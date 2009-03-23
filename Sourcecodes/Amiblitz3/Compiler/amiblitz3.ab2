@@ -105,6 +105,7 @@ XINCLUDE "/library_offsets.bb2"
 XINCLUDE "PE/wizard_Table.include.bb2"
 XINCLUDE "PE/logging.include.bb2"
 XINCLUDE "translation.include.bb2"
+XINCLUDE "ab3tokenizer.include.bb2"
 optimize 5
 WBStartup
 
@@ -715,6 +716,7 @@ End Function
   MOVE.l #myversion,$7FE(a1)
   MOVE.l #versioninformation,$80E(A1)
   MOVE.l #number_of_builds,$812(A1)
+
 
   CLR.w AL_0_2B42
 ;  MOVE.l $2C(A1),_intuibase        ; intuibase of PED
@@ -1779,7 +1781,8 @@ inmacro:   Ds.w 1                 ;macro found
 
   !basic
   saved0.l = PutD0
-  comstatus$ = !TRANS{"Pass"}+" "+Str$(Peek.w(?pass))+": "+!TRANS{"compiling sources..."}
+  passcounter.l+1
+  comstatus$ = !TRANS{"Pass"}+" "+Str$(Peek.w(?pass))+": "+!TRANS{"compiling sources..."};+Str$(passcounter)}
   GetD0 saved0
   !asm
   JSR update_progressbar
@@ -16309,13 +16312,40 @@ JL_0_C0D6:  MOVE.l A1,D0
   MOVEA.l _dosbase,A6
   MOVE.l $8(A2),D1
   MOVE.l A1,D2
+  MOVE.l D2,include_base
   ;MOVE.l #$3FF*8,D3
   MOVE.l #$10000000,d3     ;load whole file
   SUB.l D0,D3
    JSR _Read(A6)
   TST.l D0
-   BMI.w JL_0_880A
+   BMI.w error_reading_file
    BEQ.w JL_0_C120
+   MOVE.l D0,include_length
+   MOVEA.l comdata,A1
+   MOVE.l $816(A1),include_fasttokenizer
+   !basic
+   ilen.l  = Peek.l(?include_length)
+   ibase.l = Peek.l(?include_base)
+   ido.l   = Peek.l(?include_process)
+   *tn.tokenizer = Peek.l(?include_fasttokenizer)
+   If ido
+     nilen.l = tokenizer_Process{*tn,ibase,ibase,ilen}
+     ;error{"Tokenizing the include! length:"+Str$(ilen)+ "=>" +Str$(nilen)}
+     If nilen>0
+       For n.l=nilen To ilen-1
+         Poke.b ibase+n,0
+       Next
+       ;fid.l = file_Open{"ram:tokenized.include.bb2",#file_forcewrite}
+       ;If fid>=0
+       ;  file_WriteMem{fid,ibase,nilen}
+       ;  file_Close{fid}
+       ;End If
+       Poke.l ?include_length,nilen
+     End If
+   End If
+   !asm
+   MOVE.l #0,include_process
+   MOVE.l include_length,D0
    LEA inctab,a0
    MOVEQ #0,d1
    MOVE.w ininclude,d1
@@ -16334,6 +16364,10 @@ JL_0_C0D6:  MOVE.l A1,D0
   MOVE.l A0,$E(A2)
 RTS
 
+include_length:  Dc.l 0 ; for tokenizer!
+include_base:    Dc.l 0
+include_process: Dc.l 0
+include_fasttokenizer : Dc.l 0
 JL_0_C120:
   MOVE.l $8(A2),D1
   JSR -$24(A6)
@@ -17452,13 +17486,13 @@ RTS
   MOVEA.l _dosbase,A6
   JSR _Lock(A6)
   MOVE.l D0,D7
-  BEQ.w JL_0_87F2
+  BEQ.w error_cant_open_include
   MOVE.l D7,D1
   MOVE.l ptr_macrobuffer_begin,D2
   JSR _Examine(A6)
   MOVEA.l ptr_macrobuffer_begin,A0
   MOVE.l $4(A0),D0
-   BPL.w JL_0_87F2
+   BPL.w error_cant_open_include
   MOVE.l $7C(A0),D3
   MOVE.l D7,D1
    JSR _UnLock(A6)
@@ -17466,7 +17500,7 @@ RTS
   MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
    JSR _Open(A6)
   MOVE.l D0,D7
-   BEQ.w JL_0_87F2
+   BEQ.w error_cant_open_include
   MOVE.l destpointer,D0
   ADD.l D3,D0
   CMP.l destbufferend,D0
@@ -17475,7 +17509,7 @@ RTS
   MOVE.l D7,D1
    JSR _Read(A6)
   CMP.l #$FFFFFFFF,D0
-   BEQ.w JL_0_880A
+   BEQ.w error_reading_file
   ADD.l D0,destpointer
 BRA.w JL_0_CB04
 
@@ -17510,18 +17544,25 @@ JL_0_8192b: JMP JL_0_8192
     MOVE.b (a0)+,(a1)+
   BNE 'l1
   JSR save_includename
+  MOVE.l #0,include_process
 
   CMP.l #$62623200,-4(a0)     ;.bb2
   BEQ 'ok
+  CMP.l #$61623300,-4(a0)     ;.ab3
+  BEQ 'ok_tokenize
+  CMP.l #$61623200,-4(a0)     ;.ab3
+  BEQ 'ok_tokenize
   CMP.l #$2e626200,-4(a0)     ;.bb files
   BEQ 'ok
   JMP errortoken              ;can only include
+ 'ok_tokenize
+   MOVE.l #-1,include_process ; must tokenize the include
  'ok
   MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
   MOVEA.l _dosbase,A6
   JSR _Open(A6)
   MOVE.l D0,$8(A2)
-  BEQ.w JL_0_87F2
+  BEQ.w error_cant_open_include
   CLR.l includeline
   MOVE.l 8(a2),d1
   MOVE.l d3,-(a7)
@@ -17549,7 +17590,7 @@ JL_0_8192b: JMP JL_0_8192
 ;  MOVEA.l _dosbase,A6
 ;   jsr _Open(A6)
 ;  MOVE.l D0,$8(A2)
-  ; BEQ.w JL_0_87F2
+  ; BEQ.w error_cant_open_include
   ADDQ.w #1,ininclude            ;enter include
  'l2a
   LEA _include,a0
@@ -17583,7 +17624,8 @@ AL_0_CB80:   Ds.l 1
 .do_Macro:
   MOVE.l AL_0_E9E8,AL_0_CB80
    BSR.w makename2
-   BEQ.w syntaxerr
+   BEQ.w syntaxerr_longjump
+
    CLR.b thenmode
    ;bsr.w JL_0_7C44
    MOVE.w AL_0_E9A0,instringon
@@ -22341,7 +22383,7 @@ nohunkoffset  Dc.l 0
 
 ;-- data for ted
 teddata:      Dc.l tokens
-              Dc.l 0;compilermenu_entries
+              Dc.l 0;compilermenu_entries ; not used anymore
               Dc.l read_xtrafile
               Dc.l write_xtrafile
               Dc.l call_menuentry        ; compile and run ?
@@ -23729,20 +23771,20 @@ AL_0_2B42:          Ds.w 1
 firstiff:           Ds.l 1
 ptr_seg_ped:        Ds.l 1
 str_pedfile:        Ds.b #MAX_STRINGSIZE
-str_mathffpname:    Dc.b "mathffp.library",0
+str_mathffpname:    Dc.b "mathffp.library",0 : Even
 str_libfilename:    Ds.b #MAX_STRINGSIZE
 str_path_userlibs:  Ds.b #MAX_STRINGSIZE
 str_defaultdbug:    Ds.b #MAX_STRINGSIZE
-                    Even
+
 ptr_seg_debugger:   Ds.l 1
 str_blitz3assign:   Ds.b #MAX_STRINGSIZE
-                    Even
+
 str_path_acidlibs:  Ds.b #MAX_STRINGSIZE
 size_acidlibs:      Ds.l 1
 str_path_deflibs:   Ds.b #MAX_STRINGSIZE
 size_deflibs:       Ds.l 1
 str_tempfilename:   Ds.b #MAX_STRINGSIZE
-Even
+
 str_temp_debugmodulename:  Ds.b #MAX_STRINGSIZE
 ptr_temp_debugmodule:  Ds.l 1
 Even
