@@ -1786,6 +1786,8 @@ TokenHashMapFile.s   = dos_AddPart{my_systemdir$,"TokenList.hashmap"}
 Poke.l ?preprocessor,*PreProcessor
 preproc_LoadTokens{*PreProcessor,TokenHashMapFile}
 
+*rc_fib.FileInfoBlock = AllocDosObject_ (#DOS_FIB,0)
+
 ResetList HelpIndexCache()
 If NextItemFast(HelpIndexCache()) = False Then TED_ReadHelpIndexCache{HelpIndexCacheFile$}
 
@@ -2157,7 +2159,14 @@ begin1:
   CEND
 
   preproc_Free{*PreProcessor} : *PreProcessor=!_NULL
-
+  If *rc_fib Then FreeDosObject_ *rc_fib,#DOS_FIB  : *rc_fib=!_NULL
+  rc_cacheptr.l = Peek.l(?readcache_cacheptr)
+  If rc_cacheptr
+    FreeVec_ rc_cacheptr
+    Poke.l ?readcache_cacheptr,!_NULL
+    Poke.l ?readcache_cachelen,0
+    Poke.l ?readcache_readlen ,0
+  End If
   !asm
   !exitasm
 End
@@ -7041,9 +7050,9 @@ BRA saveab
 
   saveab:
   MOVE.l D0,-(a7)
-  !basic
-  WZ_ShowMessage{!TRANS{"Exporting source code as ASCII file..."}}
-  !asm
+  ;!basic
+  ;WZ_ShowMessage{!TRANS{"Exporting source code as ASCII file..."}}
+  ;!asm
   JSR set_pointerbusy
   MOVE.l (a7)+,D0
 
@@ -7101,8 +7110,7 @@ BRA saveab
     Next
 
     tmp.l      = AllocVec_(totalLength,#MEMF_CLEAR)
-    tmp2.l     = AllocVec_(totalLength*2,#MEMF_CLEAR)
-    If tmp><0 AND tmp2><0
+    If tmp
       node.l     = Peek.l(?saveascii_node)
       dptr.l     = tmp
       For n.l=0 To numlines-1
@@ -7115,16 +7123,16 @@ BRA saveab
         node = Peek.l(node)
       Next
 
-      plainLength.l = preproc_Detokenize{*PreProcessor,tmp,tmp2,totalLength}
-      If plainLength>0
-        Write_ fp,tmp2,plainLength
-      End If
+      plainLength.l = preproc_DetokenizeFP{*PreProcessor,tmp,totalLength,fp}
+      FreeVec_ tmp
+    Else
+      error{!TRANS{"Not enough memory for temp buffer!"}}
     End If
-
-    If tmp><0 Then FreeVec_ tmp
-    If tmp2><0 Then FreeVec_ tmp2
+    Close_ fp
     !asm
-  BRA.w saveascii_done
+    MOVE.l #0,d7
+
+  BRA saveascii_exit
   saveascii_node:  Dc.l 0
   saveascii_lines: Dc.l 0
 
@@ -7153,9 +7161,9 @@ BRA saveab
 
   saveascii_exit:
   JSR set_pointernormal
-  !basic
-  WZ_HideMessage{}
-  !asm
+  ;!basic
+  ;WZ_HideMessage{}
+  ;!asm
   MOVEA.l (A7)+,A2
 RTS
 
@@ -9307,18 +9315,17 @@ source_read_from_file_cached:
   rc_cachelen.l = Peek.l(?readcache_cachelen)
   rc_cacheptr.l = Peek.l(?readcache_cacheptr)
   rc_dotokenize.l = Peek.l(?readcache_dotokenize)
-  DEFTYPE.FileInfoBlock fib
 
   If rc_readlen<=0 ; no file yet!
-    ExamineFH_ rc_fp,fib
-    rc_filelen.l = fib\fib_Size
+    ExamineFH_ rc_fp,*rc_fib
+    rc_filelen.l = *rc_fib\fib_Size
     If rc_filelen>rc_cachelen
       If rc_cacheptr Then FreeVec_ rc_cacheptr
       rc_cacheptr = AllocVec_(rc_filelen,#MEMF_ANY)
       rc_cachelen = rc_filelen
     End If
     rc_readlen.l = Read_ (rc_fp,rc_cacheptr,rc_filelen)
-    ex.s = LCase$(dos_GetExt{Peek.s(&fib\fib_FileName)})
+    ex.s = LCase$(dos_GetExt{Peek.s(&*rc_fib\fib_FileName)})
     If ex="ab2" OR ex="ab3" OR ex="asc"
       rc_readlen = preproc_Tokenize{*PreProcessor,rc_cacheptr,rc_cacheptr,rc_readlen}
     End If
@@ -9895,7 +9902,16 @@ For libid.l=0 To 255
     ptr.l = PutD0
     name.s = Peek.s(ptr)
     If Left$(name,4)><"????"
-      preproc_AddToken{*PreProcessor,name,tokenid,libid}
+      tokenS.s = hashmap_GetItem{*PreProcessor\tokens,name}
+      If tokenS
+        dtoken.l = Peek.w(&tokenS)
+        dtokenid.l = (dtoken) & $7F
+        dlibid.l   = (dtoken LSR 7) &$FF
+        Emessage.s = "Token Clash: \\22"+name+"\\22 was found as "+Str$(libid)+"/"+Str$(tokenid)+" and before as "+Str$(dlibid)+"/"+Str$(dtokenid)+"!"
+        error{Emessage}
+      Else
+        preproc_AddToken{*PreProcessor,name,tokenid,libid}
+      End If
     End If
   Next
 Next
