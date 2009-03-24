@@ -393,7 +393,7 @@ CNIF #use_NTUI
 XINCLUDE "ped.ntui.bb2"
 CEND
 XINCLUDE "translation.include.bb2"
-XINCLUDE "ab3tokenizer.include.bb2"
+XINCLUDE "/preprocessor.include.bb2"
 
 #MAX_STRINGSIZE = 512
 #MAX_TEMPLATES  = 16
@@ -1782,9 +1782,9 @@ HelpIndexCacheFile$  = dos_AddPart{my_systemdir$,"HelpIndexCache.bin"}
 
 ; our fast tokenizer ...
 TokenHashMapFile.s   = dos_AddPart{my_systemdir$,"TokenList.hashmap"}
-*FastTokenizer.tokenizer = tokenizer_Create{}
-Poke.l ?fasttokenizer,*FastTokenizer
-tokenizer_LoadTokens{*FastTokenizer,TokenHashMapFile}
+*PreProcessor.preprocessor = preproc_Create{}
+Poke.l ?preprocessor,*PreProcessor
+preproc_LoadTokens{*PreProcessor,TokenHashMapFile}
 
 ResetList HelpIndexCache()
 If NextItemFast(HelpIndexCache()) = False Then TED_ReadHelpIndexCache{HelpIndexCacheFile$}
@@ -1985,10 +1985,10 @@ begin1:
   read_libmapping{dos_AddPart{my_systemdir$,"token_mapping_libs.txt"}}
   read_libmapping{dos_AddPart{my_systemdir$,"token_mapping_userlibs.txt"}}
 
-  If *FastTokenizer\hm=!_NULL ; we have no hashmap loaded, create it!
+  If *PreProcessor\tokens=!_NULL ; we have no hashmap loaded, create it!
     WZ_ShowMessage{!TRANS{"Creating Hashmaps..."}}
-    JSR create_tokenizer
-    tokenizer_SaveTokens{*FastTokenizer,TokenHashMapFile}
+    JSR preproc_query_tokens
+    preproc_SaveTokens{*PreProcessor,TokenHashMapFile}
   End If
 
   WZ_HideMessage{}
@@ -2156,7 +2156,7 @@ begin1:
   _ntui_Free{}
   CEND
 
-  tokenizer_Free{*FastTokenizer} : *FastTokenizer=!_NULL
+  preproc_Free{*PreProcessor} : *PreProcessor=!_NULL
 
   !asm
   !exitasm
@@ -3515,7 +3515,7 @@ RTS
   MOVE.l D7,ptr_sourcefilename
   JSR open_sourcefile
   CLR.w source_changed
-  JSR JL_0_4EAC
+  JSR source_readin
   BNE.w JL_0_F50
   JSR JL_0_4E4A
 JMP JL_0_6B7C
@@ -3730,6 +3730,8 @@ RTS
    BEQ 'do
   CMP.l #".ab2",-5(a1)
    BEQ 'do
+  CMP.l #".ab3",-5(a1)
+   BEQ 'do
   CMP.w #".b",-4(a1)
    BNE 'l1
   CMP.b #"b",-2(a1)
@@ -3916,6 +3918,10 @@ RTS
   BNE 'os
   MOVE.b #1,ab2mode
  'os
+  CMP.l #$61623300,-4(a0)    ;ab3
+  BNE 'os3
+  MOVE.b #3,ab2mode
+ 'os3
   SUB.l namesizestore,a0
   CMP.l #28,a0
   BLE 'l10
@@ -7057,8 +7063,9 @@ BRA saveab
   MOVEA.l firstsourceline,A2
   TST.w do_tokenize
    BEQ.w JL_0_3608
+   BRA saveascii_writeline_fast
 
-  JL_0_35D6: ;-- detokenize and write to file
+  saveascii_writeline: ;-- detokenize and write to file
     LEA $9(A2),A0
     MOVEA.l temp_tokenstring2,A1
     JSR detokenize_line
@@ -7071,8 +7078,57 @@ BRA saveab
     JSR _Write(A6)
     MOVEA.l (A2),A2
     SUBQ.l #1,d7
-  BNE JL_0_35D6
+  BNE saveascii_writeline
   BRA.w saveascii_done
+
+  saveascii_writeline_fast: ;-- detokenize and write to file
+    MOVE.l A2,saveascii_node
+    MOVE.l D7,saveascii_lines
+
+    !basic
+    node.l     = Peek.l(?saveascii_node)
+    numlines.l = Peek.l(?saveascii_lines)
+    fp.l       = Peek.l(?ptr_asciifile)
+
+    totalLength.l = 0
+
+    For n.l=0 To numlines-1
+      baseptr.l = node+$9 ;Peek.l (node+$9)
+      sptr.l = baseptr
+      While Peek.b(sptr) : sptr+1 : Wend
+      totalLength + sptr-baseptr+1
+      node = Peek.l(node)
+    Next
+
+    tmp.l      = AllocVec_(totalLength,#MEMF_CLEAR)
+    tmp2.l     = AllocVec_(totalLength*2,#MEMF_CLEAR)
+    If tmp><0 AND tmp2><0
+      node.l     = Peek.l(?saveascii_node)
+      dptr.l     = tmp
+      For n.l=0 To numlines-1
+        baseptr.l = node+$9 ;Peek.l (node+$9)
+        sptr.l = baseptr
+        Repeat
+           char.b = Peek.b(sptr)
+           Poke.b dptr,char : sptr +1 : dptr+1
+        Until char=0
+        node = Peek.l(node)
+      Next
+
+      plainLength.l = preproc_Detokenize{*PreProcessor,tmp,tmp2,totalLength}
+      If plainLength>0
+        Write_ fp,tmp2,plainLength
+      End If
+    End If
+
+    If tmp><0 Then FreeVec_ tmp
+    If tmp2><0 Then FreeVec_ tmp2
+    !asm
+  BRA.w saveascii_done
+  saveascii_node:  Dc.l 0
+  saveascii_lines: Dc.l 0
+
+
 
   JL_0_3608: ;-- directly write to file
     LEA $9(A2),A0
@@ -7216,7 +7272,7 @@ JL_0_3748:
   MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
   CLR.b menuload
   JSR open_sourcefile
-  JSR JL_0_4EAC
+  JSR source_readin
   BEQ.w JL_0_4E4Ab
   MOVE.w #$FFFF,labellist_changed
   MOVE.w #$FFFF,source_changed
@@ -9198,14 +9254,14 @@ RTS
 RTS
 
 JL_0_4EA2:
-  JSR JL_0_4EAC
+  JSR source_readin
   BNE.b readbyte
   MOVEQ.l #-$01,D0
 RTS
 
-JL_0_4EAC:
+source_readin: ; can be clipboard or file
   TST.w paste_mode
-   BEQ.w JL_0_4EEE
+   BEQ.w source_read_from_file_cached  ; well, it's from file
   MOVE.l A6,-(A7)
   MOVEA.l _execbase,A6
   MOVEA.l ptr_iorequest_clipboard,A1
@@ -9220,11 +9276,11 @@ JL_0_4EAC:
   TST.l D6
 RTS
 
-JL_0_4EEE:
-  MOVE.l D7,D1
+source_read_from_file:
+  MOVE.l D7,D1            ; file handle
   MOVEA.l AL_0_8B00,A5
-  MOVE.l A5,D2
-  MOVE.l #$2000,D3
+  MOVE.l A5,D2            ; membuffer
+  MOVE.l #$2000,D3        ; length
   MOVEA.l _dosbase,A6
    JSR _Read(A6)
   MOVE.l D0,D6
@@ -9235,6 +9291,74 @@ JL_0_4EEE:
   MOVEQ.l #$00,D6
   JL_0_4F18:
 RTS
+
+
+source_read_from_file_cached:
+  MOVE.l D7,readcache_fp
+  MOVEA.l AL_0_8B00,A5
+  MOVE.l A5,readcache_destptr            ; membuffer
+  MOVE.l #$2000,readcache_blocklen       ; length
+  !basic
+  rc_fp.l       = Peek.l(?readcache_fp)
+  rc_destptr.l  = Peek.l(?readcache_destptr)
+  rc_readlen.l  = Peek.l(?readcache_readlen)
+  rc_offset.l   = Peek.l(?readcache_offset)
+  rc_blocklen.l = Peek.l(?readcache_blocklen)
+  rc_cachelen.l = Peek.l(?readcache_cachelen)
+  rc_cacheptr.l = Peek.l(?readcache_cacheptr)
+  rc_dotokenize.l = Peek.l(?readcache_dotokenize)
+  DEFTYPE.FileInfoBlock fib
+
+  If rc_readlen<=0 ; no file yet!
+    ExamineFH_ rc_fp,fib
+    rc_filelen.l = fib\fib_Size
+    If rc_filelen>rc_cachelen
+      If rc_cacheptr Then FreeVec_ rc_cacheptr
+      rc_cacheptr = AllocVec_(rc_filelen,#MEMF_ANY)
+      rc_cachelen = rc_filelen
+    End If
+    rc_readlen.l = Read_ (rc_fp,rc_cacheptr,rc_filelen)
+    ex.s = LCase$(dos_GetExt{Peek.s(&fib\fib_FileName)})
+    If ex="ab2" OR ex="ab3" OR ex="asc"
+      rc_readlen = preproc_Tokenize{*PreProcessor,rc_cacheptr,rc_cacheptr,rc_readlen}
+    End If
+    rc_offset = 0
+  End If
+
+  rc_chunklen.l = rc_blocklen
+  If rc_chunklen>rc_readlen-rc_offset Then rc_chunklen=rc_readlen-rc_offset
+  If rc_chunklen>0
+    CopyMem_ rc_cacheptr+rc_offset,rc_destptr,rc_chunklen
+    rc_offset + rc_chunklen
+  Else
+    rc_chunklen   = 0
+    rc_readlen = 0
+  End If
+
+  Poke.l ?readcache_chunklen ,rc_chunklen
+  Poke.l ?readcache_readlen  ,rc_readlen
+  Poke.l ?readcache_offset   ,rc_offset
+  Poke.l ?readcache_cachelen ,rc_cachelen
+  Poke.l ?readcache_cacheptr ,rc_cacheptr
+  ;error{"Readfile cached! length="+Str$(rc_rlength)}
+  !asm
+  MOVE.l readcache_chunklen,d0
+  MOVE.l readcache_chunklen,d6
+  MOVEA.l AL_0_8B00,A5
+  MOVE.l readcache_fp,D7
+  TST.l D6
+RTS
+
+readcache_fp:         Dc.l 0
+readcache_destptr:    Dc.l 0
+readcache_filelen:    Dc.l 0
+readcache_offset:     Dc.l 0
+readcache_blocklen:   Dc.l 0
+readcache_readlen:    Dc.l 0
+readcache_cacheptr:   Dc.l 0
+readcache_cachelen:   Dc.l 0
+readcache_chunklen:   Dc.l 0
+readcache_dotokenize: Dc.l 0
 
 JL_0_4F1A:
   MOVE.l D5,D0
@@ -9368,6 +9492,7 @@ load
   MOVE.w D0,-(A7)
   TST.w D4                ;-1 ascii
    BEQ.w JL_0_4FFE
+
   MOVE.w do_tokenize,D2
    BEQ.w JL_0_4FFE
   SUBQ.w #1,D5
@@ -9376,7 +9501,7 @@ load
   BRA.w JL_0_4FFE
 
   JL_0_4FFA:
-  JSR import_start
+  ;JSR import_start
 
   JL_0_4FFE:
   MOVE.w (A7)+,D0
@@ -9393,7 +9518,7 @@ JL_0_5002:
 RTS
 
 
-.import_start:
+.import_start:  ; add tokenize code here...
   MOVEM.l D1-D4/D6-D7/A0-A6,-(A7)
   MOVE.w D5,D1
   MOVEA.l temp_tokenstring2,A1
@@ -9402,6 +9527,7 @@ RTS
   TST.b convert
   BEQ 'l2b  ;'l1
 
+  ;BRA 'l2b ; convert is done with preproc
   ;CMP.w #122,d1
   ;BLE 'noclip
   ;MOVE.w #122,d1
@@ -9455,6 +9581,7 @@ RTS
   BNE 'l5
   TST.b convert
   BEQ 'l5
+  ;BRA 'l5
   CMP.b #".",d0
   BNE 'l2
   CMP.b #",",-2(a1)
@@ -9757,8 +9884,8 @@ RTS
 RTS
 
 
-.create_tokenizer
-tokenizer_FlushTokens{*FastTokenizer}
+.preproc_query_tokens
+preproc_FlushTokens{*PreProcessor}
 For libid.l=0 To 255
   For tokenid.l=0 To 127
     tokenW.w = libid LSL 7 | tokenid
@@ -9768,10 +9895,11 @@ For libid.l=0 To 255
     ptr.l = PutD0
     name.s = Peek.s(ptr)
     If Left$(name,4)><"????"
-      tokenizer_AddToken{*FastTokenizer,name,tokenid,libid}
+      preproc_AddToken{*PreProcessor,name,tokenid,libid}
     End If
   Next
 Next
+preproc_Update{*PreProcessor}
 RTS
 
 
@@ -17013,8 +17141,8 @@ dummy2                      Dc.l 0            ;+$806
 dummy3                      Dc.l 0            ;+$80A
 versioninformation          Dc.l 0            ;+$80E
 number_of_builds            Dc.l 0            ;+$812
-fasttokenizer:              Dc.l 0            ; +$816
-dummy6                      Dc.l 0 ; we abuse this one for passing the tokenizer +$816
+preprocessor:               Dc.l 0            ; +$816
+dummy6                      Dc.l 0
 ; --
 ; -- END OF DATA STRUCTURE FOR "comdata"
 Even
@@ -17693,7 +17821,7 @@ Return
   ; -- scan for any templates
   ClearList templates()
   templatepath.s = dos_AddPart{sourcedir$ , "Templates"}
-  *root.ml_node = ml_AddPathNode{0,templatepath.s,"#?.(bb2|ab2|asc)"}
+  *root.ml_node = ml_AddPathNode{0,templatepath.s,"#?.(bb2|ab2|ab3|asc)"}
   *node.ml_node = *root
   templates.w = 0
   While *node><0 AND templates < #MAX_TEMPLATES
@@ -18590,6 +18718,7 @@ Return
         If Instr(t$,".include") Then u$ = "Include" Else
         If Instr(t$,".bb2")     Then u$ = "AB2-Source" Else
         If Instr(t$,".ab2")     Then u$ = "AB2-Source" Else
+        If Instr(t$,".ab3")     Then u$ = "AB3-Source" Else
         If Instr(t$,".bb")      Then u$ = "BB2-Source" Else
         If Instr(t$,".wizard")  Then u$ = "Wizard-GUI-File" Else u$ = dos_GetExt{t$}+" File"
         WZ_AddRow{"PROJECTTABLE",t$,u$}
@@ -18625,7 +18754,7 @@ Return
 
 .project_removefile:
   t$ = actual_file$
-  If Instr(t$,".bb2")     OR Instr(t$,".ab2")     OR Instr(t$,".bb")
+  If Instr(t$,".bb2")     OR Instr(t$,".ab2") OR Instr(t$,".ab3")     OR Instr(t$,".bb")
     Gosub project_loadfile
     !asm
     JSR menu_quit
@@ -18637,7 +18766,7 @@ Return
 
 .project_loadfile:
   t$ = actual_file$
-  If Instr(t$,".bb2")     OR Instr(t$,".ab2")     OR Instr(t$,".bb")
+  If Instr(t$,".bb2")     OR Instr(t$,".ab2")  OR Instr(t$,".ab3")    OR Instr(t$,".bb")
     GetD0 &actual_file$
     !asm
     JSR loadfile
@@ -23706,8 +23835,8 @@ RTS
     WZ_ShowMessage{!TRANS{"Saving Helpindex to Disc..."}}
     TED_WriteHelpIndexCache{HelpIndexCacheFile$}
     WZ_ShowMessage{!TRANS{"Creating Hashmaps..."}}
-    JSR create_tokenizer
-    tokenizer_SaveTokens{*FastTokenizer,TokenHashMapFile}
+    JSR preproc_query_tokens
+    preproc_SaveTokens{*PreProcessor,TokenHashMapFile}
     WZ_HideMessage{}
   End If
 
