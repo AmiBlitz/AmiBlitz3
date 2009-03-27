@@ -394,6 +394,7 @@ XINCLUDE "ped.ntui.bb2"
 CEND
 XINCLUDE "translation.include.bb2"
 XINCLUDE "/preprocessor.include.bb2"
+XINCLUDE "/comdata.bb2"
 
 #MAX_STRINGSIZE = 512
 #MAX_TEMPLATES  = 16
@@ -657,6 +658,8 @@ Dim tokentable.b(65536)
 DEFTYPE.Screen      *myscreen        ; Pointer to a screen
 DEFTYPE.DrawInfo    *drawinfo        ; The drawing information of that screen
 
+optimize 5
+Syntax 2
 
 
 ; ------------------------------------------------------
@@ -1574,17 +1577,13 @@ BEQ 'no_exit
 !TRANS_INIT{"AmiBlitz3"}
 ; -- checking internal data structures...
 ;
-If Peek$(?comdata+$7DE)<>"newd"
-  error{!TRANS{"INTERNAL ERROR:\\nThe data-exchange structure comdata has been changed."}}
-  Goto abnormal_exit
-EndIf
-;
+!ComData_Init ; init the comdata structure
 
 ;---  Check  if  all  needed  Librarys  are  available  with  the  needed  min  Version
 errorout.s = ""      ; for the error text
 ende.b     =  False  ; abort indicater
 
-If dos_CheckLib{"wizard.library",42} = False        ; needed for Compiler, PED and REDDebugger                             c
+If dos_CheckLib{"wizard.library",42} = False        ; needed for Compiler, PED and REDDebugger
   errorout + "Missing wizard.library:\\nThis library is required in version 42 by this IDE.\\n\\n"
   ende = True
 EndIf
@@ -1623,7 +1622,7 @@ WZ_ShowMessage{!TRANS{"Initiating AmiBlitz3 Environment..."}}
 ; AUSWERTEN DER TOOLTYPES
 ; ------------------------------------------------------------------------------------
 .SET_DEFAULT_SETTINGS
-;  MOVE.w #0,do_tokenize
+;  MOVE.w #0,comWord_DoTokenize
 ;  MOVE.w #0,flag_tokenization
 Poke.s ?warningtitle,!TRANS{"!!!PROGRAM IS RUNNING: ONLY SAVE/NAVIGATION/HELP WILL WORK..."}
 a$ = dos_GetProgIcon{"Blitz3:AmiBlitz3"}
@@ -1783,7 +1782,7 @@ HelpIndexCacheFile$  = dos_AddPart{my_systemdir$,"HelpIndexCache.bin"}
 ; our fast tokenizer ...
 TokenHashMapFile.s   = dos_AddPart{my_systemdir$,"TokenList.hashmap"}
 *PreProcessor.preprocessor = preproc_Create{}
-Poke.l ?preprocessor,*PreProcessor
+Poke.l ?comPtr_PreProcessor,*PreProcessor
 preproc_LoadTokens{*PreProcessor,TokenHashMapFile}
 
 *rc_fib.FileInfoBlock = AllocDosObject_ (#DOS_FIB,0)
@@ -1806,11 +1805,11 @@ WZ_ShowMessage{!TRANS{"Starting IDE..."} }
 .MAINPROGRAM
 !asm
 begin1:
-  MOVE.l A1,compiler_IsAvailable               ; A1 is teddata of compiler
+  MOVE.l A1,comLong_AB3IsAvailable               ; A1 is teddata of compiler
 
   ; --
   ; -- initiation of compiler data-interface
-  MOVEA.l #token,A0                 ;teddata for compiler
+  MOVEA.l #comPtr_TokenBase,A0                 ;teddata for compiler
   MOVEQ.l #$11,D0
   JL_0_1E:
     MOVE.w (A1)+,(A0)+
@@ -1884,7 +1883,7 @@ begin1:
   If Peek.l(?_graphicsbase) = 0 Then !asm : BRA.w close_libraries2
   Poke.l ?_intuibase, OpenLibrary_("intuition.library",0)
   If Peek.l(?_intuibase) = 0 Then !asm : BRA.w close_libraries2
-  Poke.l ?_intuibase_for_com,Peek.l(?_intuibase)
+  Poke.l ?comPtr_IntuiBase,Peek.l(?_intuibase)
   Poke.l ?_gadtoolsbase, OpenLibrary_("gadtools.library",0)
   If Peek.l(?_gadtoolsbase) = 0 Then !asm : BRA.w close_libraries2
 
@@ -1893,10 +1892,10 @@ begin1:
     error {!TRANS{"Unable to open ted.library !\\nThe IDE will crash."}}
   Else
 ;    Poke.l ?_tedlibbase,*tedlibbase
-    LEA comdata,A0
+    LEA.l COMDATABASE,A0
     TEDSetJumpTable_
-    TEDSetFirstLine_ ?firstsourceline
-    TEDSetCurrentLine_ ?currsourceline
+    TEDSetFirstLine_ ?comPtr_FirstSourceLine
+    TEDSetCurrentLine_ ?comPtr_CurrentSourceLine
   EndIf
   !asm
 
@@ -1910,9 +1909,9 @@ begin1:
   JSR make_MsgPort
 
   MOVEA.w #$2000,A0
-  ADDA.w maxcolumns,A0
-  ADDA.w maxcolumns,A0
-  ADDA.w maxcolumns,A0
+  ADDA.w comWord_MaxColumns,A0
+  ADDA.w comWord_MaxColumns,A0
+  ADDA.w comWord_MaxColumns,A0
   ADDQ.w #6,A0
   MOVE.l A0,D0
   MOVEQ.l #$01,D1
@@ -1923,9 +1922,9 @@ begin1:
 
   MOVEA.l D0,A0
   LEA $2000(A0),A0
-  MOVE.l A0,temp_tokenstring1 : ADDA.w maxcolumns,A0 : ADDQ.w #2,A0
-  MOVE.l A0,temp_tokenstring2 : ADDA.w maxcolumns,A0 : ADDQ.w #2,A0
-  MOVE.l A0,temp_tokenstring3 : ADDA.w maxcolumns,A0 : ADDQ.w #2,A0
+  MOVE.l A0,temp_tokenstring1 : ADDA.w comWord_MaxColumns,A0 : ADDQ.w #2,A0
+  MOVE.l A0,temp_tokenstring2 : ADDA.w comWord_MaxColumns,A0 : ADDQ.w #2,A0
+  MOVE.l A0,temp_tokenstring3 : ADDA.w comWord_MaxColumns,A0 : ADDQ.w #2,A0
   MOVE.l A0,temp_tokenstring_obsolete
 
   MOVE.l #$2F60+1000,D0
@@ -1959,15 +1958,15 @@ begin1:
   ;  LEA $100(A0),A0      ; old colorsettings
   JSR set_oldpreferences
 
-  CLR.w prefswritten_state
+  CLR.w comWord_PrefsWrittenState
 
   ; --
   ; -- return to compiler after initiation
-  MOVE.l compiler_IsAvailable,D0
+  MOVE.l comLong_AB3IsAvailable,D0
   BEQ.w start_up_without_compiler
     LEA compiler_jumps_here,A0
-    MOVEA.l #comdata,A1
-    MOVE.w #$FFFF,PED_IsAvailable
+    MOVEA.l comdata,A1 ; its now indirect, was moveA.l #comdata before
+    MOVE.w #$FFFF,comWord_PEDIsAvailable
     RTS ; <-- return to compiler
   start_up_without_compiler:
 
@@ -1983,7 +1982,7 @@ begin1:
   ; -- fill mapping array with libnames from mapping-file
   ; -- and check consistency based on the mapping files and the internal libnums
   WZ_ShowMessage{!TRANS{"Building Token Index..."}}
-  tokenbase = Peek.l(?token)
+  tokenbase = Peek.l(?comPtr_TokenBase)
   read_libmapping{dos_AddPart{my_systemdir$,"token_mapping_libs.txt"}}
   read_libmapping{dos_AddPart{my_systemdir$,"token_mapping_userlibs.txt"}}
 
@@ -2010,7 +2009,7 @@ begin1:
   JSR get_currentdir
   TST.l ptr_source_dir
    BEQ 'l2
-  MOVE.l #str_currentdir,a1
+  MOVE.l #comStr_CurrentDir,a1
   MOVE.l ptr_source_dir,a0
   MOVEQ #100,d0
  'l3
@@ -2018,13 +2017,13 @@ begin1:
   BNE 'l3
   BRA 'l1
  'l2
-  MOVE.l #str_currentdir,D0
+  MOVE.l #comStr_CurrentDir,D0
   JSR set_currentdir
  'l1
   MOVE.l lock_currentdir,lock_defaultdirectory
   CLR.l lock_currentdir
 
-;  LEA str_currentdir,A0
+;  LEA comStr_CurrentDir,A0
 ;  MOVEA.l AL_0_BC8,A1
 ;  JL_0_3BA:
 ;    MOVE.b (A0)+,(A1)+
@@ -2037,8 +2036,8 @@ begin1:
     If last_source$<>""
       currentdir$ = dos_PathPart{last_source$}
       If Right$(currentdir$,1)<>":" Then currentdir$ + "/" ; dirty hack, but better than editing ASM
-      Poke$ ?str_sourcename,dos_FilePart{last_source$}
-      Poke$ ?str_currentdir,currentdir$
+      Poke$ ?comStr_SourceName,dos_FilePart{last_source$}
+      Poke$ ?comStr_CurrentDir,currentdir$
     EndIf
   EndIf
   !asm
@@ -2046,16 +2045,16 @@ begin1:
   ; -- jump to mainloop if no sourcename given, else
   ; -- load last Source
 .AUTOLOAD_SOURCE
-  MOVE.b str_sourcename,D0
+  MOVE.b comStr_SourceName,D0
    BEQ.w skip_autoload
-  LEA str_currentdir,A0
+  LEA comStr_CurrentDir,A0
   MOVEA.l temp_tokenstring1,A1
   MOVE.l A1,D7
   JL_0_40E:
     MOVE.b (A0)+,(A1)+
   BNE.b JL_0_40E
   SUBQ.w #1,A1
-  LEA str_sourcename,A0
+  LEA comStr_SourceName,A0
   JL_0_41A:
     MOVE.b (A0)+,(A1)+
   BNE.b JL_0_41A
@@ -2080,7 +2079,7 @@ begin1:
 
   ; --
   ; -- shutdown PED after return of the mainloop
-  CLR.w PED_IsAvailable
+  CLR.w comWord_PEDIsAvailable
   JSR close_gui
 
   close_libraries:
@@ -2130,7 +2129,7 @@ begin1:
   JSR _UnLock(A6)
   JL_0_5BE:
 
-  MOVE.w PED_IsAvailable,D0
+  MOVE.w comWord_PEDIsAvailable,D0
   EXT.l D0
 
   exit_ped:
@@ -2174,8 +2173,8 @@ End
 
 .abnormal_exit:
   !asm
-  CLR.w PED_IsAvailable
-  MOVEA.l #comdata,A1
+  CLR.w comWord_PEDIsAvailable
+  MOVEA.l comdata,A1 ; its now indirect, was #comdata before
   !exitasm
 End
 
@@ -2192,46 +2191,46 @@ CNIF #use_NTUI
 CEND
 
   ; -- ab hier Probleme ohne vorhandene FPU...
-  CLR.w labellist_changed
+  CLR.w comWord_LabelListChanged
   CLR.w AL_0_86C0
   JSR PED_events
-  MOVEA.l currsourceline,A4
+  MOVEA.l comPtr_CurrentSourceLine,A4
 
   ; --- check if an exe is running ---
-  TST.b running_exe_flag
+  TST.b comByte_RunningFlag
   BEQ 'l1
-    TST.w key_before_return
+    TST.w comWord_KeyBeforeReturn
     BEQ 'l1
       JSR _redraw
-      CLR.w key_before_return
+      CLR.w comWord_KeyBeforeReturn
  'l1
 
-  MOVE.w key_before_return,D0
+  MOVE.w comWord_KeyBeforeReturn,D0
   BEQ.w JL_0_CC6
     !basic
     ; --- get address of actual source line ---
     MOVE.l displayoffset,D1
     ADD.l startdisplayline,D1
     MOVE.l d1,lastedited_line
-    MOVE.w key_before_return,D0
-    MOVE.w D0,source_changed
+    MOVE.w comWord_KeyBeforeReturn,D0
+    MOVE.w D0,comWord_SourceChanged
 
     MOVEQ #0,D0
     MOVEA.l textbufferaddr,A2
-    ADDA.w textbufferoffset,A2
+    ADDA.w comWord_TextBufferOffset,A2
     MOVE.l a2,d0 : lineaddr.l = PutD0
 
     ; --- store cursor column position ---
     MOVEQ #0,D0
-    MOVE.w column,D0
-    ADD.w columnsoffset,D0
+    MOVE.w comWord_Column,D0
+    ADD.w comWord_ColumnsOffset,D0
     columnpos.w = PutD0
 
     ; --- format source line and get new column position ---
     newcolumnpos.w = preparseline{columnpos,lineaddr,Peek.b(?auto_format),Peek.b(?correct_functions)}
     GetD0 newcolumnpos
-    SUB.w columnsoffset,D0
-    MOVE.w D0,column
+    SUB.w comWord_ColumnsOffset,D0
+    MOVE.w D0,comWord_Column
     str3b$ = "|"
     !asm
 
@@ -2239,7 +2238,7 @@ CEND
     JSR parse_line
 
     ; --- draw block mark if existing
-    SF state_blockmark
+    SF comByte_StateBlockMark
     TST.l blockendy
     BMI.w exit_updateblock
       MOVEM.l D0-D3/A0-A2,-(A7)
@@ -2262,7 +2261,7 @@ CEND
       SUB.l startdisplayline,D3
       SUB.l startdisplayline,D1
       JSR JL_0_59BC
-      ST state_blockmark
+      ST comByte_StateBlockMark
       JL_0_C66:
 
       MOVEM.l (A7)+,D0-D3/A0-A2
@@ -2270,11 +2269,11 @@ CEND
 
     JSR JL_0_55AA
 
-    MOVE.w do_tokenize,D0
+    MOVE.w comWord_DoTokenize,D0
     BEQ.w JL_0_CC6
       JSR print_current_sourceline
 
-      TST.b state_blockmark
+      TST.b comByte_StateBlockMark
       BEQ.w JL_0_CC6
         MOVEM.l D0-D3/D7/A0-A2,-(A7)
         MOVE.w blockstartx,D0
@@ -2294,7 +2293,7 @@ CEND
   JL_0_CC6:
 
   ; -- auf bestimmte Events in D7 pruefen
-  LEA keytable,A0
+  LEA comArray_KeyTable,A0
   JL_0_CCC:
     MOVE.b (A0)+,D0
      BEQ.w main_loop ; Tabelle zu Ende
@@ -2308,7 +2307,7 @@ CEND
 
   ; --
   ; -- check if an executable is running and prevent IDE from doing things
-  TST.b running_exe_flag
+  TST.b comByte_RunningFlag
   BEQ no_running_exe
   CMP.w #$1c,d7   ;crsr       ;runtask allows
   BEQ no_running_exe
@@ -2339,7 +2338,7 @@ CEND
   !basic
   If Peek.b(?auto_constructs)
     If last_key.l = $D
-      a$ = check_constructs{?currsourceline}
+      a$ = check_constructs{?comPtr_CurrentSourceLine}
       If a$<>""
         !basic
         Gosub insertstring
@@ -2373,7 +2372,7 @@ CEND
  'n1
   JL_0_CE2:
 
-  MOVE.w labellist_changed,D0
+  MOVE.w comWord_LabelListChanged,D0
   BEQ.w JL_0_CFA
     JSR update_labelstuff
   JL_0_CFA:
@@ -2453,7 +2452,7 @@ BRA.w main_loop
       MOVEA.l D0,A1              ; remove the executable task
       JSR _RemTask(A6)
       JSR _Permit(a6)
-      CLR.b running_exe_flag
+      CLR.b comByte_RunningFlag
    'exit
     MOVE.l (a7)+,a0
     BRA check_panic_exit
@@ -3040,7 +3039,7 @@ RTS
    autodocdir$= tautodocdir$
    helpdir$=    thelpdir$
    Poke.l ?ptr_source_dir,&sourcedir$
-   Poke$ ?str_currentdir,sourcedir$
+   Poke$ ?comStr_CurrentDir,sourcedir$
    Poke.l ?ptr_incdirname,&includedir$
    Poke.l ?ptr_deflibsfilename,&deflibfile$
 
@@ -3289,7 +3288,7 @@ Return
     MOVEA.l ptr_AppMenuItem,A0
     JSR _RemoveAppMenuItem(A6)        ; hier gibt es noch einen Enforcerhit
 
-    MOVEA.l currsourceline,A2
+    MOVEA.l comPtr_CurrentSourceLine,A2
     JSR open_gui
     BMI.w close_libraries_longjmp
   JL_0_B26:
@@ -3299,7 +3298,7 @@ close_libraries_longjmp:
 JMP close_libraries
 
 .get_currentdir:
-  MOVE.l #str_currentdir,D1
+  MOVE.l #comStr_CurrentDir,D1
   MOVEQ.l #$40,D2
   MOVEA.l _dosbase,A6
   JSR _GetCurrentDirName(A6)
@@ -3433,7 +3432,7 @@ RTS
 ;  MOVE.l #$FFFFFFFF,asl_drawersonly
 ;  MOVEA.w #-$1,A3
 ;  LEA str_aslchangedir,A2
-;  LEA str_currentdir,A0
+;  LEA comStr_CurrentDir,A0
 ;  JSR aslrequest_file
 ;  TST.l D0
 ;  BNE.w set_currentdir
@@ -3479,9 +3478,9 @@ RTS
 
 
 split_filename:
-  ;str_sourcefile_complete,A0
-  ;str_currentdir,A1
-  ;str_sourcename,A2
+  ;comStr_SourceFileComplete,A0
+  ;comStr_CurrentDir,A1
+  ;comStr_SourceName,A2
   MOVE.l A0,-(A7)
 
   JL_0_EFA:
@@ -3523,7 +3522,7 @@ RTS
   MOVE.b #1,menuload
   MOVE.l D7,ptr_sourcefilename
   JSR open_sourcefile
-  CLR.w source_changed
+  CLR.w comWord_SourceChanged
   JSR source_readin
   BNE.w JL_0_F50
   JSR JL_0_4E4A
@@ -3532,13 +3531,13 @@ JMP JL_0_6B7C
 JL_0_F50:
   MOVEM.l D0-D7/A0-A5,-(A7)
   MOVE.l D7,D1  ; filehandle nach D1
-  MOVE.l #str_sourcefile_complete,D2
+  MOVE.l #comStr_SourceFileComplete,D2
   MOVE.l #$FE,D3; bufflength nach D3
   JSR _NameFromFH(A6)
-  LEA str_sourcefile_complete,A0
+  LEA comStr_SourceFileComplete,A0
   TST.b convert
   BEQ 'l1
-  LEA str_sourcefile_complete,A0
+  LEA comStr_SourceFileComplete,A0
  'l10
   TST.b (a0)+
   BNE 'l10
@@ -3546,12 +3545,12 @@ JL_0_F50:
   MOVE.l #".bb2",(a0)
  'l1
 
-  LEA str_sourcefile_complete,A0
-  LEA str_currentdir,A1
-  LEA str_sourcename,A2
+  LEA comStr_SourceFileComplete,A0
+  LEA comStr_CurrentDir,A1
+  LEA comStr_SourceName,A2
   BSR.b split_filename
 
-  MOVE.l #str_currentdir,D0
+  MOVE.l #comStr_CurrentDir,D0
   JSR set_currentdir
   MOVEM.l (A7)+,D0-D7/A0-A5
   JSR set_pointerbusy
@@ -3562,8 +3561,8 @@ JL_0_F50:
   MOVE.l temp_tokenstring2,tempstore
   JSR JL_0_4F5A
   JSR JL_0_4F1A
-  MOVE.l A0,firstsourceline
-  MOVE.l A0,currsourceline
+  MOVE.l A0,comPtr_FirstSourceLine
+  MOVE.l A0,comPtr_CurrentSourceLine
   CLR.l $4(A0)
   MOVE.l A0,AL_0_854A
 
@@ -3582,19 +3581,19 @@ JL_0_F50:
   JL_0_FD6:
   JSR JL_0_4E4A
 ;  CLR.l AL_0_868A
-  CLR.w textbufferoffset
-  CLR.l column
-  CLR.l columnsoffset
+  CLR.w comWord_TextBufferOffset
+  CLR.w comWord_Column ; was .l
+  CLR.w comWord_ColumnsOffset ; was .l
   CLR.l startdisplayline
   CLR.l displayoffset
 
-  MOVE.l com_read_xtrafile,D0
+  MOVE.l comFunc_ReadXtraFile,D0
   BEQ.w JL_0_100C
   MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2 ; read xtra
   JSR open_xtrafile                      ; returns D7: filehandle
   BEQ.w skip_loadingxtrafile
 
-  MOVE.l com_read_xtrafile,D0
+  MOVE.l comFunc_ReadXtraFile,D0
   MOVEA.l D0,A5
   L_0_FF2: JSR (A5)
 
@@ -3651,7 +3650,7 @@ JL_0_F50:
   JSR _Close(A6)
 
   MOVE.l xtrabuf,d0
-  MOVEA.l currsourceline,A4
+  MOVEA.l comPtr_CurrentSourceLine,A4
   JSR gotoline
   MOVEA.l actualfile,A0
   JSR delete_tempprefs
@@ -3663,7 +3662,7 @@ JL_0_F50:
   JL_0_100C:
   JSR update_horizscroller
   JSR update_labelstuff
-  JSR copyprefsdata
+  JSR StoreXtraData
   JSR _redraw
   JSR set_pointernormal
   JSR analyze_loadedsource
@@ -3674,7 +3673,7 @@ RTS
 
 ;set filenmae as screentitle
 .analyze_loadedsource:
-  LEA str_sourcename,A0
+  LEA comStr_SourceName,A0
   ; --
   ; -- erzeugen des Fenstertitels
   MOVEA.l str_windowtitle,A1
@@ -3691,7 +3690,7 @@ RTS
   CLR.b -$1(A1)
   TST.w smart_tokenization
    BEQ 'l1
-  MOVE.w #$ffff,do_tokenize
+  MOVE.w #$ffff,comWord_DoTokenize
  'l1
   BRA.w update_title_sourcewindow
 
@@ -3707,7 +3706,7 @@ RTS
   MOVE.l #"  Di",-1(a1)
   ADDQ.l #3,a1
   MOVE.l #"r - ",(a1)+
-  LEA str_sourcename,A0
+  LEA comStr_SourceName,A0
   LEA -$c0(a0),a0
  'l2
     MOVE.b (A0)+,(A1)+
@@ -3722,9 +3721,9 @@ RTS
 
   !basic
   If Peek.b(?load_last_source)<>0
-    last_source$ = Peek$(?str_sourcefile_complete)
+    last_source$ = Peek$(?comStr_SourceFileComplete)
     If last_source$<>""
-      If Instr(last_source$,Peek$(?str_sourcename))<>0
+      If Instr(last_source$,Peek$(?comStr_SourceName))<>0
         dos_SetToolString{"LAST_SOURCE",last_source$}
       EndIf
     EndIf
@@ -3748,7 +3747,7 @@ RTS
   RTS
 
  'do
-  MOVE.w #$ffff,do_tokenize
+  MOVE.w #$ffff,comWord_DoTokenize
   MOVE.w #$ffff,flag_tokenization
   RTS
 
@@ -3762,14 +3761,14 @@ RTS
   MOVE.b #1,amigaguide
 
  'no
-  MOVE.w #0,do_tokenize
+  MOVE.w #0,comWord_DoTokenize
   MOVE.w #0,flag_tokenization
  'rt
 RTS
 
 
 .delete_tempprefs:
-  MOVE.l com_read_xtrafile,D0
+  MOVE.l comFunc_ReadXtraFile,D0
   BEQ.w exit_delete_tempprefs
 
   MOVE.l A0,D0
@@ -3784,13 +3783,13 @@ RTS
 
 
 .read_tempprefs:
-  MOVE.l com_read_xtrafile,D0
+  MOVE.l comFunc_ReadXtraFile,D0
   BEQ.w exit_read_tempprefs
 
   MOVE.l actualfile,D0
   LEA str_template_tempxtrafile,A0
   JSR generate_tempfilename
-  MOVE.l com_read_xtrafile,D0
+  MOVE.l comFunc_ReadXtraFile,D0
   MOVEA.l _dosbase,A6
   MOVEA.l D0,A5
   MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
@@ -3807,13 +3806,13 @@ RTS
 RTS
 
 .save_tempprefs:
-  MOVE.l com_write_xtrafile,D0
+  MOVE.l comFunc_WriteXtraFile,D0
   BEQ.w exit_save_tempprefs
 
   MOVE.l actualfile,D0
   LEA str_template_tempxtrafile,A0
   JSR generate_tempfilename
-  MOVE.l com_write_xtrafile,D0
+  MOVE.l comFunc_WriteXtraFile,D0
   MOVEA.l _dosbase,A6
   MOVEA.l D0,A5
   MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
@@ -3836,8 +3835,8 @@ AL_0_1162:    Ds.w 1
 
 .menu_saveas:
   ST AL_0_1162
-  JSR copyprefsdata
-  LEA str_aslsavefile,A2
+  JSR StoreXtraData
+  LEA comStr_ASLSaveFile,A2
 
   MOVEM.l D1-D6/A0-A6,-(A7)
   JSR JL_0_50D2
@@ -3855,7 +3854,7 @@ RTS
 
 
 JL_0_1164:
-  LEA str_aslsavefile,A2
+  LEA comStr_ASLSaveFile,A2
   MOVEM.l D1-D6/A0-A6,-(A7)
   JSR JL_0_50D2
   MOVEM.l (A7)+,D1-D6/A0-A6
@@ -3873,7 +3872,7 @@ RTS
 ;    RTS
 ;  JL_0_1182:
 
-  TST.b str_sourcename
+  TST.b comStr_SourceName
   BNE.w JL_0_1196
   BSR.b JL_0_1164
   TST.l D0
@@ -3882,7 +3881,7 @@ RTS
 
   JL_0_1196:
   !basic
-  BB2Filename$ = Peek$(?str_sourcefile_complete)
+  BB2Filename$ = Peek$(?comStr_SourceFileComplete)
   directory.s = dos_FilePart{dos_PathPart{BB2Filename$}}
   If dos_Exist{BB2filename$} AND LCase$(directory) = "templates"
     If RTEZRequest("",!TRANS{"Do you really want to save this file into the templates drawer?"},!TRANS{"Ok|Cancel"})
@@ -3902,9 +3901,9 @@ RTS
   !asm
 
   MOVEM.l A0-A2,-(A7)
-  MOVEA.l #str_currentdir,A1
-  MOVEA.l #str_sourcename,A2
-  MOVEA.l #str_sourcefile_complete,A0
+  MOVEA.l #comStr_CurrentDir,A1
+  MOVEA.l #comStr_SourceName,A2
+  MOVEA.l #comStr_SourceFileComplete,A0
 
   TST.b (A1)
   BEQ.w JL_0_11C6
@@ -3939,8 +3938,8 @@ RTS
   !asm
  'l10
   MOVEM.l (A7)+,A0-A2
-  MOVE.l #str_sourcefile_complete,D7
-  JSR copyprefsdata
+  MOVE.l #comStr_SourceFileComplete,D7
+  JSR StoreXtraData
   TST.b AL_0_1162
   BEQ.w JL_0_1216
   MOVEA.l _dosbase,A6
@@ -3986,7 +3985,7 @@ RTS
   JSR _Rename(A6)
   TST.b ab2mode
   BEQ 'os
-  MOVE.l #str_sourcefile_complete,d0
+  MOVE.l #comStr_SourceFileComplete,d0
   JSR saveab2
   JSR JL_0_1372
   TST.w remember_saved
@@ -4001,7 +4000,7 @@ RTS
   MOVE.b #1,menuload
   JSR open_sourcefile
   JSR set_pointerbusy
-  MOVEA.l firstsourceline,A2
+  MOVEA.l comPtr_FirstSourceLine,A2
   MOVE.l maxlines,D5           ;save routine
   ;SUBQ.l #1,D5
   TST.w AL_0_B7E0
@@ -4027,7 +4026,7 @@ RTS
   MOVEQ.l #$00,D4
   MOVE.b $8(A2),D4
   LEA $9(A2),A3
-  MOVE.w do_tokenize,D0
+  MOVE.w comWord_DoTokenize,D0
   BNE.w JL_0_12B2
 
   MOVE.b #$A,-$1(A3,D4.W)
@@ -4046,7 +4045,7 @@ RTS
   BNE JL_0_1298
 
    ;DBF D5,JL_0_1298
-  CLR.w source_changed
+  CLR.w comWord_SourceChanged
   MOVEQ.l #-$01,D0
   RTS
 
@@ -4066,7 +4065,7 @@ RTS
   MOVEQ.l #$00,D1
   MOVE.l D0,AL_0_15C0
   !newalloc
-  MOVEA.l firstsourceline,A2
+  MOVEA.l comPtr_FirstSourceLine,A2
   MOVEA.l D0,A5
   MOVE.l D4,D5
   MOVE.l D0,AL_0_15BC
@@ -4087,7 +4086,7 @@ RTS
       MOVE.b (A3)+,(A5)+
     DBF D4,JL_0_131E
 
-    TST.w do_tokenize
+    TST.w comWord_DoTokenize
     BNE.w JL_0_1334
 
     MOVE.b #$A,-$1(A5)
@@ -4102,12 +4101,12 @@ RTS
   MOVE.l AL_0_15C0,D3
   JSR _Write(A6)
   MOVE.l D0,-(A7)
-  CLR.w source_changed
+  CLR.w comWord_SourceChanged
   MOVEA.l _execbase,A6
   MOVEA.l AL_0_15BC,A1
   !newfree
   MOVEA.l _dosbase,A6
-  CLR.w source_changed
+  CLR.w comWord_SourceChanged
   MOVE.l (A7)+,D0
   RTS
 
@@ -4116,12 +4115,12 @@ RTS
   BNE.w JL_0_1380
 
   JL_0_1378:
-  LEA str_error_writefile,A0
+  LEA comStr_ErrorWriteFile,A0
   JSR show_errorrequester
   JL_0_1380:
 
   JSR JL_0_4E4A
-  MOVE.l com_write_xtrafile,D0
+  MOVE.l comFunc_WriteXtraFile,D0
   BEQ.w JL_0_13A8
   MOVEA.l D0,A5
   MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
@@ -4164,9 +4163,9 @@ RTS
   JL_0_13D6:
   JSR set_pointernormal
   JSR analyze_loadedsource
-  CLR.w source_modified_flag
-  CLR.w key_before_return
-  CLR.w source_changed
+  CLR.w comWord_SourceModifiedFlag
+  CLR.w comWord_KeyBeforeReturn
+  CLR.w comWord_SourceChanged
   JSR update_modifiermark
 RTS
 
@@ -4351,13 +4350,13 @@ Even
   CNIF #use_NTUI
   OpenAbout{}
   CELSE
-  txt0$ = "PED "+!versions+"#AmiBlitz " + Peek$(Peek.l(?compvers))
+  txt0$ = "PED "+!versions+"#AmiBlitz " + Peek$(Peek.l(?comPtr_CompilerVersion))
   txt1$ = !TRANS {"AREXX Port : "}+Peek$(?str_Arexx_PortName)
   txt2$ = !TRANS {"Public Screen : "}+Peek$(?str_defaultpubscreen)
   txt3$ = !TRANS {"AcidLibs: "}+acidlibdate$
   txt4$ = !TRANS {"DefLibs: "}+deflibdate$
 
-  txt0$ = !versions+"#"+Peek$(Peek.l(?compvers))
+  txt0$ = !versions+"#"+Peek$(Peek.l(?comPtr_CompilerVersion))
   txt1$ = Peek$(?str_Arexx_PortName)
   txt2$ = Peek$(?str_defaultpubscreen)
   txt3$ = acidlibdate$
@@ -4427,7 +4426,7 @@ RTS
 .replace_string:
   JSR search_string
    BMI.w exit_replace_string
-  MOVE.w #$FFFF,source_changed
+  MOVE.w #$FFFF,comWord_SourceChanged
 
   JL_0_17Dca:
   MOVEA.l temp_tokenstring2,A0
@@ -4550,7 +4549,7 @@ RTS
   JSR set_pointernormal
   MOVE.l D0,-(A7)
   MOVE.l D7,D0
-  MOVEA.l currsourceline,A4
+  MOVEA.l comPtr_CurrentSourceLine,A4
   JSR sub_gotoline
   MOVE.l (A7)+,D1
   JSR JL_0_7ED2
@@ -4640,7 +4639,7 @@ RTS
     MOVEA.l temp_tokenstring2,A1
     MOVE.b #";",(A1)+
     LEA $9(A4),A0
-    MOVE.w do_tokenize,D0
+    MOVE.w comWord_DoTokenize,D0
     BNE.w JL_0_220E
     JL_0_2206:
       MOVE.b (A0)+,(A1)+
@@ -4657,7 +4656,7 @@ RTS
     BRA.b JL_0_2212
 
     JL_0_2220:
-    MOVE.l A4,currsourceline
+    MOVE.l A4,comPtr_CurrentSourceLine
     JSR JL_0_55A2
     MOVEA.l (A4),A4
     ADDQ.l #1,D6
@@ -4678,7 +4677,7 @@ JMP _redraw
   JL_0_224E:
   MOVEA.l temp_tokenstring2,A1
   LEA $9(A4),A0
-  MOVE.w do_tokenize,D0
+  MOVE.w comWord_DoTokenize,D0
    BNE.w JL_0_2268
 
   JL_0_2260:
@@ -4716,7 +4715,7 @@ JMP _redraw
   BRA.b JL_0_228E
 
   JL_0_229C:
-  MOVE.l A4,currsourceline
+  MOVE.l A4,comPtr_CurrentSourceLine
   JSR JL_0_55A2
   MOVEA.l (A4),A4
   ADDQ.l #1,D6
@@ -4745,7 +4744,7 @@ JMP _redraw
     JL_0_22E2:
 
     LEA $9(A4),A0                 ; -- detokenize line in A0 and copy it in A1 behind TAB-Spaces
-    MOVE.w do_tokenize,D0
+    MOVE.w comWord_DoTokenize,D0
     BNE.w JL_0_22F8
 
     JL_0_22F0:
@@ -4763,7 +4762,7 @@ JMP _redraw
     BRA.b JL_0_22FC
     JL_0_230A:
 
-    MOVE.l A4,currsourceline
+    MOVE.l A4,comPtr_CurrentSourceLine
     JSR JL_0_55A2
     MOVEA.l (A4),A4
     ADDQ.l #1,D6
@@ -4783,7 +4782,7 @@ JMP _redraw
   JL_0_2338:
     MOVEA.l temp_tokenstring2,A1
     LEA $9(A4),A0
-    MOVE.w do_tokenize,D0
+    MOVE.w comWord_DoTokenize,D0
     BNE.w JL_0_2352
 
     JL_0_234A:
@@ -4818,7 +4817,7 @@ JMP _redraw
     BRA.b JL_0_2378
 
     JL_0_2386:
-    MOVE.l A4,currsourceline
+    MOVE.l A4,comPtr_CurrentSourceLine
     JSR JL_0_55A2
     MOVEA.l (A4),A4
     ADDQ.l #1,D6
@@ -4849,7 +4848,7 @@ str_template_tempxtrafile:Dc.b "        .xtra",0 : Even
 
 
 .close_actualsource:
-  CLR.w source_changed
+  CLR.w comWord_SourceChanged
 
   MOVEM.l D0-D2/A0-A1,-(A7)
   JSR delete_tempprefs
@@ -4871,7 +4870,7 @@ str_template_tempxtrafile:Dc.b "        .xtra",0 : Even
   !newfree
 
   MOVEA.l actualfile,A0
-  JSR JL_0_2EE2
+  JSR GetXtraData
   JSR read_tempprefs
   JSR JL_0_2Dca8
   MOVEA.l (A7)+,A0
@@ -4887,7 +4886,7 @@ str_template_tempxtrafile:Dc.b "        .xtra",0 : Even
   MOVEA.l A0,A1
   !newfree
   MOVEA.l actualfile,A0
-  JSR JL_0_2EE2
+  JSR GetXtraData
   JSR read_tempprefs
   JSR JL_0_2Dca8
   MOVEA.l (A7)+,A0
@@ -4913,7 +4912,7 @@ str_template_tempxtrafile:Dc.b "        .xtra",0 : Even
   MOVEA.l A0,A1
   !newfree
   MOVEA.l actualfile,A0
-  JSR JL_0_2EE2
+  JSR GetXtraData
   JSR read_tempprefs
   JSR JL_0_2Dca8
   MOVEA.l (A7)+,A0
@@ -4932,7 +4931,7 @@ RTS
 .dummy_compilercall:
 ; this call to the compiler is useless, as the adress com_calldummy is always zero
   MOVE.l D0,-(A7)
-  MOVE.l com_calldummy,D0
+  MOVE.l comFunc_CallDummy,D0
    BEQ.w exit_dummycall
 
   MOVEM.l D1-D7/A0-A6,-(A7)
@@ -4993,14 +4992,14 @@ RTS
     ; -- set startposition
     CMPI.l #$ffffFFFF,blockendy
      BNE.w skip_setstart
-    MOVE.w columnsoffset,D0
-    ADD.w column,D0
+    MOVE.w comWord_ColumnsOffset,D0
+    ADD.w comWord_Column,D0
     JSR set_blockstart
     skip_setstart:
     !stack2regs
     BSR movelinedown
-    MOVE.w columnsoffset,D0
-    ADD.w column,D0
+    MOVE.w comWord_ColumnsOffset,D0
+    ADD.w comWord_Column,D0
     JMP set_blockend
 
     Default
@@ -5024,7 +5023,7 @@ BRA movelinedown
   BSR checkedit2
   CNIF #hardfold = 1
   MOVE.l a0,-(a7)
-  MOVE.l currsourceline,a0
+  MOVE.l comPtr_CurrentSourceLine,a0
   CMP.l #";@@1",9(a0)
   BNE 'n1
 'l2
@@ -5040,7 +5039,7 @@ BRA movelinedown
   CELSE
   MOVE.l a0,-(a7)
   MOVE.l startdisplayline,-(a7)
-  MOVE.l currsourceline,a0
+  MOVE.l comPtr_CurrentSourceLine,a0
   CMP.l #";@@1",9(a0)
   BNE 'l1
 'l2
@@ -5052,7 +5051,7 @@ BRA movelinedown
   BEQ 'l1
   CMP.l #";@@0",9(a0)
   BNE 'l2
-  MOVE.l a0,currsourceline
+  MOVE.l a0,comPtr_CurrentSourceLine
   JSR _redraw
   ADDQ.l #4,a7
   MOVE.l (a7)+,a0
@@ -5069,7 +5068,7 @@ setpointer_to_normal:
 RTS
 
 JL_0_252E:
-  MOVE.l D0,currsourceline
+  MOVE.l D0,comPtr_CurrentSourceLine
   JL_0_2534:
   MOVE.l startdisplayline,D0
   ADD.l viewablelines,D0
@@ -5126,14 +5125,14 @@ JMP JL_0_640C
     ; -- set startposition
     CMPI.l #$ffffFFFF,blockendy
      BNE.w skip_setstart2
-    MOVE.w columnsoffset,D0
-    ADD.w column,D0
+    MOVE.w comWord_ColumnsOffset,D0
+    ADD.w comWord_Column,D0
     JSR set_blockstart
     skip_setstart2:
     !stack2regs
     BSR movelineup
-    MOVE.w columnsoffset,D0
-    ADD.w column,D0
+    MOVE.w comWord_ColumnsOffset,D0
+    ADD.w comWord_Column,D0
     JMP set_blockend
 
   Default
@@ -5177,9 +5176,9 @@ CNIF #hardfold = 1
 'n1 MOVE.l (a7)+,a2
 CELSE
   MOVE.l a2,-(a7)
-  MOVE.l currsourceline,a4
+  MOVE.l comPtr_CurrentSourceLine,a4
   MOVE.l a4,a2
-  ;MOVE.l currsourceline,a2
+  ;MOVE.l comPtr_CurrentSourceLine,a2
   CMP.l #";@@0",9(a2)
   BNE 'l1
   'l2
@@ -5192,7 +5191,7 @@ CELSE
   SUBQ.l #1,startdisplayline
   CMP.l #";@@1",9(a2)
   BNE 'l2
-  MOVE.l a2,currsourceline
+  MOVE.l a2,comPtr_CurrentSourceLine
   JSR _redraw
   MOVE.l (a7)+,a2
 RTS
@@ -5202,7 +5201,7 @@ RTS
   CEND
   MOVE.l $4(A4),D0
   BEQ.b setpointer_to_normal
-  MOVE.l D0,currsourceline
+  MOVE.l D0,comPtr_CurrentSourceLine
   MOVE.l startdisplayline,D0
   BEQ.w JL_0_642Ab
   MOVE.l displayoffset,D0
@@ -5275,7 +5274,7 @@ JMP JL_0_642A
   MOVE.l D1,blockstarty
   CLR.w blockstartx
   MOVE.l D2,blockendy
-  MOVE.w maxcolumns,D0
+  MOVE.w comWord_MaxColumns,D0
   SUBQ.w #1,D0
   MOVE.w D0,blockendx
   JSR JL_0_56BA
@@ -5299,7 +5298,7 @@ RTS
   JSR arexxfunc_cut
   MOVE.l blockstarty,d0
   JSR gotoline
-  MOVE.w blockstartx,column
+  MOVE.w blockstartx,comWord_Column
   TST.b nodisplaybeep
    BNE 'l2
   MOVEA.l ptr_pedscreen,A0
@@ -5319,7 +5318,7 @@ RTS
   JSR allocnewline
   BEQ.w JL_0_4942b
   JL_0_265E:
-  MOVE.w #$FFFF,source_changed
+  MOVE.w #$FFFF,comWord_SourceChanged
   MOVE.l startdisplayline,D0
   ADD.l displayoffset,D0
   JSR JL_0_57B6
@@ -5334,12 +5333,12 @@ RTS
 JMP  JL_0_4942
 
 JL_0_268C:
-  MOVE.l A0,firstsourceline
+  MOVE.l A0,comPtr_FirstSourceLine
 
   JL_0_2692:
   MOVE.l A4,(A0)
   MOVE.l A0,$4(A4)
-  MOVE.l A0,currsourceline
+  MOVE.l A0,comPtr_CurrentSourceLine
   MOVE.l displayoffset,D7
   JSR source_partscroll_up
 JMP JL_0_57E0
@@ -5366,7 +5365,7 @@ JMP JL_0_76E8
 
 
 .menu_deleteline:
-  MOVE.w #$FFFF,source_changed
+  MOVE.w #$FFFF,comWord_SourceChanged
   CMPI.l #$ffffFFFF,blockendy
    BEQ.w JL_0_2738
   MOVE.l startdisplayline,D0
@@ -5392,7 +5391,7 @@ JMP JL_0_76E8
   MOVEA.l D7,A1
   MOVE.l D6,$4(A1)
    BNE.w JL_0_2760
-  MOVE.l A1,firstsourceline
+  MOVE.l A1,comPtr_FirstSourceLine
 
   BRA.w JL_0_2764
 
@@ -5401,7 +5400,7 @@ JMP JL_0_76E8
   MOVE.l D7,(A0)
 
   JL_0_2764:
-  MOVE.l D7,currsourceline
+  MOVE.l D7,comPtr_CurrentSourceLine
   MOVE.l displayoffset,D7
   JSR source_partscroll_down
 JMP JL_0_5B60
@@ -5412,7 +5411,7 @@ JL_0_2776:
   SUBQ.l #1,maxlines
   JSR JL_0_6BD2
   MOVEA.l D6,A0
-  MOVE.l A0,currsourceline
+  MOVE.l A0,comPtr_CurrentSourceLine
   MOVE.l A0,AL_0_854A
   CLR.l (A0)
   MOVE.l startdisplayline,D0
@@ -5438,11 +5437,11 @@ JMP JL_0_5B00
 .menu_joinline:                       ;join line
   MOVE.l (A4),D0
   BEQ.w setpointer_to_normal
-  MOVE.w #$FFFF,source_changed
+  MOVE.w #$FFFF,comWord_SourceChanged
   MOVEA.l D0,A5
   MOVEA.l textbufferaddr,A2
-  ADDA.w textbufferoffset,A2
-  MOVE.w maxcolumns,D0
+  ADDA.w comWord_TextBufferOffset,A2
+  MOVE.w comWord_MaxColumns,D0
 
   JL_0_27E6:
   SUBQ.w #1,D0
@@ -5511,7 +5510,7 @@ JMP JL_0_5B00
     ADDQ.l #1,a0
     BRA 'l2
   'l1
-   MOVE.w do_tokenize,D0
+   MOVE.w comWord_DoTokenize,D0
    BNE.w JL_0_28AE
 
   JL_0_28A4:
@@ -5559,9 +5558,9 @@ JL_0_2906:
   TST.b new_editmode
   BNE AJL_0_2A82b
   JL_0_2906b
-  MOVE.w #$FFFF,source_changed
-  MOVE.w columnsoffset,D0
-  ADD.w column,D0
+  MOVE.w #$FFFF,comWord_SourceChanged
+  MOVE.w comWord_ColumnsOffset,D0
+  ADD.w comWord_Column,D0
   CMPI.l #$ffffFFFF,blockendy
   BEQ.w JL_0_29BC
   MOVE.l startdisplayline,D2
@@ -5612,10 +5611,10 @@ JL_0_29B6:
 JL_0_29BC:
   MOVEA.l temp_tokenstring2,A0
   MOVEA.l textbufferaddr,A2
-  ADDA.w textbufferoffset,A2
+  ADDA.w comWord_TextBufferOffset,A2
   TST.b new_editmode
   BEQ JL_0_29C8
-  CLR.w column
+  CLR.w comWord_Column
   MOVE.l d0,-(a7)
   MOVEQ #0,d0
 'l2 CMP.b #$20,0(a2,d0)
@@ -5625,28 +5624,28 @@ JL_0_29BC:
   CMP.l #columnsize,d0
   BGE 'l3
   BRA 'l2
-'l1 TST.w columnsoffset
+'l1 TST.w comWord_ColumnsOffset
     BEQ 'ld
-    CLR.w columnsoffset
+    CLR.w comWord_ColumnsOffset
     CMP.w visiblecolumns,d0
     BLE 'ld
     SUB.w visiblecolumns,d0
-   MOVE.w visiblecolumns,columnsoffset
+   MOVE.w visiblecolumns,comWord_ColumnsOffset
     CMP.w visiblecolumns,d0
     BLE 'ld
     SUB.w visiblecolumns,d0
     MOVE.l d0,-(a7)
-    MOVE.w columnsoffset,d0
+    MOVE.w comWord_ColumnsOffset,d0
     ADD.w visiblecolumns,d0
-    MOVE.w d0,columnsoffset
+    MOVE.w d0,comWord_ColumnsOffset
     MOVE.l (a7)+,d0
-'ld    MOVE.w d0,column
+'ld    MOVE.w d0,comWord_Column
 'l3 MOVE.l (a7)+,d0
 JL_0_29C8:
   MOVE.b $0(A2,D0.W),(A0)+
   MOVE.b #$20,$0(A2,D0.W)
   ADDQ.w #1,D0
-  CMP.w maxcolumns,D0
+  CMP.w comWord_MaxColumns,D0
    BCS.b JL_0_29C8
 JL_0_29DA:
   CMPA.l temp_tokenstring3,A0
@@ -5688,7 +5687,7 @@ JL_0_2A3A:
   ADDQ.l #1,maxlines
   TST.b new_editmode
   BNE 'l1
-  CLR.w column
+  CLR.w comWord_Column
  'l1
   BSR movelinedown
 JMP _redraw
@@ -5697,7 +5696,7 @@ JL_0_2A46:
   TST.w auto_indent
    BEQ.w JL_0_2A7A
   MOVEM.l D0/A0,-(A7)
-  MOVEA.l currsourceline,A0
+  MOVEA.l comPtr_CurrentSourceLine,A0
   LEA $9(A0),A0
   MOVEQ.l #-$01,D1
 JL_0_2A60:
@@ -5709,18 +5708,18 @@ JL_0_2A60:
 
   JL_0_2A6E:
   MOVEM.l (A7)+,D0/A0
-  MOVE.w D1,column
+  MOVE.w D1,comWord_Column
 RTS
 
 JL_0_2A7A:
-  CLR.w column
+  CLR.w comWord_Column
 RTS
 
 JL_0_4942c
 JMP JL_0_4942
 
 .insertreturn:                  ;return_key
-  MOVE.l currsourceline,a4
+  MOVE.l comPtr_CurrentSourceLine,a4
   MOVE.w qualifierstore,D0
   ANDI.w #$3,D0
    BNE.w JL_0_2906
@@ -5730,14 +5729,14 @@ JMP JL_0_4942
   AJL_0_2A82b
   JSR allocnewline
    BEQ.w JL_0_4942b
-  MOVE.w #$FFFF,source_changed
+  MOVE.w #$FFFF,comWord_SourceChanged
   MOVE.l startdisplayline,D0
   ADD.l displayoffset,D0
   ADDQ.w #1,D0
    JSR JL_0_57B6
   ADDQ.l #1,maxlines
    BSR.b JL_0_2A46
-  ;MOVE.l currsourceline,d1
+  ;MOVE.l comPtr_CurrentSourceLine,d1
   MOVE.l (A4),D1
    BNE.w JL_0_2AD0
   MOVE.l A0,(A4)
@@ -5753,10 +5752,10 @@ JMP JL_0_4942
   MOVE.l A4,$4(A0)
 
   JL_0_2ADE:
-  MOVE.l A0,currsourceline
-  MOVE.w columnsoffset,D0
+  MOVE.l A0,comPtr_CurrentSourceLine
+  MOVE.w comWord_ColumnsOffset,D0
   BEQ.w JL_0_2AF6
-  CLR.w columnsoffset
+  CLR.w comWord_ColumnsOffset
   JSR JL_0_7962
 
   JL_0_2AF6:
@@ -5783,7 +5782,7 @@ JMP JL_0_4942
   ADD.l startdisplayline,D1
   JSR JL_0_3154
   MOVEM.w (A7)+,D0-D1
-  TST.b state_blockmark
+  TST.b comByte_StateBlockMark
   BNE.w JL_0_2B68
 RTS
 JL_0_2B68:
@@ -5800,7 +5799,7 @@ JL_0_2B6C:
   ADD.l startdisplayline,D1
   JSR JL_0_3154
   MOVEM.w (A7)+,D0-D1
-  TST.b state_blockmark
+  TST.b comByte_StateBlockMark
   BNE.w JL_0_2BA0
 RTS
 JL_0_2BA0:
@@ -5884,7 +5883,7 @@ BRA.w gotoline
 
 .sub_gotoline:
   MOVE.w #$FFFF,-(A7)
-  CLR.w column
+  CLR.w comWord_Column
   BRA.w JL_0_2C2E
 
 
@@ -5926,7 +5925,7 @@ BRA.w gotoline
   BNE.b JL_0_2C50
 
   JL_0_2C58:
-  MOVE.l A4,currsourceline
+  MOVE.l A4,comPtr_CurrentSourceLine
   TST.b newsyntax
   BEQ 'l10
   JSR syntax_new1
@@ -6010,7 +6009,7 @@ JMP update_horizscroller
   JL_0_2CF0:
   !basic
   If *tedlibbase
-    TEDSetLabelList_ ?ptr_labellist
+    TEDSetLabelList_ ?comPtr_LabelList
     TEDSetLabelCount_ ?ptr_labelcounter
   EndIf
   !asm
@@ -6027,8 +6026,8 @@ JMP update_horizscroller
     comp_counter + 1
     !asm
     MOVEQ #$b,d6
-    MOVE.l com_callmenuentry,a0
-    MOVEA.l firstsourceline,A5
+    MOVE.l comFunc_CallMenuEntry,a0
+    MOVEA.l comPtr_FirstSourceLine,A5
     MOVE.l maxlines,D7
     ;MOVE.l d0,-(A7)
     JSR (A0)
@@ -6044,7 +6043,7 @@ JMP update_horizscroller
 
   skip_comploop:
   SUBI.l #$50,D6
-  MOVE.l com_callmenuentry,D0
+  MOVE.l comFunc_CallMenuEntry,D0
   BEQ.w exit_callcompilermenuentry
 
   CMP.w #$b,d6                    ; Save & Create executable
@@ -6084,11 +6083,11 @@ JMP update_horizscroller
 
 
   MOVE.l d0,-(a7)
-  MOVE.l #str_currentdir,D0          ;set default dir
+  MOVE.l #comStr_CurrentDir,D0          ;set default dir
   JSR set_currentdir
   MOVE.l (a7)+,d0
-  MOVE.l com_callmenuentry,a0
-  MOVEA.l firstsourceline,A5
+  MOVE.l comFunc_CallMenuEntry,a0
+  MOVEA.l comPtr_FirstSourceLine,A5
   MOVE.l maxlines,D7
   MOVE.l D6,-(A7)                    ;menu num
 
@@ -6128,7 +6127,7 @@ JMP update_horizscroller
   MOVE.l D0,-(A7)
   JSR update_title_sourcewindow
   MOVE.l (A7)+,D0
-  MOVEA.l currsourceline,A4
+  MOVEA.l comPtr_CurrentSourceLine,A4
   CMP.l #-$2,D0
    BEQ.w _redrawb
   CMP.l #-$1,D0
@@ -6152,7 +6151,7 @@ JL_0_2C1Eb:
   LEA 9(a0),a0
   MOVEQ #-1,d1
   syn1:
-  TST.w do_tokenize
+  TST.w comWord_DoTokenize
   BEQ.w JL_0_5054b
 
   CMP.l a0,a5
@@ -6188,7 +6187,7 @@ JL_0_2C1Eb:
   BGE 'l1
   MOVEQ #0,d1
  'l1
-  MOVE.w d1,column
+  MOVE.w d1,comWord_Column
   MOVE.l (a7)+,d0
 RTS
 
@@ -6270,18 +6269,20 @@ JL_0_2Dca8:
   JSR update_statusline
   JSR _redraw
  'l2
-  MOVE.l #str_currentdir,D0
+  MOVE.l #comStr_CurrentDir,D0
   JSR set_currentdir
 
   JL_0_2E0E:
-  MOVEA.l currsourceline,A4
-  CLR.w source_modified_flag
+  MOVEA.l comPtr_CurrentSourceLine,A4
+  CLR.w comWord_SourceModifiedFlag
 ;  JSR printlargestmem
 RTS
 
 
 .load_template:
   mcounter.l = menuentry-#MENU_TEMPLATE
+;  error{"Menuentry is:"+Str$(menuentry)}
+  ResetList templates()
   For n.l=0 To mcounter-1
     NextItem templates()
   Next
@@ -6300,7 +6301,7 @@ RTS
     MOVE.l (a7)+,d7
     JSR load_source
   Else
-    templatefilename$="unknown"
+    templatefilename$=!TRANS{"unknown"}
     MOVE.l d0,-(a7)
     GetD0 &templatefilename$
     !asm
@@ -6320,7 +6321,7 @@ BRA JL223
   JL223:
   JSR storeline
   MOVE.l d0,-(a7)
-  MOVE.l com_read_xtrafile,d0
+  MOVE.l comFunc_ReadXtraFile,d0
   BEQ 'l10
     MOVE.l d0,a0
     CLR.l d0
@@ -6329,9 +6330,9 @@ BRA JL223
   MOVE.l (a7)+,d0
 
   MOVEA.l _execbase,A6
-  MOVE.l #prefs_filename_env-L_0_853E+10,d0
+  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin+10,d0
   ;MOVE.l #$50C+72,D0
-  MOVE.l #$10000,D1
+  MOVE.l ##MEMF_CLEAR,D1
   !newalloc;JSR _AllocVec(A6)
   TST.l D0
    BEQ.w display_memoryalert_b
@@ -6339,7 +6340,7 @@ BRA JL223
    BNE.w JL_0_2E70
   MOVEM.l D0/A6,-(A7)
   JSR JL_0_6B7C
-  CLR.w source_changed
+  CLR.w comWord_SourceChanged
   MOVEM.l (A7)+,D0/A6
   MOVE.l D0,actualfile
   MOVE.l D0,AL_0_84B2
@@ -6353,8 +6354,8 @@ JMP display_memoryalert
 
 
 JL_0_2E70:
-  JSR copyprefsdata
-  CLR.w source_changed
+  JSR StoreXtraData
+  CLR.w comWord_SourceChanged
   MOVEA.l D0,A0
   MOVEA.l actualfile,A1
   MOVE.l D0,actualfile
@@ -6381,28 +6382,28 @@ JL_0_2EA6:
   BNE 'no
     MOVEM.l d0-d7/a0-a6,-(a7)
     JSR menu_load
-    JSR copyprefsdata
+    JSR StoreXtraData
     JSR update_vertscroller
     MOVEM.l (a7)+,d0-d7/a0-a6
  'no
 RTS
 
 
-.copyprefsdata:                  ;copy view data
+.StoreXtraData:                  ;copy view data
   MOVEM.l D0/A0-A1,-(A7)
   !basic
   MOVE.l pos3@(a5),clickpos3
   !asm
   MOVEA.l actualfile,A0
   ADDQ.l #8,A0
-  LEA L_0_853E,A1
-  MOVE.l #prefs_filename_env-L_0_853E,d0; #$504+72,D0
+  LEA comLongLong_XtraBegin,A1
+  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin,d0; #$504+72,D0
   ;MOVE.l #$504+72,D0
   SUBQ.w #1,D0
 
-  JL_0_2ED6:
+  'copyloop
     MOVE.b (A1)+,(A0)+
-  DBF D0,JL_0_2ED6
+  DBF D0,'copyloop
 
   !basic
   ;Poke.w ?button_remark,button_remark
@@ -6415,20 +6416,21 @@ RTS
   MOVEM.l (A7)+,D0/A0-A1
 RTS
 
-JL_0_2EE2:
+.GetXtraData:
   ; zurueckholen der xtra-settings nach sourcewechsel
   ADDQ.l #8,A0
-  LEA L_0_853E,A1
+  LEA comLongLong_XtraBegin,A1
   ;MOVE.l #$504+72,D0
-  MOVE.l #prefs_filename_env-L_0_853E,d0;MOVE.l #$504+72,D0
+  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin ,D0  ;MOVE.l #$504+72,D0
   SUBQ.w #1,D0
-  JL_0_2EF0:
+  'copyloop:
     MOVE.b (A0)+,(A1)+
-  DBF D0,JL_0_2EF0
+  DBF D0,'copyloop
 
   !basic
   ;button_remark = Peek.w(?button_remark)
   ;button_all = Peek.w(?button_all)
+;  error{"restore Xtra Data!"}
   search_label$ = Peek$(?xtrabuf+8):
   If WZ_CheckOpen{"WIN_LABELS"}
     Use Window WZID("WIN_LABELS")
@@ -6450,17 +6452,17 @@ JL_0_2EE2:
 ;    cstr2$ = "blabla"
 ;  End If
   !asm
-  MOVEA.l currsourceline,A4
+  MOVEA.l comPtr_CurrentSourceLine,A4
 RTS
 
 
 .selectfile:
   MOVE.l A0,-(A7)
-  BSR.b copyprefsdata
+  BSR.b StoreXtraData
   JSR save_tempprefs
   MOVEA.l (A7)+,A0
   MOVE.l A0,actualfile
-  BSR.b JL_0_2EE2
+  BSR.b GetXtraData
   JSR JL_0_2Dca8
   JSR read_tempprefs
   JSR update_statusline ;JSR linetext
@@ -6468,7 +6470,7 @@ RTS
 RTS
 
 .menu_previousfile:
-  BSR.b copyprefsdata
+  BSR.b StoreXtraData
   JSR save_tempprefs
   MOVEA.l actualfile,A0
   TST.l $4(A0)
@@ -6485,7 +6487,7 @@ RTS
 
   JL_0_2F3C:
   MOVE.l A0,actualfile
-  BSR.b JL_0_2EE2
+  BSR.b GetXtraData
   JSR JL_0_2Dca8
   JSR read_tempprefs
   JSR update_statusline     ;JSR linetext
@@ -6493,7 +6495,7 @@ RTS
 RTS
 
 .menu_nextfile:
-  JSR copyprefsdata
+  JSR StoreXtraData
   JSR save_tempprefs
   MOVEA.l actualfile,A0
   TST.l (A0)
@@ -6508,7 +6510,7 @@ RTS
   MOVEA.l (A0),A0
   JL_0_2F74:
   MOVE.l A0,actualfile
-  JSR JL_0_2EE2
+  JSR GetXtraData
   JSR JL_0_2Dca8
   JSR read_tempprefs
   JSR update_statusline     ;JSR linetext
@@ -6529,7 +6531,7 @@ RTS
   BNE.b JL_0_2FA0
   JSR update_title_sourcewindow
 
-  MOVE.l com_read_xtrafile,d0
+  MOVE.l comFunc_ReadXtraFile,d0
   BEQ 'l10
   MOVE.l d0,a0
   CLR.l d0
@@ -6565,9 +6567,9 @@ Even
   MOVE.w #$0003,$1C(A1)
   JSR _DoIO(A6)
   MOVEM.l A2-A4,-(A7)
-  MOVE.l currsourceline,-(A7)
+  MOVE.l comPtr_CurrentSourceLine,-(A7)
   JSR JL_0_3318
-  MOVE.l (A7)+,currsourceline
+  MOVE.l (A7)+,comPtr_CurrentSourceLine
   MOVEA.l A0,A2
   MOVEQ.l #$00,D6
   TST.w D7
@@ -6621,7 +6623,7 @@ Even
 ;     JSR arexxfunc_cut
 ;      MOVE.l blockstarty,d0
 ;     JSR gotoline
-;      MOVE.w blockstartx,column
+;      MOVE.w blockstartx,comWord_Column
 ;        MOVEA.l ptr_pedscreen,A0
 ;    MOVEA.l _intuibase,A6
 ;    JSR -$60(A6)
@@ -6692,7 +6694,7 @@ JL_0_3152:
  RTS
 
 JL_0_3154:
-  SF state_blockmark
+  SF comByte_StateBlockMark
   TST.l blockendy
    BMI.w JL_0_319A
   CMP.l blockstarty,D1
@@ -6709,7 +6711,7 @@ JL_0_3154:
    BGT.w JL_0_319A
 
   JL_0_3194:
-  ST state_blockmark
+  ST comByte_StateBlockMark
   JL_0_319A:
 RTS
 
@@ -6812,7 +6814,7 @@ JL_0_31D6:
 RTS
 
 JL_0_32E6:
-  TST.w do_tokenize
+  TST.w comWord_DoTokenize
    BEQ.w JL_0_3310
   MOVEM.l D1-D7/A0-A2/A4-A6,-(A7)
   MOVEQ.l #$00,D0
@@ -6838,7 +6840,7 @@ JL_0_3318:
   CMP.l blockstarty,D0
    BLT.w JL_0_3348
    BGT.w JL_0_337C
-  MOVEA.l currsourceline,A0
+  MOVEA.l comPtr_CurrentSourceLine,A0
   MOVE.l blockendy,D7
   SUB.l blockstarty,D7
   RTS
@@ -6848,27 +6850,27 @@ JL_0_3318:
   SUB.l displayoffset,D0
   SUB.l startdisplayline,D0
   SUBQ.l #1,D0
-  MOVEA.l currsourceline,A0
+  MOVEA.l comPtr_CurrentSourceLine,A0
 
   JL_0_3362:
   MOVEA.l (A0),A0
    DBF D0,JL_0_3362
   MOVE.l blockendy,D7
   SUB.l blockstarty,D7
-  MOVE.l A0,currsourceline
+  MOVE.l A0,comPtr_CurrentSourceLine
   RTS
 
   JL_0_337C:
   SUB.l blockstarty,D0
   SUBQ.w #1,D0
-  MOVEA.l currsourceline,A0
+  MOVEA.l comPtr_CurrentSourceLine,A0
 
   JL_0_338A:
   MOVEA.l $4(A0),A0
    DBF D0,JL_0_338A
   MOVE.l blockendy,D7
   SUB.l blockstarty,D7
-  MOVE.l A0,currsourceline
+  MOVE.l A0,comPtr_CurrentSourceLine
 RTS
 
 
@@ -6877,7 +6879,7 @@ RTS
   MOVE.b #1,cutmode
   JSR menu_copy
   MOVEM.l (A7)+,D0-D7/A0-A6
-  MOVE.l currsourceline,a4
+  MOVE.l comPtr_CurrentSourceLine,a4
   JSR menu_kill
 RTS
 
@@ -6925,9 +6927,9 @@ RTS
    BNE.w JL_0_344A
  's1
 
-  MOVE.w #$FFFF,paste_mode
+  MOVE.w #$FFFF,comWord_PasteMode
   JSR JL_0_3748
-  MOVE.w #$0000,paste_mode
+  MOVE.w #$0000,comWord_PasteMode
 
   MOVEA.l ptr_iorequest_clipboard,A4
   TST.l $20(A4)
@@ -6952,7 +6954,7 @@ RTS
   CMPI.l #$ffffFFFF,blockendy      ;cut block
    BEQ.w setpointer_to_normal
   CLR.w AL_0_8AD8
-  MOVE.w #$FFFF,source_changed
+  MOVE.w #$FFFF,comWord_SourceChanged
   JSR JL_0_5524
   MOVEQ.l #$00,D5
   MOVEA.l temp_tokenstring2,A0
@@ -6987,7 +6989,7 @@ RTS
   MOVE.w blockendx,D5
   JL_0_34D0:
     ADDQ.w #1,D5
-    CMP.w maxcolumns,D5
+    CMP.w comWord_MaxColumns,D5
      BCC.w JL_0_34E4
     JSR JL_0_5650
     SUBQ.w #1,D5
@@ -7004,14 +7006,14 @@ RTS
    BNE.w JL_0_3510
   MOVE.w blockendx,D0
   ADDQ.w #1,D0
-  CMP.w maxcolumns,D0
+  CMP.w comWord_MaxColumns,D0
    BCS.w JL_0_3510
   JSR JL_0_5474
   BRA.w JL_0_351C
 
   JL_0_3510:
   MOVEA.l A5,A4
-  MOVE.l A4,currsourceline
+  MOVE.l A4,comPtr_CurrentSourceLine
   JSR JL_0_55A2
 
   JL_0_351C:
@@ -7068,9 +7070,9 @@ BRA saveab
   MOVE.l maxlines,D7
    BEQ.w saveascii_done
 
-  MOVE.b #$A,entered_character
-  MOVEA.l firstsourceline,A2
-  TST.w do_tokenize
+  MOVE.b #$A,comByte_EnteredCharacter
+  MOVEA.l comPtr_FirstSourceLine,A2
+  TST.w comWord_DoTokenize
    BEQ.w JL_0_3608
    BRA saveascii_writeline_fast
 
@@ -7146,7 +7148,7 @@ BRA saveab
     MOVE.l ptr_asciifile,D1
     MOVE.l A0,D2
     JSR _Write(A6)
-    MOVE.l #entered_character,D2
+    MOVE.l #comByte_EnteredCharacter,D2
     MOVE.l ptr_asciifile,D1
     MOVEQ.l #$01,D3
     JSR _Write(A6)
@@ -7173,7 +7175,7 @@ RTS
   WZ_HideMessage{}
   !asm
   MOVEA.l (A7)+,A2
-  LEA str_error_writefile,A0
+  LEA comStr_ErrorWriteFile,A0
 JMP show_errorrequester
 
 
@@ -7194,7 +7196,7 @@ JMP update_vertscroller
 .menu_saveblockas:
   CMPI.l #$ffffFFFF,blockendy
   BEQ.w setpointer_to_normal
-  LEA str_aslsaveblock,A2
+  LEA comStr_ASLSaveBlock,A2
   JSR get_filename
   TST.l D0
   BEQ.w JL_0_3732
@@ -7202,7 +7204,7 @@ JMP update_vertscroller
   MOVE.b #1,menuload
   JSR open_sourcefile
   MOVE.l D7,-(A7)
-  MOVEA.l currsourceline,A4
+  MOVEA.l comPtr_CurrentSourceLine,A4
   JSR JL_0_5524
   MOVE.l (A7)+,D7
   MOVE.w #$FFFF,AL_0_8AD8
@@ -7229,7 +7231,7 @@ JMP update_vertscroller
     JL_0_36Dca:
     CMP.l blockendy,D6
      BCS.w JL_0_36F4
-    MOVE.w do_tokenize,D0
+    MOVE.w comWord_DoTokenize,D0
      BEQ.b JL_0_36A2
      JSR JL_0_553A
     MOVEQ.l #$00,D5
@@ -7249,7 +7251,7 @@ JMP update_vertscroller
   TST.l D0
   BPL.w JL_0_3728
   SUBA.l A0,A0
-  MOVEA.l #str_error_writefile,A0
+  MOVEA.l #comStr_ErrorWriteFile,A0
   JSR show_errorrequester
   BRA.w JL_0_372E
 
@@ -7266,7 +7268,7 @@ RTS
 
 .menu_includeblock:
   CLR.w AL_0_8AD8
-  LEA str_aslloadblock,A2
+  LEA comStr_ASLLoadBlock,A2
   JSR get_filename
   TST.l D0
   BNE.b JL_0_3748
@@ -7276,21 +7278,21 @@ JMP JL_0_4E4A
 
 
 JL_0_3748:
-  MOVEA.l currsourceline,A4
+  MOVEA.l comPtr_CurrentSourceLine,A4
   MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
   CLR.b menuload
   JSR open_sourcefile
   JSR source_readin
   BEQ.w JL_0_4E4Ab
-  MOVE.w #$FFFF,labellist_changed
-  MOVE.w #$FFFF,source_changed
+  MOVE.w #$FFFF,comWord_LabelListChanged
+  MOVE.w #$FFFF,comWord_SourceChanged
   MOVEA.l textbufferaddr,A2
-  ADDA.w textbufferoffset,A2
+  ADDA.w comWord_TextBufferOffset,A2
   MOVEA.l A2,A0
-  ADDA.w maxcolumns,A0
+  ADDA.w comWord_MaxColumns,A0
   MOVE.l A0,lineposx
-  MOVE.w columnsoffset,D1
-  ADD.w column,D1
+  MOVE.w comWord_ColumnsOffset,D1
+  ADD.w comWord_Column,D1
   MOVEA.l temp_tokenstring1,A3
   MOVEQ.l #$00,D4
   CLR.b instring
@@ -7366,8 +7368,8 @@ JL_0_3748:
   ADDQ.w #1,d6
   SUBQ.l #1,a5
  'w1
-  MOVE.w column,d0
-  ADD.w columnsoffset,D0
+  MOVE.w comWord_Column,d0
+  ADD.w comWord_ColumnsOffset,D0
   BEQ 'nc
  'w2
   CMP.w #columnsize-10,d0
@@ -7436,7 +7438,7 @@ RTS
   CMPI.l #$ffffFFFF,blockendy
    BEQ.w setpointer_to_normal
   CLR.w AL_0_8AD8
-  MOVE.w #$FFFF,source_changed
+  MOVE.w #$FFFF,comWord_SourceChanged
   MOVE.l startdisplayline,D7
   ADD.l displayoffset,D7
   CMP.l blockstarty,D7
@@ -7455,10 +7457,10 @@ JL_0_386A:
 JL_0_387E:
    JSR JL_0_5524
   MOVEA.l textbufferaddr,A2
-  ADDA.w textbufferoffset,A2
+  ADDA.w comWord_TextBufferOffset,A2
   MOVEA.l A2,A1
-  MOVE.w columnsoffset,D2
-  ADD.w column,D2
+  MOVE.w comWord_ColumnsOffset,D2
+  ADD.w comWord_Column,D2
   MOVEQ.l #$00,D1
   MOVEA.l temp_tokenstring2,A0
 JL_0_389A:
@@ -7476,14 +7478,14 @@ JL_0_38B0:
    JSR JL_0_5630
    BMI.w JL_0_3982
    BEQ.w JL_0_38C8
-  CMP.w maxcolumns,D1
+  CMP.w comWord_MaxColumns,D1
    BCC.b JL_0_38B0
   MOVE.b D0,(A0)+
   ADDQ.w #1,D1
  BRA.b JL_0_38B0
 
 JL_0_38C8:
-  CMP.w maxcolumns,D1
+  CMP.w comWord_MaxColumns,D1
    BCC.w JL_0_38D8
   MOVE.b #$20,(A0)+
   ADDQ.w #1,D1
@@ -7509,7 +7511,7 @@ JL_0_3900:
   MOVE.b D5,$8(A0)
   MOVE.l $4(A4),D1
    BNE.w JL_0_3920
-  MOVE.l A0,firstsourceline
+  MOVE.l A0,comPtr_FirstSourceLine
   CLR.l $4(A0)
  BRA.w JL_0_3928
 
@@ -7542,7 +7544,7 @@ JL_0_395A:
  BRA.b JL_0_3900
 
 JL_0_3968:
-  MOVE.w do_tokenize,D0
+  MOVE.w comWord_DoTokenize,D0
    BEQ.w JL_0_3976
    JSR JL_0_553A
 JL_0_3976:
@@ -7554,7 +7556,7 @@ JL_0_3976:
 JL_0_3982:
   MOVEM.l (A7)+,D1/A1
 JL_0_3986:
-  CMP.w maxcolumns,D1
+  CMP.w comWord_MaxColumns,D1
    BCC.w JL_0_399A
   MOVE.b (A1)+,D0
   ANDI.b #$7F,D0
@@ -7570,8 +7572,8 @@ JL_0_399A:
 
 JL_0_39A8:
    JSR JL_0_55A2
-  MOVE.w columnsoffset,D0
-  ADD.w column,D0
+  MOVE.w comWord_ColumnsOffset,D0
+  ADD.w comWord_Column,D0
   MOVE.l startdisplayline,D7
   ADD.l displayoffset,D7
   CMP.l blockendy,D7
@@ -7584,7 +7586,7 @@ JL_0_39D0:
   SUB.l blockstarty,D1
   MOVE.w blockendx,D2
   ADDQ.w #1,D2
-  CMP.w maxcolumns,D2
+  CMP.w comWord_MaxColumns,D2
    BCS.w JL_0_39FA
   ADDQ.l #1,D1
   CMP.l blockstarty,D7
@@ -7634,14 +7636,14 @@ BRA.w _redrawb
 ;    BCS.w JL_0_3A9A
 ;  CMP.w ptr_labelcounter,D3
 ;    BCC.w JL_0_3A9A
-;  LEA ptr_labellist,A0
+;  LEA comPtr_LabelList,A0
 ;
 ;  JL_0_3A76:
 ;    MOVEA.l (A0),A0
 ;  DBF D3,JL_0_3A76
 
 .jump_to_keyword:                ; A0 = pointer zieltextzeile
-  MOVEA.l firstsourceline,A1
+  MOVEA.l comPtr_FirstSourceLine,A1
   MOVEQ.l #$00,D0
   MOVE.l maxlines,D1
   SUBQ.l #1,D1
@@ -7697,7 +7699,7 @@ RTS
   ADD.l startdisplayline,D1
   MOVE.l D1,linepos2
   MOVE.l D1,linepos3
-  ADD.w columnsoffset,D2
+  ADD.w comWord_ColumnsOffset,D2
   MOVE.w D2,lineposx
   MOVE.w D2,AL_0_86AC
    JSR JL_0_57F2
@@ -7707,7 +7709,7 @@ RTS
   MOVE.l D3,D1
   CLR.w AL_0_86B8
   MOVE.l startdisplayline,-(A7)
-  MOVE.w columnsoffset,-(A7)
+  MOVE.w comWord_ColumnsOffset,-(A7)
   MOVE.l A4,-(A7)
   JSR JL_0_59BC
 
@@ -7727,7 +7729,7 @@ RTS
   CMP.l maxlines,D0
    BCC.b JL_0_3B1E
   SUBQ.l #1,D3
-  MOVE.w maxcolumns,D2
+  MOVE.w comWord_MaxColumns,D2
   MOVE.l startdisplayline,D0
   ADD.l viewablelines,D0
   CMP.l maxlines,D0
@@ -7735,12 +7737,12 @@ RTS
   MOVEM.l D5-D6,-(A7)
    JSR source_fullscroll_down
   MOVEA.l (A4),A4
-  MOVE.l A4,currsourceline
+  MOVE.l A4,comPtr_CurrentSourceLine
   ADDQ.l #1,startdisplayline
    JSR JL_0_5B60
   MOVEM.l (A7)+,D5-D6
   SUBQ.w #1,D6
-  MOVE.w maxcolumns,D2
+  MOVE.w comWord_MaxColumns,D2
   MOVE.l viewablelines,D3
   SUBQ.l #1,D3
   MOVE.l D3,D1
@@ -7750,11 +7752,11 @@ RTS
   MOVE.l D1,-(A7)
   MOVE.w D5,D2
   MOVE.w D6,D3
-  MOVE.w maxcolumns,D0
+  MOVE.w comWord_MaxColumns,D0
   MOVE.l viewablelines,D1
   SUBQ.l #2,D1
    JSR JL_0_59BC
-  MOVE.w maxcolumns,D5
+  MOVE.w comWord_MaxColumns,D5
   MOVE.l viewablelines,D6
   SUBQ.l #1,D6
   MOVE.l D6,D3
@@ -7774,7 +7776,7 @@ RTS
   MOVEM.l D5-D6,-(A7)
    JSR source_fullscroll_up
   MOVEA.l $4(A4),A4
-  MOVE.l A4,currsourceline
+  MOVE.l A4,comPtr_CurrentSourceLine
   SUBQ.l #1,startdisplayline
    JSR JL_0_5B24
   MOVEM.l (A7)+,D5-D6
@@ -7789,7 +7791,7 @@ RTS
   MOVEQ.l #$00,D0
   MOVEQ.l #$01,D1
    JSR JL_0_59BC
-  MOVE.w maxcolumns,D2
+  MOVE.w comWord_MaxColumns,D2
   MOVEQ.l #$00,D3
   MOVEQ.l #-$01,D5
   MOVEQ.l #$00,D6
@@ -7801,7 +7803,7 @@ RTS
   BRA.w JL_0_3D06
 
   JL_0_3C38:
-  ADD.w columnsoffset,D2
+  ADD.w comWord_ColumnsOffset,D2
   MOVE.l D3,D1
   ADD.l startdisplayline,D1
   CMP.l maxlines,D1
@@ -7814,7 +7816,7 @@ RTS
   TST.w D0
    BNE.w JL_0_3CA6                  ;ok
   SUBQ.w #1,D2
-  MOVE.w columnsoffset,D0
+  MOVE.w comWord_ColumnsOffset,D0
    BEQ.w JL_0_3D06
   SUBQ.w #1,D2
   MOVEM.w D2-D3/D5-D6,-(A7)
@@ -7830,7 +7832,7 @@ RTS
   MOVE.l linepos3,blockendy
   ;MOVE.l AL_0_86AC,blockendx
    JSR JL_0_5836
-  SUBQ.w #2,columnsoffset
+  SUBQ.w #2,comWord_ColumnsOffset
    JSR scroll_right
    JSR JL_0_572C
   MOVEM.w (A7)+,D2-D3/D5-D6
@@ -7838,12 +7840,12 @@ RTS
 
   JL_0_3CA6:
   MOVE.w D2,D0
-  SUB.w columnsoffset,D0
+  SUB.w comWord_ColumnsOffset,D0
   CMP.w visiblecolumns,D0
    BCS.w JL_0_3D06
-  MOVE.w columnsoffset,D2
+  MOVE.w comWord_ColumnsOffset,D2
   ADD.w visiblecolumns,D2
-  CMP.w maxcolumns,D2
+  CMP.w comWord_MaxColumns,D2
    BCC.w JL_0_3D06
   ADDQ.w #1,D2
   MOVEM.l D2-D3/D5-D6,-(A7)
@@ -7858,7 +7860,7 @@ RTS
   MOVE.l linepos3,blockendy
   ;MOVE.l AL_0_86AC,blockendx
    JSR JL_0_5836
-  ADDQ.w #2,columnsoffset
+  ADDQ.w #2,comWord_ColumnsOffset
    JSR scroll_left
    JSR JL_0_572C
   MOVEM.l (A7)+,D2-D3/D5-D6
@@ -7924,7 +7926,7 @@ RTS
    BCS.w JL_0_3DB2
   MOVE.l viewablelines,D1
   SUBQ.l #1,D1
-  MOVE.w maxcolumns,D0
+  MOVE.w comWord_MaxColumns,D0
   SUBQ.w #1,D0
 
   JL_0_3DB2:
@@ -7944,9 +7946,9 @@ RTS
 
 JL_0_3DD0:
   MOVE.l startdisplayline,AL_0_3EE2
-  MOVE.w columnsoffset,AL_0_3EE4
-  MOVE.l (A7)+,currsourceline
-  MOVE.w (A7)+,columnsoffset
+  MOVE.w comWord_ColumnsOffset,AL_0_3EE4
+  MOVE.l (A7)+,comPtr_CurrentSourceLine
+  MOVE.w (A7)+,comWord_ColumnsOffset
   MOVE.l (A7)+,startdisplayline
   MOVE.w AL_0_86AC,D0
    BPL.w JL_0_3E16
@@ -7961,11 +7963,11 @@ JL_0_3E10:
 BRA.w JL_0_3E24
 
 JL_0_3E16:
-  CMP.w maxcolumns,D0
+  CMP.w comWord_MaxColumns,D0
    BCS.w JL_0_3E24
 
 JL_0_3E1E:
-  MOVE.w maxcolumns,D0
+  MOVE.w comWord_MaxColumns,D0
   SUBQ.w #1,D0
 
   JL_0_3E24:
@@ -8004,12 +8006,12 @@ JL_0_3E5E:
   MOVE.w (a7)+,blockstartx
   ;MOVE.l (A7)+,blockstartx
   MOVE.w lineposx,D0
-  SUB.w columnsoffset,D0
-  MOVE.w D0,column
+  SUB.w comWord_ColumnsOffset,D0
+  MOVE.w D0,comWord_Column
   CLR.l foldnum
   MOVE.l startdisplayline,D0
   ADD.l displayoffset,D0
-  MOVEA.l currsourceline,A4
+  MOVEA.l comPtr_CurrentSourceLine,A4
 
 CNIF #hardfold = 1
 'l11 CMP.l linepos2,d0
@@ -8020,7 +8022,7 @@ CNIF #hardfold = 1
   MOVE.l a4,a2
   JSR doreverse
   MOVE.l (a7)+,a2
-JL_0_3E84:                      ;mouseclick get currsourceline
+JL_0_3E84:                      ;mouseclick get comPtr_CurrentSourceLine
   CMP.l linepos2,D0
    BEQ.w JL_0_3E9E
   MOVE.l $4(A4),d1
@@ -8091,7 +8093,7 @@ CEND
   SUB.l startdisplayline,D0
 
   MOVE.w D0,displayoffset+2
-  MOVE.l A4,currsourceline
+  MOVE.l A4,comPtr_CurrentSourceLine
   JSR JL_0_775E
   MOVE.w message_qualifier,d1
   AND.w #$3,d1
@@ -8139,7 +8141,7 @@ JL_0_3EC6:
   MOVE.l startdisplayline,D0
   CMP.l AL_0_3EE2,D0
    BNE.w _redrawb
-  MOVE.w columnsoffset,D0
+  MOVE.w comWord_ColumnsOffset,D0
   CMP.w AL_0_3EE4,D0
    BNE.w _redrawb
 
@@ -8162,7 +8164,7 @@ AL_0_3EE4:    Ds.w 1
 ;Dc.l displayoffset
 ;  JL_0_3EEC:
 ;  MOVE.w D3,displayoffset+2
-;  MOVEA.l currsourceline,A0
+;  MOVEA.l comPtr_CurrentSourceLine,A0
 ;
 ;  JL_0_3EF6:
 ;    MOVEA.l A0,A4
@@ -8177,7 +8179,7 @@ AL_0_3EE4:    Ds.w 1
 ;
 ;  JL_0_3F0E:
 ;  MOVE.w D0,displayoffset+2
-;  MOVE.l A4,currsourceline
+;  MOVE.l A4,comPtr_CurrentSourceLine
 ;  MOVEA.l A4,A2
 ;  LEA $9(A2),A2
 ;  JSR JL_0_775E
@@ -8187,7 +8189,7 @@ AL_0_3EE4:    Ds.w 1
 ;JL_0_3F26:
 ;  MOVE.l displayoffset,D0
 ;  MOVE.w D3,displayoffset+2
-;  MOVEA.l currsourceline,A0
+;  MOVEA.l comPtr_CurrentSourceLine,A0
 ;
 ;  JL_0_3F36:
 ;    MOVEA.l A0,A4
@@ -8202,7 +8204,7 @@ AL_0_3EE4:    Ds.w 1
 ;
 ;  JL_0_3F4C:
 ;  MOVE.w D0,displayoffset+2
-;  MOVE.l A4,currsourceline
+;  MOVE.l A4,comPtr_CurrentSourceLine
 ;  MOVEA.l A4,A2
 ;  LEA $9(A2),A2
 ;  JSR JL_0_775E
@@ -8215,7 +8217,7 @@ AL_0_3EE4:    Ds.w 1
   MOVEA.l _dosbase,A6
   JSR _Delay(A6)
   MOVEA.l (A7)+,A0
-  MOVEA.l ptr_compilerwindow,A1
+  MOVEA.l comPtr_CompilerWindow,A1
   SUBA.l A2,A2
   MOVEA.l _intuibase,A6
   JSR _ActivateGadget(A6)
@@ -8273,8 +8275,8 @@ RTS
   ADD.l displayoffset,D1
 
   MOVE.l (a7)+,D0
-;  MOVE.w columnsoffset,D0
-;  ADD.w column,D0
+;  MOVE.w comWord_ColumnsOffset,D0
+;  ADD.w comWord_Column,D0
   CMP.w D0,D2
    BNE.w JL_0_42D8
   CMP.l D1,D3
@@ -8288,7 +8290,7 @@ RTS
   TST.l D1
    BEQ.w JL_0_42EA
   SUBQ.l #1,D1
-  MOVE.w maxcolumns,D0
+  MOVE.w comWord_MaxColumns,D0
 
   JL_0_42EA:
   MOVE.w D0,blockendx
@@ -8476,7 +8478,7 @@ RTS
 
 
 .comwin_refreshglist:
-  MOVEA.l ptr_compilerwindow,A1
+  MOVEA.l comPtr_CompilerWindow,A1
   SUBA.l A2,A2
   MOVEA.l _intuibase,A6
 JMP _RefreshGList(A6)             ; A0: Gadgets, A1: Window, A2: Requ, D0: NumGad
@@ -8499,10 +8501,10 @@ JL_0_5F62b: JMP JL_0_5F62
 
 
 AJL_0_44F6:
-  MOVE.w do_tokenize,D0
+  MOVE.w comWord_DoTokenize,D0
    BNE.w setpointer_to_normalb
-  NOT.w do_tokenize
-  MOVEA.l firstsourceline,A4
+  NOT.w comWord_DoTokenize
+  MOVEA.l comPtr_FirstSourceLine,A4
   MOVE.l maxlines,-(A7)
 
   JL_0_450E:
@@ -8513,7 +8515,7 @@ AJL_0_44F6:
     LEA $9(A4),A2
     MOVEA.l temp_tokenstring1,A1
     JSR JL_0_5F62
-    MOVE.l A4,currsourceline
+    MOVE.l A4,comPtr_CurrentSourceLine
     JSR JL_0_55AA
 
     JL_0_4530:
@@ -8525,11 +8527,11 @@ AJL_0_44F6:
 BRA.w JL_0_458E
 
 AJL_0_453C:
-  MOVE.w do_tokenize,D0
+  MOVE.w comWord_DoTokenize,D0
    BEQ.w setpointer_to_normalb
-  CLR.w do_tokenize
+  CLR.w comWord_DoTokenize
   JL_0_454C:
-  MOVEA.l firstsourceline,A4
+  MOVEA.l comPtr_FirstSourceLine,A4
   MOVE.l maxlines,-(A7)
 
   JL_0_4554:
@@ -8539,7 +8541,7 @@ AJL_0_453C:
     SUBA.l temp_tokenstring1,A1
     ADDQ.w #1,A1
     MOVE.l A1,D5
-    MOVE.l A4,currsourceline
+    MOVE.l A4,comPtr_CurrentSourceLine
     JSR JL_0_55AA
     MOVEA.l (A4),A4
     SUBQ.w #1,(A7)
@@ -8548,9 +8550,9 @@ AJL_0_453C:
 RTS
 
 JL_0_457C:
-  MOVE.w do_tokenize,D0
+  MOVE.w comWord_DoTokenize,D0
    BEQ.w setpointer_to_normalb
-  CLR.w do_tokenize
+  CLR.w comWord_DoTokenize
   BSR.b JL_0_454C
   JL_0_458E:
   JSR update_currsourceline
@@ -8581,7 +8583,7 @@ RTS
   skip.l = 0
   MOVE.l (a2),straddr
   !asm
-  MOVEA.l firstsourceline,A0
+  MOVEA.l comPtr_FirstSourceLine,A0
   MOVE.l maxlines,D0
   MOVE.b AL_0_8BCE,D1
   MOVE.l A1,-(A7)
@@ -8650,7 +8652,7 @@ RTS
    BNE 'nf
   ADDQ.l #5,a1
  'nf
-  MOVE.w D1,labellist_changed
+  MOVE.w D1,comWord_LabelListChanged
   JSR JL_0_46D6
 
   JL_0_4696:
@@ -8820,7 +8822,7 @@ RTS
  'addlist
   CMP.l #maxlabels,numcount  ;reduce this for slow computer
   BGE 'out
-  MOVE.w D1,labellist_changed
+  MOVE.w D1,comWord_LabelListChanged
   JSR JL_0_46D6            ;remarklistadd
 
  'skip
@@ -8842,7 +8844,7 @@ RTS
 RTS
 
 JL_0_46CC:
-  MOVE.w #$FFFF,labellist_changed
+  MOVE.w #$FFFF,comWord_LabelListChanged
 RTS
 
 .oldlistadd
@@ -8860,7 +8862,7 @@ RTS
   MOVE.w ptr_labelcounter,D1
   BEQ.w JL_0_4714
 
-  MOVEA.l ptr_labellist,A1
+  MOVEA.l comPtr_LabelList,A1
   SUBQ.w #2,D1
   BMI.w JL_0_470E
 
@@ -8873,7 +8875,7 @@ RTS
   BRA.w JL_0_471A
 
   JL_0_4714:
-  MOVE.l A2,ptr_labellist
+  MOVE.l A2,comPtr_LabelList
 
   JL_0_471A:
   MOVE.l A0,$4(A2)
@@ -8883,7 +8885,7 @@ RTS
 RTS
 
 JL_0_472A:
-  MOVE.w #$FFFF,labellist_changed
+  MOVE.w #$FFFF,comWord_LabelListChanged
 RTS
 
 
@@ -8911,7 +8913,7 @@ AL_0_4734:  Ds.l 1
   JSR _redraw
   JSR update_horizscroller
   JSR update_vertscroller
-  CLR.w labellist_changed
+  CLR.w comWord_LabelListChanged
 
   redraw_labellist:
   MOVE.w ptr_labelcounter,D5
@@ -8940,7 +8942,7 @@ AL_0_4734:  Ds.l 1
 RTS
 
 ;.split_path_and_name:
-;  LEA str_currentdir,A1
+;  LEA comStr_CurrentDir,A1
 ;  TST.b (A0)
 ;   BEQ.w JL_0_48E8
 ;  MOVEA.l A1,A2
@@ -8963,7 +8965,7 @@ RTS
 ;  BRA.b JL_0_48A6
 ;
 ;  JL_0_48C4:
-;  LEA str_sourcename,A1
+;  LEA comStr_SourceName,A1
 ;  MOVEA.l A2,A0
 ;  CMPI.b #$2F,(A2)              ; /
 ;   BNE.w JL_0_48D4
@@ -8993,7 +8995,7 @@ RTS
 
 JL_0_4942:
   JSR display_memoryalert
-  MOVE.l ptr_sourcefilehandle,D1
+  MOVE.l comPtr_SourceFileHandle,D1
   BEQ.w JL_0_4956
   MOVEA.l _dosbase,A6
   JSR _Close(A6)
@@ -9001,7 +9003,7 @@ JL_0_4942:
 
   CLR.l startdisplayline
   CLR.l displayoffset
-  MOVE.l firstsourceline,currsourceline
+  MOVE.l comPtr_FirstSourceLine,comPtr_CurrentSourceLine
   JSR _redraw
 JMP JL_0_CE2
 
@@ -9039,12 +9041,12 @@ RTS
   ;!asm
 
   ; -- check/set tokenisation mode
-  MOVE.w flag_tokenization,do_tokenize
-  TST.w do_tokenize
+  MOVE.w flag_tokenization,comWord_DoTokenize
+  TST.w comWord_DoTokenize
   BEQ.w JL_0_4A76
-    TST.l token
+    TST.l comPtr_TokenBase
     BNE.w JL_0_4A76
-      CLR.w do_tokenize
+      CLR.w comWord_DoTokenize
   JL_0_4A76:
 
   ; -- add the source history to the menu
@@ -9157,14 +9159,14 @@ RTS
 
 
 .show_newfilerequest:
-  MOVE.w source_changed,D0
+  MOVE.w comWord_SourceChanged,D0
   BEQ.w JL_0_4DFC
     LEA easystruct_loosewarning,A1
     JSR show_requester
     RTS
   JL_0_4DFC:
 
-  MOVE.w #$FFFF,labellist_changed
+  MOVE.w #$FFFF,comWord_LabelListChanged
   MOVEQ.l #-$01,D0
 RTS
 
@@ -9184,7 +9186,7 @@ JL_0_4E08:
   MOVE.l A4,$4(A0)
   MOVE.l A0,(A4)
   MOVEA.l A0,A4
-  MOVE.l A4,currsourceline
+  MOVE.l A4,comPtr_CurrentSourceLine
 RTS
 
 JL_0_4E36:
@@ -9201,9 +9203,9 @@ JL_0_4E36:
 RTS
 
 JL_0_4E4A:
-  TST.w paste_mode
+  TST.w comWord_PasteMode
    BNE.w JL_0_4E64
-  CLR.l ptr_sourcefilehandle
+  CLR.l comPtr_SourceFileHandle
   MOVE.l D7,D1
   MOVEA.l _dosbase,A6
 JMP _Close(A6)
@@ -9211,13 +9213,13 @@ JL_0_4E64:
 RTS
 
 .open_sourcefile:  ; D7: filename & Path
-  TST.w paste_mode
+  TST.w comWord_PasteMode
     BNE.w exit_opensourcefile
 
   MOVE.l D7,D1
   MOVE.l D1,A0
   CLR.b convert
-  LEA str_sourcefile_complete,A0
+  LEA comStr_SourceFileComplete,A0
  'l10
     TST.b (a0)+
   BNE 'l10
@@ -9230,7 +9232,7 @@ RTS
    BNE 'l11
   TST.w smart_tokenization
   BEQ 't1
-  MOVE.w #$ffff,do_tokenize
+  MOVE.w #$ffff,comWord_DoTokenize
  't1
   MOVE.b #1,convert
  'l11
@@ -9240,7 +9242,7 @@ RTS
    BNE.w file_found
   ADDQ.w #4,A7
   SUBA.l A0,A0
-  MOVEA.l #str_error_openfile,A0
+  MOVEA.l #comStr_ErrorOpenFile,A0
   TST.b menuload
   BNE 'lod1
     BRA.w show_errorrequester
@@ -9249,7 +9251,7 @@ RTS
   BRA loadfileerror
 
   file_found:
-  MOVE.l D7,ptr_sourcefilehandle
+  MOVE.l D7,comPtr_SourceFileHandle
 
   exit_opensourcefile:
 RTS
@@ -9268,7 +9270,7 @@ JL_0_4EA2:
 RTS
 
 source_readin: ; can be clipboard or file
-  TST.w paste_mode
+  TST.w comWord_PasteMode
    BEQ.w source_read_from_file_cached  ; well, it's from file
   MOVE.l A6,-(A7)
   MOVEA.l _execbase,A6
@@ -9294,7 +9296,7 @@ source_read_from_file:
   MOVE.l D0,D6
    BPL.w JL_0_4F18
   SUBA.l A0,A0
-  MOVEA.l #str_error_readfile,A0
+  MOVEA.l #comStr_ErrorReadFile,A0
    JSR show_errorrequester
   MOVEQ.l #$00,D6
   JL_0_4F18:
@@ -9500,7 +9502,7 @@ load
   TST.w D4                ;-1 ascii
    BEQ.w JL_0_4FFE
 
-  MOVE.w do_tokenize,D2
+  MOVE.w comWord_DoTokenize,D2
    BEQ.w JL_0_4FFE
   SUBQ.w #1,D5
    BPL.w JL_0_4FFA
@@ -9762,7 +9764,7 @@ BRA 'l4
   CLR.b instring3
 
   detokenize_line2
-    TST.w do_tokenize
+    TST.w comWord_DoTokenize
      BEQ.w JL_0_5054
     MOVEQ.l #$00,D0
     MOVE.b (A0)+,D0
@@ -9851,14 +9853,14 @@ RTS
 
 
 .token_to_ascii:
-  ;MOVEA.l token,A3     ;findtokenlib $80
+  ;MOVEA.l comPtr_TokenBase,A3     ;findtokenlib $80
   BCLR #$F,D0
   LEA instrtab,a3
 
   Dc.l $26730400 ;Dc.l $26730600 MOVE.l 0(a3,d0.w*4),a3
   CMP.l #0,a3
   BNE 'l10
-  MOVEA.l token,A3
+  MOVEA.l comPtr_TokenBase,A3
  'JL_0_50A2:
     CMP.w $4(A3),D0
      BEQ.w JL_0_50B4
@@ -9920,18 +9922,18 @@ RTS
 
 
 .get_filename:
-  LEA str_asldummypath,A0
-  LEA str_asldummydir,A1
-  LEA str_filepattern_noinfo,A3
+  LEA comStr_ASLDummyPath,A0
+  LEA comStr_ASLDummyDir,A1
+  LEA comStr_FilePattern_NoInfo,A3
 BRA.w aslrequest_file
 
 
 .do_aslfilerequest:
-  LEA str_aslloadfile,A2      ; asl title
+  LEA comStr_ASLLoadFile,A2      ; asl title
   JL_0_50D2:
-  LEA str_currentdir,A0       ; asl dir
-  LEA str_sourcename,A1       ; asl path
-  LEA str_filepattern,A3      ; file pattern (*.bb2 etc.)
+  LEA comStr_CurrentDir,A0       ; asl dir
+  LEA comStr_SourceName,A1       ; asl path
+  LEA comStr_FilePattern,A3      ; file pattern (*.bb2 etc.)
 BRA.b aslrequest_file
 
 
@@ -9969,7 +9971,7 @@ asl_drawersonly: Ds.l 1
     If Peek.l(?asl_usepattern)<>0
       If _a3<>0 Then tmppattern$ = Peek$(_a3)
     Else
-      tmppattern$ = Peek$(?str_filepattern_noinfo)
+      tmppattern$ = Peek$(?comStr_FilePattern_NoInfo)
     EndIf
   Else
     tmppattern$ = ""
@@ -9977,7 +9979,7 @@ asl_drawersonly: Ds.l 1
   If Peek.w(?use_asldims)
     asl_SetRequesterDims{Peek.l(?aslreq_x),Peek.l(?aslreq_y),Peek.l(?aslreq_width),Peek.l(?aslreq_height)}
   EndIf
-  aslfr_SetRequesterTitle{1,tmptitle$,"Ok","Cancel"}
+  aslfr_SetRequesterTitle{1,!TRANS{tmptitle$},"",""}
   aslfr_SetPattern{1,tmppattern$}
   aslfr_SetPath{1,tmpdir$}
   aslfr_SetFile{1,tmpfile$}
@@ -9989,7 +9991,7 @@ asl_drawersonly: Ds.l 1
     tempfile$ = ""
   EndIf
   If tempfile$<>""
-    Poke.s ?str_sourcefile_complete,tempcomplete$
+    Poke.s ?comStr_SourceFileComplete,tempcomplete$
     Poke.s _a0,tempdir$
     Poke.s _a1,tempfile$
     GetD0 &tempcomplete$
@@ -10324,10 +10326,10 @@ RTS
   TST.l D0
   BEQ.w JL_0_4942
   MOVE.l AL_0_519C,AL_0_51A0
-  MOVE.l ptr_compilerwindow,AL_0_519C
-  MOVE.l D0,ptr_compilerwindow
+  MOVE.l comPtr_CompilerWindow,AL_0_519C
+  MOVE.l D0,comPtr_CompilerWindow
 ;  JSR settopaz8
-  MOVEA.l ptr_compilerwindow,A0
+  MOVEA.l comPtr_CompilerWindow,A0
   MOVEA.l $32(A0),A0
   MOVEA.l comwin_datas,A1
   MOVEA.l $18(A1),A1                ; itext laden
@@ -10359,7 +10361,7 @@ AL_0_5388:    Ds.w 1
 comwin_close:
   MOVEM.l D0-D1/A0-A2/A6,-(A7)
   SUBQ.w #1,AL_0_5388
-  MOVE.l ptr_compilerwindow,D0
+  MOVE.l comPtr_CompilerWindow,D0
   BEQ.w JL_0_543A
   MOVEA.l D0,A2
   MOVEA.l _execbase,A6
@@ -10375,13 +10377,13 @@ comwin_close:
   BRA.b JL_0_53A6
 
   JL_0_53B8:
-  MOVEA.l ptr_compilerwindow,A0
+  MOVEA.l comPtr_CompilerWindow,A0
   MOVEA.l _intuibase,A6
   JSR _ClearPointer(A6)
-  MOVEA.l ptr_compilerwindow,A0
+  MOVEA.l comPtr_CompilerWindow,A0
   JSR _CloseWindow(A6)
   MOVE.l #$0,comwin_title
-  MOVE.l AL_0_519C,ptr_compilerwindow
+  MOVE.l AL_0_519C,comPtr_CompilerWindow
   MOVE.l AL_0_51A0,AL_0_519C
   CLR.l AL_0_51A0
   MOVEA.l comwin_datas,A0
@@ -10451,7 +10453,7 @@ JL_0_5474:
   BRA.w JL_0_54BE
 
   JL_0_54A4:
-  MOVE.l D1,firstsourceline
+  MOVE.l D1,comPtr_FirstSourceLine
   MOVEA.l D1,A0
   CLR.l $4(A0)
   BRA.w JL_0_54BE
@@ -10514,7 +10516,7 @@ JL_0_5524:
   BSR.b move_to_blockstarty
   MOVE.w blockstartx,D5
 
-  MOVE.w do_tokenize,D0
+  MOVE.w comWord_DoTokenize,D0
   BEQ.w JL_0_5538
   BRA.w JL_0_553A
 
@@ -10566,7 +10568,7 @@ JL_0_5556:
 RTS
 
 .update_currsourceline:
-  MOVEA.l firstsourceline,A4
+  MOVEA.l comPtr_FirstSourceLine,A4
   MOVE.l startdisplayline,D0
   ADD.l displayoffset,D0
   BEQ.w JL_0_558E
@@ -10579,7 +10581,7 @@ RTS
   BNE JL_0_5588
 
   JL_0_558E:
-  MOVE.l A4,currsourceline
+  MOVE.l A4,comPtr_CurrentSourceLine
 RTS
 
 JL_0_5596:
@@ -10628,9 +10630,9 @@ JL_0_55A2:
 
   JL_0_55D8:
   MOVEA.l (A7)+,A1
-  CMPA.l firstsourceline,A4
+  CMPA.l comPtr_FirstSourceLine,A4
    BNE.w JL_0_55E6
-  MOVE.l A0,firstsourceline
+  MOVE.l A0,comPtr_FirstSourceLine
 
   JL_0_55E6:
   CMPA.l AL_0_854A,A4
@@ -10661,11 +10663,11 @@ JL_0_55A2:
   MOVE.b (A1)+,(A0)+
    BNE.b JL_0_5620
   JSR JL_0_6C04
-  MOVE.l A4,currsourceline
+  MOVE.l A4,comPtr_CurrentSourceLine
 RTS
 
 JL_0_5630:
-  CMP.w maxcolumns,D5
+  CMP.w comWord_MaxColumns,D5
    BGE.w JL_0_568C
   CMP.l blockendy,D6
    BCS.w JL_0_5650
@@ -10679,7 +10681,7 @@ RTS
 
 JL_0_5650:
   ADDQ.w #1,D5
-  MOVE.w do_tokenize,D0
+  MOVE.w comWord_DoTokenize,D0
    BEQ.w JL_0_5670
   MOVEA.l temp_tokenstring3,A3
   CMP.b (A3),D5
@@ -10831,30 +10833,30 @@ JL_0_57E0:
 RTS
 
 JL_0_57F2:
-  ;MOVE.l column,-(A7)
-  MOVE.w column,-(A7)
+  ;MOVE.l comWord_Column,-(A7)
+  MOVE.w comWord_Column,-(A7)
   MOVE.l displayoffset,-(A7)
   MOVEM.w D2-D3/D5,-(A7)
-  SUB.w columnsoffset,D2
+  SUB.w comWord_ColumnsOffset,D2
    BPL.w JL_0_5808
   MOVEQ.l #$00,D2
   BRA.w JL_0_5816
 
   JL_0_5808:
-  CMP.w maxcolumns,D2
+  CMP.w comWord_MaxColumns,D2
    BCS.w JL_0_5816
-  MOVE.w maxcolumns,D2
+  MOVE.w comWord_MaxColumns,D2
   SUBQ.w #1,D2
 
   JL_0_5816:
-  MOVE.w D2,column
+  MOVE.w D2,comWord_Column
   MOVE.w D3,displayoffset+2
    JSR update_horizscroller
    JSR update_vertscroller
   MOVEM.w (A7)+,D2-D3/D5
-  ;MOVE.l (A7)+,column
+  ;MOVE.l (A7)+,comWord_Column
   MOVE.l (A7)+,displayoffset
-  MOVE.w (A7)+,column
+  MOVE.w (A7)+,comWord_Column
 RTS
 
 JL_0_5836:
@@ -10900,7 +10902,7 @@ RTS
   MOVE.l #$ffffFFFF,blockendy
   JSR save_cursorposition
   JSR clear_sourcewindow
-  MOVEA.l currsourceline,A2
+  MOVEA.l comPtr_CurrentSourceLine,A2
   CMPA.l #$0,A2
   BNE.w JL_0_58B6
   MOVE.l (A7)+,blockendy
@@ -10941,7 +10943,7 @@ BRA.b JL_0_58BA
 .getfoldstatus
   CLR.l foldnum
   MOVE.l a1,-(a7)
-  MOVE.l firstsourceline,d0
+  MOVE.l comPtr_FirstSourceLine,d0
   BEQ 'out
  'l1
     MOVE.l d0,a1
@@ -11000,11 +11002,11 @@ RTS
 JL_0_58C6:
   MOVE.w D1,displayoffset+2
 ;  CLR.l AL_0_868A
-  CLR.w textbufferoffset
+  CLR.w comWord_TextBufferOffset
   CLR.l foldnum
   MOVE.l viewablelines,D7
   SUBQ.l #1,D7
-  MOVE.w columnsoffset,AL_0_869A
+  MOVE.w comWord_ColumnsOffset,AL_0_869A
   MOVE.l linepos2,d0
 
   JL_0_58E8:                      ;print whole window
@@ -11022,7 +11024,7 @@ JL_0_58C6:
       MOVE.l displayoffset,d0
       CMP.l store_displayoffset,d0
       BNE 'l3b
-      ;MOVE.l a2,currsourceline
+      ;MOVE.l a2,comPtr_CurrentSourceLine
      'l3b
       TST.l foldnum
       BEQ 'do
@@ -11050,7 +11052,7 @@ JL_0_58C6:
   TST.l blockendy
    BMI.w JL_0_59BA
   MOVEA.l _graphicsbase,A6
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
   MOVE.w blockstartx,D0
   MOVE.w blockendx,D2
   MOVE.l blockendy,D3
@@ -11058,7 +11060,7 @@ JL_0_58C6:
   MOVE.l startdisplayline,D4
   MOVE.l D4,D5
   ADD.l viewablelines,D5
-  SUB.w columnsoffset,D0
+  SUB.w comWord_ColumnsOffset,D0
    BPL.w JL_0_5954
   MOVEQ.l #$00,D0
 
@@ -11071,7 +11073,7 @@ JL_0_58C6:
   MOVEQ.l #$00,D1
 
   JL_0_5968:
-  SUB.w columnsoffset,D2
+  SUB.w comWord_ColumnsOffset,D2
    BPL.w JL_0_5974
   MOVEQ.l #$00,D2
 
@@ -11095,8 +11097,8 @@ JL_0_58C6:
   SUBQ.w #1,D2
 
   JL_0_59AA:
-  ADD.w columnsoffset,D0
-  ADD.w columnsoffset,D2
+  ADD.w comWord_ColumnsOffset,D0
+  ADD.w comWord_ColumnsOffset,D2
   BRA.w JL_0_59C0
 
   JL_0_59BA:
@@ -11132,8 +11134,8 @@ JL_0_59BC:                 ;redraw mark
 
   JL_0_59EA:
   MOVEA.l _graphicsbase,A6
-  SUB.w columnsoffset,D2
-  SUB.w columnsoffset,D0
+  SUB.w comWord_ColumnsOffset,D2
+  SUB.w comWord_ColumnsOffset,D0
   CMP.w visiblecolumns,D2
    BLE.w JL_0_5A08
   MOVE.w visiblecolumns,D2
@@ -11202,7 +11204,7 @@ RTS
 
 JL_0_5AA6:
   SUBQ.w #1,D2
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
   JSR _RectFill(A6)               ;A1:rp, D0:xmin, D1:ymin, D2:xmax, D3:ymax  d0-d3:16
 RTS
 
@@ -11260,18 +11262,18 @@ JMP clear_sourcewindow
 JL_0_5B08:
   JSR allocnewline
   BEQ.w JL_0_5B22
-  MOVE.l A0,firstsourceline
+  MOVE.l A0,comPtr_FirstSourceLine
   MOVE.l A0,AL_0_854A
-  MOVE.l A0,currsourceline
+  MOVE.l A0,comPtr_CurrentSourceLine
   JL_0_5B22:
 RTS
 
 
 JL_0_5B24:
-  MOVEA.l currsourceline,A2
+  MOVEA.l comPtr_CurrentSourceLine,A2
    JSR save_cursorposition
 ;  CLR.l AL_0_868A
-  CLR.w textbufferoffset
+  CLR.w comWord_TextBufferOffset
   MOVE.l displayoffset,D1
 
   JL_0_5B3C:
@@ -11290,7 +11292,7 @@ JL_0_5B4E:                       ;print 1 line down
 BRA.w JL_0_612C
 
 JL_0_5B60:
-  MOVEA.l currsourceline,A2
+  MOVEA.l comPtr_CurrentSourceLine,A2
   JSR save_cursorposition
   JL_0_5B68:
     MOVE.l displayoffset,D0
@@ -11310,7 +11312,7 @@ JL_0_5B60:
 BRA.w JL_0_60FE
 
 .print_current_sourceline:
-  MOVEA.l currsourceline,A2
+  MOVEA.l comPtr_CurrentSourceLine,A2
 BRA.w print_sourceline
 
 AL_0_5B9A:    Ds.l 1
@@ -11322,7 +11324,7 @@ expandstore:  Ds.l 1
 AL_0_5BB2:    Ds.l 1
 
 JL_0_5BB6:                   ;type text
-  TST.w cursor_in_marked_block
+  TST.w comWord_CursorInMarkedBlock
   BEQ.w JL_0_5BF4
   !basic
   Request "","JL_0_5BB6","OK"
@@ -11371,14 +11373,14 @@ RTS
 
   MOVEA.l _intuibase,A6
 
-  TST.w do_tokenize
+  TST.w comWord_DoTokenize
   BNE.w tokenized_text
 
   JSR print_standard_text               ; print standard, non-tokenized text
   BRA.w exit_print_complete_line
 
   tokenized_text:
-  MOVE.w maxcolumns,D4
+  MOVE.w comWord_MaxColumns,D4
   SUBQ.w #1,D4
   MOVEA.l AL_0_5BA6,A1
 
@@ -11413,7 +11415,7 @@ RTS
   CMP.l #0,a0
   BEQ 'l2b
  'l1
-    CMP.w columnsoffset,d2
+    CMP.w comWord_ColumnsOffset,d2
     BGE 'l2b
     MOVE.b (a0)+,d0
     CMP.b #$22,d0
@@ -11603,7 +11605,7 @@ RTS
   MOVEQ #0,d0
   BRA 'c2
  'c1
-  SUB.w columnsoffset,d0
+  SUB.w comWord_ColumnsOffset,d0
  'c2
   MOVE.l A0,-(A7)
   MOVE.l displayoffset,D1
@@ -11708,7 +11710,7 @@ RTS
 
   semi_position.w = 0
   in_string.b = 0
-  columnsoff.w = Peek.l(?columnsoffset)
+  columnsoff.w = Peek.w(?comWord_ColumnsOffset)
 
   ; -- if templine is used, get it instead of textbuffer
 ;  If Peek.w(?columnsoffset) = 0
@@ -11716,7 +11718,7 @@ RTS
 ;      mytext$ = Peek$(Peek.l(?templine))
 ;    EndIf
 ;    If mytext$=""
-;      mytext$ = Peek$(Peek.l(?textbufferaddr)+Peek.l(?textbufferoffset))
+;      mytext$ = Peek$(Peek.l(?textbufferaddr)+Peek.l(?comWord_TextBufferOffset))
 ;    EndIf
 ;  Else
     mytext$ = Peek$(*textaddr)
@@ -11757,7 +11759,7 @@ BRA exit_check_comments
 ;  CLR.w semipos
 ;  MOVE.l a0,a4
 ;  CLR.b instring
-;  TST.w columnsoffset
+;  TST.w comWord_ColumnsOffset
 ;   BEQ 'lc1
 ;  CMP.l #0,templine
 ;   BEQ 'tt1
@@ -11765,10 +11767,10 @@ BRA exit_check_comments
 ;  BRA 'tt2
 ; 'tt1
 ;  MOVEA.l textbufferaddr,A0
-;  ADD.w   textbufferoffset,a0
+;  ADD.w   comWord_TextBufferOffset,a0
 ; 'tt2
 ;  ; -- search for ';'
-;  MOVE.w columnsoffset,d2
+;  MOVE.w comWord_ColumnsOffset,d2
 ;  CMP.b #$22,0(a0,d2.w)
 ;  BNE 'tc1
 ;  BCHG.b #0,instring
@@ -11886,7 +11888,7 @@ RTS
 .print_standard_text
   MOVEA.l _graphicsbase,A6
   MOVEA.l AL_0_5BAA,A1
-  MOVE.w maxcolumns,D3
+  MOVE.w comWord_MaxColumns,D3
 
   JL_0_5DB8:
     MOVE.b (A0)+,(A1)+
@@ -11910,7 +11912,7 @@ RTS
   MOVEA.l AL_0_5BAA,A0
   ADDA.w AL_0_869A,A0
   MOVEQ.l #$00,D0
-  MOVE.w maxcolumns,D0
+  MOVE.w comWord_MaxColumns,D0
   ADDQ.w #1,D3
   SUB.w D3,D0
   ADDQ.w #1,D0
@@ -11936,7 +11938,7 @@ RTS
   JL_0_5E32:
   LEA $9(A2),A2
   MOVEA.l textbufferaddr,A3
-  ADDA.w textbufferoffset,A3
+  ADDA.w comWord_TextBufferOffset,A3
   TST.b (A2)
    BEQ.w JL_0_5E72
 
@@ -11946,7 +11948,7 @@ RTS
   MOVEQ.l #$00,D1
   MOVE.l displayoffset,D1
   MULU fontheight,D1
-  MOVE.w columnsoffset,AL_0_869A
+  MOVE.w comWord_ColumnsOffset,AL_0_869A
   MOVE.l AL_0_5BAA,templine
   JSR print_complete_line
   CLR.l templine
@@ -11958,7 +11960,7 @@ RTS
   MOVEA.l AL_0_5BAA,A2
   CLR.l (A2)
   JL_0_5E78:
-  MOVE.w column,-(A7)
+  MOVE.w comWord_Column,-(A7)
   MOVEQ.l #$00,D3
   MOVEQ.l #$00,D2
   MOVE.b (A2)+,D0
@@ -12183,11 +12185,11 @@ BRA ready
   MOVEM.l a2/d2,-(a7)
   CLR.b instring
   MOVEA.l textbufferaddr,A0
-  ADDA.w textbufferoffset,A0
+  ADDA.w comWord_TextBufferOffset,A0
   MOVE.l a0,a2
   MOVE.l a2,textlinestart
   MOVEQ #0,d0
-  MOVE.w columnsoffset,d0
+  MOVE.w comWord_ColumnsOffset,d0
   ADD.l d0,textlinestart
   MOVEQ #0,d2
   hl1:
@@ -12234,12 +12236,12 @@ JL_0_5EA0:
     CMP.w visiblecolumns,D3
     BCC.w JL_0_5ED8
     MOVEQ.l #$20,D0
-    MOVE.w D3,column
+    MOVE.w D3,comWord_Column
     ADDQ.w #1,D3
   BRA.b JL_0_5EC4
 
   JL_0_5ED8:
-  MOVE.w (A7)+,column
+  MOVE.w (A7)+,comWord_Column
 RTS
 
 
@@ -12247,17 +12249,17 @@ RTS
 JL_0_5EE0:
   MOVE.b D0,$0(A3,D2.W)
   JL_0_5EE4:
-  CMP.w columnsoffset,D2
+  CMP.w comWord_ColumnsOffset,D2
    BCS.w JL_0_5EFC
   CMP.w visiblecolumns,D3
    BCC.w JL_0_5EFC
-  MOVE.w D3,column
+  MOVE.w D3,comWord_Column
   ADDQ.w #1,D3
   JL_0_5EFC:
 RTS
 
 JL_0_5EFE:
-  TST.w do_tokenize
+  TST.w comWord_DoTokenize
    BEQ.b JL_0_5EE0
   TST.b D0
    BPL.b JL_0_5EE0
@@ -12283,9 +12285,9 @@ RTS
 .parse_line:                      ; input A2: textstring, results in temp_tokenstring1
   MOVEA.l temp_tokenstring1,A1
   MOVE.l A1,-(A7)
-  MOVE.w maxcolumns,D1
+  MOVE.w comWord_MaxColumns,D1
   SUBQ.w #1,D1
-  MOVE.w do_tokenize,D0
+  MOVE.w comWord_DoTokenize,D0
   BNE.w JL_0_5F68
 
   MOVEA.l A1,A0
@@ -12423,7 +12425,7 @@ RTS
 
     JL_0_6030:
     SUBQ.w #1,A2
-    MOVEA.l token,A3
+    MOVEA.l comPtr_TokenBase,A3
 
     JL_0_6036:
     MOVEA.l A2,A4
@@ -12540,9 +12542,9 @@ RTS
 JL_0_60FE:
   TST.l blockendy
    BMI.w JL_0_612A
-  MOVE.w column,D0
+  MOVE.w comWord_Column,D0
   MOVE.l viewablelines_m1,D1
-  ADD.w columnsoffset,D0
+  ADD.w comWord_ColumnsOffset,D0
   ADD.l startdisplayline,D1
   MOVE.l viewablelines_m1,D6
   BRA.w JL_0_6150
@@ -12553,9 +12555,9 @@ RTS
 JL_0_612C:
   TST.l blockendy
    BMI.w JL_0_614E
-  MOVE.w column,D0
+  MOVE.w comWord_Column,D0
   MOVE.l startdisplayline,D1
-  ADD.w columnsoffset,D0
+  ADD.w comWord_ColumnsOffset,D0
   MOVEQ.l #$00,D6
  BRA.w JL_0_6150
 
@@ -12564,13 +12566,13 @@ JL_0_614E:
 
 JL_0_6150:
   MOVE.w blockstartx,D4
-  SUB.w columnsoffset,D4
+  SUB.w comWord_ColumnsOffset,D4
   BPL.w JL_0_6162
   MOVEQ.l #$00,D4
 
   JL_0_6162:
   MOVE.w blockendx,D5
-  SUB.w columnsoffset,D5
+  SUB.w comWord_ColumnsOffset,D5
   BPL.w JL_0_6174
   MOVEQ.l #$00,D5
 
@@ -12582,7 +12584,7 @@ JL_0_6150:
   JL_0_6184:
   MOVE.l blockstarty,D2
   MOVE.l blockendy,D3
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
   MOVEA.l _graphicsbase,A6
   CMP.l D2,D1
    BLT.w JL_0_61D0
@@ -12694,7 +12696,7 @@ JL_0_6290:
   TST.l D6
   BEQ.w fill2
   MOVE.l D7,D0
-  MOVE.w maxcolumns,D1
+  MOVE.w comWord_MaxColumns,D1
   MULU D1,D0
   MOVEA.l textbufferaddr,A0
   ADDA.l D0,A0
@@ -12711,7 +12713,7 @@ JL_0_6290:
   fill2:
   MOVE.l viewablelines,D0
   SUBQ.l #1,D0
-  MULU maxcolumns,D0
+  MULU comWord_MaxColumns,D0
   MOVEA.l textbufferaddr,A0
   ADDA.w D0,A0
   MOVE.w #$2020,d1
@@ -12759,7 +12761,7 @@ checkd7
   SUB.l D7,D6
   SUBQ.l #1,D6
    BEQ.w fill
-  MOVE.w maxcolumns,D1
+  MOVE.w comWord_MaxColumns,D1
   MOVE.w D1,D0
   MULU viewablelines+2,D0
   MOVEA.l textbufferaddr,A0
@@ -12775,7 +12777,7 @@ checkd7
     SUBQ.l #1,d0
   BNE 'loop
   fill
-  MULU maxcolumns,D7
+  MULU comWord_MaxColumns,D7
   MOVEA.l textbufferaddr,A0
   ADDA.l D7,A0
   MOVE.w #$2020,d1
@@ -12792,8 +12794,8 @@ JL_0_640C:
   MOVEQ.l #$00,D0
 ;  MOVE.w AL_0_86CC,D0
 ;  ADD.l D0,AL_0_868A
-  MOVE.w maxcolumns,D0
-  ADD.w D0,textbufferoffset
+  MOVE.w comWord_MaxColumns,D0
+  ADD.w D0,comWord_TextBufferOffset
 RTS
 
 JL_0_642A:
@@ -12801,14 +12803,14 @@ JL_0_642A:
   MOVEQ.l #$00,D0
 ;  MOVE.w AL_0_86CC,D0
 ;  SUB.l D0,AL_0_868A
-  MOVE.w maxcolumns,D0
-  SUB.w D0,textbufferoffset
+  MOVE.w comWord_MaxColumns,D0
+  SUB.w D0,comWord_TextBufferOffset
 RTS
 
 JL_0_6448:
   MOVEA.l rp_sourcewindow,A1
-  MOVE.w column,D0
-  ADD.w columnsoffset,D0
+  MOVE.w comWord_Column,D0
+  ADD.w comWord_ColumnsOffset,D0
   MOVE.l displayoffset,D1
   ADD.l startdisplayline,D1
 
@@ -12830,7 +12832,7 @@ JL_0_6448:
    BGT.w source_scroll_line_to_right
   SUBQ.w #1,blockendx
   MOVE.w visiblecolumns,D1
-  ADD.w columnsoffset,D1
+  ADD.w comWord_ColumnsOffset,D1
   CMP.w blockendx,D1
    BGT.w source_scroll_line_to_right
 
@@ -12867,7 +12869,7 @@ RTS
   MOVEQ.l #$00,D2
   MOVEQ.l #$00,D3
   MOVEQ.l #$00,D4
-  MOVE.w column,D2
+  MOVE.w comWord_Column,D2
   MULU fontwidth,d2                 ; xmin
 
   MOVE.l displayoffset,D3
@@ -12891,9 +12893,9 @@ JL_0_653C:
   TST.l blockendy
    BMI.w JL_0_65A4
   MOVEQ.l #$00,D0
-  MOVE.w column,D0
+  MOVE.w comWord_Column,D0
   MOVE.l displayoffset,D1
-  ADD.w columnsoffset,D0
+  ADD.w comWord_ColumnsOffset,D0
   ADD.l startdisplayline,D1
   CMP.l blockstarty,D1
    BLT.w JL_0_65A4
@@ -12903,7 +12905,7 @@ JL_0_653C:
    BLT.w JL_0_65A4
   CMP.w blockendx,D0
    BGT.w JL_0_65A4
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
   ;ASL.w #3,D0
   MULU fontwidth,d0
   MOVE.l D0,D2
@@ -12932,12 +12934,12 @@ RTS
    BMI.w exit_update_blockmark
 
   MOVEA.l _graphicsbase,A6
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
 
   MOVE.l startdisplayline,D1
   MOVE.w D1,D2
   ADD.l viewablelines,D2
-  MOVE.w columnsoffset,D0         ; D0
+  MOVE.w comWord_ColumnsOffset,D0         ; D0
 
   CMP.l blockendy,D1
    BGT.w exit_update_blockmark
@@ -12968,13 +12970,13 @@ RTS
   JSR JL_0_669A
 ;  MOVEM.l D0-D4/A1,-(A7)
   !basic
-  xmin.w = (Peek.w(?columnsoffset)-Peek.w(?columnsoffset)) * Peek.w(?fontwidth)
+  xmin.w = (Peek.w(?comWord_ColumnsOffset)-Peek.w(?comWord_ColumnsOffset)) * Peek.w(?fontwidth)
   ymin.w = (Peek.l(?blockstarty)-Peek.l(?startdisplayline) + 1) * Peek.w(?fontheight)
   ymax.w = Peek.l(?blockendy) - Peek.l(?startdisplayline)
   If ymax > Peek.l(?viewablelines) Then ymax = Peek.l(?viewablelines)
   xmax.w = xmin + Peek.w(?fontwidth)*2 - 1   ; warum 15 ?? m|esste eigentlich die Fontbreite sein
   ymax = ymax * Peek.w(?fontheight) - 1
-  RectFill_ Peek.l(?rp_sourcearea),xmin,ymin,xmax,ymax
+  RectFill_ Peek.l(?comPtr_SourceAreaRastPort),xmin,ymin,xmax,ymax
   !asm
 ;  MOVEM.l (A7)+,D0-D4/A1
   exit_update_blockmark:
@@ -12987,12 +12989,12 @@ JL_0_6658:                          ; mark first line of selected source
 
   MOVEM.l D0-D3/A1,-(A7)
   !basic
-  xmin.w = (Peek.w(?columnsoffset)-Peek.w(?columnsoffset)) * Peek.w(?fontwidth)
+  xmin.w = (Peek.w(?comWord_ColumnsOffset)-Peek.w(?comWord_ColumnsOffset)) * Peek.w(?fontwidth)
   xmax.w = xmin + Peek.w(?fontwidth)*2 - 1
 
   ymin.w = (Peek.l(?blockstarty)-Peek.l(?startdisplayline)) * Peek.w(?fontheight)
   ymax.w = ymin + Peek.w(?font_Heightm1)
-  RectFill_ Peek.l(?rp_sourcearea),xmin,ymin,xmax,ymax
+  RectFill_ Peek.l(?comPtr_SourceAreaRastPort),xmin,ymin,xmax,ymax
   !asm
   MOVEM.l (A7)+,D0-D3/A1
 
@@ -13005,14 +13007,14 @@ JL_0_669A:
   CMP.w blockendx,D0
    BGT.w JL_0_66EC
   !basic
-    xmin.w = (Peek.w(?columnsoffset)-Peek.w(?columnsoffset)) * Peek.w(?fontwidth)
-    xmax_temp.w = (Peek.l(?blockendx)-Peek.w(?columnsoffset)+1) * Peek.w(?fontwidth) -1
+    xmin.w = (Peek.w(?comWord_ColumnsOffset)-Peek.w(?comWord_ColumnsOffset)) * Peek.w(?fontwidth)
+    xmax_temp.w = (Peek.l(?blockendx)-Peek.w(?comWord_ColumnsOffset)+1) * Peek.w(?fontwidth) -1
     If xmax_temp <(Peek.w(?fontwidth)*2-1) Then xmax_temp = Peek.w(?fontwidth)*2 - 1
     xmax.w = xmin + xmax_temp
     ymin.w = (Peek.l(?blockendy)-Peek.l(?startdisplayline)) * Peek.w(?fontheight)
     ymax.w = ymin + Peek.w(?font_Heightm1)
 
-    RectFill_ Peek.l(?rp_sourcearea),xmin,ymin,xmax,ymax
+    RectFill_ Peek.l(?comPtr_SourceAreaRastPort),xmin,ymin,xmax,ymax
   !asm
 
   JL_0_66EC:
@@ -13026,13 +13028,13 @@ JL_0_66F2:
   CMP.w blockendx,D0
    BGT.w exit_update_blockmark
   !basic
-  xmin.w = (Peek.w(?columnsoffset)-Peek.w(?columnsoffset)) * Peek.w(?fontwidth)
-  xmax_temp.w = (Peek.l(?blockendx)-Peek.w(?columnsoffset)+1) * Peek.w(?fontwidth) -1
+  xmin.w = (Peek.w(?comWord_ColumnsOffset)-Peek.w(?comWord_ColumnsOffset)) * Peek.w(?fontwidth)
+  xmax_temp.w = (Peek.l(?blockendx)-Peek.w(?comWord_ColumnsOffset)+1) * Peek.w(?fontwidth) -1
   If xmax_temp < $2 Then xmax_temp = $2 * Peek.w(?fontwidth) -1
   xmax.w = xmin + xmax_temp
   ymin.w = (Peek.l(?blockstarty)-Peek.l(?startdisplayline)) * Peek.w(?fontheight)
   ymax.w = ymin + Peek.w(?font_Heightm1)
-  RectFill_ Peek.l(?rp_sourcearea),xmin,ymin,xmax,ymax
+  RectFill_ Peek.l(?comPtr_SourceAreaRastPort),xmin,ymin,xmax,ymax
   !asm
 RTS
 
@@ -13065,13 +13067,13 @@ RTS
 
 .source_draw_new_columns:                        ;left scroll
   JSR save_cursorposition
-  ;CLR.l column
-  CLR.w column
+  ;CLR.l comWord_Column
+  CLR.w comWord_Column
   CLR.l displayoffset
 ;  CLR.l AL_0_868A
-  CLR.w textbufferoffset
+  CLR.w comWord_TextBufferOffset
   MOVEA.l textbufferaddr,A5
-  ADDA.w columnsoffset,A5
+  ADDA.w comWord_ColumnsOffset,A5
   MOVE.l viewablelines,D2
   SUBQ.w #1,D2
   CLR.w AL_0_869A
@@ -13081,7 +13083,7 @@ RTS
     MOVE.b (A5),(A0)
     MOVE.b $1(A5),$1(A0)
     MOVEQ.l #$00,D0
-    MOVE.w column,D0
+    MOVE.w comWord_Column,D0
     MOVE.l displayoffset,D1
     MULU fontheight,D1
     ;ASL.w #3,D0
@@ -13091,12 +13093,12 @@ RTS
     MOVEM.l D2/A5,-(A7)
     MOVEM.l d0-d2/a0,-(a7)
     MOVE.l textbufferaddr,a0
-    ADD.w textbufferoffset,a0
+    ADD.w comWord_TextBufferOffset,a0
     CLR.b instring2
     MOVE.w #0,d2
     CMP.l #0,a0
     BEQ 'l2b
-    MOVE.w columnsoffset,d1
+    MOVE.w comWord_ColumnsOffset,d1
    'l1
       CMP.w d1,d2
       BGE 'l2b
@@ -13121,9 +13123,9 @@ RTS
     MOVEQ.l #$00,D0
 ;    MOVE.w AL_0_86CC,D0
 ;    ADD.l D0,AL_0_868A
-    MOVE.w maxcolumns,D0
+    MOVE.w comWord_MaxColumns,D0
     ADDA.w D0,A5
-    ADD.w D0,textbufferoffset
+    ADD.w D0,comWord_TextBufferOffset
     ADDQ.l #1,displayoffset
   DBF D2,JL_0_67AA
   JSR restore_cursorposition
@@ -13140,11 +13142,11 @@ update_blockmark2:
   TST.l blockendy
    BMI.w JL_0_68C2
   MOVEA.l _graphicsbase,A6
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
   MOVE.l startdisplayline,D1
   MOVE.l D1,D2
   ADD.l viewablelines,D2
-  MOVE.w columnsoffset,D0
+  MOVE.w comWord_ColumnsOffset,D0
   ADD.w visiblecolumns,D0
   SUBQ.w #2,D0
   CMP.l blockendy,D1
@@ -13168,7 +13170,7 @@ update_blockmark2:
   CMP.w D1,D3
    BLE.w JL_0_6906
    JSR JL_0_6906
-  SUB.w columnsoffset,D0
+  SUB.w comWord_ColumnsOffset,D0
   ;ASL.w #3,D0
   MULU fontwidth,d0
   MOVE.w D0,D2
@@ -13186,7 +13188,7 @@ JL_0_68C4:
   CMP.w blockstartx,D0
    BLT.w JL_0_6904
   MOVEM.l D0-D3/A1,-(A7)
-  SUB.w columnsoffset,D0
+  SUB.w comWord_ColumnsOffset,D0
   ;ASL.w #3,D0
   MULU fontwidth,d0
   MOVE.w D0,D2
@@ -13218,7 +13220,7 @@ JL_0_6906:
   MOVEQ.l #$10,D5
 
   JL_0_692A:
-  SUB.w columnsoffset,D0
+  SUB.w comWord_ColumnsOffset,D0
   ;ASL.w #3,D0
   MULU fontwidth,d0
   MOVE.w D0,D2
@@ -13253,7 +13255,7 @@ JL_0_695E:
   ;ASL.w #3,D4
   MULU fontwidth,d4
   SUBQ.w #1,D4
-  SUB.w columnsoffset,D0
+  SUB.w comWord_ColumnsOffset,D0
   ;ASL.w #3,D0
   MULU fontwidth,d0
   MOVE.w D0,D2
@@ -13297,12 +13299,12 @@ draw_new_columns:
   JSR save_cursorposition                   ;scroll right
   MOVE.w visiblecolumns,D0
   SUBQ.w #2,D0
-  MOVE.w D0,column
+  MOVE.w D0,comWord_Column
   CLR.l displayoffset
 ;  CLR.l AL_0_868A
-  CLR.w textbufferoffset
+  CLR.w comWord_TextBufferOffset
   MOVEA.l textbufferaddr,A5
-  ADDA.w columnsoffset,A5
+  ADDA.w comWord_ColumnsOffset,A5
   ADDA.w D0,A5
   MOVE.l viewablelines,D2
   SUBQ.w #1,D2
@@ -13313,7 +13315,7 @@ draw_new_columns:
     MOVE.b (A5),(A0)
     MOVE.b $1(A5),$1(A0)
     MOVEQ.l #$00,D0
-    MOVE.w column,D0
+    MOVE.w comWord_Column,D0
     MOVE.l displayoffset,D1
     MULU fontheight,D1
     ;ASL.w #3,D0
@@ -13321,12 +13323,12 @@ draw_new_columns:
     ST AL_0_8668
     MOVEM.l d0-d2/a0,-(a7)
     MOVE.l textbufferaddr,a0
-    ADD.w textbufferoffset,a0
+    ADD.w comWord_TextBufferOffset,a0
     CLR.b instring2
     MOVE.w #0,d2
     CMP.l #0,a0
     BEQ 'l2b
-    MOVE.w columnsoffset,d1
+    MOVE.w comWord_ColumnsOffset,d1
     ADD.w visiblecolumns,d1
     SUBQ.w #1,d1
    'l1
@@ -13350,9 +13352,9 @@ draw_new_columns:
     MOVEQ.l #$00,D0
 ;    MOVE.w AL_0_86CC,D0
 ;    ADD.l D0,AL_0_868A
-    MOVE.w maxcolumns,D0
+    MOVE.w comWord_MaxColumns,D0
     ADDA.w D0,A5
-    ADD.w D0,textbufferoffset
+    ADD.w D0,comWord_TextBufferOffset
     ADDQ.l #1,displayoffset
   DBF D2,JL_0_6AFA
   JSR restore_cursorposition
@@ -13379,17 +13381,17 @@ RTS
 
 JL_0_6B7C:
   JSR JL_0_572C
-  ;CLR.l column
-  CLR.w column
+  ;CLR.l comWord_Column
+  CLR.w comWord_Column
   CLR.l displayoffset
 ;  CLR.l AL_0_868A
-  CLR.w textbufferoffset
+  CLR.w comWord_TextBufferOffset
   CLR.l startdisplayline
-  CLR.w columnsoffset
-  CLR.w source_changed
-  CLR.l ptr_labellist
+  CLR.w comWord_ColumnsOffset
+  CLR.w comWord_SourceChanged
+  CLR.l comPtr_LabelList
   CLR.w ptr_labelcounter
-  CLR.b str_sourcename
+  CLR.b comStr_SourceName
   MOVE.l #$0001,maxlines
   JSR JL_0_5B00
   JSR update_horizscroller
@@ -13400,7 +13402,7 @@ JL_0_6B7C:
 RTS
 
 JL_0_6BD2:
-  MOVEA.l currsourceline,A1
+  MOVEA.l comPtr_CurrentSourceLine,A1
   MOVE.b AL_0_8BCE,D0
   MOVEM.l D0/A0-A2,-(A7)
   LEA $9(A1),A2
@@ -13420,7 +13422,7 @@ JL_0_6BD2:
   BRA.b JL_0_6C0C
 
   JL_0_6C04:
-  MOVEA.l currsourceline,A1
+  MOVEA.l comPtr_CurrentSourceLine,A1
   MOVE.b AL_0_8BCE,D0
 
   JL_0_6C0C:
@@ -13457,7 +13459,7 @@ RTS
 
 .clear_actualsource:
   MOVEA.l _execbase,A6
-  MOVEA.l firstsourceline,A2
+  MOVEA.l comPtr_FirstSourceLine,A2
   MOVE.l maxlines,D2
   SUBQ.l #1,D2
   ;!basic
@@ -13595,6 +13597,7 @@ win_BorLef:   Dc.w 0
 win_BorRig:   Dc.w 0
 win_TopLeft:  Dc.w 0
 win_Width:    Dc.w 1000
+win_Height:   Dc.w 200
 
 .open_sourcewindow:
   MOVEM.l D0-D7/A0-A6,-(A7)
@@ -13634,10 +13637,10 @@ win_Width:    Dc.w 1000
   If Used Screen < 0 Then WbToScreen 0
   *myscreen = Peek.l(Addr Screen(Used Screen))
   If *myscreen <> 0
-    Poke.b ?scr_BarHeight, *myscreen\BarHeight
+    Poke.b ?comByte_ScreenBarHeight, *myscreen\BarHeight
     If Peek.w(?win_Width)<32  Then Poke.w ?win_Width, (*myscreen\Width - Peek.w(?win_TopLeft)-1)
-    If Peek.w(?win_Height)<32 Then Poke.w ?win_Height,(*myscreen\Height - Peek.w(?win_TopEdge)-1)
-    If Peek.w(?win_TopEdge)+Peek.w(?win_Height)> *myscreen\Height Then Poke.w ?win_Height,*myscreen\Height-Peek.w(?win_TopEdge)
+    If Peek.w(?win_Height)<32 Then Poke.w ?win_Height ,(*myscreen\Height - Peek.w(?win_TopEdge)-1)
+    If Peek.w(?win_TopEdge)+Peek.w(?win_Height )> *myscreen\Height Then Poke.w ?win_Height ,*myscreen\Height-Peek.w(?win_TopEdge)
     If Peek.w(?win_TopLeft)+Peek.w(?win_Width) > *myscreen\Width  Then Poke.w ?win_Width, *myscreen\Width-Peek.w(?win_TopLeft)
 
     Poke.w ?win_BorTop, *myscreen\WBorTop + *myscreen\Font\ta_YSize + 1
@@ -13862,7 +13865,7 @@ win_Width:    Dc.w 1000
                       #WA_Title,Null("AmiBlitz"),@@
                       #WA_Left, Peek.w(?win_TopLeft),@@
                       #WA_Top, Peek.w(?win_TopEdge),@@
-                      #WA_Height,Peek.w(?win_Height),@@
+                      #WA_Height,Peek.w(?win_Height ),@@
                       #WA_Width,Peek.w(?win_Width),@@
                       #WA_MinWidth,256,@@
                       #WA_MaxWidth,-1,@@
@@ -13888,7 +13891,7 @@ win_Width:    Dc.w 1000
   SetFont_ *sourcewin\RPort,Peek.l(?ptr_sourcefont)
   !asm
 
-  MOVE.w #$FFFF,labellist_changed     ; was soll das ??
+  MOVE.w #$FFFF,comWord_LabelListChanged     ; was soll das ??
   MOVEA.l _execbase,A6
   SUBA.l A1,A1
   JSR _FindTask(A6)
@@ -13910,7 +13913,7 @@ win_Width:    Dc.w 1000
   MOVEQ.l #$64,D0
   MOVEQ.l #$00,D1
   !newalloc
-  MOVE.l D0,rp_sourcearea
+  MOVE.l D0,comPtr_SourceAreaRastPort
   MOVEA.l rp_sourcewindow,A0
   MOVEA.l D0,A1
   MOVEQ.l #$63,D0
@@ -13918,7 +13921,7 @@ win_Width:    Dc.w 1000
     MOVE.b (A0)+,(A1)+
   DBF D0,JL_0_7300
   MOVEA.l _graphicsbase,A6
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
   MOVEQ.l #$02,D0
   JSR _SetDrMd(A6)
   MOVEM.l (A7)+,D0-D1/A0-A1/A6
@@ -13933,7 +13936,7 @@ RTS
 
 .sub_calculatedimensions:
   !basic
-  Poke.w ?win_InnerHeight, Peek.w(?win_Height) - Peek.w(?win_BorTop) - Peek.w(?win_BorBot)
+  Poke.w ?win_InnerHeight, Peek.w(?win_Height ) - Peek.w(?win_BorTop) - Peek.w(?win_BorBot)
   Poke.w ?win_InnerWidth , Peek.w(?win_Width)  - Peek.w(?win_BorLef) - Peek.w(?win_BorRig)
 
   CLR.l d0
@@ -14028,15 +14031,15 @@ AL_0_7356:    Ds.l 1
 RTS
 
 .print_actualsourcecolumn
-  MOVE.l #$20202000,str_actualcolumn
+  MOVE.l #$20202000,comLong_ActualColumn
   MOVEQ #0,d0
-  MOVE.w columnsoffset,D0
-  ADD.w column,D0
+  MOVE.w comWord_ColumnsOffset,D0
+  ADD.w comWord_Column,D0
   ADDQ.w #1,D0
-  LEA str_actualcolumn,A0
+  LEA comLong_ActualColumn,A0
   JSR format_value
   MOVEQ.l #$14,D0
-  LEA str_actualcolumn,A0
+  LEA comLong_ActualColumn,A0
   JSR print_statustext      ; print column in statusarea
 RTS
 
@@ -14113,11 +14116,11 @@ RTS
   ;MOVE.l d1,statline
   !asm
   MOVEQ.l #$00,D0
-  LEA str_statusstring,A0             ; "Line"
+  LEA comStr_StatusString,A0             ; "Line"
   ;MOVE.l statline,A0
   JSR print_statustext
   MOVEQ.l #11,D0
-  LEA str_statusstring+11,A0          ; "Column"
+  LEA comStr_StatusString+11,A0          ; "Column"
   ;MOVE.l statcolumn,A0
   JSR print_statustext
   JSR print_actualsourceline
@@ -14141,7 +14144,7 @@ RTS
 
 .allocate_textbuffer:
   MOVEA.l _execbase,A6
-  MOVE.w maxcolumns,D0
+  MOVE.w comWord_MaxColumns,D0
   MULU viewablelines+2,D0
   MOVEQ.l #$02,D1
   MOVE.w D1,AL_0_86C0
@@ -14234,10 +14237,10 @@ RTS
   !asm
   CLR.l ptr_sourcewindow
   ; -- clear rastport for source area
-  TST.l rp_sourcearea
+  TST.l comPtr_SourceAreaRastPort
    BEQ.w exit_closesourcewindow
   MOVEA.l _execbase,A6
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
   !newfree
   exit_closesourcewindow:
 
@@ -14294,22 +14297,22 @@ RTS
 
 
 .save_cursorposition:
-  MOVE.w column,store_column
+  MOVE.w comWord_Column,store_column
   MOVE.l displayoffset,store_displayoffset
-  MOVE.w textbufferoffset,store_textbufferoffset
+  MOVE.w comWord_TextBufferOffset,store_textbufferoffset
 RTS
 
 .restore_cursorposition:
-  MOVE.w store_column,column
+  MOVE.w store_column,comWord_Column
   MOVE.l store_displayoffset,displayoffset
-  MOVE.w store_textbufferoffset,textbufferoffset
+  MOVE.w store_textbufferoffset, comWord_TextBufferOffset
 RTS
 
 .clear_sourcewindow:
 ;RTS
   ; -- clear current text memoryarea
   MOVEA.l textbufferaddr,A0
-  MOVE.w maxcolumns,D0
+  MOVE.w comWord_MaxColumns,D0
   LSR.w #1,D0
   MOVE.l viewablelines,D1
   MULS d0,d1
@@ -14348,34 +14351,34 @@ RTS
 
 JL_0_76EA:
   MOVEA.l textbufferaddr,A0
-  ADDA.w textbufferoffset,A0
-  ADDA.w columnsoffset,A0
-  ADDA.w column,A0
+  ADDA.w comWord_TextBufferOffset,A0
+  ADDA.w comWord_ColumnsOffset,A0
+  ADDA.w comWord_Column,A0
   MOVE.b D0,(A0)
-  MOVE.b D0,entered_character
+  MOVE.b D0,comByte_EnteredCharacter
   MOVEQ.l #$00,D0
   MOVE.l displayoffset,D1
-  MOVE.w column,D0
+  MOVE.w comWord_Column,D0
 
   TST.l blockendy
    BMI.w JL_0_7742
   MOVEM.l D0-D1,-(A7)
-  ADD.w columnsoffset,D0
+  ADD.w comWord_ColumnsOffset,D0
   ADD.l startdisplayline,D1
   JSR JL_0_3154
   MOVEM.l (A7)+,D0-D1
-  TST.b state_blockmark
+  TST.b comByte_StateBlockMark
    BEQ.w JL_0_7742
-  ST cursor_in_marked_block
+  ST comWord_CursorInMarkedBlock
   JL_0_7742:
 
   ; -- print entered character to source window
   MULU fontheight,D1
   MULU fontwidth,D0
-  LEA entered_character,A0
+  LEA comByte_EnteredCharacter,A0
   CLR.w AL_0_869A
   JSR JL_0_5BB6
-  SF cursor_in_marked_block
+  SF comWord_CursorInMarkedBlock
 RTS
 
 JL_0_775E:
@@ -14383,8 +14386,8 @@ JL_0_775E:
 ;  MULU AL_0_86CC,D1
 ;  MOVE.l D1,AL_0_868A
   MOVE.l displayoffset,D1
-  MULU maxcolumns,D1
-  MOVE.w D1,textbufferoffset
+  MULU comWord_MaxColumns,D1
+  MOVE.w D1, comWord_TextBufferOffset
 RTS
 
 .cursor_on:
@@ -14392,10 +14395,10 @@ RTS
    BNE.w exit_cursor_on
 
 .cursor_on_force
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
   MOVE.b #3,$18(a1)
   JSR switch_cursordisplay
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
   MOVE.b #15,$18(a1)
 
   exit_cursor_on:
@@ -14405,10 +14408,10 @@ RTS
   TST.w state_of_cursor
   BEQ.w exit_cursor_off
 
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
   MOVE.b #3,$18(a1)
   JSR switch_cursordisplay
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
   MOVE.b #15,$18(a1)
   exit_cursor_off:
 RTS
@@ -14425,11 +14428,11 @@ state_of_cursor:  Ds.w 1
   If Peek.l(?displayoffset) > Peek.l(?viewablelines)-1
     Poke.l ?displayoffset, Peek.l(?viewablelines)-1
   EndIf
-  xmin.w = Peek.w(?column) * Peek.w(?fontwidth)
+  xmin.w = Peek.w(?comWord_Column) * Peek.w(?fontwidth)
   ymin.w = Peek.l(?displayoffset) * Peek.w(?fontheight)
   xmax.w = xmin + Peek.w(?fontwidth) - 1
   ymax.w = ymin + Peek.w(?font_Heightm1)
-  RectFill_ Peek.l(?rp_sourcearea),xmin,ymin,xmax,ymax
+  RectFill_ Peek.l(?comPtr_SourceAreaRastPort),xmin,ymin,xmax,ymax
   !asm
   MOVEM.l (A7)+,D0-D3/A0-A1/A6
 
@@ -14458,31 +14461,31 @@ RTS
 
 .update_modifiermark:
   MOVEM.l D0/A0-A1/A3,-(A7)
-  TST.w key_before_return
+  TST.w comWord_KeyBeforeReturn
   BNE.w JL_0_78B6
-  TST.w source_changed
+  TST.w comWord_SourceChanged
    BNE.w JL_0_78B6
-  CMPI.w #$1,source_modified_flag
+  CMPI.w #$1,comWord_SourceModifiedFlag
   BEQ.w JL_0_78F6
-  MOVE.w #$0001,source_modified_flag
-  MOVE.l #$20202020,str_modified
-  MOVE.l #$20202020,str_modified2
+  MOVE.w #$0001,comWord_SourceModifiedFlag
+  MOVE.l #$20202020,comLong_Modified
+  MOVE.l #$20202020,comLong_Modified2
   MOVE.b #$0,AL_0_8724
   BRA.w JL_0_78E6
 
   JL_0_78B6:
-  CMPI.w #$2,source_modified_flag
+  CMPI.w #$2,comWord_SourceModifiedFlag
   BEQ.w JL_0_78F6
-  MOVE.w #$0002,source_modified_flag
-  MOVE.l #$4D4F4449,str_modified       ;write modified
-  MOVE.l #$46494544,str_modified2      ; "FIED"
+  MOVE.w #$0002,comWord_SourceModifiedFlag
+  MOVE.l #$4D4F4449,comLong_Modified       ;write modified
+  MOVE.l #$46494544,comLong_Modified2      ; "FIED"
   MOVE.b #$0,AL_0_8724
 
   JL_0_78E6:
 ;  MOVEQ.l #$00,D0
 ;  MOVE.w visiblecolumns,D0
 ;  SUBQ.w #8,D0
-;  LEA str_modified,A0
+;  LEA comLong_Modified,A0
   JSR update_statusline
 
   JL_0_78F6:
@@ -14497,8 +14500,8 @@ RTS
   xpot.l = PutD0
 
   MOVEQ #0,d0
-  MOVE.w columnsoffset,D0
-  ADD.w column,D0
+  MOVE.w comWord_ColumnsOffset,D0
+  ADD.w comWord_Column,D0
   ADDQ.w #1,D0
   xact.l = PutD0
   xmax_slider.l = #columnsize
@@ -14517,15 +14520,15 @@ RTS
 
 JL_0_7962:                        ;horiz scroll
   JSR save_cursorposition
-  CLR.w textbufferoffset
+  CLR.w comWord_TextBufferOffset
   MOVEQ.l #$00,D7
   MOVE.l viewablelines,D7
   SUBQ.l #1,D7
   CLR.l displayoffset
-  CLR.w column
+  CLR.w comWord_Column
   MOVEA.l textbufferaddr,A5
-  ADDA.w textbufferoffset,A5
-  ADDA.w columnsoffset,A5
+  ADDA.w comWord_TextBufferOffset,A5
+  ADDA.w comWord_ColumnsOffset,A5
   MOVEQ.l #$00,D6
   CLR.w AL_0_869A
 
@@ -14537,18 +14540,18 @@ JL_0_7962:                        ;horiz scroll
     MOVE.w D7,-(A7)
     ST AL_0_8668
   ;  MOVE.l a0,-(a7)
-  ;  SUBA.w textbufferoffset,A0
-  ;  SUBA.w columnsoffset,A0
+  ;  SUBA.w comWord_TextBufferOffset,A0
+  ;  SUBA.w comWord_ColumnsOffset,A0
   ;  ;MOVE.l a0,currdisplayaddr
   ;  MOVE.l (a7)+,a0
     MOVEM.l d0-d2/a0,-(a7)
     MOVE.l textbufferaddr,a0
-    ADD.w textbufferoffset,a0
+    ADD.w comWord_TextBufferOffset,a0
     CLR.b instring2
     MOVE.w #0,d2
     CMP.l #0,a0
     BEQ 'l2b
-    MOVE.w columnsoffset,d1
+    MOVE.w comWord_ColumnsOffset,d1
    'l1
     CMP.w d1,d2
     BGE 'l2b
@@ -14568,7 +14571,7 @@ JL_0_7962:                        ;horiz scroll
     SF AL_0_8668
     JSR process_highlightning
     ADDQ.l #1,displayoffset
-    ADD.w #columnsize,textbufferoffset
+    ADD.w #columnsize, comWord_TextBufferOffset
     MOVEQ.l #$00,D0
     ADD.l #columnsize,A5
     ADD.w fontheight,D6
@@ -14582,8 +14585,8 @@ JL_0_79CC:
   ADD.l displayoffset,D2
   CMP.l blockstarty,D2
   BNE.w JL_0_79EE
-  MOVE.w column,D2
-  ADD.w columnsoffset,D2
+  MOVE.w comWord_Column,D2
+  ADD.w comWord_ColumnsOffset,D2
   CMP.w blockstartx,D2
   BHI.w JL_0_79EE
   MOVEQ.l #$00,D3
@@ -14596,8 +14599,8 @@ JL_0_79F0:
   ADD.l displayoffset,D2
   CMP.l blockendy,D2
   BNE.w JL_0_7A12
-  MOVE.w column,D2
-  ADD.w columnsoffset,D2
+  MOVE.w comWord_Column,D2
+  ADD.w comWord_ColumnsOffset,D2
   CMP.w blockendx,D2
   BHI.w JL_0_7A12
   MOVEQ.l #$00,D3
@@ -14607,7 +14610,7 @@ RTS
 
 JL_0_7A14:
   MOVE.w blockstartx,D2
-  CMP.w maxcolumns,D2
+  CMP.w comWord_MaxColumns,D2
   BCS.w JL_0_7A3C
   CLR.w blockstartx
   ADDQ.l #1,blockstarty
@@ -14619,7 +14622,7 @@ JMP JL_0_572C
 JL_0_7A3C:
   MOVE.w blockendx,D2
   BPL.w JL_0_7A66
-  MOVE.w maxcolumns,D2
+  MOVE.w comWord_MaxColumns,D2
   SUBQ.w #1,D2
   MOVE.w D2,blockendx
   SUBQ.l #1,blockendy
@@ -14638,9 +14641,9 @@ JL_0_7A66:
   BLT.b JL_0_7A62
 
   JL_0_7A7C:
-  CMP.w maxcolumns,D2
+  CMP.w comWord_MaxColumns,D2
   BCS.w JL_0_7A90
-  MOVE.w maxcolumns,D2
+  MOVE.w comWord_MaxColumns,D2
   SUBQ.w #1,D2
   MOVE.w D2,blockendx
 
@@ -14649,7 +14652,7 @@ RTS
 
 
 .PED_events:
-  CLR.w key_before_return
+  CLR.w comWord_KeyBeforeReturn
   JSR cursor_on
 ;  BRA.w JL_0_7AA8
 
@@ -14678,8 +14681,8 @@ RTS
   JSR general_message_loop
   JSR cursor_off
   MOVEA.l textbufferaddr,A2
-  ADDA.w textbufferoffset,A2
-  MOVE.w column,D0
+  ADDA.w comWord_TextBufferOffset,A2
+  MOVE.w comWord_Column,D0
 
   ; -- update functioncompletion and close any subwindows on key-press
   !regs2stack
@@ -14727,11 +14730,11 @@ BRA.w JL_0_7AA0
   MOVE.b #2,doedit2                   ;change to 2 if char should cut block
   JSR checkedit2
   MOVEA.l textbufferaddr,A2
-  ADDA.w textbufferoffset,A2
-  MOVE.w column,D0
-  MOVE.w D7,key_before_return
-  MOVE.w maxcolumns,D1
-  ADD.w columnsoffset,D0
+  ADDA.w comWord_TextBufferOffset,A2
+  MOVE.w comWord_Column,D0
+  MOVE.w D7,comWord_KeyBeforeReturn
+  MOVE.w comWord_MaxColumns,D1
+  ADD.w comWord_ColumnsOffset,D0
 
   JL_0_7AE8:
     SUBQ.w #1,D1
@@ -14744,8 +14747,8 @@ BRA.w JL_0_7AA0
   JSR source_scroll_line_to_left
   TST.l blockendy
    BMI.w JL_0_7BB0
-  MOVE.w column,D0
-  ADD.w columnsoffset,D0
+  MOVE.w comWord_Column,D0
+  ADD.w comWord_ColumnsOffset,D0
   MOVE.l displayoffset,D1
   ADD.l startdisplayline,D1
   JSR JL_0_3154
@@ -14758,7 +14761,7 @@ BRA.w JL_0_7AA0
   JL_0_7B3A:
   CMP.w blockstartx,D0
    BLE.w JL_0_7B94
-  TST.b state_blockmark
+  TST.b comByte_StateBlockMark
    BEQ.w JL_0_7BB0
   ADDQ.w #1,blockendx
   CMPI.w #columnsize-1,blockendx
@@ -14784,7 +14787,7 @@ BRA.w JL_0_7AA0
   JL_0_7BB0:
   MOVE.w D7,D0
   JSR JL_0_76EA
-  MOVE.w column,D0
+  MOVE.w comWord_Column,D0
   JSR JL_0_7F70
 RTS
 
@@ -14808,7 +14811,7 @@ RTS
    BEQ.w JL_0_7C1C
 
   MOVE.w D0,D1
-  ADD.w columnsoffset,D1
+  ADD.w comWord_ColumnsOffset,D1
    BEQ.w JL_0_7BE6
 
   MOVEQ.l #$00,D1
@@ -14818,9 +14821,9 @@ BRA.w JL_0_7C5C
 
 .getactualword:
   nostring.l = 0
-  lastcolumn.w = Peek.w(?column)
+  lastcolumn.w = Peek.w(?comWord_Column)
   MOVE.l textbufferaddr,a0
-  ADD.w textbufferoffset,a0
+  ADD.w comWord_TextBufferOffset,a0
   MOVE.l a0,d0:lineaddr = PutD0
   For i.l = lineaddr To lineaddr + #columnsize    ;clear highlight info but dont trash strings
     If nostring.l = 0
@@ -14830,27 +14833,27 @@ BRA.w JL_0_7C5C
       If Peek.b(i) = $22 Then nostring = 0
     End If
   Next
-  MOVE.w column,d1
+  MOVE.w comWord_Column,d1
   SUBQ.w #1,d1
   BGT 'w1
   MOVEQ #1,d1
  'w1
   MOVE.l textbufferaddr,a0
-  ADD.w textbufferoffset,a0
-  ADD.w columnsoffset,d1
+  ADD.w comWord_TextBufferOffset,a0
+  ADD.w comWord_ColumnsOffset,d1
   ADD.w d1,a0
   JSR getwordnodetoke
   MOVE.l a0,d0 : i = PutD0
   actualword$ = Peek$(i)
-  cursorposition.l = Peek.w(?column)+1
-  Poke.w ?column,lastcolumn
+  cursorposition.l = Peek.w(?comWord_Column)+1
+  Poke.w ?comWord_Column,lastcolumn
 RTS
 
 .getactualword_new:
   nostring = 0 : already_displayed.b = False
-;  lastcolumn.w = Peek.w(?column)
+;  lastcolumn.w = Peek.w(?comWord_Column)
   MOVE.l textbufferaddr,a0
-  ADD.w textbufferoffset,a0
+  ADD.w comWord_TextBufferOffset,a0
   MOVE.l a0,d0 : lineaddr = PutD0
   For i.l = lineaddr To lineaddr + #columnsize    ;clear highlight info but dont trash strings
     If nostring.l = 0
@@ -14862,7 +14865,7 @@ RTS
   Next
   mytext$ = Peeks$(lineaddr,#columnsize)
 
-  cursorpos.l = Peek.w(?column) + 1
+  cursorpos.l = Peek.w(?comWord_Column) + 1
   aword$ = "" : char$ =""
   tlen.l = FLen(mytext$)
   strhelp$ = ""
@@ -14895,8 +14898,8 @@ RTS
 
     actualword$ = aword$
     mytext$ =""
-;    cursorposition.l = Peek.w(?column)+1
-;    Poke.w ?column,lastcolumn
+;    cursorposition.l = Peek.w(?comWord_Column)+1
+;    Poke.w ?comWord_Column,lastcolumn
   EndIf
 RTS
 
@@ -14921,9 +14924,9 @@ RTS
   already_displayed.b = False
 ;!cout{Hex$(_key)}
   If (_key=$20) OR (_key = $28) OR (_key = $7b)  ; " " "(" "{"
-    If Peek.w(?column) > 0
+    If Peek.w(?comWord_Column) > 0
       If WZ_CheckOpen{"WIN_POPUP"} Then Gosub close_popupwindow
-      strline$ = Peeks$(lineaddr,Peek.w(?column))
+      strline$ = Peeks$(lineaddr,Peek.w(?comWord_Column))
       slen.w = FLen(strline$) : found.l = False
       tokname$ = "" : strhelp$ = ""
       While (slen > 0) AND (found = False)
@@ -14958,7 +14961,7 @@ RTS
 ;        Else
 ;          search_instruction$ = ""
 ;          ypos.l = Peek.l (?displayoffset)*Peek.w (?fontheight)+(Peek.w (?fontheight)*3)
-;          wtemp\ibrowser_x = Peek.w (?column)*Peek.w (?fontwidth):wtemp\ibrowser_y = ypos
+;          wtemp\ibrowser_x = Peek.w (?comWord_Column)*Peek.w (?fontwidth):wtemp\ibrowser_y = ypos
 ;          Gosub open_instructionbrowser
         EndIf
       EndIf
@@ -14978,12 +14981,12 @@ RTS
            RTS
            ; replace text in textbuffer
 ;           MOVE.l textbufferaddr,d0
-;           ADD.w textbufferoffset,d0
-;           ADD.w columnsoffset,d0
-;           ADD.w column,d0
+;           ADD.w comWord_TextBufferOffset,d0
+;           ADD.w comWord_ColumnsOffset,d0
+;           ADD.w comWord_Column,d0
 ;           faddr.l = PutD0 - 1
 ;           PokeS faddr-Len(poptok$), a$,FLen(a$)
-;;           Poke.w ?columnsoffset,Peek.w(?column)+FLen(a$)
+;;           Poke.w ?comWord_ColumnsOffset,Peek.w(?comWord_Column)+FLen(a$)
 ;           Pop Select
 ;           !asm
 ;           MOVE.l #0,D7
@@ -15001,19 +15004,19 @@ RTS
     strhelp$ = ""
     If tokname$ <> ""
       If StrLeft(tokname$,1) = "!"
-        MOVE.l macrobase,d0 : *macrobase.l = PutD0
+        MOVE.l comPtr_MacroBase,d0 : *macrobase.l = PutD0
         strhelp$= TED_GetMacroHelp{*macrobase,tokname$}
       Else
         Select _key
         Case $20 ; Space pressed, search for tokenhelp
-          MOVE.l token,D0  : *tokenbase.l = PutD0
+          MOVE.l comPtr_TokenBase,D0  : *tokenbase.l = PutD0
           strhelp$ = TED_GetTokenHelp{*tokenbase,tokname$}
           ; error: hier erscheint immer ein ";" hinter einem eingegeben Token
           commata.l = Instr(strhelp$,";")
           strhelp$ = StrLeft(strhelp$,commata-1)+"  "+Mid$(strhelp$,commata+1,Len(strhelp$)-commata+1)
 
         Case $28 ; "("
-          MOVE.l token,D0  : *tokenbase.l = PutD0
+          MOVE.l comPtr_TokenBase,D0  : *tokenbase.l = PutD0
           strhelp$ = TED_GetTokenHelp{*tokenbase,tokname$}
           strhelp$ = StrChg(strhelp$,";","")
 
@@ -15025,14 +15028,14 @@ RTS
 
             ; replace text in textbuffer
             ; MOVE.l textbufferaddr,d0
-            ; ADD.w textbufferoffset,d0
-            ; ADD.w columnsoffset,d0
-            ; ADD.w column,d0
+            ; ADD.w comWord_TextBufferOffset,d0
+            ; ADD.w comWord_ColumnsOffset,d0
+            ; ADD.w comWord_Column,d0
             ; faddr.l = PutD0
             ; poke.s faddr-Len(tokname$), tokname$,Len(tokname$)
           EndIf
         Case $8b ; just Help
-          MOVE.l token,D0  : *tokenbase.l = PutD0
+          MOVE.l comPtr_TokenBase,D0  : *tokenbase.l = PutD0
           strhelp$ = TED_GetTokenHelp{*tokenbase,tokname$}
           If strhelp$ = "" Then strhelp$ = TED_GetTokenHelp{*tokenbase,tokname$+"$"}
 
@@ -15048,7 +15051,7 @@ RTS
           If (Len(strhelp$) = Len(tokname$)) OR (strhelp$="")
             search_instruction$ = tokname$
             ypos.l = Peek.l (?displayoffset)*Peek.w (?fontheight)+(Peek.w (?fontheight)*3)
-            wtemp\ibrowser_x = Peek.w (?column)*Peek.w (?fontwidth):wtemp\ibrowser_y = ypos
+            wtemp\ibrowser_x = Peek.w (?comWord_Column)*Peek.w (?fontwidth):wtemp\ibrowser_y = ypos
             Gosub open_instructionbrowser
             strhelp$ = Peek$(?str_screentitle)
           EndIf
@@ -15068,11 +15071,11 @@ RTS
 RTS
 
 .intellisense:
-  ; -- bei delete-key wird ?column nicht aktualisiert
+  ; -- bei delete-key wird ?comWord_Column nicht aktualisiert
   If Peek.b(?use_intellisense) = 1
-    If Peek.w(?column) > 1
+    If Peek.w(?comWord_Column) > 1
       ; -- get everything left of cursor until " " or "="
-      strline$ = Peeks$(lineaddr,Peek.w(?column))
+      strline$ = Peeks$(lineaddr,Peek.w(?comWord_Column))
       slen.w = Len(strline$) : found = False
       tokname$ = "" : strhelp$ = ""
       While (slen > 0) AND (found = False)
@@ -15104,7 +15107,7 @@ RTS
         ; -- open list if something found
         If popfound > 0
           WZ_SetPopUpMenu{tokenliste$,1}
-          xpos.l = Peek.w(?win_TopLeft)+ Peek.w(?win_BorLef) + (Peek.w (?column)-2) * Peek.w (?fontwidth)
+          xpos.l = Peek.w(?win_TopLeft)+ Peek.w(?win_BorLef) + (Peek.w (?comWord_Column)-2) * Peek.w (?fontwidth)
           ypos.l = Peek.w(?win_TopEdge) + Peek.w(?win_BorTop) + Peek.l (?displayoffset) * Peek.w(?fontheight) + Peek.w(?fontheight) + 2
           WZ_PopUp_Nonmodal{xpos,ypos}
           Gosub activatesource
@@ -15140,7 +15143,7 @@ RTS
   WZPrint "LIBRARY_LIST",0,lib_list
 
   DEFTYPE.tokendata tokeninfo
-  MOVE.l token,D0    : *tokenbase.l = PutD0
+  MOVE.l comPtr_TokenBase,D0    : *tokenbase.l = PutD0
   ; Zeilenstruktur:
   ; 0 - 3 bytes : Adresse naechste Zeile
   ; 4 - 7 bytes : Adresse prev Zeile
@@ -15245,7 +15248,7 @@ JL_0_7BE6:
   BEQ.w JL_0_7AA0
 
   MOVE.l A0,-(A7)
-  MOVEA.l currsourceline,A0
+  MOVEA.l comPtr_CurrentSourceLine,A0
   MOVEA.l $4(A0),A0
   LEA $9(A0),A0
   MOVEQ.l #-$01,D1
@@ -15275,30 +15278,30 @@ BRA.w JL_0_7AA0
 .deletechar:
   MOVEM.l d0-d1/a0-a2,-(a7)
   MOVEA.l textbufferaddr,A2
-  ADDA.w textbufferoffset,A2
+  ADDA.w comWord_TextBufferOffset,A2
   MOVE.b #1,doedit2
-  ;MOVE.w D7,key_before_return                ;delete char
+  ;MOVE.w D7,comWord_KeyBeforeReturn                ;delete char
   MOVEM.l D1/A0-A2,-(A7)
   JSR JL_0_6448
   MOVEM.l (A7)+,D1/A0-A2
-  MOVE.w column,D0
-  ADD.w columnsoffset,D0
+  MOVE.w comWord_Column,D0
+  ADD.w comWord_ColumnsOffset,D0
 
   JL_0_7E3Ab:
     ADDQ.w #1,D0
-    CMP.w maxcolumns,D0
+    CMP.w comWord_MaxColumns,D0
      BCC.w JL_0_7E4Cb
     MOVE.b $0(A2,D0.W),-$1(A2,D0.W)
   BRA.b JL_0_7E3Ab
   JL_0_7E4Cb:
 
   MOVE.b #$20,-$1(A2,D0.W)
-  MOVE.w column,-(A7)
+  MOVE.w comWord_Column,-(A7)
   MOVE.w visiblecolumns,D0
   SUBQ.w #1,D0
-  MOVE.w D0,column
+  MOVE.w D0,comWord_Column
   MOVE.w visiblecolumns,D0
-  ADD.w columnsoffset,D0
+  ADD.w comWord_ColumnsOffset,D0
   SUBQ.w #1,D0
   MOVE.l d0,d1
   MOVE.l d0,-(a7)
@@ -15320,7 +15323,7 @@ BRA.w JL_0_7AA0
  'l3
   JSR JL_0_76EA
   CLR.w instru
-  MOVE.w (A7)+,column
+  MOVE.w (A7)+,comWord_Column
   MOVEM.l (a7)+,d0-d1/a0-a2
 BRA deletekey
 
@@ -15354,7 +15357,7 @@ BRA deletekey
   ANDI.w #$3,D1
    BEQ.w noshift
   ; -- shift-key pressed aswell
-  MOVE.w maxcolumns,D1
+  MOVE.w comWord_MaxColumns,D1
 
   ; -- search for rightmost character in actual line
   JL_0_7C3C:
@@ -15367,7 +15370,7 @@ BRA deletekey
   BEQ.b JL_0_7C3C
 
   ADDQ.w #1,D1
-  CMP.w maxcolumns,D1
+  CMP.w comWord_MaxColumns,D1
   BCS.w JL_0_7C5C
   SUBQ.w #1,D1
   JL_0_7C5C:
@@ -15388,7 +15391,7 @@ BRA.w JL_0_7AA0
    BNE.w key_tab
 
   MOVE.w D0,D1
-  OR.w columnsoffset,D1
+  OR.w comWord_ColumnsOffset,D1
   BNE.w 'l1
 
   TST.b new_editmode
@@ -15404,11 +15407,11 @@ BRA.w JL_0_7AA0
  'weit
   CMP.l #0,d0
    BEQ 'l2
-  MOVE.l currsourceline,a4
+  MOVE.l comPtr_CurrentSourceLine,a4
   JSR storeline
   JSR movelineup
   MOVEA.l textbufferaddr,A2
-  ADDA.w textbufferoffset,A2
+  ADDA.w comWord_TextBufferOffset,A2
   MOVE.l #columnsize,d0
   SUBQ .l #1,d0
  'loop
@@ -15418,8 +15421,8 @@ BRA.w JL_0_7AA0
   BPL 'loop
  'f
   ADDQ.l #1,d0
-  MOVE.w d0,column
-  MOVE.l currsourceline,a4
+  MOVE.w d0,comWord_Column
+  MOVE.l comPtr_CurrentSourceLine,a4
   JSR menu_joinline
  'l2
   MOVEM.l (a7)+,a0-a3/a5/d0-d6
@@ -15429,7 +15432,7 @@ BRA.w JL_0_7AA0
   MOVEM.l A0-A2,-(A7)
   JSR JL_0_7F40
   MOVEM.l (A7)+,A0-A2
-  MOVE.w column,D0
+  MOVE.w comWord_Column,D0
   MOVEQ.l #$08,D7
 BRA.w deletekey
 
@@ -15442,12 +15445,12 @@ BRA.w deletekey
   BNE 'l1
   MOVE.w #1,tab_size
  'l1
-  ADD.w columnsoffset,D0
+  ADD.w comWord_ColumnsOffset,D0
   MOVE.w D0,D2
   MOVE.w qualifierstore,D1
   ANDI.w #$3,D1
   BEQ.w JL_0_7D1C
-  MOVE.w D7,key_before_return
+  MOVE.w D7,comWord_KeyBeforeReturn
 
   JL_0_7CB4:
   SUBQ.w #1,D0
@@ -15483,19 +15486,19 @@ BRA.w deletekey
   MOVE.b $0(A2,D2.W),$0(A2,D0.W)
   ADDQ.w #1,D2
   ADDQ.w #1,D0
-  CMP.w maxcolumns,D2
+  CMP.w comWord_MaxColumns,D2
   BCS.b JL_0_7CFA
 
   JL_0_7D0A:
   MOVE.b #$20,$0(A2,D0.W)
   ADDQ.w #1,D0
-  CMP.w maxcolumns,D0
+  CMP.w comWord_MaxColumns,D0
   BCS.b JL_0_7D0A
   BRA.w JL_0_7DDC
 
   JL_0_7D1C:
   ADDQ.w #1,D0
-  CMP.w maxcolumns,D0
+  CMP.w comWord_MaxColumns,D0
   BCC.w JL_0_7AA0
   MOVEQ.l #$00,D1
   MOVE.w D0,D1
@@ -15503,7 +15506,7 @@ BRA.w deletekey
   SWAP D1
   TST.w D1
   BNE.b JL_0_7D1C
-  MOVE.w D7,key_before_return
+  MOVE.w D7,comWord_KeyBeforeReturn
   MOVE.w D0,-(A7)
   SUB.w D2,D0
   CMPI.w #$ffffFFFF,blockendy
@@ -15523,7 +15526,7 @@ BRA.w deletekey
   MOVE.w (A7)+,D2
 
   JL_0_7D6E:
-  MOVE.w maxcolumns,D1
+  MOVE.w comWord_MaxColumns,D1
 
   JL_0_7D72:
     SUBQ.w #1,D1
@@ -15537,9 +15540,9 @@ BRA.w deletekey
 
   JL_0_7D8A:
   MOVE.w D1,-(A7)
-  MOVE.w column,D7
-  ADD.w columnsoffset,D7
-  MOVE.w D7,column
+  MOVE.w comWord_Column,D7
+  ADD.w comWord_ColumnsOffset,D7
+  MOVE.w D7,comWord_Column
 
   JL_0_7D9E:
   MOVE.b #$20,$0(A2,D1.W)
@@ -15558,15 +15561,15 @@ BRA.w deletekey
   JL_0_7DCA:
   MOVE.w (A7)+,D0
   ADDQ.w #1,D0
-  ADD.w D0,column
+  ADD.w D0,comWord_Column
   MOVE.w D0,D1
   MOVE.w (A7)+,D7
   BRA.w JL_0_7C5C
 
   JL_0_7DDC:
-  MOVE.w column,-(A7)
-  CLR.w column
-  ADDA.w columnsoffset,A2
+  MOVE.w comWord_Column,-(A7)
+  CLR.w comWord_Column
+  ADDA.w comWord_ColumnsOffset,A2
   MOVE.w visiblecolumns,D7
   SUBQ.w #1,D7
 
@@ -15575,9 +15578,9 @@ BRA.w deletekey
   MOVEM.l D7/A2,-(A7)
    JSR JL_0_76EA
   MOVEM.l (A7)+,D7/A2
-  ADDQ.w #1,column
+  ADDQ.w #1,comWord_Column
    DBF D7,JL_0_7DF0
-  MOVE.w (A7)+,column
+  MOVE.w (A7)+,comWord_Column
   MOVE.w (A7)+,D1
   BRA.w JL_0_7C5C
 
@@ -15592,7 +15595,7 @@ BRA.w JL_0_7ED0
 
   deletekey:
   MOVE.b #2,doedit2
-  MOVE.w D7,key_before_return
+  MOVE.w D7,comWord_KeyBeforeReturn
   JSR checkedit2
   TST.b nodelete
    BNE JL_0_7AA0
@@ -15601,23 +15604,23 @@ BRA.w JL_0_7ED0
   JSR JL_0_6448
   MOVEM.l (A7)+,D1/A0-A2
 
-  MOVE.w column,D0
-  ADD.w columnsoffset,D0
+  MOVE.w comWord_Column,D0
+  ADD.w comWord_ColumnsOffset,D0
   JL_0_7E3A:
     ADDQ.w #1,D0
-    CMP.w maxcolumns,D0
+    CMP.w comWord_MaxColumns,D0
      BCC.w JL_0_7E4C
     MOVE.b $0(A2,D0.W),-$1(A2,D0.W)
   BRA.b JL_0_7E3A
   JL_0_7E4C:
 
   MOVE.b #$20,-$1(A2,D0.W)
-  MOVE.w column,-(A7)
+  MOVE.w comWord_Column,-(A7)
   MOVE.w visiblecolumns,D0
   SUBQ.w #1,D0
-  MOVE.w D0,column
+  MOVE.w D0,comWord_Column
   MOVE.w visiblecolumns,D0
-  ADD.w columnsoffset,D0
+  ADD.w comWord_ColumnsOffset,D0
   SUBQ.w #1,D0
   MOVE.l d0,d1
   MOVE.l d0,-(a7)
@@ -15638,11 +15641,11 @@ BRA.w JL_0_7ED0
  'l3
   JSR JL_0_76EA
   CLR.w instru
-  MOVE.w (A7)+,column
+  MOVE.w (A7)+,comWord_Column
 
-  TST.w column
+  TST.w comWord_Column
    BNE 'x1
-  TST.w columnsoffset
+  TST.w comWord_ColumnsOffset
    BEQ 'x5
  'x1
   ; -- check if shift-backspace is pressed
@@ -15650,14 +15653,14 @@ BRA.w JL_0_7ED0
   AND.w #$3,d1
    BEQ JL_0_7AA0
   ; -- ok, delete all left of cursor ...
-  TST.w column
+  TST.w comWord_Column
    BEQ 'x4
-  SUBQ.w #1,column
+  SUBQ.w #1,comWord_Column
   BRA deletekey
  'x4
-  TST.w columnsoffset
+  TST.w comWord_ColumnsOffset
    BEQ 'x5
-  SUBQ.w #1,columnsoffset
+  SUBQ.w #1,comWord_ColumnsOffset
   BRA.w deletekey
  'x5
   JSR JL_0_7962
@@ -15728,7 +15731,7 @@ BRA.w horiz_loop
     GetD0 &a$
     !asm
     JSR loadfile
-    JSR copyprefsdata
+    JSR StoreXtraData
     !basic
   End If
   a$ = dos_AddPart{includedir$,Peek$(i)}
@@ -15736,7 +15739,7 @@ BRA.w horiz_loop
     GetD0 &a$
     !asm
     JSR loadfile
-    JSR copyprefsdata
+    JSR StoreXtraData
     !basic
   End If
  'noload
@@ -15749,14 +15752,14 @@ BRA.w horiz_loop
   !asm
   CMP.l #$D9,D6
    BNE.w exit_addfilename
-  MOVE.w (A7)+,key_before_return
-  ADD.w columnsoffset,D0
+  MOVE.w (A7)+,comWord_KeyBeforeReturn
+  ADD.w comWord_ColumnsOffset,D0
   MOVE.w D0,-(A7)
 
   JL_0_7EBC:
   MOVE.b #$20,$0(A2,D0.W)
   ADDQ.w #1,D0
-  CMP.w maxcolumns,D0
+  CMP.w comWord_MaxColumns,D0
    BCS.b JL_0_7EBC
   BRA.w JL_0_7DDC
 
@@ -15767,16 +15770,16 @@ BRA.w horiz_loop
 RTS
 
 JL_0_7ED2:
-  MOVE.w columnsoffset,D4
+  MOVE.w comWord_ColumnsOffset,D4
   MOVE.w visiblecolumns,D2
   SUB.w AL_0_B7F4,D2
   CMP.w D2,D1
   BCC.w JL_0_7EFC
-  CLR.w columnsoffset
-  MOVE.w D1,column
+  CLR.w comWord_ColumnsOffset
+  MOVE.w D1,comWord_Column
 
   JL_0_7EF0:
-  CMP.w columnsoffset,D4
+  CMP.w comWord_ColumnsOffset,D4
   BEQ.w JL_0_7F3E
   BRA.w JL_0_7962
 
@@ -15785,7 +15788,7 @@ JL_0_7ED2:
   LSR.w #1,D2
   MOVE.w D1,D0
   SUB.w D2,D0
-  MOVE.w maxcolumns,D3
+  MOVE.w comWord_MaxColumns,D3
   SUB.w visiblecolumns,D3
   CMP.w D3,D0
   BGT.w JL_0_7F2E
@@ -15795,14 +15798,14 @@ JL_0_7ED2:
   SUBQ.w #1,D2
 
   JL_0_7F20:
-  MOVE.w D0,columnsoffset
-  MOVE.w D2,column
+  MOVE.w D0,comWord_ColumnsOffset
+  MOVE.w D2,comWord_Column
   BRA.b JL_0_7EF0
 
   JL_0_7F2E:
-  MOVE.w D3,columnsoffset
+  MOVE.w D3,comWord_ColumnsOffset
   SUB.w D3,D1
-  MOVE.w D1,column
+  MOVE.w D1,comWord_Column
   BRA.b JL_0_7EF0
   JL_0_7F3E:
 RTS
@@ -15811,17 +15814,17 @@ JL_0_7F40:
   CMP.w AL_0_B7F4,D0
   BCS.w JL_0_7F50
   JL_0_7F48:
-  SUBQ.w #1,column
+  SUBQ.w #1,comWord_Column
 RTS
 
 JL_0_7F50:
-  MOVE.w columnsoffset,D1
+  MOVE.w comWord_ColumnsOffset,D1
   CMP.w #1,d1
   ;BNE.w JL_0_7F5E
   BGT.w JL_0_7F5E
   TST.w d1
   BEQ 'l10
-  MOVE.w #0,columnsoffset
+  MOVE.w #0,comWord_ColumnsOffset
   JSR scroll_right
   JSR _redraw
  'l10
@@ -15830,16 +15833,16 @@ JL_0_7F50:
 RTS
 
 JL_0_7F5E:
-  SUBQ.w #2,columnsoffset
+  SUBQ.w #2,comWord_ColumnsOffset
   JSR scroll_right
-  ADDQ.w #1,column
+  ADDQ.w #1,comWord_Column
 RTS
 
 JL_0_7F70:
-  MOVE.w columnsoffset,D1
+  MOVE.w comWord_ColumnsOffset,D1
   MOVE.w visiblecolumns,D2
   ADD.w D2,D1
-  CMP.w maxcolumns,D1
+  CMP.w comWord_MaxColumns,D1
   BCS.w JL_0_7F8C
   SUBQ.w #1,D2
   CMP.w D2,D0
@@ -15853,13 +15856,13 @@ JL_0_7F8C:
   CMP.w D2,D0
   BCC.w JL_0_7FA6
   JL_0_7F9E:
-  ADDQ.w #1,column
+  ADDQ.w #1,comWord_Column
 RTS
 
 JL_0_7FA6:
-  ADDQ.w #2,columnsoffset
+  ADDQ.w #2,comWord_ColumnsOffset
   JSR scroll_left
-  SUBQ.w #1,column
+  SUBQ.w #1,comWord_Column
 RTS
 
 ;JL_0_7FB8:
@@ -15930,7 +15933,7 @@ AJL_0_7FCC:
   MOVEQ.l #$00,D0
   MOVEQ.l #$00,D7
   LEA L_0_808E,A1
-  MOVEA.l ptr_labellist,A0
+  MOVEA.l comPtr_LabelList,A0
   MOVEQ.l #$00,D4
 
   JL_0_8048:
@@ -15966,12 +15969,12 @@ L_0_80B0: Ds.w 17
 
 .checkfor_compilerwin:
   !basic
-;  If Peek.l(Peek.l(?ptr_compilerwindow))<>0
+;  If Peek.l(Peek.l(?comPtr_CompilerWindow))<>0
     error{"checkfor_compilerwindow"}
 ;  EndIf
   !asm
 ;  MOVEA.l ptr_sourcewindow,A2
-;  MOVE.l ptr_compilerwindow,D0
+;  MOVE.l comPtr_CompilerWindow,D0
 ;  BEQ.b JL_0_80DE
 ;  MOVEA.l D0,A2
 ;  JL_0_80DE:
@@ -15997,9 +16000,9 @@ RTS
   !basic
   Request "","sub_mouseblicked","Ok"
   ; get the last entered word
-  If Peek.w(?column) > 0
+  If Peek.w(?comWord_Column) > 0
     MOVE.l a2,d0 : lineaddr.l = PutD0
-    strline$ = Peeks$(lineaddr,Peek.w(?column))
+    strline$ = Peeks$(lineaddr,Peek.w(?comWord_Column))
     slen.w = Len(strline$) : found = False
     tokname$ = "" : strhelp$ = ""
     While (slen > 0) AND (found = False)
@@ -16080,30 +16083,30 @@ RTS
 ;  MOVE.l _tedlibbase,a6
 ;  LEA comdata,A0
 ;  JSR _TEDSetJumpTable(A6)                  ;set_tedlibbase
-;  LEA firstsourceline,A0
+;  LEA comPtr_FirstSourceLine,A0
 ;  JSR _TEDSetFirstLine(A6)
-;  LEA currsourceline,A0
-;  MOVE.l currsourceline,a0
+;  LEA comPtr_CurrentSourceLine,A0
+;  MOVE.l comPtr_CurrentSourceLine,a0
 ;  MOVE.l (a0),d0
 ;  BEQ 'skip
 ;  JSR _TEDSetCurrentLine(A6)
 ; 'skip
 ;  MOVEA.l _tedlibbase,A6
-;  LEA ptr_labellist,A0
+;  LEA comPtr_LabelList,A0
 ;  JSR _TEDSetLabelList(A6)
 ;  LEA ptr_labelcounter,A0
 ;  JSR _TEDSetLabelCount(A6)
 ; 'notedlib
   !basic
   If *tedlibbase
-    LEA comdata,A0
+    LEA COMDATABASE,A0
     TEDSetJumpTable_
-    TEDSetFirstLine_ ?firstsourceline
-    TEDSetCurrentLine_ ?currsourceline
-    If Peek.l(?currsourceline) > 0
-      TEDSetCurrentLine_ ?currsourceline
+    TEDSetFirstLine_ ?comPtr_FirstSourceLine
+    TEDSetCurrentLine_ ?comPtr_CurrentSourceLine
+    If Peek.l(?comPtr_CurrentSourceLine) > 0
+      TEDSetCurrentLine_ ?comPtr_CurrentSourceLine
     EndIf
-    TEDSetLabelList_ ?ptr_labellist
+    TEDSetLabelList_ ?comPtr_LabelList
     TEDSetLabelCount_ ?ptr_labelcounter
   EndIf
   !asm
@@ -16168,10 +16171,10 @@ JL_0_8104:
   CMP.b blinkcount,d0
   BGT 'l1
   MOVE.b #0,blinkcount
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
   MOVE.b #3,$18(a1)
   JSR switch_cursordisplay
-  MOVEA.l rp_sourcearea,A1
+  MOVEA.l comPtr_SourceAreaRastPort,A1
 ;  TST.b newcolormode
 ;  BEQ 'l1
   MOVE.b #15,$18(a1)
@@ -16247,13 +16250,13 @@ JL_0_8104:
   Wend
 
   ;-- check if a compiled program is running
-  TST.b running_exe_flag
+  TST.b comByte_RunningFlag
   BEQ 'l1
   PrintScreenTitle{Peek$(?warningtitle)}
   rf.l = 1
   BRA 'l2
  'l1
-  If rf = 1 AND Peek.b(?running_exe_flag) = 0
+  If rf = 1 AND Peek.b(?comByte_RunningFlag) = 0
     PrintScreenTitle{Peek$(?str_screentitle)}
     rf = 0
   End If
@@ -16292,10 +16295,10 @@ RTS
 .check_state_of_debuggertoggle
   MOVEM.l d0-d1/a0-a1/a6,-(a7)
   !basic
-  If Peek.b(?debugmode)<>Peek.b(?olddebugmode)
-    Poke.b ?olddebugmode,Peek.b(?debugmode)
+  If Peek.b(?comByte_DebugMode)<>Peek.b(?olddebugmode)
+    Poke.b ?olddebugmode,Peek.b(?comByte_DebugMode)
   EndIf
-  GTSetMenuChecked 0,4,12,Peek.b(?debugmode)
+  GTSetMenuChecked 0,4,12,Peek.b(?comByte_DebugMode)
   !asm
   MOVEM.l (a7)+,d0-d1/a0-a1/a6
 RTS
@@ -16504,7 +16507,7 @@ BRA.w reply_idcmp_message
 
 .message_mousebuttons
   MOVEQ.l #-$03,D7
-  TST.b running_exe_flag
+  TST.b comByte_RunningFlag
   BNE 'l1r
   ;MOVE.w message_code,D7
   ;AND.w #IECODE_UP_PREFIX,D7
@@ -16730,7 +16733,7 @@ BRA message_vanillakey
   MOVEM.l a0-a6/d0-d7,-(a7)
   MOVE.l lastedited_line,d0
  'doit
-  MOVE.l currsourceline,a4
+  MOVE.l comPtr_CurrentSourceLine,a4
   JSR cursor_off
   JSR gotoline
   BSR cursor_on
@@ -16888,280 +16891,8 @@ AL_0_84B2:                  Ds.l 1
 AL_0_84B6:                  Dc.l close_gui
 AL_0_84BA:                  Dc.l create_whole_gui
 
-.COMDATA      ;dont change the following order
-comdata:                    Dc.l comwin_open                                  ;$0
-AL_0_84C2:                  Dc.l comwin_close                                 ;$4
-AL_0_84C6:                  Dc.l general_message_loop                         ;$8
-AL_0_84CA:                  Dc.l show_errorrequester                          ;$0C
-AL_0_84CE:                  Dc.l AJL_0_453C                                   ;$10
-AL_0_84D2:                  Dc.l AJL_0_44F6                                   ;$14
-AL_0_84D6:                  Dc.l show_aslfilerequest                          ;$18
-AL_0_84DA:                  Dc.l comwin_refreshglist                          ;$1c
-AL_0_84DE:                  Dc.l check_events                                 ;$20
-;AL_0_84E2:
-Ds.l 1                                            ;$24
-;ptr_exescreen:
-Ds.l 1                                            ;$28 (pointer screen)
-_intuibase_for_com:         Ds.l 1                                            ;$2c (_intuibase)
-AL_0_84EE:                  Dc.l set_storedcolors                             ;$30
-AL_0_84F2:                  Dc.l set_storedcolors                             ;$34
-AL_0_84F6:                  Dc.l com_0_44E2                                   ;$38
-AL_0_84FA:                  Dc.l console_open                                 ;$3C
-AL_0_84FE:                  Dc.l console_close                                ;$40
-AL_0_8502:                  Dc.l activate_gad_in_compilerwin                  ;$44
-AL_0_8506:                  Dc.l set_pointernormal                            ;$48
-AL_0_850A:                  Dc.l set_pointerbusy                              ;$4C     4c 4d 4e 4f
-AL_0_850E:                  Ds.l 2                                            ;$50     50 51 52 53 54 55 56 57
-                            Dc.l AJL_0_4972                                   ;$58     58 59 5a 5b
-comdata_screenwidth_Lsl1:   Ds.w 1                                            ;$5C     5c 5d
-ptr_compilerwindow:         Ds.l 1                                            ;$5E     5e 5f 60 61
-AL_0_8520:                  Ds.w 1                                            ;$62     62 63
-AL_0_8522:                  Dc.l detokenize_line                              ;$64
-AL_0_8526:                  Dc.l str_currentdir                               ;$68
-AL_0_852A:                  Dc.l str_sourcename                               ;$6C
-AL_0_852E:                  Dc.l AL_0_8BD2                                    ;$70
-AL_0_8532:                  Dc.l AL_0_8BD6                                    ;$74
-do_tokenize:                Ds.l 2                                            ;$78
-L_0_853E:                   Dc.b "tEdSdOc!"                                   ;$80
-firstsourceline:            Ds.l 1                                            ;$88
-AL_0_854A:                  Ds.l 1                                            ;$8C
-currsourceline:             Ds.l 1                                            ;$90
-;maxlines:
-Ds.w 1                                                                        ;$94
-str_currentdir:             Ds.l 48                                           ;$96
-str_sourcename:             Ds.l 18                                           ;$156    ;$96+48*4
-;font_Baseline:
-Ds.l 1                                                                        ;$19E
-AL_0_8660:                  Ds.w 1                                            ;$1A2
-AL_0_8662:                  Ds.l 1                                            ;$1A4
-paste_mode:                  Ds.w 1                                            ;$1A8
-AL_0_8668:                  Ds.w 1                                            ;$1AA
-entered_character:          Ds.w 1                                            ;$1AC
-state_blockmark:                  Ds.w 1                                            ;$1AE
-;viewablelines_m1:
-Ds.w 1                                                                        ;$1B0
-AL_0_8670:                  Ds.w 1                                            ;$1B2
-;win_TopEdge:
-Ds.b 1                                                                        ;$1B4
-scr_BarHeight:              Ds.b 1                                            ;$1B5
-win_Height:                 Ds.w 1                                            ;$1B6
-maxcolumns:                 Dc.w columnsize                                   ;$1B8
-;AL_0_8678:
-  Dc.b $00,$50                                                                ;$1BA
-oldvars
-;viewablelines:
-  Ds.w 1                                                                      ;$1BC
-;visiblecolumns:
-  Ds.w 1                                                                      ;$1BE
-;ypos_statusarea:
-  Ds.w 1                                                                      ;$1C0
-;AL_0_8680:
-  Ds.l 1                                                                      ;$1C2
-;win_InnerHeight:
-  Ds.w 1                                                                      ;$1C6
-column:                     Ds.w 1                                            ;$1C8
-;displayoffset:
-  Ds.w 1                                                                      ;$1CA
-;AL_0_868A:
-  Ds.l 1                                                                      ;$1CC
-textbufferoffset:           Ds.w 1                                            ;$1D0
-store_column:               Ds.l 1                                            ;$1D2
-;AL_0_8694:
-  Ds.l 1                                                                      ;$1D6
-store_textbufferoffset:     Ds.w 1                                            ;$1DA
-AL_0_869A:                  Ds.w 1                                            ;$1DC
-columnsoffset:              Ds.w 1                                            ;$1DE
-;startdisplayline:
-  Ds.w 1                                                                      ;$1E0
-qualifierstore:             Ds.w 1                                            ;$1E2
-;textbufferaddr:
-  Ds.l 1                                                                      ;$1E4
-key_before_return:          Ds.w 1                                            ;$1E8
-;lineposx:
-running_exe_flag:           Dc.w $0                                           ;$1EA
-  ;Ds.w 1
-;linepos2:
-  ;Ds.w 1
-                            Dc.w $0                                           ;$1EC
-AL_0_86AC:                  Ds.w 1                                            ;$1EE
-destbufferstart             Ds.l 1                                            ;$1F0
-;linepos3:             ;1 longs free
-  ;Ds.w 1
-;blockstartx:
-  ;Ds.w 1
-;blockstarty:
-  Ds.w 1                                                                      ;$1F4
-;blockendx:
-  Ds.w 1                                                                      ;$1F6
-;blockendy:
-  Ds.w 1                                                                      ;$1F8
-AL_0_86B8:                  Ds.w 1                                            ;$1FA
-cursor_in_marked_block:     Ds.w 1                                            ;$1FC
-ptr_sourcefilehandle:       Ds.l 1                                            ;$1FE
-AL_0_86C0:                  Ds.w 1                                            ;$202
-source_modified_flag:       Ds.w 1
-AL_0_86C4:                  Ds.w 1
-AL_0_86C6:                  Ds.w 1
-;fontheight:
-  Dc.b $00,$06
-
-;font_Heightm1:
-  Dc.b $00,$05
-
-;AL_0_86CC:
-  Ds.w 1
-ptr_labellist:              Ds.l 1
-labellist_changed:          Ds.w 1
-str_statusstring:           Dc.b "Line:     ",0," Column:     ",0,"                   ",0,0
-str_block:                  Dc.b "Block   ",0,0
-str_actualcolumn:           Ds.l 1
-AL_0_8710:                  Ds.w 1
-prefswritten_state:         Ds.w 1  ; nach writeprefs $FFFF, ansonsten $0
-comwin_datas:               Ds.l 1
-source_changed:             Dc.l $203A
-str_modified:               Dc.b "    "
-str_modified2:              Dc.b "    "
-AL_0_8724:                  Ds.l 1
-str_filepattern:            Dc.b "(#?.bb|#?.bb2|#?.asm|#?ab2|#?.txt|#?.guide)",0,0
-                            Ds.l 16
-str_filepattern_standalone: Dc.b $7e,"(#?.info)",0,0
-                            Ds.l 20
-str_filepattern_noinfo:     Dc.b $7e,"(#?.info)",0,0
-                            Ds.l 20
-str_sourcefile_complete:    Ds.l 63
-                            Ds.w 1
-str_asldummydir:            Ds.l 48
-str_asldummypath:           Ds.l 16
-labelsize:                  Ds.w 1                ; AL_0_8A3E
-Even
-newvars
-store_displayoffset:        Dc.l 0
-;viewablelines_m1:
-Dc.l 0
-AL_0_3EE2:                  Dc.l 0
-AL_0_4282:                  Dc.l 0
-displayoffset               Dc.l 0
-startdisplayline:           Dc.l 0
-linepos3:                   Dc.l 0
-lineposx:                   Dc.l 0       ;current cursor line
-linepos2:                   Dc.l 0
-blockstartx                 Dc.l 0
-blockstarty:                Dc.l 0
-blockendx:                  Dc.l 0
-blockendy:                  Dc.l 0
-maxlines                    Dc.l 0          ;ok
-;viewablelines
-Dc.l 0
-;fontheightl
-Dc.l 0
-boundlines                  Dc.l $6
-clickpos3:                  Dc.l 0
-ptr_labelcounter:           Ds.w 5
-                            Dc.l 0
-; additional configdata saved behind xtrafile
-xtrabuf:                    Dc.l 0     ; saved cursorposition
-button_remark:              Ds.b 2     ; state of buttons in label window
-button_all:                 Ds.b 2
-labelsearchstring:          Ds.b 30    ; stored string of stringgadget
-xtra_dummy:                 Ds.b 66
-prefs_filename_env:         Dc.b "ENV:ped.prefs",0
-prefs_filename_envarc:      Dc.b "ENVARC:ped.prefs",0,0
-AL_0_8A6A:                  Ds.w 1
-str_aslchangedir:           Dc.b "Choose directory...",0
-str_aslloadfile:            Dc.b "Name of file to open",0,0
-str_aslsavefile:            Dc.b "Name to save file as",0,0
-str_aslloadblock:           Dc.b "Name of block to load",0
-str_aslsaveblock:           Dc.b "Name to save block as",0
-AL_0_8AD8:                  Ds.w 1
-comdata_labelsize:          Ds.w 1
-;ptr_statuswindow:
-  Ds.l 1
-;ptr_sourcewindow:
-  Ds.l 1
-;rp_sourcewindow:
-  Ds.l 1
-rp_sourcearea:              Ds.l 1
-unknown_rastport:           Ds.l 1
-temp_tokenstring1:          Ds.l 1
-temp_tokenstring2:          Ds.l 1
-temp_tokenstring3:          Ds.l 1
-temp_tokenstring_obsolete:  Ds.l 1
-AL_0_8B00:                  Ds.l 1
-L_0_8B04:                   Dc.b "?????",0
-                            Dc.b "Token Unavailable",0
-Even
-
-.keytable:                  ; vanillakeys
-  Dc.b $1C,$01              ; CURSORUP
-  Dc.l key_cursorup
-  Dc.b $1D,$01              ; CURSORDOWN
-  Dc.l key_cursordown
-  Dc.b 13,$01               ; RETURN
-  Dc.l insertreturn
-  Dc.b $81,$00              ; F1
-  Dc.l menu_helpgeneral
-  Dc.b $82,$00              ; F2
-  Dc.l menu_helpincludesguide
-  Dc.b $83,$00              ; F3
-  Dc.l menu_helpblitzlibs
-  Dc.b $84,$00              ; F4
-  Dc.l menu_dublicate
-  Dc.b $89,$00              ; F9
-  Dc.l menu_previousfile
-  Dc.b $8A,$00              ; F10
-  Dc.l menu_nextfile
-  Dc.b $8B,$00              ; HELP
-  Dc.l event_helpkey
-  Dc.b $FF,$01              ; VERTICAL SCROLLER
-  Dc.l event_vertscroller
-  Dc.b $FE,$00
-  Dc.l event_shortcut       ; SHORTCUT
-  Dc.b $FD,$01
-  Dc.l event_leftmousebutton; L-MOUSEBUTTON
-  Dc.b $FB,$01
-  Dc.l AJL_0_7FCC
-Ds.w 1
 
 
-
-str_error_openfile:         Dc.b "Couldn't open file!",0
-str_error_readfile:         Dc.b "Error reading file!",0
-str_error_writefile:        Dc.b "Error writing file!",0
-PED_IsAvailable:            Ds.w 1            ;+$7B2         B2 B3
-compiler_IsAvailable:       Ds.l 1            ;+$7B4         B4 B5 B6 B7
-token:                      Ds.l 2            ;+$7B6         B8 B9 C0 CA CB CC CD CE CF
-com_read_xtrafile:          Ds.l 1            ;+$7C0
-com_write_xtrafile:         Ds.l 1            ;+$7C4
-com_callmenuentry:          Ds.l 1            ;+$7C8
-com_calldummy:              Ds.l 1            ;+$7CC         in teddata, there is a 0
-L_0_8BCCa:                  Dc.b $FF          ;+$7D0         +++ : +++
-L_0_8BCD:                   Dc.b $FF          ;+$7D1         +++ \\34 +++
-AL_0_8BCE:                  Dc.b $FF          ;+$7D2         +++ . +++
-L_0_8BCF:                   Dc.b $FF,$00,$00  ;+$7D3         +++ ; +++
-AL_0_8BD2:                  Ds.l 1            ;+$7D6         +++ NEW1 +++
-AL_0_8BD6:                  Ds.l 1            ;+$7DA
-newdebug                    Dc.b "newd"       ;+$7de
-trap15addr                  Dc.l 0            ;+$7e2
-directbuffer                Dc.l 0            ;+$7e6
-macrobase                   Dc.l 0            ;+$7ea
-debugmode                   Dc.b -1           ;+$7ee
-                            Dc.b 1
-                            Dc.w 1
-varbase                     Dc.l 0            ;+$7f2
-instrbase                   Dc.l 0            ;+$7f6
-libpointer                  Dc.l 0            ;+$7fa
-
-compvers                    Dc.l 0            ;+$7fe         hier soll der pointer auf den versionsstring stehen
-dummy1                      Dc.l compiler_openwindow  ;$802
-dummy2                      Dc.l 0            ;+$806
-dummy3                      Dc.l 0            ;+$80A
-versioninformation          Dc.l 0            ;+$80E
-number_of_builds            Dc.l 0            ;+$812
-preprocessor:               Dc.l 0            ; +$816
-dummy6                      Dc.l 0
-; --
-; -- END OF DATA STRUCTURE FOR "comdata"
-Even
 
 .fontdependent:
 viewablelines     Dc.l 0
@@ -17446,7 +17177,7 @@ AJL_0_B990:
   MOVEQ.l #$00,D6
   MOVEA.l #AL_0_BE10,A0
   ANDI.l #MaxWord,D6
-  LEA str_sourcename,A3
+  LEA comStr_SourceName,A3
   JL_0_B9A2:
     MOVEA.l $0(A0,D6.W),A1
     MOVEA.l (A1),A1
@@ -17463,10 +17194,10 @@ AJL_0_B990:
   MOVEA.l #AL_0_BE24,A2
   MOVEA.l $0(A2,D6.W),A1
   MOVEA.l (A1),A1
-  LEA str_currentdir,A3
+  LEA comStr_CurrentDir,A3
   JSR compare_strings
   BNE.w JL_0_BA3C
-  LEA str_sourcename,A3
+  LEA comStr_SourceName,A3
   BRA.b JL_0_B9B2
 
   JL_0_B9E0:
@@ -17494,10 +17225,10 @@ AJL_0_B990:
   JL_0_BA1C:
   MOVEA.l $0(A0,D6.W),A1
   MOVEA.l (A1),A1
-  LEA str_sourcename,A0
+  LEA comStr_SourceName,A0
   MOVEA.l $0(A2,D6.W),A2
   JSR AJL_0_4A8E
-  LEA str_currentdir,A0
+  LEA comStr_CurrentDir,A0
   MOVEA.l (A2),A1
   JSR AJL_0_4A8E
 
@@ -17710,12 +17441,12 @@ RTS
   LEA AL_0_BE10,A1
   MOVEA.l $0(A1,D6.W),A1
   MOVEA.l (A1),A1
-  LEA str_sourcename,A0
+  LEA comStr_SourceName,A0
   JSR AJL_0_4A8E
   LEA AL_0_BE24,A1
   MOVEA.l $0(A1,D6.W),A1
   MOVEA.l (A1),A1
-  LEA str_currentdir,A0
+  LEA comStr_CurrentDir,A0
   JSR AJL_0_4A8E
 RTS
 
@@ -17723,13 +17454,13 @@ RTS
   LEA AL_0_BE10,A0
   MOVEA.l $0(A0,D6.W),A1
 
-  LEA str_sourcename,A2
+  LEA comStr_SourceName,A2
   MOVEA.l (A1),A1
   JL_0_BD96:
     MOVE.b (A1)+,(A2)+
   BNE.b JL_0_BD96
 
-  LEA str_currentdir,A2
+  LEA comStr_CurrentDir,A2
   LEA AL_0_BE24,A0
   MOVEA.l $0(A0,D6.W),A1
   MOVEA.l (A1),A1
@@ -17752,7 +17483,7 @@ RTS
   LEA AL_0_BE10,A2
   MOVEA.l $0(A2,D6.W),A2
   MOVEA.l (A2),A2
-  MOVEA.l #str_sourcefile_complete,A0
+  MOVEA.l #comStr_SourceFileComplete,A0
   TST.b (A1)
   BEQ.w JL_0_BDEE
 
@@ -17769,7 +17500,7 @@ RTS
     MOVE.b (A2)+,(A0)+
   BNE.b JL_0_BDEE
 
-  MOVE.l #str_sourcefile_complete,D7
+  MOVE.l #comStr_SourceFileComplete,D7
   MOVE.l D6,-(A7)
   JSR load_source
   MOVE.l (A7)+,D6
@@ -17819,7 +17550,7 @@ Return
 
 .init_menus
   Gosub kill_menus
-  GTMenuTitle 0,0,   !TRANS{"Project"}
+  GTMenuTitle   0,0,   !TRANS{"Project"         }
   GTMenuItem  0,0,0, 0,!TRANS{"Project Settings"},"M",0,#MENU_PROJECTSETTINGS
   GTMenuItem  0,0,0, 1,!TRANS{"IDE Preferences" },"" ,0,#MENU_IDEPREFERENCES
   GTMenuItem  0,0,0, 2
@@ -17828,12 +17559,12 @@ Return
   GTMenuItem  0,0,0, 5,!TRANS{"Open Shell"      },"" ,0,#MENU_OPENSHELL
   GTMenuItem  0,0,0, 6,!TRANS{"Calculator"      },"" ,0,#MENU_CALCULATOR
   GTMenuItem  0,0,0, 7
-  GTMenuItem  0,0,0, 8,!TRANS{"About"           },"" ,0,#MENU_ABOUT
+  GTMenuItem  0,0,0, 8,!TRANS{"About AmiBlitz3" },"" ,0,#MENU_ABOUT
   GTMenuItem  0,0,0, 9
   GTMenuItem  0,0,0,10,!TRANS{"Iconify"         },"" ,0,#MENU_ICONIFY
   GTMenuItem  0,0,0,11,!TRANS{"Quit"            },"Q",0,#MENU_QUIT
-  GTMenuTitle 0,1,   !TRANS{"Source File"
-  GTMenuItem  0,0,1, 0,!TRANS{"New ..."         },"",0,#MENU_NEW
+  GTMenuTitle   0,1,   !TRANS{"Source File"     }
+  GTMenuItem  0,0,1, 0,!TRANS{"New..."          },"",0,#MENU_NEW
   ; -- scan for any templates
   ClearList templates()
   templatepath.s = dos_AddPart{sourcedir$ , "Templates"}
@@ -17858,9 +17589,10 @@ Return
   GTMenuItem  0,0,1, 3,!TRANS{"Include File"    },"I",0,#MENU_INCLUDEFILE
   GTMenuItem  0,0,1, 4
   GTMenuItem  0,0,1, 5,!TRANS{"Save"            },"S",0,#MENU_SAVE
-  GTMenuItem  0,0,1, 6,!TRANS{"Save As ..."     },"A",0,#MENU_SAVEAS
-  GTMenuItem  0,0,1, 7,!TRANS{"Export ASCII As ..." },"",0,#MENU_EXPORTASCII
-  GTMenuItem  0,0,1, 8,!TRANS{"Print ..."       },"" ,0,#MENU_PRINT
+  GTMenuItem  0,0,1, 6,!TRANS{"Save As..."      },"A",0,#MENU_SAVEAS
+;  GTMenuItem  0,0,1, 7,!TRANS{"Export ASCII As..." },"",0,#MENU_EXPORTASCII
+  GTMenuItem  0,0,1, 7
+  GTMenuItem  0,0,1, 8,!TRANS{"Print..."        },"" ,0,#MENU_PRINT
   GTMenuItem  0,0,1, 9
   GTMenuItem  0,0,1,10,!TRANS{"Close"           },"" ,0,#MENU_CLOSE
   If Peek.w(?remember_saved)
@@ -17871,14 +17603,14 @@ Return
     GTMenuItem  0,0,1,15,Peek$(Peek.l(?AL_0_C022)),"4",0,#MENU_LASTSOURCE4
     GTMenuItem  0,0,1,16,Peek$(Peek.l(?AL_0_C036)),"5",0,#MENU_LASTSOURCE5
   EndIf
-  GTMenuTitle 0,2,   !TRANS{"Edit"}
+  GTMenuTitle   0,2,   !TRANS{"Edit"}
   GTMenuItem  0,0,2, 0,!TRANS{"Cut"             },"X",0,#MENU_CUT
   GTMenuItem  0,0,2, 1,!TRANS{"Copy"            },"C",0,#MENU_COPY
   GTMenuItem  0,0,2, 2,!TRANS{"Paste"           },"V",0,#MENU_PASTE
   GTMenuItem  0,0,2, 3,!TRANS{"Duplicate"       },"Z",0,#MENU_DUPLICATE
   GTMenuItem  0,0,2, 4,!TRANS{"Forget"          },"W",0,#MENU_FORGET
   GTMenuItem  0,0,2, 5,!TRANS{"Kill"            },"K",0,#MENU_KILL
-  GTMenuItem  0,0,2, 6,!TRANS{"Save Block As ..."},"",0,#MENU_SAVEBLOCKAS
+  GTMenuItem  0,0,2, 6,!TRANS{"Save Block As..."},"",0,#MENU_SAVEBLOCKAS
   GTMenuItem  0,0,2, 7
   GTMenuItem  0,0,2, 8,!TRANS{"Insert Line"     },"" ,0,#MENU_INSERTLINE
   GTMenuItem  0,0,2,09,!TRANS{"Delete Line"     },"D",0,#MENU_DELETELINE
@@ -17896,27 +17628,27 @@ Return
 
 
 
-  GTMenuTitle 0,3,   !TRANS{"Navigation"
-  GTMenuItem  0,0,3, 0,!TRANS{"Find ..."        },"F",0,#MENU_OPENFIND
+  GTMenuTitle   0,3,   !TRANS{"Navigation"
+  GTMenuItem  0,0,3, 0,!TRANS{"Find..."         },"F",0,#MENU_OPENFIND
   GTMenuItem  0,0,3, 1,!TRANS{"Find Next"       },"N",0,#MENU_FIND
   GTMenuItem  0,0,3, 2,!TRANS{"Find Previous"   },"P",0,#MENU_PREVIOUS
   GTMenuItem  0,0,3, 3,!TRANS{"Replace & Find"  },"R",0,#MENU_REPLACE
   GTMenuItem  0,0,3, 4
-  GTMenuItem  0,4,3, 5,!TRANS{"Top"              },"CTRL+Up"   ,0,#MENU_TOP
-  GTMenuItem  0,4,3, 6,!TRANS{"Bottom"           },"CTRL+Down" ,0,#MENU_BOTTOM
-  GTMenuItem  0,0,3, 7,!TRANS{"Goto Line ..."    },"G",0,#MENU_GOTOLINE
+  GTMenuItem  0,4,3, 5,!TRANS{"Top"             },"CTRL+Up"   ,0,#MENU_TOP
+  GTMenuItem  0,4,3, 6,!TRANS{"Bottom"          },"CTRL+Down" ,0,#MENU_BOTTOM
+  GTMenuItem  0,0,3, 7,!TRANS{"Goto Line..."    },"G",0,#MENU_GOTOLINE
   GTMenuItem  0,0,3, 8
-  GTMenuItem  0,4,3,09,!TRANS{"Previous Page"    },"F9",0,#MENU_PREVPAGE
-  GTMenuItem  0,4,3,10,!TRANS{"Next Page"        },"F10",0,#MENU_NEXTPAGE
+  GTMenuItem  0,4,3,09,!TRANS{"Previous Page"   },"F9",0,#MENU_PREVPAGE
+  GTMenuItem  0,4,3,10,!TRANS{"Next Page"       },"F10",0,#MENU_NEXTPAGE
 
-  GTMenuTitle 0,4,   !TRANS{"Compiler"}
-  GTMenuItem  0,0,4, 0,!TRANS{"Compile & Run"          },"#",0,#MENU_COMPILERUN
-  GTMenuItem  0,0,4, 1,!TRANS{"Save & Compile & Run"   },"B",0,#MENU_SAVECOMPILERUN
-  GTMenuItem  0,0,4, 2,!TRANS{"Run"                    },"",0,#MENU_RUN
-  GTMenuItem  0,0,4, 3,!TRANS{"Create Executable ..."  },"E",0,#MENU_CREATEEXE
+  GTMenuTitle   0,4,   !TRANS{"Compiler"        }
+  GTMenuItem  0,0,4, 0,!TRANS{"Compile & Run"         },"#",0,#MENU_COMPILERUN
+  GTMenuItem  0,0,4, 1,!TRANS{"Save & Compile & Run"  },"B",0,#MENU_SAVECOMPILERUN
+  GTMenuItem  0,0,4, 2,!TRANS{"Run"                   },"",0,#MENU_RUN
+  GTMenuItem  0,0,4, 3,!TRANS{"Create Executable..."  },"E",0,#MENU_CREATEEXE
   GTMenuItem  0,0,4, 4,!TRANS{"Save & Create Executable" },"T",0,#MENU_SAVECREATEEXE
   GTMenuItem  0,0,4, 5,!TRANS{"Create minimized Executable" },"",0,#MENU_CREATERELEASEEXE
-  GTMenuItem  0,0,4, 6,!TRANS{"Create Resident ..."    },"",0,#MENU_CREATERESIDENT
+  GTMenuItem  0,0,4, 6,!TRANS{"Create Resident..."    },"",0,#MENU_CREATERESIDENT
   GTMenuItem  0,0,4, 7
   GTMenuItem  0,0,4, 8,!TRANS{"Set CLI Arguments"      },"",0,#MENU_SETCLIARGS
   GTMenuItem  0,0,4,09,!TRANS{"Reload Blitzlibs"       },"\"  ,0,#MENU_RELOADBLITZLIBS
@@ -17924,8 +17656,8 @@ Return
   GTMenuItem  0,0,4,11,!TRANS{"Compiler Settings"      },"",0,#MENU_COMPILERSETTINGS
   GTMenuItem  0,1,4,12,!TRANS{"Create Debug Code"      },"",0,#MENU_CREATEDEBUGCODE
 
-  GTMenuTitle 0,5,   !TRANS{"Help"}
-  GTMenuItem  0,0,5, 0,!TRANS{"What's New ?"          },"",0,#MENU_WHATSNEW
+  GTMenuTitle   0,5,   !TRANS{"Help"}
+  GTMenuItem  0,0,5, 0,!TRANS{"What's New?"            },"",0,#MENU_WHATSNEW
   GTMenuItem  0,0,5, 1
   GTMenuItem  0,0,5, 2,!TRANS{"General AB3 Guide"      },"",0,#MENU_GENERALGUIDE
   GTMenuItem  0,0,5, 3,!TRANS{"Programming in Blitz"   },"",0,#MENU_PROGRAMGUIDE
@@ -18501,7 +18233,7 @@ RTS
 
 
 .menu_project:
-  JSR copyprefsdata
+  JSR StoreXtraData
   !basic
   If NOT WZ_CheckOpen{"WIN_PROJECT"}
     WZWindow WZID("WIN_PROJECT"),0,192,-2,-2,-2,-2,WZID("WIN_PROJECT")
@@ -18520,7 +18252,7 @@ RTS
   DEFTYPE.l *ptr_filename
   MOVE.l actualfile,D0 : *ptr_filename.l = PutD0
   actual_file$ = Peek.s(*ptr_filename + $DE)
-  actual_drawer$ = Peek.s(?str_currentdir)
+  actual_drawer$ = Peek.s(?comStr_CurrentDir)
 
   If project_tab = 1
     WZ_DrawTable{"PROJECTTABLE"}
@@ -18651,10 +18383,10 @@ RTS
 ; -- TAB Changelog --
 
       Case "CHANGELOG_ADDENTRY"
-        If Peek.l(?versioninformation) AND Peek.l(?number_of_builds)
-          If (Peek.l(?versioninformation)<>0) AND (Peek.l(?number_of_builds)<>0)
-            version_code.l = Peek.l(Peek.l(?versioninformation))
-            anz_builds.l   = Peek.l(Peek.l(?number_of_builds))
+        If Peek.l(?comPtr_VersionInformation) AND Peek.l(?comPtr_NumberOfBuilds)
+          If (Peek.l(?comPtr_VersionInformation)<>0) AND (Peek.l(?comPtr_NumberOfBuilds )<>0)
+            version_code.l = Peek.l(Peek.l(?comPtr_VersionInformation))
+            anz_builds.l   = Peek.l(Peek.l(?comPtr_NumberOfBuilds))
             vercode$ = Str$(version_code LSR 24 )+"."
             vercode$ + Str$((version_code LSL 8) LSR 24 )+"."
             vercode$ + Str$((version_code LSL 16)LSR 24 )+" (build: "
@@ -18815,22 +18547,22 @@ Return
 
 .get_versiondata_from_gui:
   If WZ_CheckOpen{"WIN_PROJECT"}
-    If Peek.l(?versioninformation)
+    If Peek.l(?comPtr_VersionInformation)
       version_code = WZInput("INTEGER_VER_MAJOR") LSL 24
       version_code + (WZInput("INTEGER_VER_MINOR") LSL 16)
       version_code + (WZInput("INTEGER_VER_PATCH") LSL 8)
-      Poke.l Peek.l(?versioninformation),version_code
+      Poke.l Peek.l(?comPtr_VersionInformation),version_code
 
-      Poke.l Peek.l(?number_of_builds), WZInput("INTEGER_VER_BUILD")
+      Poke.l Peek.l(?comPtr_NumberOfBuilds), WZInput("INTEGER_VER_BUILD")
     EndIf
   EndIf
 Return
 
 .update_versiongadgets
-  If Peek.l(?versioninformation) AND Peek.l(?number_of_builds)
-    If (Peek.l(?versioninformation)<>0) AND (Peek.l(?number_of_builds)<>0)
-      version_code.l = Peek.l(Peek.l(?versioninformation))
-      anz_builds.l   = Peek.l(Peek.l(?number_of_builds))
+  If Peek.l(?comPtr_VersionInformation) AND Peek.l(?comPtr_NumberOfBuilds)
+    If (Peek.l(?comPtr_VersionInformation)<>0) AND (Peek.l(?comPtr_NumberOfBuilds)<>0)
+      version_code.l = Peek.l(Peek.l(?comPtr_VersionInformation))
+      anz_builds.l   = Peek.l(Peek.l(?comPtr_NumberOfBuilds))
       If WZ_CheckOpen{"WIN_PROJECT"}
         Use Window WZID("WIN_PROJECT")
         WZPrint "INTEGER_VER_MAJOR",version_code LSR 24
@@ -19387,7 +19119,7 @@ AL_0_E6F2:  Dc.b "MAKEEXEC",0,0
   MOVEA.l ptr_sourcewindow,A0
   TST.w AL_0_5388
   BEQ.w JL_0_E818
-  MOVEA.l ptr_compilerwindow,A0
+  MOVEA.l comPtr_CompilerWindow,A0
 
   JL_0_E818:
   MOVE.l A6,-(A7)
@@ -19512,7 +19244,7 @@ RTS
 RTS
 
 .arexxfunc_getdoclist:
-  JSR copyprefsdata
+  JSR StoreXtraData
   MOVE.l loadedfilesbase,D0
   MOVEA.l ptr_tempstring,A0
   JSR generate_tempfilename
@@ -19772,7 +19504,7 @@ RTS
 RTS
 
 .arexxfunc_topline:
-  MOVE.l firstsourceline,ptr_arexx_currsourceline
+  MOVE.l comPtr_FirstSourceLine,ptr_arexx_currsourceline
   SUBA.l A0,A0
   MOVEQ.l #$00,D0
 RTS
@@ -19853,8 +19585,8 @@ RTS
   MOVEA.l ptr_tempstring,A0
   MOVE.w replacestartcolumn,d0
   ;SUBQ.w #1,d0
-  MOVE.w d0,column
-  CLR.w columnsoffset
+  MOVE.w d0,comWord_Column
+  CLR.w comWord_ColumnsOffset
   MOVEQ.l #$00,D0
 RTS
 
@@ -19867,7 +19599,7 @@ RTS
 
   JL_0_ECA2:
   CLR.b macro_
-  MOVEA.l currsourceline,A0
+  MOVEA.l comPtr_CurrentSourceLine,A0
   LEA $9(A0),A0
   MOVE.l A1,-(A7)
   MOVEA.l expandstore,A1
@@ -19881,8 +19613,8 @@ RTS
   MOVEA.l expandstore,A0
   MOVE.l (A7)+,A1
   MOVEQ.l #$00,D1
-  MOVE.w column,D1
-  ADD.w columnsoffset,D1
+  MOVE.w comWord_Column,D1
+  ADD.w comWord_ColumnsOffset,D1
   ;SUBQ.w #1,D1
   ADDA.l D1,A0
 
@@ -19954,10 +19686,10 @@ RTS
 .getstring_new
   *textline.l = TEDGetCurrentLine_ + 9
   *detokened.l = TEDDetoke_(*textline)
-;  !cout{Peek.w(?columnsoffset),Peek.w(?column),Hex$(*detokened),Hex$(*textline)}
+;  !cout{Peek.w(?comWord_ColumnsOffset),Peek.w(?comWord_Column),Hex$(*detokened),Hex$(*textline)}
 ;  !cout{"*"+Peek$(*detokened)+"*",Peek$(*textline)}
   text$ = Peek$(*detokened)
-  cursorpos.l = Peek.w(?column)+1
+  cursorpos.l = Peek.w(?comWord_Column)+1
   aword$ = "" : char$ =""
   tlen = Len(text$)
   nextpos.l = cursorpos
@@ -19979,7 +19711,7 @@ RTS
 
 .getstring:
   MOVEA.l ptr_tempstring,A1
-  MOVEA.l currsourceline,A0
+  MOVEA.l comPtr_CurrentSourceLine,A0
   LEA $9(A0),A0
   MOVE.l A1,-(A7)
   MOVEA.l expandstore,A1
@@ -19993,8 +19725,8 @@ RTS
   MOVEA.l expandstore,A0
   MOVE.l (A7)+,A1
   MOVEQ.l #$00,D1
-  MOVE.w column,D1
-  ADD.w columnsoffset,D1
+  MOVE.w comWord_Column,D1
+  ADD.w comWord_ColumnsOffset,D1
   ;SUBQ.w #1,D1
   ADDA.l D1,A0
  'l1
@@ -20062,7 +19794,7 @@ RTS
 
 .arexxfunc_help:
   MOVEM.l    A0-A4,-(A7)
-  MOVEA.l    currsourceline,A4
+  MOVEA.l    comPtr_CurrentSourceLine,A4
   ; -- not implemented
   MOVEM.l    (A7)+,A0-A4
   MOVEQ.l    #$00,D0
@@ -20071,12 +19803,12 @@ RTS
 
 .arexxfunc_helptext:
   MOVEM.l    A0-A4,-(A7)
-  MOVE.w     do_tokenize,D0
+  MOVE.w     comWord_DoTokenize,D0
   BEQ.w      JL_0_EE70
-  MOVEA.l    currsourceline,A4
+  MOVEA.l    comPtr_CurrentSourceLine,A4
   LEA        $9(A4),A4
-  MOVE.w     columnsoffset,D3
-  ADD.w      column,D3
+  MOVE.w     comWord_ColumnsOffset,D3
+  ADD.w      comWord_Column,D3
   MOVEQ.l    #$00,D1
   MOVEQ.l    #$00,D2
 
@@ -20138,7 +19870,7 @@ RTS
   MOVEQ.l #$00,D0
 RTS
 ;  MOVEM.l    A1-A6,-(A7)
-;  MOVEA.l    currsourceline,A4
+;  MOVEA.l    comPtr_CurrentSourceLine,A4
 ;  MOVEA.l    temp_tokenstring3,A2
 ;  CLR.b      (A2)
 ;  MOVE.l     A2,-(A7)
@@ -20280,11 +20012,11 @@ RTS
 ;
 ;  TST.l ptr_aslpattern
 ;  BMI.b JL_0_F0BA
-;  CMPA.l #str_filepattern,A3
+;  CMPA.l #comStr_str_FilePattern,A3
 ;  BEQ.w JL_0_F0A6
-;  CMPA.l #str_filepattern_standalone,A3
+;  CMPA.l #comStr_str_FilePattern_standalone,A3
 ;  BEQ.w JL_0_F0A6
-;  CMPA.l #str_filepattern_noinfo,A3
+;  CMPA.l #comStr_str_FilePattern_noinfo,A3
 ;  BNE.w JL_0_F0BA
 ;  JL_0_F0A6:
 ;  MOVE.l #$FFFFFFFF,AL_0_F236
@@ -20352,9 +20084,9 @@ RTS
 ;    BNE.b JL_0_F158
 ;  JL_0_F15C:
 ;
-;  ; -- copy returned to str_sourcefile_complete
+;  ; -- copy returned to comStr_SourceFileComplete
 ;  MOVEA.l $8(A0),A2
-;  LEA str_sourcefile_complete,A1
+;  LEA comStr_SourceFileComplete,A1
 ;  MOVEQ.l #-$01,D1
 ;  TST.b (A2)
 ;  BNE.b JL_0_F170
@@ -20386,7 +20118,7 @@ RTS
 ;  MOVE.l D1,-(A7)
 ;  MOVE.l (A7)+,D1
 ; 'n2
-;  MOVE.l #str_sourcefile_complete,D0
+;  MOVE.l #comStr_SourceFileComplete,D0
 ;  MOVEA.l D0,A0
 ;  TST.b (A0)
 ;  BNE.w JL_0_F1A8
@@ -20672,7 +20404,7 @@ RTS
    BEQ.w JL_0_F5F4
    CLR.b instring
   MOVE.l maxlines,D6
-  MOVEA.l firstsourceline,A4
+  MOVEA.l comPtr_FirstSourceLine,A4
 
   JL_0_F58E:
     MOVEA.l temp_tokenstring1,A0
@@ -20882,7 +20614,7 @@ RTS
 
 .jump_onclick:
   MOVEM.l d2-d7/a1/a5-a6,-(a7)
-  MOVEA.l currsourceline,A4
+  MOVEA.l comPtr_CurrentSourceLine,A4
   MOVE.l a4,olda4
   CLR.b foundf2
  'lp1
@@ -20892,7 +20624,7 @@ RTS
    BNE 'lp1
   MOVE.b #1,foundf2
  'ex1
-  MOVEA.l currsourceline,A4
+  MOVEA.l comPtr_CurrentSourceLine,A4
   JSR arexxfunc_getword
   JSR reset_currsourceline
   JSR jump_addhistory
@@ -20991,7 +20723,7 @@ RTS
  'l20                                 ;not found search other files
   JSR set_pointerbusy
   !basic
-  TEDSetCurrentLine_ ?currsourceline
+  TEDSetCurrentLine_ ?comPtr_CurrentSourceLine
   Gosub getstring_new
   word1$ = actualword$
   ;  !cout{word1$}
@@ -21022,7 +20754,7 @@ RTS
           JSR set_pointernormal
           ; --
           ; -- jump to first line of source and search again
-          MOVEA.l currsourceline,A4
+          MOVEA.l comPtr_CurrentSourceLine,A4
           JSR reset_currsourceline
           MOVEQ #0,D3
           BRA begin_search
@@ -21041,10 +20773,10 @@ RTS
 .jumpline     ; D0: Zielzeile
   CMP.l maxlines,d0
   BGE 'ret
-  MOVEA.l currsourceline,A4
+  MOVEA.l comPtr_CurrentSourceLine,A4
   JSR cursor_off
-  CLR.w column
-  CLR columnsoffset
+  CLR.w comWord_Column
+  CLR.w comWord_ColumnsOffset
   JSR gotoline
   ;JSR cursor_on
   ;JSR linetext
@@ -21073,7 +20805,7 @@ RTS
   w$ = actualword$
   tokname$ = actualword$
   res$ = ""
-  MOVE.l token,token@(a5)
+  MOVE.l comPtr_TokenBase,token@(a5)
   While token.l
     b$ = Peek$(token+6)
     If b$ = w$
@@ -21084,7 +20816,7 @@ RTS
     token = Peek.l(token)
   Wend
   If res$ = ""
-    MOVE.l macrobase,a0:MOVE.l (a0),token@(a5)
+    MOVE.l comPtr_MacroBase,a0:MOVE.l (a0),token@(a5)
     c.l = 0
     While token
       b$ = Peek$(token+13)
@@ -21114,9 +20846,9 @@ RTS
        Next
        linesize.l = 0
        MOVEA.l textbufferaddr,A0
-       ADDA.w textbufferoffset,A0
+       ADDA.w comWord_TextBufferOffset,A0
        MOVE.l a0,a1
-       ADD.w maxcolumns,a1
+       ADD.w comWord_MaxColumns,a1
        SUBQ.l #1,a1
 's2    CMP.b #" ",(a1)
        BNE 's1
@@ -21126,9 +20858,9 @@ RTS
 's1    SUB.l a0,a1
        MOVE.l a1,d1
        MOVE.l d1,linesize@(a5)
-       ;MOVE.l currsourceline,a0
+       ;MOVE.l comPtr_CurrentSourceLine,a0
        ;LEA 9(a0),a0
-       MOVE.w column,d0
+       MOVE.w comWord_Column,d0
        BEQ 'l3
 'l1    CMP.b #" ",0(a0,d0)
        BEQ 'l2
@@ -21155,7 +20887,7 @@ RTS
 'q     RTS
 'l2    ADD.l d0,a0
        MOVE.l #columnsize,d0
-       SUB.w column,d0
+       SUB.w comWord_Column,d0
        SUBQ.l #1,d0
 'la1   CMP.b #$20,(a0)+
        BNE 'la2
@@ -21169,7 +20901,7 @@ RTS
        MOVE.l addcodepos@(a5),a0
        SUBQ #2,a0
        SUB.l textbufferaddr,A0
-       SUB.w textbufferoffset,A0
+       SUB.w comWord_TextBufferOffset,A0
        MOVE.l a0,d0
        SUB.l d0,linesize@(a5)
        If linesize >1 Then linesize-1
@@ -21204,17 +20936,17 @@ RTS
 RTS
 
 .help_checkfortype:
-  MOVE.w column,d1
+  MOVE.w comWord_Column,d1
   MOVE.w d1,columnstore
   SUBQ.w #2,d1
   BGT 'w1
   MOVEQ #1,d1
  'w1
   MOVE.l textbufferaddr,a0
-  ADD.w textbufferoffset,a0
+  ADD.w comWord_TextBufferOffset,a0
   MOVE.l a0,a1
   SUBQ.l #1,a1
-  ADD.w column,a0
+  ADD.w comWord_Column,a0
   CMP.b #"\",-1(a0)
   BEQ typehelp1
   CMP.b #"\",(a0)
@@ -21265,9 +20997,9 @@ RTS
   BEQ 'x1
   CMP.b #".",d0
   BNE 't1
-  MOVE.w d1,column
+  MOVE.w d1,comWord_Column
   BSR arexxfunc_getword
-  MOVE.w columnstore,column
+  MOVE.w columnstore,comWord_Column
   BRA typehelp
  't1
   MOVE.l a2,-(a7)
@@ -21284,7 +21016,7 @@ RTS
   CMP.b #"*",d0
   BEQ 'x12
   CLR.b (a2)
-  MOVE.l currsourceline,a0
+  MOVE.l comPtr_CurrentSourceLine,a0
   JSR gettype
   TST.l d0
   BNE 'found
@@ -21294,7 +21026,7 @@ RTS
   LEA typestr,a0
   BRA typehelp
  'path
-  MOVE.l currsourceline,a0
+  MOVE.l comPtr_CurrentSourceLine,a0
  'nl2
   MOVE.l 4(a0),d0
 ;  BEQ notypehelp
@@ -21422,7 +21154,7 @@ RTS
 
 ;.notypehelp
 .help_checkforif
-  actline.l   = ?currsourceline
+  actline.l   = ?comPtr_CurrentSourceLine
   nestcount.b = 1
   Repeat
     iffound.b = 0
@@ -21550,7 +21282,7 @@ RTS
 
 .findvar
   !basic
-  MOVE.l varbase,d0
+  MOVE.l comPtr_VarBase,d0
   BEQ 'oldped
   MOVE.l d0,a0
   CMP.l #0,(a0)
@@ -21580,7 +21312,7 @@ RTS
     WZWindow WZID("WIN_NEWTYPE"),?wzgui,255,\type_x,\type_y,\type_w,\type_h,WZID("WIN_NEWTYPE")
     SetMenuStrip_ WZWindowAddr,Peek.l(?addr_menustrip)
     ;GTSetMenuChecked 0,5,9,On
-    MOVE.l varbase,d0
+    MOVE.l comPtr_VarBase,d0
     BEQ 'oldped
     MOVE.l d0,a0
     CMP.l #0,(a0)
@@ -21661,7 +21393,7 @@ Return
       message$ = ""
       For i = 0 To 255 : lib_check(i)=False : Next i
       ;DEFTYPE.tokendata tokeninfo
-      *tpointer.l = Peek.l(?token)
+      *tpointer.l = Peek.l(?comPtr_TokenBase)
  ;     fid = file_Open{"ram:tokenlist.csv",#file_forcewrite}
       Repeat
         tokeninfo\next_token = Peek.l(*tpointer)
@@ -21713,7 +21445,7 @@ Return
     pos.l = WZ_Row{"FUNCTIONSTABLE"}
     actualword$ = WZ_GetCell{"FUNCTIONSTABLE",WZ_Row{"FUNCTIONSTABLE"},1}
     If actualword$<>""
-      libinfo$ = lib_mapping$(libnumber.l,0)+" (LibNr. "+Str$(libnumber)+" Token "+Hexw$(TED_GetTokenID{?token,actualword$}) +")"
+      libinfo$ = lib_mapping$(libnumber.l,0)+" (LibNr. "+Str$(libnumber)+" Token "+Hexw$(TED_GetTokenID{?comPtr_TokenBase,actualword$}) +")"
       WZPrint "ARGS_LIBRARYNAME",&libinfo$
     EndIf
   Case #WZTABLEEVENT_DOUBLECLICK
@@ -21753,7 +21485,7 @@ Return
 
   WZ_ClearTable{"FUNCTIONSTABLE"}
 ;  DEFTYPE.tokendata tokeninfo
-  MOVE.l token,D0    : tokenbase.l = PutD0
+  MOVE.l comPtr_TokenBase,D0    : tokenbase.l = PutD0
   If tokenbase<>0
     *tpointer.l = tokenbase : tfound.b = False : tcounter.l = 0 : tname$ = ""
     Repeat
@@ -21829,9 +21561,9 @@ RTS
     Case "add" ;addcode
       a$ = bstr$
       MOVE.l textbufferaddr,a0
-      ADD.w textbufferoffset,a0
-      ADD.w columnsoffset,a0
-      ADD.w column,a0
+      ADD.w comWord_TextBufferOffset,a0
+      ADD.w comWord_ColumnsOffset,a0
+      ADD.w comWord_Column,a0
       CMP.b #" ",(a0)
       BEQ nocharunder
       MOVEQ #-1,d0
@@ -21871,8 +21603,8 @@ RTS
   wev.l = WZ_CheckTableEvent{ev}
   Select wev
   Case #WZTABLEEVENT_CELLSELECTED
-    MOVE.l token,token@(a5)
-    MOVE.l token,d0 : *tokenbase = PutD0
+    MOVE.l comPtr_TokenBase,token@(a5)
+    MOVE.l comPtr_TokenBase,d0 : *tokenbase = PutD0
     b$ = WZ_GetCell{"INSTRUCTIONTABLE",WZ_Row{"INSTRUCTIONTABLE"},1}
     bstr$ = b$
     While token
@@ -21904,7 +21636,7 @@ Return
     InitArgParse search_instruction$
     word1$ = NextArg$
     word2$ = NextArg$
-    MOVE.l token,token@(a5)
+    MOVE.l comPtr_TokenBase,token@(a5)
     numcount.l = 0
     If browse_instructions
       While token
@@ -21941,7 +21673,7 @@ Return
     End If
     ;
     If browse_macros
-      MOVE.l macrobase,a0:MOVE.l (a0),token@(a5)
+      MOVE.l comPtr_MacroBase,a0:MOVE.l (a0),token@(a5)
       c.l = 0
       While token
         b$ = Peek$(token+13)
@@ -22045,7 +21777,7 @@ Return
  'l1
     MOVE.b (a2)+,d7
     BEQ 'e1
-    CMP.w #$7d,column
+    CMP.w #$7d,comWord_Column
     BGE 'e1
     MOVEM.l a2/a5,-(a7)
     JSR insertchar
@@ -22056,8 +21788,8 @@ Return
 Return
 
 .instructionbrowser_startguide   ;actualword$: zu suchende Funktion
-  MOVE.l token,token@(a5)
-  MOVE.l token,d0 : *tokenbase = PutD0
+  MOVE.l comPtr_TokenBase,token@(a5)
+  MOVE.l comPtr_TokenBase,d0 : *tokenbase = PutD0
 
   b$=actualword$
   While token
@@ -22120,31 +21852,31 @@ Return
     WZ_InitTable{"WIN_SHORTCUTS","SHORTCUTS",2}
     WZ_SetTableTitle{"SHORTCUTS",!TRANS{"Key"},!TRANS{"Function"}}
     WZ_SetPriority{"SHORTCUTS",1,2}
-    WZ_AddRow{"SHORTCUTS","<ALT> + Left Mousebutton"   ,!TRANS{"Jump to label/func"} }
-    WZ_AddRow{"SHORTCUTS","<ALT> + Middle Mousebutton" ,!TRANS{"Back from Label/func"}}
-    WZ_AddRow{"SHORTCUTS","<ALT> + click on a filename",!TRANS{"save and compile and run (see above)"}  }
-    WZ_AddRow{"SHORTCUTS","<CTRL> + click on filename" ,!TRANS{"save and create exe(save both if you click on diffrent)"}}
-    WZ_AddRow{"SHORTCUTS","<CTRL> + <U>"               ,!TRANS{"undo current line"}   }
-    WZ_AddRow{"SHORTCUTS","<ESC>"                      ,!TRANS{"closes any active helpwindow"}  }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<ALT> + Left Mousebutton"}   ,!TRANS{"Jump to label/func"} }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<ALT> + Middle Mousebutton" },!TRANS{"Back from Label/func"}}
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<ALT> + click on a filename"},!TRANS{"save and compile and run (see above)"}  }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<CTRL> + click on filename"} ,!TRANS{"save and create exe(save both if you click on diffrent)"}}
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<CTRL> + <U>" }              ,!TRANS{"undo current line"}   }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<ESC>" }                     ,!TRANS{"closes any active helpwindow"}  }
     WZ_AddRow{"SHORTCUTS","####","####"}
-    WZ_AddRow{"SHORTCUTS","<ALT> + <CURSOR UP>"        ,!TRANS{"move history up"}  }
-    WZ_AddRow{"SHORTCUTS","<ALT> + <CURSOR DOWN>"      ,!TRANS{"move history down"}}
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<ALT> + <CURSOR UP>"}        ,!TRANS{"move history up"}  }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<ALT> + <CURSOR DOWN>"}      ,!TRANS{"move history down"}}
     WZ_AddRow{"SHORTCUTS","####","####"}
-    WZ_AddRow{"SHORTCUTS","<HELP> + <SHIFT>"           ,!TRANS{"opens guide/autodoc of instruction under cursor"} }
-    WZ_AddRow{"SHORTCUTS","<HELP> + <CTRL>"            ,!TRANS{"opens parameter diagnostic for actual function"} }
-    WZ_AddRow{"SHORTCUTS","<HELP> on any function"     ,!TRANS{"displays correct syntax in screens titlebar"}   }
-    WZ_AddRow{"SHORTCUTS","<HELP> on unknown word"     ,!TRANS{"opens instruction browser"}                      }
-    WZ_AddRow{"SHORTCUTS","<HELP> on '\'"              ,!TRANS{"opens window 'type browser' and shows newtype information"} }
-    WZ_AddRow{"SHORTCUTS","<HELP> on 'EndIf"           ,!TRANS{"shows corresponding IF-Blockheader"} }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<HELP> + <SHIFT>"  }         ,!TRANS{"opens guide/autodoc of instruction under cursor"} }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<HELP> + <CTRL>"   }         ,!TRANS{"opens parameter diagnostic for actual function"} }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<HELP> on any function"}     ,!TRANS{"displays correct syntax in screens titlebar"}   }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<HELP> on unknown word"}     ,!TRANS{"opens instruction browser"}                      }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<HELP> on '\'"     }         ,!TRANS{"opens window 'type browser' and shows newtype information"} }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<HELP> on 'EndIf" }          ,!TRANS{"shows corresponding IF-Blockheader"} }
     WZ_AddRow{"SHORTCUTS","####","####"}
-    WZ_AddRow{"SHORTCUTS","<L-Amiga> + <F4>-<F6>"      ,!TRANS{"save winconfig"}       }
-    WZ_AddRow{"SHORTCUTS","<F4> - <F6>"                ,!TRANS{"load winconfig (F4 also startconfig)"}   }
-;    WZ_AddRow{"SHORTCUTS","<F7>"                       ,!TRANS{"choose next entry in source browser"}    }
-;    WZ_AddRow{"SHORTCUTS","<F8>"                       ,!TRANS{"choose previous entry in source browser"} }
-    WZ_AddRow{"SHORTCUTS","<F7>"                       ,!TRANS{"window autolayout variant #1"}    }
-    WZ_AddRow{"SHORTCUTS","<F8>"                       ,!TRANS{"window autolayout variant #2"} }
-    WZ_AddRow{"SHORTCUTS","<F9>"                       ,!TRANS{"goto previous document"}    }
-    WZ_AddRow{"SHORTCUTS","<F10>"                      ,!TRANS{"goto next document"} }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<L-Amiga> + <F4>-<F6>"}      ,!TRANS{"save winconfig"}       }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<F4> - <F6>"}                ,!TRANS{"load winconfig (F4 also startconfig)"}   }
+;    WZ_AddRow{"SHORTCUTS",!TRANS{ "<F7>" }                      ,!TRANS{"choose next entry in source browser"}    }
+;    WZ_AddRow{"SHORTCUTS",!TRANS{ "<F8>" }                      ,!TRANS{"choose previous entry in source browser"} }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<F7>"  }                     ,!TRANS{"window autolayout variant #1"}    }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<F8>"  }                     ,!TRANS{"window autolayout variant #2"} }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<F9>"  }                     ,!TRANS{"goto previous document"}    }
+    WZ_AddRow{"SHORTCUTS",!TRANS{ "<F10>" }                     ,!TRANS{"goto next document"} }
 
 
     WZ_DrawTable{"SHORTCUTS"}
@@ -22176,12 +21908,12 @@ Return
     !ev_WaitEvent
 
     ; bubble onlinehelp for most windows
-    If Peek.b(?onlinehelp)<>0
-      If (ev<>#IDCMP_INTUITICKS) AND (ev<>#IDCMP_ACTIVEWINDOW) AND (ev<>#IDCMP_GADGETHELP)  AND (ev<>#IDCMP_CHANGEWINDOW)
-        WZ_HideHelp{}
-      EndIf
-      If ev = #IDCMP_GADGETHELP Then WZ_ShowHelp{}
-    EndIf
+   ; If Peek.b(?onlinehelp)<>0
+   ;   If (ev<>#IDCMP_INTUITICKS) AND (ev<>#IDCMP_ACTIVEWINDOW) AND (ev<>#IDCMP_GADGETHELP)  AND (ev<>#IDCMP_CHANGEWINDOW)
+   ;     WZ_HideHelp{}
+   ;   EndIf
+   ;   If ev = #IDCMP_GADGETHELP Then WZ_ShowHelp{}
+   ; EndIf
 
     Select ev
     Case #IDCMP_CLOSEWINDOW
@@ -22512,7 +22244,7 @@ Return
   InitArgParse str2$
   word1$ = NextArg$
   word2$ = NextArg$
-  MOVE.l varbase,d0
+  MOVE.l comPtr_VarBase,d0
   *nt = PutD0:*nt = Peek.l(*nt):
   While *nt
     a$ = Peek$(*nt + $13)
@@ -22687,28 +22419,28 @@ Return
       Next
       If addcodesize >1 Then t$ = Peeks$(addcodepos,addcodesize):Else t$ = ""
       t$ = StripLead$(t$,32)
-      MOVE.w column,colstore
+      MOVE.w comWord_Column,colstore
       JSR cursor_off
       MOVE.l addcodepos@(a5),a0
       SUB.l textbufferaddr,a0
-      SUB.w textbufferoffset,a0
-      MOVE.w a0,column
-      MOVE.w columnsoffset,oldcolumnsoffset
-      CLR.w columnsoffset
-      i = Len(t$)
+      SUB.w comWord_TextBufferOffset,a0
+      MOVE.w a0,comWord_Column
+      MOVE.w comWord_ColumnsOffset,oldcolumnsoffset
+      CLR.w comWord_ColumnsOffset
+      i = FLen(t$)
       PrintScreenTitle{Str$(i)+" "+t$}
       If i
          MOVE.l addcodepos@(a5),a0
          SUB.l textbufferaddr,a0
-         SUB.w textbufferoffset,a0
-         MOVE.w a0,column
+         SUB.w comWord_TextBufferOffset,a0
+         MOVE.w a0,comWord_Column
          For i2 = 1 To i-1
            JSR deletechar
          Next
       End If
       Gosub insertstring
-      MOVE.w oldcolumnsoffset,columnsoffset
-      MOVE.w colstore,column
+      MOVE.w oldcolumnsoffset,comWord_ColumnsOffset
+      MOVE.w colstore,comWord_Column
       JSR activatesource
       JSR cursor_on
       Gosub diag_redraw
@@ -22872,7 +22604,7 @@ Return
       JSR jump_addhistory
       i = WZListData (list_labels,pos3b)
       !asm
-      MOVEA.l currsourceline,A4
+      MOVEA.l comPtr_CurrentSourceLine,A4
       MOVE.l d0,a0:
       JSR storeline
       JSR jump_to_keyword
@@ -22933,7 +22665,7 @@ Return
       ;pos3c = i
       i = WZListData (list_labels,WZInput)
       !asm
-      MOVE.l currsourceline,a4
+      MOVE.l comPtr_CurrentSourceLine,a4
       CMP.l oldcurrsourceline,a4
       BEQ 'l1
       MOVE.l d0,a0:
@@ -22985,7 +22717,7 @@ Return
       activategadget{"STRING_LABEL"}
 
     Case "button_update_liblist"
-      ; MOVE.l token,D0    : *tokenbase.l = PutD0
+      ; MOVE.l comPtr_TokenBase,D0    : *tokenbase.l = PutD0
       ; MOVE.l comdata,D0  : *cd.l = PutD0
       ; MOVE.l varbase,D0  : *vb.l = PutD0
       ; MOVE.l instrbase,D0: *intructionbase.l = PutD0
@@ -23017,7 +22749,7 @@ Return
         !asm
         JSR storeline
         JSR cursor_off
-        MOVE.l currsourceline,a4
+        MOVE.l comPtr_CurrentSourceLine,a4
         JSR menu_findnext
         JSR update_vertscroller
         JSR cursor_on
@@ -23107,20 +22839,20 @@ JL_0_46D6:
 RTS
 
 .storeline
-  MOVE.w key_before_return,D0
+  MOVE.w comWord_KeyBeforeReturn,D0
   BEQ.w exit_storeline
 
   MOVEM.l d0-d7/a0-a6,-(a7)
-  MOVE.l currsourceline,a4
+  MOVE.l comPtr_CurrentSourceLine,a4
   JSR cursor_off
   MOVEA.l textbufferaddr,A2
-  ADDA.w textbufferoffset,A2
-  MOVE.w D0,source_changed
+  ADDA.w comWord_TextBufferOffset,A2
+  MOVE.w D0,comWord_SourceChanged
 
   JSR parse_line
 
   ; -- draw selecting block if existing
-  SF state_blockmark
+  SF comByte_StateBlockMark
   TST.l blockendy
    BMI.w exit_updateblocka
   MOVEM.l D0-D3/A0-A2,-(A7)
@@ -23143,16 +22875,16 @@ RTS
   SUB.l startdisplayline,D3
   SUB.l startdisplayline,D1
   JSR JL_0_59BC
-  ST state_blockmark
+  ST comByte_StateBlockMark
   JL_0_C66a:
   MOVEM.l (A7)+,D0-D3/A0-A2
   exit_updateblocka:
 
   JSR JL_0_55AA
-  MOVE.w do_tokenize,D0
+  MOVE.w comWord_DoTokenize,D0
    BEQ.w JL_0_CC6b
   JSR print_current_sourceline
-  TST.b state_blockmark
+  TST.b comByte_StateBlockMark
    BEQ.w JL_0_CC6b
   MOVEM.l D0-D3/D7/A0-A2,-(A7)
   MOVE.w blockstartx,D0
@@ -23172,18 +22904,18 @@ RTS
   MOVEM.l (A7)+,D0-D3/D7/A0-A2
 
   JL_0_CC6b
-  MOVE.l a4,currsourceline
+  MOVE.l a4,comPtr_CurrentSourceLine
   MOVEM.l (a7)+,d0-d7/a0-a6
 
   exit_storeline:
-  CLR.w key_before_return
-  MOVE.l currsourceline,a4
+  CLR.w comWord_KeyBeforeReturn
+  MOVE.l comPtr_CurrentSourceLine,a4
 RTS
 
 .ascii_to_token  ;a2 = text
   MOVEM.l d1-d7/a0-a6,-(a7)
   MOVE.l d0,a2
-  MOVEA.l token,A3
+  MOVEA.l comPtr_TokenBase,A3
 
   JL_0_6036b:
   MOVEA.l A2,A4
@@ -23239,7 +22971,7 @@ RTS
     i = WZListData (list_labels,pos3b)
     !asm
     MOVEM.l a0-a6/d1-d7,-(a7)
-    MOVEA.l currsourceline,A4
+    MOVEA.l comPtr_CurrentSourceLine,A4
     MOVE.l d0,a0:
     JSR storeline
     JSR jump_to_keyword
@@ -23261,7 +22993,7 @@ RTS
     i = WZListData (list_labels,pos3b)
     !asm
     MOVEM.l a0-a6/d1-d7,-(a7)
-    MOVEA.l currsourceline,A4
+    MOVEA.l comPtr_CurrentSourceLine,A4
     MOVE.l d0,a0:
     JSR storeline
     JSR jump_to_keyword
@@ -23344,7 +23076,7 @@ RTS
 
     CMP.l actualfile,a0
     BNE 'nom
-    CMP.l #$4D4F4449,str_modified     ; "MODI"
+    CMP.l #$4D4F4449,comLong_Modified     ; "MODI"
     BNE 'nom2
 
     MOVEM.l d0/a0/a1,-(a7)
@@ -23506,7 +23238,7 @@ RTS
   MOVE.w message_qualifier,d1
   AND.w ##IEQUALIFIER_CONTROL|#IEQUALIFIER_LALT|#IEQUALIFIER_RALT,d1
   BEQ 'noctrl
-  CMP.l #$4D4F4449,str_modified    ; "MODI"
+  CMP.l #$4D4F4449,comLong_Modified    ; "MODI"
   BNE 'noc
   !asm
   JSR storeline
@@ -23552,7 +23284,7 @@ RTS
   MOVE.w message_qualifier,d1
   AND.w ##IEQUALIFIER_CONTROL|#IEQUALIFIER_LALT|#IEQUALIFIER_RALT ,d1
   BEQ 'nos2
-  CMP.l #$4D4F4449,str_modified     ; "MODI"
+  CMP.l #$4D4F4449,comLong_Modified     ; "MODI"
   BNE 'nos2
   MOVEM.l a0-a6/d0-d7,-(a7)
   !asm
@@ -23576,13 +23308,13 @@ RTS
   JSR cursor_off
   JSR selectfile
   !asm
-  JSR copyprefsdata
+  JSR StoreXtraData
   !basic
   MOVE.b #0,refreshonstore
   MOVE.w message_qualifier,d1
   AND.w ##IEQUALIFIER_CONTROL|#IEQUALIFIER_LALT|#IEQUALIFIER_RALT ,d1
   BEQ 'no
-  ;CMP.l #$4D4F4449,str_modified
+  ;CMP.l #$4D4F4449,comLong_Modified
   ;BNE 'nos
   ; !asm
   ; JSR saverout
@@ -23888,7 +23620,7 @@ findmode:   Dc.w 0
         !asm
         JSR storeline
         JSR cursor_off
-        MOVE.l currsourceline,a4
+        MOVE.l comPtr_CurrentSourceLine,a4
         JSR menu_findnext
         JSR update_vertscroller
         JSR cursor_on
@@ -23906,7 +23638,7 @@ findmode:   Dc.w 0
         !asm
         JSR storeline
         JSR cursor_off
-        MOVE.l currsourceline,a4
+        MOVE.l comPtr_CurrentSourceLine,a4
         JSR menu_findnext
         JSR update_vertscroller
         JSR cursor_on
@@ -23918,7 +23650,7 @@ findmode:   Dc.w 0
         !asm
         JSR storeline
         JSR cursor_off
-        MOVE.l currsourceline,a4
+        MOVE.l comPtr_CurrentSourceLine,a4
         JSR menu_findnext
         JSR update_vertscroller
         JSR cursor_on
@@ -23928,7 +23660,7 @@ findmode:   Dc.w 0
         !asm
         JSR storeline
         JSR cursor_off
-        MOVE.l currsourceline,a4
+        MOVE.l comPtr_CurrentSourceLine,a4
         JSR menu_previous
         JSR update_vertscroller
         JSR cursor_on
@@ -23938,7 +23670,7 @@ findmode:   Dc.w 0
         !asm
         JSR storeline
         JSR cursor_off
-        MOVE.l currsourceline,a4
+        MOVE.l comPtr_CurrentSourceLine,a4
         JSR menu_replace
         JSR cursor_on
         !basic
@@ -23954,11 +23686,11 @@ findmode:   Dc.w 0
           MOVE.l A4,D0
           TST.w findmode
            BNE.b replace_loop
-          MOVE.l firstsourceline,D0
+          MOVE.l comPtr_FirstSourceLine,D0
 
           replace_loop:
             MOVEA.l D0,A4
-            MOVE.l A4,currsourceline
+            MOVE.l A4,comPtr_CurrentSourceLine
             JSR replace_string
             MOVE.l (A4),D0
           BNE.b replace_loop
@@ -23995,7 +23727,7 @@ Return
 ; Declarations of Variables
 ; ---------------------------------------------------------------------
 .DECLARATIONS
-warningtitle     Ds.b #MAX_STRINGSIZE
+warningtitle:    Ds.b #MAX_STRINGSIZE
 ;CNIF #lang = 0
 ;menu1           Dc.b "Save & Create Exec",0,0
 ;menu2           Dc.b "Save & Compile & Run",0,0
