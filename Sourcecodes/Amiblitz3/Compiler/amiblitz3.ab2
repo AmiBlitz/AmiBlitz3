@@ -100,13 +100,15 @@ Syntax 2
 !initasm
 !basic
 XINCLUDE "dos.include.bb2"
+XINCLUDE "/preprocessor.include.bb2"
+XINCLUDE "/comdata.bb2"
 XINCLUDE "/common.bb2"
 XINCLUDE "/library_offsets.bb2"
 XINCLUDE "PE/wizard_Table.include.bb2"
 XINCLUDE "PE/logging.include.bb2"
 XINCLUDE "translation.include.bb2"
-XINCLUDE "/preprocessor.include.bb2"
-XINCLUDE "/comdata.bb2"
+XINCLUDE "AmiBlitz3_CLIMode.bb2"
+
 optimize 5
 WBStartup
 
@@ -202,16 +204,74 @@ End If
 If ende Then Goto abnormal_exit  ; remove Assigns
 ;------
 
-; --
-; -- check, if there is an alternative PED-executable set via Tooltype
-pedfile$ = dos_GetToolString{"EDITOR",dos_AddPart{my_systemdir$,"PED"}}
-Poke$ ?str_pedfile,pedfile$
-
-If dos_GetToolState{"START_WITHOUT_LIBS"} = -1
-  Poke.b ?start_without_libs,1
-Else
+If dos_FromCLI{}
+  CLIMode.l=True
   Poke.b ?start_without_libs,0
-EndIf
+  Poke$ ?str_pedfile,"NoPed!"
+  Poke.l ?CLIMode,CLIMode
+
+  ; We assume no error happened so far ...
+  err.l      = False ; indicate that an error has occured
+  showhelp.l = False ; show the CLI tool's help
+
+  ; Set the default values of your CLI arguments.
+  cli_exefile.s = ""
+  cli_debug.l   = False
+
+  ; Get the required CLI arguments ...
+  filename.s = dos_GetNextArg{} ; first read the filename
+  If filename.s = ""
+    NPrint "*** ERROR: No filename specified!"
+    err=True
+  End If
+
+  ; Get the optional CLI arguments
+  Repeat
+    arg.s = dos_GetNextArg{} ; get the next CLI argument
+    larg.s = LCase$(arg) ; lower case the option string
+    Select larg
+      Case "-o"  ; the user can specify a string here, spaces must be in quotes
+        cli_exefile.s = dos_GetNextArg{}
+      Case "-debug"  ; the user can specify an integer number here
+        cli_debug.l = Vallong(dos_GetNextArg{})
+      Case "-h"
+        showhelp = True  ; show the help and quit
+      Default
+        If arg><""
+          NPrint "*** ERROR: Unknown option \\22",arg,"\\22 specified!"
+          err = True
+        End If
+    End Select
+  Until arg = "" ; until we processed all arguments
+
+  ; Show the help if something went wrong or help was requested
+  If err><False OR showhelp = True
+    NPrint "\\n  Syntax : AmiBlitz3 <filename> [options]"
+    NPrint "\\n    required:"
+    NPrint "    <filename>      : file to compile"
+    NPrint "\\n    optional:"
+    NPrint "    -o <exefile>    : specify output  executable filename"
+    NPrint "    -debug <n>      : use debugger"
+    NPrint "    -h              : show this help"
+    NPrint "\\n  Example :"
+    NPrint "    AmiBlitz3 \\22DH0:Sourcecodes\MyProgram.ab3\\22 -o ram:MyProgram.exe\\n"
+    Pop If:Pop If
+    Goto abnormal_exit
+  End If
+
+Else
+  CLIMode=False
+  ; --
+  ; -- check, if there is an alternative PED-executable set via Tooltype
+  pedfile$ = dos_GetToolString{"EDITOR",dos_AddPart{my_systemdir$,"PED"}}
+  Poke$ ?str_pedfile,pedfile$
+
+  If dos_GetToolState{"START_WITHOUT_LIBS"} = -1
+    Poke.b ?start_without_libs,1
+  Else
+    Poke.b ?start_without_libs,0
+  EndIf
+End If
 
 ; --
 ; -- Konstanten- und Variableninitialisierung
@@ -628,11 +688,13 @@ End Function
   MOVE.l A4,ptr_ThisTask
 
   !basic
+  If CLIMode=False
   ; -- get the CLI args ...
   get_filename.s = dos_GetNextArg{}
   If get_filename <> ""
     Poke$ ?str_tempfilename,get_filename
   EndIf
+  End If
   !asm
   BSR.w open_doslibrary
   BEQ.w shutdown_compiler
@@ -683,6 +745,18 @@ End Function
   ADD.l macrobuffer_size,D0
   MOVE.l D0,ptr_macrobuffer_end
 
+  TST.l CLIMode
+  BEQ load_ped
+
+;  MOVE.l COMDATABASE,comdata
+  #columnsize = 250
+  !ComData_LEA{comWord_MaxColumns,A0}         : MOVE.w ##columnsize          ,(A0)
+  !ComData_SetL{comData_Magic,#$7E3A3A7E} ;#"~::~"}  ;
+  !ComData_LEA{comPtr_CurrentDir,A0}          : MOVE.l #comStr_CurrentDir       ,(A0)                           ;$68
+  !ComData_LEA{comPtr_SourceName,A0}          : MOVE.l #comStr_SourceName       ,(A0)                           ;$6C
+  JMP skip_ped
+
+.load_ped
   ; --
   ; -- load_PED
   MOVE.l #str_pedfile,D1            ; Load PED
@@ -707,6 +781,7 @@ End Function
   !ComData_GetW{comWord_PEDIsAvailable,D0}
   BEQ.w unload_ped
 
+.skip_ped
   !ComData_GetL{comData_Magic,D0}
   CMP.l #$7E3A3A7E,D0;"~::~",D0
   BNE unload_ped
@@ -725,6 +800,10 @@ End Function
 
   CLR.w AL_0_2B42
 ;  MOVE.l $2C(A1),_intuibase        ; intuibase of PED
+  !basic
+  NPrint "Loading Libs..."
+  !asm
+ 
 
   ; --
   ; -- load all acidlibs, deflibs and userlibs
@@ -737,6 +816,7 @@ End Function
     BSR.w init_buffers
     BSR.w call_setpointernormal
   skip_loading_libs:
+ 
 
   ; --
   ; --
@@ -761,6 +841,29 @@ End Function
     !asm
   ok_12:
 
+
+  TST.l CLIMode
+  BEQ run_ped
+  !basic
+  NPrint "Initializing hashmaps..."
+  TokenHashMapFile.s = "Blitz3:System/TokenList.hashmap"
+  *PreProcessor.preprocessor = preproc_Create{}
+  Poke.l ?comPtr_PreProcessor,*PreProcessor
+  preproc_LoadTokens{*PreProcessor,TokenHashMapFile}
+  If *PreProcessor\tokens=!_NULL ; we have no hashmap loaded, create it!
+    preproc_QueryTokens{*PreProcessor}
+    preproc_SaveTokens{*PreProcessor,TokenHashMapFile}
+  End If
+
+
+  NPrint "Now I could do some compiling stuff..."
+  preproc_Free{*PreProcessor} : *PreProcessor=!_NULL
+   
+
+  !asm
+  JMP terminate_ab3
+
+.run_ped
   ; -- jump to the address ped returned before and pass a sourcename in A0
   MOVEA.l ped_startup_addr,A1
   LEA str_tempfilename,A0
@@ -768,7 +871,7 @@ End Function
   ; --
   ; -- PED has been quit now ...
   ; --
-
+.terminate_ab3
   MOVE.l signalNum,D0
   MOVEA.l _execbase,A6
   JSR _FreeSignal(A6)
@@ -885,6 +988,7 @@ RTS
   !ComData_JMP{comFunc_SetBusyPointer}
  ; L_0_2F0A:
 ;JMP (A0)
+
 
 .call_menuentry:          ; D6: menuitem
   MOVE.l A5,AL_0_2B3C
@@ -16346,8 +16450,6 @@ JL_0_C0D6:  MOVE.l A1,D0
    BMI.w error_reading_file
    BEQ.w JL_0_C120
    MOVE.l D0,include_length
-;   MOVEA.l comdata,A1
-;   MOVE.l $816(A1),include_preprocessor
    !ComData_GetL{comPtr_PreProcessor,include_preprocessor}
    !basic
    ilen.l  = Peek.l(?include_length)
@@ -24093,3 +24195,6 @@ button_dec_flags:   Ds.w 1
 ped_startup_addr:   Ds.l 1
 start_without_libs: Ds.b 1
 skip_bytes:         Ds.b 1
+Even
+CLIMode: Dc.l 0
+
