@@ -95,11 +95,118 @@
 ; - better compiler options dialogue
 
 
-optimize 5 ;dont use fpu
+optimize 5 ; don't use FPU
 Syntax 2
+
+XINCLUDE "/library_offsets.bb2"
+#MAX_STRINGSIZE = 512
+
+._AB3_MakeEarlyAssign       ; this adds the local Libs to LIBS: before Basic is initialized
+MOVEM.l A0-A6,-(A7)
+MOVEM.l D0-D7,-(A7)
+
+BRA skipDataSection         ; skip code below since there is a bug!
+
+MOVE.l $4,A6
+MOVE.l A6,libExecBase       ; get Execbase
+
+
+LEA strDosLibrary,A1        ; A1:libName
+MOVE.l #36,D0               ; D0:version
+MOVE.l libExecBase,A6
+JSR _OpenLibrary(A6)        ; open dos.library
+MOVE.l D0,libDosBase        ; => D0:libBase
+BEQ 'error
+
+
+MOVE.l libDosBase,A6
+JSR _GetProgramDir(A6)      ; get program's directory lock
+MOVE.l D0,ptrProgramLock    ; => D0:lock
+BEQ 'error
+
+
+MOVE.l ptrProgramLock,D1    ; D1:lock
+LEA strAssignPath,A1
+MOVE.l A1,D2                ; D2:buffer
+MOVE.l ##MAX_STRINGSIZE,D3  ; D3:len
+MOVE.l libDosBase,A6
+JSR _NameFromLock(A6)       ; get program's directory name
+TST.l D0                    ; => D0:sucess
+BEQ 'error
+
+
+LEA strAssignPath,A1
+MOVE.l A1,D1                ; D1:dirname
+LEA strLibDir,A1
+MOVE.l A1,D2                ; D2:filename
+MOVE.l ##MAX_STRINGSIZE,D3  ; D3:size
+MOVE.l libDosBase,A6
+JSR _AddPart(A6)            ; concatenate assign path
+TST D0                      ; => D0:success
+BEQ 'error
+
+
+LEA strAssignPath,A1
+MOVE.l A1,D1                ; D1:name
+MOVE.l ##ACCESS_READ,D2     ; D2:accessMode
+MOVE.l libDosBase,A6
+JSR _Lock(A6)               ; lock the assign path
+MOVE.l D0,ptrAssignLock     ; => D0:lock
+BEQ 'error
+
+
+LEA strAssign,A1
+MOVE.l A1,D1                ; D1:name
+MOVE.l ptrAssignLock,D2     ; D2:lock
+MOVE.l libDosBase,A6
+JSR _AssignAdd(A6)          ; add ProgDir:Libs to LIBS:
+TST.l D0                    ; => D0:success
+BNE 'cleanup
+
+
+'error:
+TST.l libDosBase            ; If (libDosBase) Then ...
+BEQ 'skip_CloseDosBase
+
+
+TST.l ptrAssignLock         ; If (ptrAssignLock) Then ...
+BEQ 'skip_Unlock
+
+
+MOVE.l ptrAssignLock,D1     ; D1:lock
+MOVE.l libDosBase,A6
+JSR _UnLock(A6)             ; unlock the assign path
+'skip_Unlock:
+
+
+'cleanup:
+TST.l libDosBase            ; If (libDosBase) Then ...
+BEQ 'skip_CloseDosBase
+LEA libDosBase,A1           ; A1:libBase
+MOVE.l libExecBase,A6
+JSR _CloseLibrary(A6)       ; close dos.library
+'skip_CloseDosBase:
+
+
+BRA skipDataSection         ; data section:
+libExecBase:     Dc.l 0
+libDosBase:      Dc.l 0
+ptrProgramLock:  Dc.l 0
+ptrAssignLock:   Dc.l 0
+strDosLibrary:   Dc.b "dos.library",0 : Even
+strAssign:       Dc.b "LIBS",0        : Even
+strLibDir:       Dc.b "Libs",0        : Even
+strAssignPath:   Ds.b #MAX_STRINGSIZE
+skipDataSection:
+
+
+MOVEM.l (A7)+,D0-D7
+MOVEM.l (A7)+,A0-A6
+
+initbasic
+
 !initasm
 !basic
-XINCLUDE "/library_offsets.bb2"
 XINCLUDE "dos.include.bb2"
 XINCLUDE "/common.bb2"
 XINCLUDE "/preprocessor.include.bb2"
@@ -110,8 +217,6 @@ XINCLUDE "AmiBlitz3_CLIMode.bb2"
 
 optimize 5
 WBStartup
-
-#MAX_STRINGSIZE = 512
 
 
 .TOOLTYPES
@@ -202,7 +307,7 @@ End If
 ;--- End if needed library or Version is not available
 If ende Then Goto abnormal_exit  ; remove Assigns
 ;------
-
+CLIMode.l=False
 If dos_FromCLI{}
   CLIMode.l=True
   Poke.b ?start_without_libs,0
@@ -265,12 +370,17 @@ If dos_FromCLI{}
     Goto abnormal_exit
   End If
 
-Else
-  CLIMode=False
+  If cli_gui        Then CLIMode = False
+  If cli_sourcefile Then Poke.s ?str_tempfilename,cli_sourcefile
+End If
+
+
+If CLIMode=False
   ; --
   ; -- check, if there is an alternative PED-executable set via Tooltype
   pedfile$ = dos_GetToolString{"EDITOR",dos_AddPart{my_systemdir$,"PED"}}
   Poke$ ?str_pedfile,pedfile$
+  Poke.l ?CLIMode,CLIMode
 
   If dos_GetToolState{"START_WITHOUT_LIBS"} = -1
     Poke.b ?start_without_libs,1
@@ -692,15 +802,6 @@ End Function
   MOVEA.l $114(A6),A4             ; get adress of this.Task-Structure
   MOVE.l A4,ptr_ThisTask
 
-  !basic
-  If CLIMode=False
-  ; -- get the CLI args ...
-  get_filename.s = dos_GetNextArg{}
-  If get_filename <> ""
-    Poke$ ?str_tempfilename,get_filename
-  EndIf
-  End If
-  !asm
   BSR.w open_doslibrary
   BEQ.w shutdown_compiler
 
@@ -753,12 +854,14 @@ End Function
   TST.l CLIMode
   BEQ load_ped
 
-;  MOVE.l COMDATABASE,comdata
+  ;/* Emulate PED Environment */
   #columnsize = 250
-  !ComData_LEA{comWord_MaxColumns,A0}         : MOVE.w ##columnsize          ,(A0)
-  !ComData_SetL{comData_Magic,#$7E3A3A7E} ;#"~::~"}  ;
-  !ComData_LEA{comPtr_CurrentDir,A0}          : MOVE.l #comStr_CurrentDir       ,(A0)                           ;$68
-  !ComData_LEA{comPtr_SourceName,A0}          : MOVE.l #comStr_SourceName       ,(A0)                           ;$6C
+  !ComData_LEA{comWord_MaxColumns,A0}         : MOVE.w ##columnsize         ,(A0)
+  !ComData_SetL{comData_Magic,#$7E3A3A7E} ;#"~::~"}
+  !ComData_LEA{comPtr_CurrentDir,A0}          : MOVE.l #comStr_CurrentDir   ,(A0)
+  !ComData_LEA{comPtr_SourceName,A0}          : MOVE.l #comStr_SourceName   ,(A0)
+  EmulatePED{}
+  error_SetFlags{#error_stdout} ; pipe error messages to stdout!
   JMP skip_ped
 
 .load_ped
@@ -792,23 +895,24 @@ End Function
   BNE unload_ped
 
   ; -- extent_comdatas:
-  !ComData_SetL{comPtr_Trap15      ,#AJL_0_50E0 } ;MOVE.l #AJL_0_50E0,$7e2(a1)
-  !ComData_SetL{comPtr_DirectBuffer,#directbuffer} ;MOVE.l #directbuffer,$7e6(a1)      ;addr of directbuffer
-  !ComData_SetL{comPtr_MacroBase   ,#macrobase} ; MOVE.l #macrobase,$7ea(a1)
-  !ComData_SetL{comPtr_VarBase     ,#varbase };    MOVE.l #varbase,$7f2(a1)
-  !ComData_SetL{comPtr_InstrBase   ,#instrtab};   MOVE.l #instrtab,$7F6(a1)
-  !ComData_SetL{comPtr_LibPointer  ,#libpointer}  ; MOVE.l #libpointer,$7FA(a1)
-  !ComData_SetL{comPtr_CompilerVersion     ,#myversion }  ; MOVE.l #myversion,$7FE(a1)
-  !ComData_SetL{comPtr_VersionInformation,#versioninformation}  ; MOVE.l #versioninformation,$80E(A1)
-  !ComData_SetL{comPtr_NumberOfBuilds,#number_of_builds}  ; MOVE.l #number_of_builds,$812(A1)
-
+  !ComData_SetL{comPtr_Trap15            ,#AJL_0_50E0 }
+  !ComData_SetL{comPtr_DirectBuffer      ,#directbuffer}
+  !ComData_SetL{comPtr_MacroBase         ,#macrobase}
+  !ComData_SetL{comPtr_VarBase           ,#varbase }
+  !ComData_SetL{comPtr_InstrBase         ,#instrtab}
+  !ComData_SetL{comPtr_LibPointer        ,#libpointer}
+  !ComData_SetL{comPtr_CompilerVersion   ,#myversion }
+  !ComData_SetL{comPtr_VersionInformation,#versioninformation}
+  !ComData_SetL{comPtr_NumberOfBuilds    ,#number_of_builds}
 
   CLR.w AL_0_2B42
 ;  MOVE.l $2C(A1),_intuibase        ; intuibase of PED
   !basic
-  NPrint "Loading Libs..."
+  If CLIMode
+    NPrint "Loading BlitzLibs..."
+  End If
   !asm
- 
+
 
   ; --
   ; -- load all acidlibs, deflibs and userlibs
@@ -821,7 +925,6 @@ End Function
     BSR.w init_buffers
     BSR.w call_setpointernormal
   skip_loading_libs:
- 
 
   ; --
   ; --
@@ -863,8 +966,7 @@ End Function
 
   NPrint "Now I could do some compiling stuff..."
   preproc_Free{*PreProcessor} : *PreProcessor=!_NULL
-   
-
+  NPrint "Amiblitz3 Shutdown..."
   !asm
   JMP terminate_ab3
 
