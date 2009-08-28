@@ -1,0 +1,348 @@
+; AB3 - AutoDcoViwer
+;
+; 1.06:
+; + recompiled with latest AB3beta
+;
+; 1.05:
+; + Tooltype for Standardpath added
+;
+; 1.04:
+; + ???
+;
+; 1.03:
+; + window position and size will be stored to tolltypes on exit
+; + textviewgadget has greater priority when resizing window
+; + Requester when no autodoc loaded removed
+;
+; 1.02:
+; + fixed slow reaction time
+;
+; 1.01:
+; + added appWindowsupport
+; + fixed some little errors (as always!)
+;
+;
+version$ = "1.06"
+#MAX_NODES = 255
+;WBStartup
+FindScreen 0
+
+Syntax 2
+optimize 4
+#CLIARGMODE = 1
+XINCLUDE "file.include.bb2"
+INCLUDE "PE/wizard_Tools.include.bb2"
+WZLoadGUI ?wzgui
+
+Dim autodoc_nodes$(#MAX_NODES)
+DEFTYPE.w winx,winy,winw,winh
+
+; --
+; -- get the Tooltypes
+default_path.s = dos_GetToolString{"PATH","Blitz3:Docs/"}
+
+; --
+; -- get the CLI args ...
+If dos_GetNumArgs{} = 0
+  wbmode.b = True
+Else
+  Repeat
+    ioption.s = dos_GetNextArg{}
+    option.s = LCase$(ioption.s)
+    If Peek.b(&option.s) = @"-" Then option.s = Right$(option.s,FLen(option.s)-1)
+    Select UCase$(option.s)
+      Case "DIR"
+        directory$ = dos_GetNextArg{}
+        rc$ = Right$(directory$,1)
+        If rc$<>":" AND rc$<>"/" Then directory$ + "/"
+
+      Case "FILE"
+        autodoc$ = dos_GetNextArg{}
+        library$ = dos_FilePart{autodoc$}
+        library$ = dos_RemExt{library$}
+
+      Case "FUNCTION"
+        token.s = dos_GetNextArg{}
+
+      Case "PUBSCREEN"
+        pubscreen$ = dos_GetNextArg{}
+
+      Case "WX"
+        wx.w = Val(dos_GetNextArg{})
+
+      Case "WY"
+        wy.w = Val(dos_GetNextArg{})
+
+      Case "WW"
+        ww.w = Val(dos_GetNextArg{})
+
+      Case "WH"
+        wh.w = Val(dos_GetNextArg{})
+
+    End Select
+  Until option.s = ""
+  If (directory$ = "") AND (autodoc$ = "")
+    NPrint "No valid data for mandatory options FILE and/or DIR set."
+    Gosub autodoc_writeinfos
+    End
+  Else
+    If dos_Exist{directory$ + autodoc$} = 0  AND (dos_Exist{directory$ + autodoc$ + ".doc"} = 0)
+      NPrint "File "+directory$+autodoc$+" has not been found."
+      End
+    EndIf
+  EndIf
+EndIf
+
+
+; --
+; -- check of PubScreen with the given PubScreenname exists
+If pubscreen$<>""
+  GetPubScreen 0,pubscreen$
+  If Peek.l(Addr Screen(0))=0
+    WbToScreen 0
+  Else
+    Use Screen 0
+  EndIf
+EndIf
+
+; --
+; -- display the window with the selected node and goto the main loop
+Gosub get_windowsettings
+WZWindow WZID("WIN_AUTODOC"),?wzgui,128,winx,winy,winw,winh,WZID("WIN_AUTODOC")
+AddAppWindow WZID("WIN_AUTODOC")
+Gosub autodoc_open
+exit.b = False
+Repeat
+  Delay_ 2
+  ev.l = Event :appev.l = AppEvent
+  Select ev
+  Case #IDCMP_IDCMPUPDATE
+    Select WZGadName
+    Case "LISTVIEW_FUNCTIONS"
+      selfunc$ = WZListString(entries.List,WZInput,1)
+      For i.w = 1 To fcounter.w
+        If dos_FilePart {autodoc_nodes$(i)} = selfunc$ Then  akt_entry.w = i : Pop For:Goto quit_for
+      Next i
+      akt_entry = 0
+      quit_for:
+      Gosub autodoc_showentry
+
+    Case "AUTODOC_OPENFILE"
+      aslfr_SetRequesterTitle{2,"Select autodoc-file","Ok","Cancel"}
+      aslfr_SetPath{2,default_path,"","#?.doc"}
+
+      If aslfr_Request{2,False,False,False}
+          a.s = dos_AddPart{aslfr_GetPath{2},aslfr_GetFile{2}}
+          If a.s<>""
+            directory$ ="" : token.s = "" : akt_entry = 0
+            autodoc$ = a.s
+            Gosub autodoc_open
+            Gosub autodoc_showentry
+          EndIf
+      End If
+    End Select
+
+  Case #IDCMP_VANILLAKEY
+    If EventCode = 27
+      exit = True
+    EndIf
+
+  Case #IDCMP_MENUPICK
+    Select WZMenuName
+    Case "MENU_ABOUT"
+      message$ = "AB3autodocviewer Version "+version$ + "\\n\\n"
+      message$ + "written in 2008 by Sven Dröge\\n\\n"
+      message$ + "http://www.programmed-excellence.de"
+      FindScreen 0
+      dummy = RTEZRequest("",message$,"_OK")
+    Case "MENU_EXIT"
+      exit = True
+    End Select
+
+  Case #IDCMP_CLOSEWINDOW
+    exit = True
+  End Select
+
+  Select appev
+  Case $800000
+    If AppNumFiles > 0
+      a.s = NextAppFile
+      If a.s<>""
+        directory$ ="" : token.s = "" : akt_entry = 0
+        autodoc$ = a.s
+        Gosub autodoc_open
+        Gosub autodoc_showentry
+      EndIf
+    EndIf
+
+  End Select
+Until exit = True
+
+Gosub put_windowsettings
+Gosub autodoc_close
+End
+
+
+.autodoc_open
+  ; -- clear windowgadgets
+  For i = 0 To #MAX_NODES
+    autodoc_nodes$(i) = "HONITOS"
+  Next i
+  WZListRemove entries.List
+  WZPrint "LISTVIEW_FUNCTIONS",0,&entries
+  ; check for file
+  file_Close{fid.l}
+  If dos_Exist{directory$ + autodoc$} = 0 Then autodoc$ = autodoc$ + ".doc"
+  file_SetASLPath{default_path,"","#?.doc"}
+  fid.l = file_Open{directory$ + autodoc$,#file_read}
+  If fid<>-1
+    file_Cache{fid}
+    zeile$ = file_ReadLine{fid}
+    If zeile$ = "TABLE OF CONTENTS"
+      lf.l = file_GetLength{fid} : content_begin.w = 0 : fcounter.w = 1
+      leerzeile$ = file_ReadLine{fid}
+      While (file_GetSeekPos{fid} < lf) AND (content_begin = 0)
+        zeile$ = file_ReadLine{fid}
+        char.w = Asc( Left$(zeile$,1) )
+        If (char = 12) OR (char = -1); OR (zeile$="")
+          content_begin = file_GetSeekPos{fid} - Len(zeile$)
+          file_Seek{fid,lf}
+        Else
+          If zeile$<>""
+            WZListAdd entries,dos_FilePart{zeile$}
+            If fcounter < #MAX_NODES
+              autodoc_nodes$(fcounter) = StrChg(zeile$," ","")
+            Else
+              Request "","Only autodocs with up to 255 functions are supported.","_Ok"
+            EndIf
+            fcounter + 1
+          EndIf
+        EndIf
+      Wend
+
+      WZPrint "AUTODOC_LIBNAME",&library$
+      exit.b = False
+      If token<>""
+        For i.w = 1 To 255
+          If LCase$(dos_FilePart {autodoc_nodes$(i)}) = LCase$(token.s) Then akt_entry.w = i : Pop For : Goto end_for
+        Next i
+      EndIf
+      akt_entry.w = 1
+      end_for:
+      WZPrint "LISTVIEW_FUNCTIONS",akt_entry - 1,entries.List,akt_entry - 1
+      Gosub autodoc_showentry
+    Else ; we have to build a TOC for ourselves
+      dummy = RTEZRequest("","This autodocfile does not supply a table of contents\\nThe feature of build a TOC is not implemented yet.\\nPlease report the author if you need that feature.","_Ok")
+    EndIf
+  Else
+    If wbmode = False
+      Gosub autodoc_writeinfos
+      NPrint "ERROR: unkown or missing autodoc-file."
+      NPrint ""
+      End
+    Else
+      autodoc$ = "*** No autodoc loaded ***"
+    EndIf
+  EndIf
+  WZPrint "AUTODOC_LIBNAME",&autodoc$
+Return
+
+.autodoc_close
+  file_Close{fid}
+  WZCloseWindow WZID("WIN_AUTODOC")
+  DelAppWindow WZID("WIN_AUTODOC")
+  ReleasePubScreen 0
+Return
+
+.autodoc_showentry:
+  If fid = -1 Then Return
+  WZListRemove info.List
+  ;
+  ; seek until die function name comes up ...
+  ;
+  file_Seek{fid,content_begin}
+  Repeat
+    zeile$ = file_ReadLine{fid}
+  Until Instr(zeile$,autodoc_nodes$(akt_entry)) > 0 OR (file_GetSeekPos{fid} >= lf)
+  If file_GetSeekPos{fid} >= lf
+    WZPrint "LISTVIEW_INFO",-1,info.List
+    Return
+  EndIf
+  ;
+  ; print all the infos until the next function is described...
+  ;
+  CaseSense On
+  Repeat
+    key_found.b = False
+    Restore key_words
+    Repeat
+      Read keyword$
+      If Instr(zeile$,keyword$) > 0
+        key_found = True
+      EndIf
+    Until keyword$ = "###"
+    If key_found = True
+      WZTags #WENTRYA_FormatStyle,2
+      WZTags #WENTRYA_TextStyle,6
+      WZTags #WENTRYA_TextPen,3
+      zeile$ = StripLead$(zeile$,32)
+    Else
+      WZTags #WENTRYA_TextPen,1
+    EndIf
+    zeile$ = StrChg(zeile$,Chr$(9),"  ")
+    zeile$ = StrChg(zeile$,Chr$(12),"")   ; this indicates a new function
+    WZListAdd info.List,zeile$,-2
+
+    zeile$ = file_ReadLine{fid}
+  Until Instr(zeile$,autodoc_nodes$(akt_entry+1)) OR (file_GetSeekPos{fid} >= lf)
+  CaseSense Off
+  WZPrint "LISTVIEW_INFO",-1,info.List
+Return
+
+.get_windowsettings
+  winx.w = dos_GetToolValue {"winx",-2}
+  winy.w = dos_GetToolValue {"winy",-2}
+  winw.w = dos_GetToolValue {"winw",-2}
+  winh.w = dos_GetToolValue {"winh",-2}
+Return
+
+.put_windowsettings
+  dos_SetToolValue {"winx",WindowX}
+  dos_SetToolValue {"winy",WindowY}
+  dos_SetToolValue {"winw",WindowWidth}
+  dos_SetToolValue {"winh",WindowHeight}
+Return
+
+.autodoc_writeinfos
+    NPrint ""
+    NPrint "Autodocviewer V" + version$
+    NPrint "written in 2008 by Sven Dröge for AmiBlitz3-IDE"
+    NPrint ""
+    NPrint "Parameters: "
+    NPrint "FILE <autodoc>"
+    NPrint "FUNCTION <functionname>"
+    NPrint "PUBSCREEN <screenname>"
+    NPrint "DIR <path>"
+    NPrint "WX <windowtopleft>"
+    NPrint "WY <windowtopoff>"
+    NPrint "WW <windowwidth>"
+    NPrint "WH <windowheight>"
+    NPrint ""
+Return
+
+
+key_words:
+Data$ "NAME"
+Data$ "SYNOPSIS"
+Data$ "FUNCTION"
+Data$ "INPUT"
+Data$ "RESULT"
+Data$ "SEE ALSO"
+Data$ "BUGS"
+Data$ "###"
+
+
+wzgui:
+IncBin "ab3autodocreader.wizard"
+wzguiend:
+

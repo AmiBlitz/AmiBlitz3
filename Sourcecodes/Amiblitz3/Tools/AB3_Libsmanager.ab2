@@ -1,0 +1,1109 @@
+; V1.2.0
+; - added "replace"-option for libs
+; - added "add" option for collections
+; - added menu entry "examine library file"
+;
+; V1.1.0
+; - added acidlibs-support
+; - completely rewrote libs-analyzing code based on "explain.txt"
+;
+; V1.0.1
+; - after creating a deflibs, a Longvalue $000000 is added for compatibility
+;
+; V1.0.0
+; - initial release For loading deflibs, adding/deletinge blitzlibs AND writng a New deflibs-File
+;
+NoCli: optimize 7 : Syntax 2
+#USE_WIZARD = 1
+#log_Width = 120
+XINCLUDE "file.include.bb2"
+XINCLUDE "dos.include.bb2"
+XINCLUDE "asl.include.bb2"
+XINCLUDE "screen.include.bb2"
+XINCLUDE "PE/wizard_table.include.bb2"
+XINCLUDE "PE/logging.include.bb2"
+XINCLUDE "system/sorted_libnums.bb2"
+
+
+#byte   =1
+#word   =2
+#long   =3
+#quick  =4
+#float  =5
+#string =7
+
+
+NEWTYPE.blitzlib
+  number.l
+  _type.l
+  size.l
+  name.s
+  firsttoken.s
+End NEWTYPE
+
+NEWTYPE.command
+  _type.w
+  arguments.b
+  returns.b
+  name.s
+  help.s
+End NEWTYPE
+
+Dim List blitzlibs.blitzlib(0)
+Dim List commands.command(0)
+Dim templist$(255,1)
+
+SHARED libcounter.w
+SHARED ptr_biglib.l
+SHARED size_biglib.l
+SHARED ptr_singlelib.l
+SHARED size_singlelib.l
+
+#DEFLIBS = 0
+#ACIDLIBS= 1
+#USERLIBS= 2
+
+
+
+Statement read_libmapping{_file.s}
+SHARED tokenbase
+SHARED templist$()
+DEFTYPE.w i
+
+  fid.l = file_Open{_file,#file_read}
+  If fid<>-1
+    file_Cache{fid}
+    libcounter = 0
+    Repeat
+      zeile$ = file_ReadLine{fid}
+      qpos.w = Instr(zeile$,";")
+      If qpos
+        lstring$ = Left$(zeile$,qpos-1)
+        rstring$ = Right$(zeile$,FLen(zeile$)-qpos)
+
+        ; -- get optional stored libnumber
+        ;qpos.w = Instr(rstring$,";")
+        ;If qpos
+        ;  lstring$ = Left$(rstring$,qpos-1)
+        ;  rstring$ = Right$(zeile$,Len(zeile$)-qpos-1)
+        ;Else
+        ;  lstring$ = rstring$
+        ;EndIf
+
+        ; get libnumber from internal structure
+        templist$(libcounter,0) = StrChg(lstring$," ","")
+        templist$(libcounter,1) = StrChg(rstring$," ","")
+        libcounter + 1
+      EndIf
+    Until file_EOF{fid}
+    file_Close{fid}
+  Else
+    error{"Could not find mapping file.\\nNo Library names will be available!"}
+  EndIf
+  WZ_HideMessage{}
+End Statement
+
+Function.s lib_getsystemname{libnum.w}
+  Select libnum
+  Case #varslib             : libname$ = "varslib" ; 65534
+  Case #wbstartuplib        : libname$ = "wbstartuplib" ; 65533
+  Case #memlib              : libname$ = "memlib" ; 65530
+  Case #intlib              : libname$ = "intlib" ; 65520
+  Case #switchlib           : libname$ = "switchlib" ; 65510
+  Case #runerrlib           : libname$ = "runerrslib" ; 65500
+  Case #arrayslib           : libname$ = "arrayslib" ; 65434
+  Case #staticslib          : libname$ = "staticslib" ; 65335
+  Case #strings1lib         : libname$ = "strings1lib" ; 65235
+  Case #strings2lib         : libname$ = "strings2lib" ; 65135
+  Case #exitslib            : libname$ = "exitslib" ; 65035
+  Case #ffplib              : libname$ = "ffplib" ; 64935
+  Case #lmullib             : libname$ = "lmullib" ; 64835
+  Case #ldivlib             : libname$ = "ldivlib" ; 64735
+  Case #clrlib              : libname$ = "clrlib" ; 64635
+  Case #datalib             : libname$ = "datalib" ; 64535
+  Case #strcomplib          : libname$ = "strcomplib" ; 64435
+  Case #maxslib             : libname$ = "maxslib" ; 64335
+  Case #maxlenlib           : libname$ = "maxlenlib" ; 64135
+  Case #chipbaselib         : libname$ = "chipbaselib" ; 64100
+  Case #floatquicklib       : libname$ = "floatquicklib" ; 64080
+  Case #modlib              : libname$ = "modlib" ; 64070
+  Case #debuglib            : libname$ = "debuglib" ; 64060
+  Case #rundebuglib         : libname$ = "rundebuglib" ; 64050
+  Case #errtraplib          : libname$ = "errtraplib" ; 64040 ;64090
+  Default: libname$ = ""
+  End Select
+  Function Return libname$
+End Function
+
+Statement lib_showcommands{}
+SHARED commands()
+
+  WZ_LockWindow{"WIN_LIBSMANAGER"} : Delay_ 5
+
+  ww.w = screen_GetWidth{}  / 1.2
+  wh.w = screen_GetHeight{} / 3
+  wx.w = (screen_GetWidth{}-ww) / 2
+  wy.w = (screen_GetHeight{}-wh) / 2
+
+  WZWindow WZID("WIN_COMMANDLIST"),?wzgui,128,wx,wy,ww,wh,WZID("WIN_COMMANDLIST")
+  Use Window WZID("WIN_COMMANDLIST")
+  Activate WZID("WIN_COMMANDLIST")
+  WZ_InitTable{"WIN_COMMANDLIST","TABELLE_COMMANDS",4}
+  WZ_SetTableTitle{"TABELLE_COMMANDS","Type","Name","Helptext","returns"}
+  WZ_SetTableAlign{"TABELLE_COMMANDS",#ALIGN_LEFT,#ALIGN_LEFT,#ALIGN_LEFT}
+  WZ_SetPriority{"TABELLE_COMMANDS",2,3,5,1}
+  WZ_SetTableReadOnly{"TABELLE_COMMANDS",1}
+  WZ_DrawTable{"TABELLE_COMMANDS"}
+
+  ResetList commands()
+  While NextItem(commands())
+    Select commands()\_type
+    Case 0 : typ$ = "Nullsub"
+    Case 1 : typ$ = "Statement"
+    Case 2 : typ$ = "Function"
+    Case 3 : typ$ = "Command"
+    Case 6 : typ$ = "OS-function"
+    Case 8 : typ$ = "Blitzobject"
+    Default: typ$ = "unknown "+Str$(commands()\_type)
+    End Select
+    name$= commands()\name
+    Help$= commands()\help
+    args$= Str$(commands()\arguments)
+    Select commands()\returns
+    Case #byte  : ret$ = "b"
+    Case #word  : ret$ = "w"
+    Case #long  : ret$ = "l"
+    Case #quick : ret$ = "q"
+    Case #float : ret$ = "f"
+    Case #string: ret$ = "s"
+    Default     : ret$ = ""
+    End Select
+    WZ_AddRow{"TABELLE_COMMANDS",typ$,name$,Help$,ret$}
+  Wend
+  WZ_UpdateTable{"TABELLE_COMMANDS"}
+
+  Repeat
+    ev = WaitEvent
+    Select ev
+    Case #IDCMP_CLOSEWINDOW : c_exit = True
+    Case #IDCMP_VANILLAKEY  : c_exit = True
+
+    End Select
+
+    Select WZ_CheckTableEvent{ev}
+    Case #WZTABLEEVENT_DOUBLECLICK
+    Case #WZTABLEEVENT_CELLSELECTED
+    End Select
+  Until c_exit
+
+  WZ_KillTable{"TABELLE_COMMANDS"}
+  WZCloseWindow WZID("WIN_COMMANDLIST")
+  WZ_UnlockWindow{"WIN_LIBSMANAGER"}
+End Statement
+
+
+
+
+Function.w lib_parse{ptr_mem.l}
+SHARED commands()
+  If ptr_mem = 0 Then Function Return -1
+
+  DEFTYPE.l   token_offset        ; Used when moving around in file
+  DEFTYPE.w   end_of_lib          ; Flag to show when to stop scanning file
+
+  ; Now some variables for the library info
+  DEFTYPE.w   libnum
+  DEFTYPE.w   token_type
+  DEFTYPE.w   token_num
+
+  ClearList commands()
+  ; library header starts at byte 32 from start of file
+  ; --> for further information look at Docs/Miscellaneous/explain.txt
+  ;
+  temp1.w = Peek.w(ptr_mem + 32)
+  temp2.w = Peek.w(ptr_mem + 34)
+  If temp1 = $7000 AND temp2 = $4e75
+    libtype = 1 ; blitzlib or systemlib
+    exitcode = -1
+  Else
+    libtype = 0 ; oslib
+    exitcode = 0
+  EndIf
+  log_Print{Hex$(temp1)+"  "+Hex$(temp2)+ "  " + Str$(libtype)}
+
+  libnum.w = Peek.w(ptr_mem + 36)
+
+  ; --
+  ; -- read all the tokens
+    token_offset.l = ptr_mem + 80
+    Repeat
+      token_type.w      = Peek.w(token_offset)
+      token_offset + 6
+
+      Select token_type
+      Case -1 ; end of lib
+      log_Print{"-- End_Of_Lib"}
+        end_of_lib = True
+
+      Case 0  ; nullsub
+        log_Print{"nullsub"}
+        ; dc.w 0,0,0
+        ;for each library requested, there is
+        ; dc.w library number
+        ; dc.w register to put library base in
+        ;this list is always terminated by a
+        ; dc.w 0
+        ; dc.l pointer to error handler 1 code
+        ; dc.l pointer to routine code
+        ; dc.l pointer to error handler 2 code
+        Repeat
+          nullsublibrary.w = Peek.w(token_offset)
+          nullsubregister.w = Peek.w(token_offset + 2)
+          log_Print{"needed library: "+Str$(nullsublibrary)}
+          log_Print{"register for libbase: "+Str$(nullsubregister)}
+          token_offset + 4
+        Until nullsublibrary = 0
+        token_offset - 2
+        nullsuberrorh1.l = Peek.l(token_offset) : token_offset +4
+        nullsubroutine.l = Peek.l(token_offset) : token_offset +4
+        nullsuberrorh2.l = Peek.l(token_offset) : token_offset +4
+        log_Print{"pointer to error handler 1 code " + Hex$(nullsuberrorh1)}
+        log_Print{"pointer to error handler 1 code " + Hex$(nullsubroutine)}
+        log_Print{"pointer to error handler 1 code " + Hex$(nullsuberrorh2)}
+        !log_memhex{token_offset,100}
+
+      Case 6  ; shared library token
+        ; skip stuff with oslibraries
+        log_Print{"osfunction"}
+        token_offset + 4
+
+        ; make even
+        If token_offset MOD 2 <> 0 Then token_offset + 1
+        While Peek.l(token_offset) <> $000000
+          token_offset + 2
+        Wend
+
+        ;dc.l 0
+        ;dc.w 0
+        While Peek.b(token_offset) =0
+          token_offset + 2
+        Wend
+
+      Case 8  ; dumtoken
+        log_Print{"dumtoken"}
+        ; dc.w 8,0,0
+        ; dc.l 0
+        ; dc.w 0
+        ; dc.b name string,0 (optional label points here)
+        ; dc.b help string,0
+        token_offset + 4
+        token_offset + 2
+
+      Default ; standard function/statement/command
+        log_Print{"standard statement/function/command"}
+        ;-- check for arguments for that command
+        ; dc.w number of arguments
+        ; dc.b for each argument
+        ; Even
+        Repeat
+          token_arguments.w = Peek.w(token_offset) & $FF: token_offset + 2
+          log_Print{Str$(token_arguments)}
+          For i = 0 To token_arguments-1
+            Select Peek.b(token_offset)
+              Case 0:log_Print{"usesize "}
+              Case 1:log_Print{"byte "}
+              Case 2:log_Print{"word "}
+              Case 3:log_Print{"long "}
+              Case 4:log_Print{"quick "}
+              Case 5:log_Print{"float "}
+              Case 7:log_Print{"string "}
+              Case 8:log_Print{"unknown "}
+              Case 16:log_Print{"arrayend "}
+              Case 32:log_Print{"array "}
+              Case 64:log_Print{"push "}
+              Case -128:log_Print{"varptr "}
+              Default:log_Print{"quoi? "}
+            End Select
+            token_offset = token_offset + 1
+          Next
+          ; make even
+          If(token_offset AND 1) Then token_offset = token_offset + 1
+
+          ;-- check libraries needed for that command:
+          ;for each library requested, there is
+          ; dc.w library number
+          ; dc.w register for libbase
+          ;List is always terminated by an
+          ; dc.w 0
+          While(Peek.w(token_offset) <> 0)
+              needlib_num.w = Peek.w(token_offset) : token_offset + 2
+              needlib_reg.w = Peek.w(token_offset) : token_offset + 2
+              ; look at libinfo.bb2 for further analysis
+          Wend
+          token_offset + 2
+
+          ;-- skip subs data
+          ; dc.l pointer to error routine
+          ; dc.l pointer to routine
+          ; dc.l last parameter of macro (0 ?)
+          ; make even
+          token_offset + 12
+        Until Peek.w(token_offset)=-1
+
+        ; dc.w -1
+        ; dc.l 0
+        ; dc.w 0
+        token_offset + 2 + 4 + 2
+        !log_memhex{token_offset,80}
+      End Select
+
+      If NOT end_of_lib
+      If token_type<>0 ;nullsub
+        token_name.s = Peek$(token_offset) : token_offset + Len(token_name)+1
+        token_help.s = Peek$(token_offset) : token_offset + Len(token_help)+1
+        ; make even
+        If token_offset AND 1 Then token_offset + 1
+      Else
+        token_name.s = ""
+        token_help.s = ""
+        token_arguments = 0
+      EndIf
+
+      If AddLast(commands())
+        commands()\name = token_name
+        commands()\help = dos_Trim{token_help}
+        commands()\_type = token_type AND $ff
+        commands()\arguments = token_arguments
+        commands()\returns = (token_type LSR 8) AND $FF
+        log_Print{"name:" + token_name}
+        log_Print{"help:" + token_help}
+      EndIf
+
+
+      EndIf
+
+
+    Until Peek.w(token_offset) = exitcode OR (end_of_lib = True) OR (token_offset-ptr_mem>2000)
+
+  Function Return libnum
+End Function
+
+
+Statement lib_free{}
+  If ptr_singlelib<>0
+    FreeMem_ ptr_singlelib, size_singlelib
+    ptr_singlelib = 0
+    size_singlelib = 0
+  EndIf
+End Statement
+
+
+Function lib_read{filename$}
+SHARED commands()
+
+  If ptr_singlelib<>0
+    lib_free{}
+  EndIf
+
+  fid.l = file_Open{filename$,#file_read}
+  If NOT fid
+    ;-- reading the lib to RAM
+    size_singlelib.l = file_GetLength{fid}
+    ptr_singlelib.l = AllocMem_(size_singlelib,#MEMF_FAST)
+    If ptr_singlelib<>0
+      file_ReadMem{fid,ptr_singlelib,size_singlelib}
+      file_Close{fid}
+      Function Return lib_parse{ptr_singlelib}
+    EndIf
+  EndIf
+  Function Return -1
+End Function
+
+
+Function.l lib_GetNumber{libname$}
+SHARED blitzlibs()
+  ResetList blitzlibs()
+  While NextItem(blitzlibs())
+    If blitzlibs()\name = libname$
+      Function Return blitzlibs()\number
+    EndIf
+  Wend
+End Function
+
+Function.s lib_GetName{libnum.l}
+SHARED blitzlibs()
+
+  If libnum<-1 Then libnum = 65536+libnum
+  ResetList blitzlibs()
+  While NextItem(blitzlibs())
+    If blitzlibs()\number = libnum
+      Function Return blitzlibs()\name
+    EndIf
+  Wend
+;  Function Return lib_getsystemname{libnum}
+End Function
+
+
+
+Function biglib_scan{}
+SHARED manager_mode,blitzlibs(),templist$()
+
+  ;-- check if a collection is opened
+  If ptr_biglib = 0
+    error{"No collection has been opened."}
+  EndIf
+
+  Select manager_mode
+  Case #DEFLIBS: WZ_ShowMessage{"scanning DEFLIBS..."}
+  Case #ACIDLIBS:WZ_ShowMessage{"scanning ACIDLIBS..."}
+  End Select
+
+  ;-- resetting the lib_mapping
+  ClearList blitzlibs()
+
+  ;-- reading the collection
+  ptr_mem.l = ptr_biglib
+  While ptr_mem<>0
+    size_lib.l = Peek.l(ptr_mem)
+    ptr_lib.l = ptr_mem + 4
+
+    ;-- check type of lib
+    temp1.w = Peek.w(ptr_lib + 32)
+    temp2.w = Peek.w(ptr_lib + 34)
+    If temp1 = $7000 AND temp2 = $4e75
+      lib_type = 1 ; blitzlib or systemlib
+      exitcode = -1
+    Else
+      lib_type = 0 ; oslib
+      exitcode = 0
+    EndIf
+
+    ;-- get libnumber
+    lib_num.l = Peek.w(ptr_lib + 36)
+
+    ;-- jump to token data
+    ptr_lib  = ptr_lib + 80
+    token_type.w      = Peek.w(ptr_lib)
+
+    If lib_type <> 0
+      token_arguments.w = Peek.w(ptr_lib + 6)
+
+      ; skip stuff with needed libraries and subs until token name appears
+      ; token name comes after $FFFF
+      ptr_lib + 7
+
+      ; make even
+      If ptr_lib MOD 2 <> 0 Then ptr_lib + 1
+      While Peek.w(ptr_lib) <> -1
+        ptr_lib + 2
+      Wend
+
+      ; dc.w -1
+      ; dc.l 0
+      ; dc.w 0
+      ptr_lib + 2 + 4 + 2
+
+    Else
+
+      ; skip stuff with oslibraries
+      ptr_lib + 10
+
+      ; make even
+      If ptr_lib MOD 2 <> 0 Then ptr_lib + 1
+      While Peek.l(ptr_lib) <> $000000
+        ptr_lib + 2
+      Wend
+
+      ;dc.l 0
+      ;dc.w 0
+      While Peek.b(ptr_lib) =0
+        ptr_lib + 2
+      Wend
+    EndIf
+
+    lib_token.s = Peek$(ptr_lib)
+
+    If lib_num > 0 AND lib_num<256
+      lib_name.s = "Unknown lib #"+Str$(lib_num)
+      If lib_token<>""
+        For i = 0 To libcounter
+          If LCase$(templist$(i,1)) = LCase$(lib_token) AND templist$(i,1)<>""
+            lib_name.s = templist$(i,0) : Goto exit_libcheck
+          EndIf
+        Next i
+        exit_libcheck:
+      EndIf
+      If Left$(lib_name,4)="Unkn"
+        Select lib_num
+        Case 1   : lib_name = "dhandlerlib.obj"
+        Case 130 : lib_name = "rawkeylib.obj"  ; 1028
+        Case 162 : lib_name = "iffiolib.obj"
+        End Select
+      EndIf
+    Else
+      lib_num.l = 65536 + lib_num
+      lib_name = lib_getsystemname{lib_num}
+      If lib_name<>""
+        log_Print{"systemlib "+lib_name +", libnum #"+Str$(lib_num)}
+      Else
+        log_Print{"found an obscure lib with lib number #" + Str$(lib_num) + "($"+Hex$(lib_num AND $ffff)+") and size of "+Str$(size_lib) + " bytes"}
+        !log_memhex{ptr_mem,40}
+        lib_num = 0
+      EndIf
+    EndIf
+
+    If lib_num > 0
+      If AddLast(blitzlibs())
+        blitzlibs()\name       = lib_name
+        blitzlibs()\number     = lib_num
+        blitzlibs()\size       = size_lib
+        blitzlibs()\_type      = lib_type
+        blitzlibs()\firsttoken = lib_token
+        ;!cout{lib_num,lib_name}
+      EndIf
+    Else
+    ;  !cout{lib_num}
+    EndIf
+
+    ptr_mem = ptr_mem + size_lib + 4
+    If (size_lib = 0) OR (ptr_mem - ptr_biglib + 4) >= size_biglib Then ptr_mem = 0
+  Wend
+
+  WZ_HideMessage{}
+End Function
+
+
+Statement biglib_free{}
+  If ptr_biglib<>0
+    FreeMem_ ptr_biglib, size_biglib
+    ptr_biglib = 0
+    size_biglib = 0
+  EndIf
+End Statement
+
+
+Function biglib_read{filename$}
+SHARED manager_mode
+
+  Select manager_mode
+  Case #DEFLIBS: WZ_ShowMessage{"scanning DEFLIBS..."}
+  Case #ACIDLIBS:WZ_ShowMessage{"scanning ACIDLIBS..."}
+  End Select
+
+  ;-- check if a collection is opened
+  biglib_free{}
+
+  log_Print{"reading collection: "+filename$}
+  fid.l = file_Open{filename$,#file_read}
+  If NOT fid
+    ;-- reading the lib to RAM and store data in global vars
+    size_biglib.l = file_GetLength{fid}
+    ptr_biglib.l = AllocMem_(size_biglib,#MEMF_FAST)
+    If ptr_biglib<>0
+      file_ReadMem{fid,ptr_biglib,size_biglib}
+      file_Close{fid}
+    Else
+      error{"Could not allocate memory for loading that collection."}
+    EndIf
+  Else
+    error{"Could not read from that file: \\n"+filename$}
+  EndIf
+  WZ_HideMessage{}
+  Function Return True
+End Function
+
+
+Function biglib_write{outputfile$}
+  If ptr_biglib = 0
+    error{"No collection has been opened."}
+  EndIf
+
+  outfid.l = file_Open{outputfile$,#file_forcewrite}
+  If outfid
+    error{"Could not open outputfile "+outputfile$}
+    WZ_HideMessage{}
+    Function Return False
+  EndIf
+
+  WZ_ShowMessage{"Writing new collection ..."}
+  mem_ptr.l = ptr_biglib
+  While mem_ptr<>0
+    lib_size.l  = Peek.l(mem_ptr) : mem_ptr + 4
+    lib_num.w   = Peek.w(mem_ptr + 36)
+    ;-- write only libs that are marked as to be stored
+    If lib_GetName{lib_num}<>""
+      log_Print{"writing lib #"+Str$(lib_num)+", size: "+Str$(lib_size)}
+      file_WriteLong{outfid,lib_size}
+      file_WriteMem{outfid,mem_ptr,lib_size}
+    Else
+      log_Print{"skipping lib #"+Str$(lib_num) + ", size: "+Str$(lib_size)}
+    EndIf
+
+    mem_ptr = mem_ptr + lib_size
+    If mem_ptr - ptr_biglib >= size_biglib OR (lib_size = 0) Then mem_ptr = 0
+  Wend
+  log_Print{"writing end-of-file."}
+  file_WriteLong{outfid,$00000000}
+  file_Close{outfid}
+  success = True
+
+  WZ_HideMessage{}
+  Function Return success
+End Function
+
+
+Function biglib_extract{outputpath$,@libnum.l}
+SHARED commands()
+
+  If ptr_biglib = 0
+    error{"No collection has been opened."}
+  EndIf
+
+
+;  outfid.l = file_Open{outputfile$,#file_forcewrite}
+;  If outfid
+;    error{"Could not open outputfile "+outputfile$}
+;    WZ_HideMessage{}
+;    Function Return False
+;  EndIf
+
+  If libnum=-1
+    WZ_ShowMessage{"Extracting all libs ...",1}
+  EndIf
+
+  ptr_lib.l = ptr_biglib
+  While ptr_lib<>0
+    lib_size.l  = Peek.l(ptr_lib) : ptr_lib + 4
+
+    lib_num.l   = Peek.w(ptr_lib + 36)
+    If lib_num < 0 Then lib_num = 65536 + lib_num
+
+    If (lib_num = libnum) OR (libnum = -1)
+      libname$ = lib_GetName{lib_num}
+      If libname$=""
+        libname$=RTEZGetString("AB3Libmanager","Type in a filename:",27,libname$)
+      EndIf
+      outputfile$ = dos_PathPart{outputpath$} + dos_FilePart{libname$}
+      outfid.l = file_Open{outputfile$,#file_forcewrite}
+      If outfid
+        error{"Could not open outputfile "+outputfile$}
+      Else
+        file_WriteMem{outfid,ptr_lib,lib_size}
+        file_Close{outfid}
+        If libnum=-1
+          WZ_ShowMessage{libname$}
+        EndIf
+      EndIf
+    EndIf
+
+    ptr_lib = ptr_lib + lib_size
+    If ptr_lib - ptr_biglib> = size_biglib OR (lib_size = 0) Then ptr_lib = 0
+  Wend
+  success = True
+
+  WZ_HideMessage{}
+  Function Return success
+End Function
+
+Function.b biglib_removelib{libnum.l}
+SHARED blitzlibs()
+
+  If libnum <-1 Then libnum = 65536 + libnum
+  ResetList blitzlibs()
+  While NextItem(blitzlibs())
+    If blitzlibs()\number = libnum Then KillItem blitzlibs():Goto exit_delcom
+  Wend
+  Function Return False
+  exit_delcom:
+  Function Return True
+End Function
+
+
+Function.l biglib_browseto{wanted_libnum.w}
+  If ptr_biglib = 0
+    error{"No collection has been opened."}
+    Function Return False
+  EndIf
+
+  mem_ptr.l = ptr_biglib
+  While mem_ptr<>0
+    size_lib.l = Peek.l(mem_ptr)
+    ptr_lib.l = mem_ptr + 4
+
+
+    lib_size.l  = Peek.l(ptr_lib + 4)
+    lib_num.w   = Peek.w(ptr_lib + 36)
+
+    ;-- write only libs that are marked to be stored
+    If lib_num = wanted_libnum
+      Function Return ptr_lib
+    EndIf
+
+    mem_ptr = mem_ptr + size_lib + 4
+    If mem_ptr - ptr_biglib >= size_biglib OR (size_lib = 0) Then mem_ptr = 0
+  Wend
+
+  Function Return False
+End Function
+
+
+
+
+
+Statement Update_Libstable{}
+SHARED blitzlibs()
+
+  WZ_ClearTable{"TABELLE_DEFLIBS"}
+
+  ResetList blitzlibs()
+  While NextItem(blitzlibs())
+      Format "##000": tmp_num$ = Str$(blitzlibs()\number) :Format ""
+      tmp_name$ = blitzlibs()\name
+      Format "#####0": tmp_size$ = Str$(blitzlibs()\size) : Format ""
+      Select blitzlibs()\_type
+      Case 1:  tmp_type$ = "blitzlib"
+      Case 0:  tmp_type$ = "fdconverted os-lib"
+      Default: tmp_type$ = "unknown"
+      End Select
+      If blitzlibs()\number>255 Then tmp_type$ = "syslib"
+      WZ_AddRow{"TABELLE_DEFLIBS",tmp_name$,tmp_num$,tmp_size$,tmp_type$}
+  Wend
+  test$ = Str$(WZ_GetNumberOfEntries{"TABELLE_DEFLIBS"})
+  WZPrint "NUMBER_OF_LIBRARIES",&test$
+  WZ_UpdateTable{"TABELLE_DEFLIBS"}
+End Statement
+
+
+
+
+
+; ############################
+.MAIN
+log_SetDestination{#log_tofile,"t:AB3_LibsManager.log"}
+log_Reset{}
+log_SetFormat{#log_short}
+
+diskobject.l = dos_OpenToolTypes{dos_GetProgFile{""}}
+my_deflibs$ = dos_GetToolString{"DEFLIBS","blitz3:blitzlibs/deflibs"}
+my_acidlibs$ = dos_GetToolString{"ACIDLIBS","blitz3:blitzlibs/acidlibs"}
+my_userlibspath$ = dos_GetToolString{"USERLIBSPATH","blitz3:blitzlibs/userlibs"}
+my_tokenmapping$ = dos_GetToolString{"MAPPINGFILE","blitz3:system/token_mapping_libs.txt"}
+my_debugmode.b = dos_GetToolState{"DEBUG"}
+new_deflibs$ =     "ram:deflibs"
+
+If my_debugmode = True
+  log_SetLevel{#log_all}
+Else
+  If my_debugmode = 1 Then log_SetLevel{#log_nothing}
+EndIf
+
+WZLoadGUI ?wzgui
+WZ_ShowMessage{"reading token mapping ..."}
+read_libmapping{my_tokenmapping$}
+
+screen_Open{"",-1}
+ww.w = screen_GetWidth{}  / 1.5
+wh.w = screen_GetHeight{} / 1.5
+wx.w = (screen_GetWidth{} - ww) / 2
+wy.w = (screen_GetHeight{}- wh) / 2
+WZWindow WZID("WIN_LIBSMANAGER"),?wzgui,128,wx,wy,ww,wh,WZID("WIN_LIBSMANAGER")
+Use Window WZID("WIN_LIBSMANAGER")
+
+WZ_InitTable{"WIN_LIBSMANAGER","TABELLE_DEFLIBS",4}
+WZ_SetTableTitle{"TABELLE_DEFLIBS","Name","ID","Length","Lib-Type"}
+WZ_SetTableAlign{"TABELLE_DEFLIBS",#ALIGN_LEFT,#ALIGN_RIGHT,#ALIGN_RIGHT}
+WZ_SetPriority{"TABELLE_DEFLIBS",3,1,1,3}
+WZ_DrawTable{"TABELLE_DEFLIBS"}
+
+manager_mode = #DEFLIBS
+If biglib_read{my_deflibs$}
+  biglib_scan{}
+EndIf
+Update_Libstable{}
+WZ_TableSort{"TABELLE_DEFLIBS",1}
+WZ_UpdateTable{"TABELLE_DEFLIBS"}
+
+manager_exit = False
+
+WZPrint "MANAGER_CYCLE",manager_mode
+Repeat
+  ev.l = WaitEvent
+  If (ev<>#IDCMP_INTUITICKS) AND (ev<>#IDCMP_ACTIVEWINDOW) AND (ev<>#IDCMP_GADGETHELP)
+    WZ_HideHelp{}
+  EndIf
+
+  Select ev
+  Case #IDCMP_GADGETHELP  : WZ_ShowHelp{}
+  Case #IDCMP_CLOSEWINDOW : manager_exit = True
+  Case #IDCMP_MENUPICK
+    Select WZMenuName
+    Case "MENU_ABOUT"
+      msg$ = "AB3-Libsmanager V\\__VER_MAJOR.\\__VER_MINORb, Build:\\__VER_BUILD\\n"
+      msg$ + "\\n"
+      msg$ + "Written in 2008 by Sven Dröge for AmiBlitz3\\n"
+      msg$ + "This tool is part of the AB3-Distribution.\\n"
+      !Dialog{msg$}
+
+    Case "MENU_EXAMINELIB"
+      Gosub Examine_lib
+
+    Case "MENU_SETACIDLIBS"
+      aslfr_SetRequesterTitle{1,"Select your ACIDLIBS file:","Select","Cancel"}
+      aslfr_SetPath{1,dos_PathPart{my_acidlibs$},"ACIDLIBS",""}
+      If aslfr_EasyRequest{1}
+        my_acidlibs$ =  dos_AddPart{aslfr_GetPath{1},aslfr_GetFile{1}}
+        dos_SetToolString{"ACIDLIBS",my_acidlibs$}
+        dos_FlushToolTypes{}
+      EndIf
+
+    Case "MENU_SETDEFLIBS"
+      aslfr_SetRequesterTitle{1,"Select your DEFLIBS file:","Select","Cancel"}
+      aslfr_SetPath{1,dos_PathPart{my_deflibs$},"DEFLIBS",""}
+      If aslfr_EasyRequest{1}
+        my_deflibs$ =  dos_AddPart{aslfr_GetPath{1},aslfr_GetFile{1}}
+        dos_SetToolString{"DEFLIBS",my_deflibs$}
+        dos_FlushToolTypes{}
+      EndIf
+
+    Case "MENU_SETUSERLIBS"
+      aslfr_SetRequesterTitle{1,"Select your drawer for Userlibs:","Select","Cancel"}
+      aslfr_SetPath{1,my_userlibspath$,"",""}
+      If aslfr_Request{1,False,False,True}
+        my_userlibspath$ =  aslfr_GetPath{1}
+        dos_SetToolString{"USERLIBSPATH",my_userlibspath$}
+        dos_FlushToolTypes{}
+      EndIf
+
+    Case "MENU_QUIT" : manager_Exit = True
+    End Select
+
+  Case #IDCMP_IDCMPUPDATE
+    Select WZGadName
+    Case "BIGLIB_ADD"
+      aslfr_SetRequesterTitle{1,"Select library file:","Select","Cancel"}
+      aslfr_SetPath{1,dos_PathPart{"ram:"},"",""}
+      If aslfr_EasyRequest{1}
+        libfile$ =  dos_AddPart{aslfr_GetPath{1},aslfr_GetFile{1}}
+        nummer.l = lib_read{libfile$}
+        If nummer<>-1
+          tmpnummer.l = biglib_browseto{nummer}
+          If tmpnummer<>0
+            !Dialog{"There is already a library with #"+Str$(nummer)+" in the collection."}
+          Else
+            message$ = "Do you really want to add the library "+aslfr_GetFile{1}+" to the collection ?" + Chr$(10)
+            message$ + "Be careful: This operation takes effect immediately !"
+            dummy = RTEZRequest("AB3Libmanager",message$,"Yes|No!")
+            If dummy = 1
+              Select manager_mode
+              Case #DEFLIBS  : fname$ = my_deflibs$
+              Case #ACIDLIBS : fname$ = my_acidlibs$
+              End Select
+              biglib_write{fname$}
+              fout.l = file_Open{fname$,#file_open}
+              If fout<>-1
+                file_Seek{fout,file_GetLength{fout}-4}
+                file_WriteLong{fout,size_singlelib}
+                file_WriteMem{fout,ptr_singlelib,size_singlelib}
+                file_WriteLong{fout,$00000000}
+                file_Close{fout}
+                Gosub Refresh_Table
+              Else
+                error{"Could not write to file: "+fname$}
+              EndIf
+           EndIf
+          EndIf
+        Else
+          error{"This file has an unknown fileformat."}
+        EndIf
+      EndIf
+
+    Case "BIGLIB_REMOVE"
+      row.w  = WZ_Row{"TABELLE_DEFLIBS"}
+      name$ = WZ_GetCell{"TABELLE_DEFLIBS",row,1}
+      If name$=""
+        !Dialog{"No library has been selected."}
+      Else
+        dummy = RTEZRequest("AB3Libmanager","Do you really want to remove `"+name$+"` from the actual collection ?","Yes|No!")
+        If dummy = 1
+          tmp_num.w = Vallong(WZ_GetCell{"TABELLE_DEFLIBS",row,2})
+          If biglib_removelib{tmp_num}
+            Update_Libstable{}
+            error{"The lib has been removed from the collection."}
+          Else
+            error{"Could not remove that lib."}
+          EndIf
+        EndIf
+      EndIf
+
+    Case "BIGLIB_REPLACE"
+      y.w = WZ_Row{wztabledata\id}
+      x.w = WZ_Column{wztabledata\id}
+      lname$ = WZ_GetCell{wztabledata\id,y,1}
+      lnum.w = lib_GetNumber{lname$}
+      If lname$="" OR lnum=0
+        error{"You did not select a lib to be replaced."}
+      Else
+        aslfr_SetRequesterTitle{1,"Select new library file:","Select","Cancel"}
+        aslfr_SetPath{1,dos_PathPart{"ram:"},"",""}
+        If aslfr_EasyRequest{1}
+          libfile$ =  dos_AddPart{aslfr_GetPath{1},aslfr_GetFile{1}}
+          nummer.l = lib_read{libfile$}
+          If nummer<>-1
+
+            If nummer<>lnum
+              message$ = "The existing lib "+lname$+" has a different lib num (#"+Str$(lnum)+")," + Chr$(10)
+              message$ + "than the new one "+aslfr_GetFile{1}+" (#"+Str$(nummer)+")." + Chr$(10)
+              message$ + "Should I proceed to replace the old lib ?"
+              dummy = RTEZRequest("AB3Libmanager",message$,"Yes|No!")
+            Else
+              dummy = 1
+            EndIf
+
+            If dummy = 1
+              If biglib_removelib{lnum}
+                Select manager_mode
+                Case #DEFLIBS  : fname$ = my_deflibs$
+                Case #ACIDLIBS : fname$ = my_acidlibs$
+                End Select
+                biglib_write{fname$}
+                fout.l = file_Open{fname$,#file_open}
+                If fout<>-1
+                  file_Seek{fout,file_GetLength{fout}-4}
+                  file_WriteLong{fout,size_singlelib}
+                  file_WriteMem{fout,ptr_singlelib,size_singlelib}
+                  file_WriteLong{fout,$00000000}
+                  file_Close{fout}
+                  Gosub Refresh_Table
+                Else
+                  error{"Could not write to file: "+fname$}
+                EndIf
+              Else
+                error{"Could not remove that lib. Cancelled operation."}
+              EndIf
+            Else
+              error{"Replace cancelled."}
+              lib_free{}
+            EndIf
+          Else
+            error{"Could not successfully scan through the commands."}
+          EndIf
+        Else
+          error{"This file has an unknown fileformat."}
+        EndIf
+      EndIf
+
+    Case "BIGLIB_WRITE"
+      Gosub write_collection
+
+    Case "BIGLIB_EXTRACT"
+      row.w  = WZ_Row{"TABELLE_DEFLIBS"}
+      name$ = WZ_GetCell{"TABELLE_DEFLIBS",row,1}
+      nummer.l =Vallong(WZ_GetCell{"TABELLE_DEFLIBS",row,2})
+      If name$=""
+        !Dialog{"No library has been selected."}
+      Else
+        outputpath$ = "RAM:"
+        If biglib_extract{outputpath$,nummer}
+          !Dialog{"Extracting completed. "+name$+" has been stored to "+outputpath$}
+        EndIf
+      EndIf
+
+    Case "BIGLIB_EXTRACTALL"
+      outoutpath$= "RAM:"
+      If biglib_extract{outputpath$}
+        !Dialog{"Extracting completed. Files were stored to "+outputpath$}
+      EndIf
+
+    Case "BIGLIB_SCAN"
+      Gosub Refresh_Table
+
+    Case "MANAGER_CYCLE"
+      manager_mode = WZInput
+      Gosub Refresh_Table
+
+    Case "MANAGER_EXIT" : manager_exit = True
+    End Select
+  End Select
+
+  Select WZ_CheckTableEvent{ev}
+  Case #WZTABLEEVENT_DOUBLECLICK
+    y.w = WZ_Row{wztabledata\id}
+    x.w = WZ_Column{wztabledata\id}
+    lname$ = WZ_GetCell{wztabledata\id,y,1}
+    lnum.w = lib_GetNumber{lname$}
+    lib_ptr.l = biglib_browseto{lnum}
+    If lib_ptr<> 0
+      lib_parse{lib_ptr}
+      lib_showcommands{}
+      WZ_UpdateTable{"TABELLE_DEFLIBS"}
+    Else
+      !Dialog{"No information found for Lib#"+Str$(lnum)}
+    EndIf
+
+  Case #WZTABLEEVENT_CELLSELECTED
+  End Select
+
+Until manager_exit
+WZCloseWindow WZID("WIN_LIBSMANAGER")
+lib_free{}
+biglib_free{}
+dos_CloseToolTypes{}
+screen_Close{}
+!coutclose
+End
+
+wzgui:
+IncBin "AB3_libsmanager.wizard"
+wzguiEnd:
+
+
+.write_collection:
+      DateFormat 0
+      mydate$ = Date$(SystemDate)
+      Select manager_mode
+      Case #DEFLIBS
+        backup_file$ = my_deflibs$ + "_"+Date_Years{}+Date_Months{}+Date_Days{}
+        new_file$ = my_deflibs$
+      Case #ACIDLIBS
+        backup_file$ = my_acidlibs$ + "_"+Date_Years{}+Date_Months{}+Date_Days{}
+        new_file$ = my_acidlibs$
+      End Select
+
+      dos_Rename{new_file$,backup_file$}
+      If biglib_write{new_file$}
+        !Dialog{"New collection has been written to file: "+newfile$}
+      EndIf
+      Gosub Refresh_Table
+Return
+
+.Refresh_Table:
+  Select manager_mode
+  Case #DEFLIBS: biglib_read{my_deflibs$}
+  Case #ACIDLIBS:biglib_read{my_acidlibs$}
+  Default: error{"Unknown mode. Contact author."}
+  End Select
+  biglib_scan{}
+  Update_Libstable{}
+  WZ_TableSort{"TABELLE_DEFLIBS",1}
+  WZ_UpdateTable{"TABELLE_DEFLIBS"}
+Return
+
+.Examine_lib:
+      aslfr_SetRequesterTitle{1,"Select library file:","Select","Cancel"}
+      aslfr_SetPath{1,dos_PathPart{"ram:"},"",""}
+      If aslfr_EasyRequest{1}
+        libfile$ =  dos_AddPart{aslfr_GetPath{1},aslfr_GetFile{1}}
+        nummer.l = lib_read{libfile$}
+        If nummer=-1
+          error{"This file has an unrecognizeable format for me."}
+        Else
+          If lib_parse{ptr_singlelib} = nummer
+            lib_showcommands{}
+            lib_free{}
+          Else
+            error{"Could not successfully scan this lib for commands."}
+          EndIf
+        EndIf
+      EndIf
+
+Return
