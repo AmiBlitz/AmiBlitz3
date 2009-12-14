@@ -9,7 +9,7 @@
 ;/ Authors: 1990...1996 Mark Silby                                             /
 ;/          1991...2003 Red When Excited                                       /
 ;/          2003...2009 Bernd Roesch, Sven Droege                              /
-;/                      Thilo Koehler                                          /
+;/          2009...     Thilo Koehler, Thomas Klein                            /
 ;/                                                                             /
 ;/ Requirements: AmigaOS3.1+                                                   /
 ;/                                                                             /
@@ -40,6 +40,8 @@
 ;/ der Namensgebung zu AmiBlitz3.                                              /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
+;#USE_WBSTARTUPMSG = 0
+;#CLIARGMODE       = 0 ; OS-Calls
 
 optimize 5                               ; don't use FPU (opt. 4)
 Syntax 2                                 ; syntax strictness
@@ -54,9 +56,20 @@ Macro stack2regs                         ; helper macro
   MOVEM.l (a7)+,d0-d7/a0-a6
 End Macro
 
+Macro DPrint
+  !basic
+  NPrint `1
+  ;MouseWait
+  !asm
+End Macro
+
 !initasm                                 ; some initial mumbo jumbo
 !basic
 WBStartup
+SHARED cli_verbose.l
+SHARED CLIMode.l
+cli_verbose = -1
+CLIMode     = False
 
 XINCLUDE "/Shared/library_offsets.bb2"   ; needed includes
 XINCLUDE "dos.include.bb2"
@@ -99,20 +112,30 @@ If dynassign <> ""
     dos_AddAssign{"LIBS:",dos_AddPart{dynassign,"Libs"}}
   EndIf
 
-  Poke$ ?str_blitz3assign,dynassign
-  Poke$ ?str_defaultdbug,dos_AddPart{dynassign,"Debug/DefaultDBug"}
-  ;Poke$ ?str_defaultdbug,dos_AddPart{dynassign,"Debug/REDDebugger"}
+  Poke.s ?str_blitz3assign,dynassign
+  Poke.s ?str_defaultdbug,dos_AddPart{dynassign,"Debug/DefaultDBug"}
+  ;poke.s ?str_defaultdbug,dos_AddPart{dynassign,"Debug/REDDebugger"}
 
-  Poke$ ?str_path_acidlibs,dos_AddPart{dynassign, "BlitzLibs/AcidLibs"}
-  Poke$ ?str_path_deflibs ,dos_AddPart{dynassign, "BlitzLibs/DefLibs" }
-  Poke$ ?str_path_userlibs,dos_AddPart{dynassign, "BlitzLibs/UserLibs"}
+  Poke.s ?str_path_acidlibs,dos_AddPart{dynassign, "BlitzLibs/AcidLibs"}
+  Poke.s ?str_path_deflibs ,dos_AddPart{dynassign, "BlitzLibs/DefLibs" }
+  Poke.s ?str_path_userlibs,dos_AddPart{dynassign, "BlitzLibs/UserLibs"}
   my_systemdir$    = dos_AddPart{dynassign, "System"}
   my_residentsdir$ = dos_AddPart{dynassign, "BlitzLibs/Residents"}
   my_blitzlibsdir$ = dos_AddPart{dynassign, "BlitzLibs"}
   dos_CreateDir{my_blitzlibsdir$}
-  dos_CreateDir{Peek$(?str_path_userlibs)}
+  dos_CreateDir{Peek.s(?str_path_userlibs)}
   dos_CreateDir{my_residentsdir$}
   dos_CreateDir{my_systemdir$}
+
+  ; --
+  ; -- check, if there is an alternative PED-executable set via Tooltype
+  pedfile$ = dos_GetToolString{"EDITOR",dos_AddPart{my_systemdir$,"PED"}}
+  Poke.s ?str_pedfile,pedfile$
+  If dos_GetToolState{"START_WITHOUT_LIBS"} = -1
+    Poke.b ?start_without_libs,1
+  Else
+    Poke.b ?start_without_libs,0
+  EndIf
 
 EndIf
 
@@ -155,27 +178,34 @@ End If
 ;--- End if needed library or Version is not available
 If ende Then Goto abnormal_exit                            ; remove Assigns
 ;------
-CLIMode.l=False
+
 If dos_FromCLI{}
   CLIMode.l=True
-  Poke.b ?start_without_libs,0
-  Poke.s ?str_pedfile,"NoPed!"
-  Poke.l ?CLIMode,CLIMode
 
   ; We assume no error happened so far ...
   err.l      = False                                       ; indicate that an error has occured
   showhelp.l = False                                       ; show the CLI tool's help
 
   ; Set the default values of your CLI arguments.
-  cli_exefile.s    = ""
-  cli_debug.l      = False
-  cli_sourcefile.s = ""
-  cli_arexxport.s  = ""
-  cli_run.l        = False
-  cli_deamon.l     = False
-  cli_smallest.l   = False
-  cli_numargs.l    = dos_GetNumArgs{}
-  cli_gui.l        = False
+  cli_exefile.s      = ""
+  cli_debuginfo.l    = False
+  cli_sourcefile.s   = ""
+  cli_savefile.s     = ""
+  cli_run.l          = False
+  cli_dumplabel.s    = ""
+  cli_dumptoken.s    = ""
+  cli_dumptype.s     = ""
+  cli_dumpfunc.s     = ""
+  cli_dumpmacro.s    = ""
+  cli_dumplib.s      = ""
+  cli_dumpvar.s      = ""
+  cli_dumpconst.s    = ""
+  cli_info.s         = ""
+  cli_release.l      = False
+  cli_numargs.l      = dos_GetNumArgs{}
+  cli_gui.l          = False
+  cli_dumpform.l     = 0 ; 0 = bin, 1 = ASCII
+  cli_verbose.l      = 1
   If cli_numargs=0 Then showhelp=True
 
   ; Get the CLI arguments
@@ -184,13 +214,37 @@ If dos_FromCLI{}
     larg.s = LCase$(arg)                                   ; lower case the option string
     If Left$(larg,1)="-" Then larg = Right$(larg,FLen(larg)-1)
     Select larg
-      Case "o"        : cli_exefile     = dos_GetNextArg{}
-      Case "s"        : cli_sourcefile  = dos_GetNextArg{}
-      Case "debug"    : cli_debug       = True
+      Case "s" : larg="source"
+      Case "e" : larg="exe"
+      Case "d" : larg="debug"
+      Case "r" : larg="release"
+      Case "h" : larg="help"
+      Case "v" : larg="verbose"
+    End Select
+
+    Select larg
+      Case "exe"      : cli_exefile     = dos_GetNextArg{}
+      Case "source"   : cli_sourcefile  = dos_GetNextArg{}
+      Case "save"     : cli_savefile    = dos_GetNextArg{}
+      Case "debug"    : cli_debuginfo   = True
       Case "run"      : cli_run         = True
-      Case "deamon"   : cli_deamon      = True : cli_arexxport = dos_GetNextArg{}
-      Case "smallest" : cli_smallest    = True
-      Case "gui"      : cli_gui         = True
+      Case "release"  : cli_release     = True
+      Case "ped"      : cli_gui         = True
+      Case "dumpform" : cli_dumpform.l  = Vallong(dos_GetNextArg{})
+      Case "dump"     : cli_info        = dos_GetNextArg{}
+                        Select LCase$(cli_info)
+                          Case "token"    : cli_dumptoken    = dos_GetNextArg{}
+                          Case "label"    : cli_dumplabel    = dos_GetNextArg{}
+                          Case "var"      : cli_dumpvar      = dos_GetNextArg{}
+                          Case "const"    : cli_dumpconst    = dos_GetNextArg{}
+                          Case "func"     : cli_dumpfunc     = dos_GetNextArg{}
+                          Case "macro"    : cli_dumpmacro    = dos_GetNextArg{}
+                          Case "type"     : cli_dumptype     = dos_GetNextArg{}
+                          Case "lib"      : cli_dumplib      = dos_GetNextArg{}
+                          Default
+                            NPrint "*** WARNING: Unknown info to dump: ",cli_info
+                        End Select
+      Case "verbose"  : cli_verbose     = Vallong(dos_GetNextArg{})
       Case "h"        : showhelp        = True             ; show the help and quit
       Default
         If arg><""
@@ -198,23 +252,28 @@ If dos_FromCLI{}
           err = True
         End If
     End Select
-  Until arg = ""                                           ; until we processed all arguments
+  Until arg = "" OR err=True          ; until we processed all arguments
 
   ; Show the help if something went wrong or help was requested
   If err><False OR showhelp = True
-    NPrint "\\nSyntax: AmiBlitz3 [options]"
+    If showhelp
+    NPrint "Syntax: AmiBlitz3 [options]"
     NPrint "\\nOptions:"
-    NPrint "  -s <sourcefile> : initial source filename"
-    NPrint "  -o <exefile>    : output  executable filename"
-    NPrint "  -debug          : compile with debuginfo"
-    NPrint "  -run            : execute compiled data"
-    NPrint "  -deamon <port>  : run in deamon mode using REXX as ARexx port name"
-    NPrint "  -smallest       : create smallest exectuable"
-    NPrint "  -gui            : start like from wb using PED as GUI"
-    NPrint "  -h              : show this help"
+    NPrint "  -(s)ource <file>    : source code filename (.bb2,.ab2 or .ab3)"
+    NPrint "  -(e)xe <file>       : output executable filename"
+    NPrint "  -(d)ebug            : compile with debuginfo"
+    NPrint "  -(r)elease          : create release executable (size optimized)"
+    NPrint "  -run                : run compiled program"
+    NPrint "  -dump <info> <file> : dump compiler internals to file"
+    NPrint "                        (info=token|label|var|func|const|macro|type|lib)"
+    NPrint "  -dumpform <n>       : format of compiler internals (0=bin, 1=ASCII, default=0)"
+    NPrint "  -PED                : start Amiblitz3 IDE (PED)"
+    NPrint "  -(v)erbose <n>      : set verbose level 0,1,2 (default=1)"
+    NPrint "  -(h)elp             : show this help"
     NPrint "\\nExample:"
-    NPrint "  AmiBlitz3 -s \\22DH0:Sourcecodes\MyProgram.ab3\\22 -o ram:MyProgram.exe\\n"
-    NPrint "\\n\\nNote: To start the AmiBlitz3 IDE, run this exectuable from Workbench."
+    NPrint "  AmiBlitz3 -s \\22DH0:Sourcecodes\MyProgram.ab3\\22 -e RAM:MyProgram.exe"
+    NPrint "\\nNote: To start the AmiBlitz3 IDE, run this exectuable from Workbench."
+    End If
     Pop If:Pop If
     Goto abnormal_exit
   End If
@@ -223,26 +282,14 @@ If dos_FromCLI{}
   If cli_sourcefile Then Poke.s ?str_tempfilename,cli_sourcefile
 End If
 
-
-If CLIMode=False
-  ; --
-  ; -- check, if there is an alternative PED-executable set via Tooltype
-  pedfile$ = dos_GetToolString{"EDITOR",dos_AddPart{my_systemdir$,"PED"}}
-  Poke$ ?str_pedfile,pedfile$
-  Poke.l ?CLIMode,CLIMode
-
-  If dos_GetToolState{"START_WITHOUT_LIBS"} = -1
-    Poke.b ?start_without_libs,1
-  Else
-    Poke.b ?start_without_libs,0
-  EndIf
-End If
+Poke.l ?CLIMode,CLIMode
 
 ; --
 ; -- Konstanten- und Variableninitialisierung
 .DEFINITIONS
-  Dim incdim.s(40)
-  Dim incline.l(40)
+  #maxincludes   = 1024
+  Dim incdim.s (#maxincludes)
+  Dim incline.l(#maxincludes)
 
   #64bitconstant    = 0
   #funcscan         = 0                                    ; if 1 functions are add at beginning
@@ -543,6 +590,10 @@ Function.s Get_Libinfo{addr_libnum.l}
   lib_ab2.b = False : lib_os.b = False
   addr_counter.l = addr_libnum
   skip.l = 0
+  If addr_counter=0
+    error{"\\__THIS_FUNCTION: Invalid pointer!"}
+    Function Return ""
+  End If
 ;  runner.l = 0
 ;  !cout{Hex$(addr_counter)}
   Repeat
@@ -557,15 +608,15 @@ Function.s Get_Libinfo{addr_libnum.l}
 ;      !cout{"found."}
       lib_os = True
       skip = 10
-      If Peek$(addr_counter+skip) = "" Then skip + 4
+      If Peek.s(addr_counter+skip) = "" Then skip + 4
     EndIf
   Until (lib_ab2=True OR lib_os = True) OR (addr_counter>addr_libnum + $400)
-  ;!cout{Hex$(addr_libnum),Peek$(addr_counter + skip),Peek$(addr_counter + skip+1),Peek$(addr_counter + skip+2)   }
+  ;!cout{Hex$(addr_libnum),peek.s(addr_counter + skip),peek.s(addr_counter + skip+1),peek.s(addr_counter + skip+2)   }
   If (addr_counter>addr_libnum + $400)
 ;    !cout{"error"}
     Function Return ""
   Else
-    Function Return Peek$(addr_counter + skip)
+    Function Return Peek.s(addr_counter + skip)
   EndIf
 End Function
 
@@ -750,15 +801,13 @@ BRA.w JL_0_2D0E
   BEQ load_ped
 
   ;/* Emulate PED Environment */
-  #columnsize = 250
-  !ComData_SetW{comWord_MaxColumns,##columnsize}
-  !ComData_SetL{comData_Magic     ,#$7E3A3A7E}             ; "~::~"
-  !ComData_SetL{comPtr_CurrentDir ,#comStr_CurrentDir }
-  !ComData_SetL{comPtr_SourceName ,#comStr_SourceName }
   !basic
-   EmulatePED{}
-   error_SetFlags{#error_stdout}                           ; pipe error messages to stdout!
+  error_SetFlags{#error_stdout}                           ; pipe error messages to stdout!
+  succ.l = InitEmulatedPED{}
+  GetD0 succ
   !asm
+  TST.l d0
+  BEQ freemem_and_quit
 JMP skip_ped
 
 .load_ped
@@ -783,6 +832,7 @@ JMP skip_ped
   MOVE.l A0,ped_startup_addr                               ; PED returns address of routine "startup_code"
   MOVE.l A1,comdata                                        ; PED returns address of comdata-area in A1
 ;  MOVE.w $7b2(a1),d0                                       ; if PED_IsAvailable=0, quit AmiBlitz
+
   !ComData_GetW{comWord_PEDIsAvailable,D0}
   BEQ.w unload_ped
 
@@ -810,11 +860,9 @@ JMP skip_ped
 ;  MOVE.l $2C(A1),_intuibase                                ; intuibase of PED
   !basic
   If CLIMode
-    NPrint "Loading BlitzLibs..."
+    If cli_verbose>=2 Then NPrint !TRANS{"Loading BlitzLibs."}
   End If
   !asm
-
-
 
   ; --
   ; -- load all acidlibs, deflibs and userlibs
@@ -853,36 +901,76 @@ JMP skip_ped
  ok_12:
   TST.l CLIMode
   BEQ run_ped
+  ;//////////////////////////////////////////////////////////////////////////////
+  ;/                                                                            /
+  ;/                    AmiBlitz3 Command Line Interface                        /
+  ;/                                                                            /
+  ;//////////////////////////////////////////////////////////////////////////////
   !basic
-  NPrint "Initializing hashmaps..."
+
+  ;//////////////////////////////////////////////////////////////////////////////
+  ;/                                                                            /
+  ;/ Initialize Token Hashmap                                                   /
+  ;/                                                                            /
+  ;//////////////////////////////////////////////////////////////////////////////
+  If cli_verbose>=2 Then NPrint "Initializing token hashmap."
   TokenHashMapFile.s = "Blitz3:System/TokenList.hashmap"
   *PreProcessor.preprocessor = preproc_Create{}
   Poke.l ?comPtr_PreProcessor,*PreProcessor
   preproc_LoadTokens{*PreProcessor,TokenHashMapFile}
-  If *PreProcessor\tokens=!_NULL ; we have no hashmap loaded, create it!
+  If *PreProcessor\tokens=!_NULL
+    If cli_verbose>=1 Then NPrint "No hashmap found (\\22"+TokenHashMapFile+"\\22), will be created..."
     preproc_QueryTokens{*PreProcessor}
     preproc_SaveTokens{*PreProcessor,TokenHashMapFile}
   End If
 
-  succ.l=True
-  If cli_sourcefile
-    succ=LoadSource{cli_sourcefile}
+  ;//////////////////////////////////////////////////////////////////////////////
+  ;/                                                                            /
+  ;/ Dump Token Hashmap                                                         /
+  ;/                                                                            /
+  ;//////////////////////////////////////////////////////////////////////////////
+  If cli_dumptoken><""
+    If cli_verbose>=2 Then NPrint "Updating token hashmap."
+    preproc_QueryTokens{*PreProcessor}
+    If cli_dumpform=0
+      If cli_verbose>=2 Then NPrint "Saving token hashmap."
+      preproc_SaveTokens {*PreProcessor,dos_SetExt{cli_dumptoken,"hashmap"}}
+    Else
+      If cli_verbose>=2 Then NPrint "Exporting as ASCII token hashmap."
+      preproc_DumpTokens{dos_SetExt{cli_dumptoken,"txt"}    }
+    End If
   End If
 
-  If succ
-    If cli_deamon
-      NPrint "Running Deamon!"
-      ;DeamonMode{}
-    Else
+  ;//////////////////////////////////////////////////////////////////////////////
+  ;/                                                                            /
+  ;/ load and Compile Sourcecoce                                                /
+  ;/                                                                            /
+  ;//////////////////////////////////////////////////////////////////////////////
+  succ.l=True
+  If cli_sourcefile
+    If cli_verbose>=2 Then NPrint "Loading sourcecode \\22",cli_sourcefile,"\\22."
+    succ=LoadSource{cli_sourcefile}
+    If succ
       ; compile...
-      NPrint "Compiling "+cli_sourcefile+"..."
+      If cli_verbose>=2 Then NPrint "Compiling "+cli_sourcefile+"..."
+      succ.l = CompileSource{cli_exefile,cli_debuginfo,cli_release}
+      If succ
+        NPrint "Compiling successful!"
+      Else
+        NPrint "Error compiling source!"
+      End If
+    Else
+      If cli_verbose>=0 NPrint "*** ERROR: Unable to read source file!"
     End If
-  Else
-    NPrint "Unable to read source file!"
+  EndIf
+
+  If cli_savefile
+    SaveSource{cli_savefile}
   End If
 
   preproc_Free{*PreProcessor} : *PreProcessor=!_NULL
-  NPrint "Amiblitz3 Shutdown..."
+  If cli_verbose>=2 Then NPrint "Exit AmiBlitz3."
+  DeinitEmulatedPED{}
   !asm
 JMP terminate_ab3
 
@@ -1025,7 +1113,7 @@ ab3_SaveSource:
 ;    error{"...as "+ab3save_filename}
     SaveSource{ab3save_filename}
   Else
-    error{"INTERNAL ERROR: no filename passed in D0 o SaveSource{}!"}
+    error{"INTERNAL ERROR: no filename passed in D0 to SaveSource{}!"}
   End If
   !asm
   RTS
@@ -1036,6 +1124,8 @@ ab3_LoadSource:
   If ab3save_filenameP
     ab3save_filename.s = Peek.s(ab3save_filenameP)
     LoadSource{ab3save_filename}
+  Else
+    error{"INTERNAL ERROR: no filename passed in D0 to LoadSource{}!"}
   End If
   !asm
   RTS
@@ -1045,6 +1135,98 @@ ab3_ClearSource:
   ClearSource{}
   !asm
   RTS
+
+.stdout_error
+  MOVE.l a0,-(a7)
+  MOVE.l a0,d0
+  MOVE.l a5,a0                                             ;macro title
+  !basic
+  i = PutD0
+  MOVEQ #20,d0
+
+ 'l2:
+    MOVE.b -(a0),d1
+    BEQ 'l1
+    CMP.b #":",d1
+    BEQ 'l1
+    SUBQ.l #1,d0
+    BNE 'l2
+
+ 'l1
+  ADDQ #1,a0
+  MOVE.l a0,d0
+  i2.l = PutD0
+  If Peek.w (?ininclude)>0
+    Poke.s (?includetemp2),incdim(Peek.w(?ininclude)-1)
+    errorline.l = Peek.l(?includeline)-1
+    Poke.l ?compilelinecounter,Peek.l(?includeline) - 1
+  Else
+    Poke.s (?includetemp2),Peek.s(?ptr_parameterstore)
+    errorline.l = Peek.l(?compilelinecounter) + 1
+  End If
+
+  errorfile.s = Peek.s(?includetemp2)
+  If i
+    errortext.s = !TRANS{Replace$(Peek.s(i),"\\0a","\n")}
+  Else
+    errortext.s = "???"
+  End If
+
+  NPrint "*** ERROR\\n",!TRANS{"Compiler Error"}+"(",errorfile,"\",errorline,"): ",errortext
+;    NPrint peek.s(i2)
+  NPrint Peek.l(?globallinecount)," ",!TRANS{"line(s) compiled."}
+;  NPrint Hex$(Peek.w(?globalvarpointer))+" global var base"
+  !asm
+  MOVE.l (a7)+,a0
+RTS
+
+
+.save_errorfile
+  MOVE.l a0,-(a7)
+  MOVE.l a0,d0
+  MOVE.l a5,a0                                             ;macro title
+  !basic
+  i = PutD0
+  MOVEQ #20,d0
+
+ 'l2:
+    MOVE.b -(a0),d1
+    BEQ 'l1
+    CMP.b #":",d1
+    BEQ 'l1
+    SUBQ.l #1,d0
+    BNE 'l2
+
+ 'l1
+  ADDQ #1,a0
+  MOVE.l a0,d0
+  i2.l = PutD0
+  fid.l = file_Open{dos_AddPart{my_systemdir$,"ab_compileerror.txt"},#file_forcewrite}
+  If fid <> -1
+    If Peek.w (?ininclude)>0
+      Poke.s(?includetemp2),incdim(Peek.w(?ininclude)-1)
+    Else
+      Poke.s(?includetemp2),""
+    End If
+    a$ = Peek.s(?includetemp2)
+    x$ = Replace$(Peek.s(i),"\\0a","\n")
+    file_WriteLine{fid,x$}
+    file_WriteLine{fid,Str$(Peek.l(?compilelinecounter) + 1)}
+    If a$
+      file_WriteLine{fid,a$}
+      file_WriteLine{fid,Str$(Peek.l(?includeline)-1)}
+      Poke.l ?compilelinecounter,Peek.l(?includeline) - 1
+    Else
+      file_WriteLine{fid,"none"}
+    End If
+    file_WriteLine{fid,Peek.s(i2)}
+    file_WriteLine{fid,Str$(Peek.l(?globallinecount))+" line(s) compiled"}
+    file_WriteLine{fid,Hex$(Peek.w(?globalvarpointer))+" global var base"}
+    file_Close{fid}
+  End If
+  !asm
+  MOVE.l (a7)+,a0
+RTS
 
 
 .call_menuentry:                                           ; D6: menuitem
@@ -1468,12 +1650,18 @@ BRA.w call_setpointernormal
   ; --
   ; -- get size of acidlibs/deflibs
   !basic
-  Poke.l ?size_acidlibs, dos_GetFileSize{Peek$(?str_path_acidlibs)}
+  Poke.l ?size_acidlibs, dos_GetFileSize{Peek.s(?str_path_acidlibs)}
 
-  If Peek$(Peek.l(?deflib))<>""
-    Poke.l ?size_deflibs, dos_GetFileSize{Peek$(Peek.l(?deflib))}
+  deflibNameP.l = Peek.l(?deflib)
+  If deflibNameP
+    If Peek.s(deflibNameP)<>""
+      Poke.l ?size_deflibs, dos_GetFileSize{Peek.s(Peek.l(?deflib))}
+    Else
+      Poke.l ?size_deflibs, dos_GetFileSize{Peek.s(?str_path_deflibs)}
+    End If
   Else
-    Poke.l ?size_deflibs, dos_GetFileSize{Peek$(?str_path_deflibs)}
+    Poke.l ?size_deflibs, dos_GetFileSize{Peek.s(?str_path_deflibs)}
+    error{"INTERNAL: Invalid deflib name pointer!"}
   EndIf
   !asm
 
@@ -1679,7 +1867,6 @@ BRA.b 'debugoff
   CLR.w pass
   MOVE.w #0,compiler_job
   CLR.l funcscanon
-
  JL_0_3824:
   CNIF #funcscan                                           ; scan, welche funktionen verwendet werden
     MOVE.l #1,funcscanon
@@ -1927,7 +2114,7 @@ BRA.b 'debugoff
  'd
   MOVEM.l (a7)+,a0-a6/d0-d7
   !basic
-   dos_Delete{dos_AddPart{my_systemdir$,"ab_compileerror.txt"}}
+  dos_Delete{dos_AddPart{my_systemdir$,"ab_compileerror.txt"}}
   !asm
   CLR.b returncode
 JMP freeprocvs
@@ -2014,8 +2201,8 @@ JMP freeslist
 ;bmapmul:            Dc.w 0
 ;botline:            Dc.w 0                                ;offset to bottom of stripe
 
-progressbar_width:   Ds.w 1                                ;riteend org source ;right end of include strip
-inmacro:             Ds.w 1                                ;macmask org source ;macro found
+progressbar_width:   Dc.w 100                              ;riteend org source ;right end of include strip
+inmacro:             Dc.w 0                                ;macmask org source ;macro found
 
 
 .nextline:
@@ -2724,7 +2911,7 @@ clrreq:     Ds.w 1
    BEQ.w close_compilewin__skip
 
   !basic
-  If Peek.l(Addr Window(4))<>0 Then WZCloseWindow 4        ;turn off the requester
+  If Peek.l(Addr Window(4)) Then WZCloseWindow 4        ;turn off the requester
   !asm
   LEA clrreq,a0
   NOT.w (a0)                                               ;reass
@@ -2780,13 +2967,15 @@ debugmode:  Ds.w 1                                         ;debugga org source ;
   LEA  clrreq,a1
   MOVE.w #2000,(a1)
   !basic
-   FindScreen 0
-   WZWindow 4,?wzgui,64,-2,-2,-2,-2,4
-   ;  comstatus$ = "Pass "+Str$(Peek.w(?pass))
-   ;  WZPrint "COMPILE_INFO",&comstatus$
-   calcpro_old.l = 0
-   typ_old.l     = -1
-   pass_old.l    = -1
+  If CLIMode=False
+    FindScreen 0
+    WZWindow 4,?wzgui,64,-2,-2,-2,-2,4
+    ;  comstatus$ = "Pass "+Str$(Peek.w(?pass))
+    ;  WZPrint "COMPILE_INFO",&comstatus$
+  End If
+  calcpro_old.l = 0
+  typ_old.l     = -1
+  pass_old.l    = -1
   !asm
   CLR.w stopit
 RTS
@@ -3276,21 +3465,23 @@ chkrealstop:
 
  chkrealstop__loop:                                        ;??looks like label not used??
   !basic
-  Use Window 4
-  ev.l = Event : c_abort.b = False
-  While ev
-    If ev = #IDCMP_IDCMPUPDATE
-      If WZGadName = "COMPILE_ABORT" Then c_abort = True
-    EndIf
-    If (c_abort = True)
-      Pop If : Pop While
-      MOVEQ.l #-$01,d4
-      MOVE.w D4,stopit
-      !asm
-  BRA chkrealstop__skip
-    EndIf
-    ev = Event
-  Wend
+  If Peek.l(Addr Window(4))
+    Use Window 4
+    ev.l = Event : c_abort.b = False
+    While ev
+      If ev = #IDCMP_IDCMPUPDATE
+        If WZGadName = "COMPILE_ABORT" Then c_abort = True
+      EndIf
+      If (c_abort = True)
+        Pop If : Pop While
+        MOVEQ.l #-$01,d4
+        MOVE.w D4,stopit
+        !asm
+    BRA chkrealstop__skip
+      EndIf
+      ev = Event
+    Wend
+  End If
   !asm
   MOVEQ.l #$00,D6
   MOVEQ.l #$00,D7                                          ; clr Z-Flag for beq.b in chkstop_chk
@@ -4224,7 +4415,8 @@ BRA.w JL_0_4974
  JL_0_4964:
   MOVE.w D1,fixlibst+2
   MOVE.l fixlibst,D1
-  BSR.w writelong
+;  BSR.w writelong
+  JSR writelong
 
  JL_0_4974:
   MOVE.w (A7)+,a2offset
@@ -4278,7 +4470,8 @@ JL_0_49EA:
   BSR.w AJL_0_498A                                         ;read peek/poke size
 
   ORI.w #$7000,D1
-  BSR.w writeword
+;  BSR.w writeword
+  JSR writeword
   ADDQ.w #1,regnum
 
  JL_0_4A06:
@@ -4319,29 +4512,34 @@ srctype:    Ds.w 1
    BNE.w syntaxerr
   MOVE.b D2,srctype
   MOVE.w pusha2,D1
-  BSR.w writeword
+;  BSR.w writeword
+  JSR writeword
   BSR.w get1bytemain
   BSR.w excget
   CMP.b srctype,D2
    BNE.w excerr2
   MOVE.w pulla1,D1
-   BSR.w writeword
+   ;BSR.w writeword
+   JSR writeword
   CMP.b #$2,D2
    BCS.w JL_0_4B2A
    BEQ.w JL_0_4B1E
   LEA swapl(PC),A0
   LEA swaplf(PC),A1
-BRA.w pokecode
+;BRA.w pokecode
+JMP pokecode
 
  JL_0_4B1E:
   LEA swapw(PC),A0
   LEA swapwf(PC),A1
-BRA.w pokecode
+;BRA.w pokecode
+JMP pokecode
 
  JL_0_4B2A:
   LEA swapb(PC),A0
   LEA swapbf(PC),A1
-BRA.w pokecode
+;BRA.w pokecode
+JMP pokecode
 
  excget:
   ;BSR.w getparameter
@@ -4403,7 +4601,8 @@ BRA.w syntaxerr
    BEQ.w popreturn__norerr
   LEA popreturn__rfix(PC),A0
   LEA popreturn__rfixf(PC),A1
-   BSR.w pokecode
+   ;BSR.w pokecode
+   JSR pokecode
   MOVE.w #$C305,D1
    JSR Atokejsr
   MOVE.w popreturn__rfix2(PC),D1
@@ -4567,7 +4766,7 @@ check_for_infoextention:                                     ;does a0 end in .in
   DBF D0,check_for_infoextention__loop
 
 ;  !basic
-;   logging{Peek$(?str_temp)+" "}
+;   logging{peek.s(?str_temp)+" "}
 ;  !asm
   LEA str_temp(PC),A1
   MOVE.b (A0),D0
@@ -5041,7 +5240,8 @@ stamigalib:                                                ;an amigalib called t
   MOVEQ.l #$03,D2
   ADDQ.w #1,D3
   MOVEM.l D3/A3,-(A7)
-   BSR.w peval
+   ;BSR.w peval
+   JSR peval
   MOVEM.l (A7)+,D3/A3
   CMP.w #$2C,D0
    BEQ.w stamigalib__loop
@@ -5305,8 +5505,8 @@ RTS
   LEA str_residentpath,A0
   LEA str_residentname,A1
   !basic
-    Poke$ ?str_residentpath,my_residentsdir$
-    Poke$ ?str_residentname,".res"
+    Poke.s ?str_residentpath,my_residentsdir$
+    Poke.s ?str_residentname,".res"
   !asm
 
  L_0_560C:
@@ -5702,13 +5902,18 @@ RTS
 .check_residentpath
    !basic
     MOVE.l ptr_resfile,d0
-    resfile$ = Peek$(Peek.l(?ptr_resfile))
-    tests.b = Instr(resfile$,"/")
-    testc.b = Instr(resfile$,":")
-    If tests=0 AND testc=0
-      resfile$ = dos_AddPart{my_residentsdir$,resfile$}
-      Poke.l ?ptr_resfile,&resfile$
-    EndIf
+    resfileP.l = Peek.l(?ptr_resfile)
+    If resfileP
+      resfile$ = Peek.s(resfileP)
+      tests.b = Instr(resfile$,"/")
+      testc.b = Instr(resfile$,":")
+      If tests=0 AND testc=0
+        resfile$ = dos_AddPart{my_residentsdir$,resfile$}
+        Poke.l ?ptr_resfile,&resfile$
+      EndIf
+    Else
+      error{"INTERNAL: Invalid pointer in ptr_resfile!"}
+    End If
    !asm
 RTS
 
@@ -9132,7 +9337,7 @@ BRA.w process_libraries
     ; --
     ; -- open that file ...
     !basic
-      Poke$ ?str_libfilename,dos_AddPart{Peek$(?str_path_userlibs),Peek$(?fib_FileName)}
+      Poke.s ?str_libfilename,dos_AddPart{Peek.s(?str_path_userlibs),Peek.s(?fib_FileName)}
     !asm
     MOVE.l #str_libfilename,D1
     BSR.w open_userlibfile
@@ -10297,7 +10502,8 @@ BRA JL_0_7576b
 BRA.w JL_0_755Eb
 
  JL_0_757Cb
-  BSR.w call_setpointernormal
+;  BSR.w call_setpointernormal
+  JSR call_setpointernormal
   MOVEM.l (a7)+,d2-d7/a2-a6
   AL_0_7790:
 RTS
@@ -10456,7 +10662,8 @@ BRA.w getchar
     MOVE.l (A1)+,(A0)+
   DBF D0,getchar__cmloop
 
-   BSR.w AJL_0_BF6E                                      ;get constant into d3
+;   BSR.w JMP_AJL_0_BF6E                                      ;get constant into d3
+   JSR AJL_0_BF6E
   CMP.w #$7E,D0
    BNE.w syntaxerr
   MOVE.l A5,cmakea5                                      ;tilde
@@ -10481,6 +10688,8 @@ BRA.w getchar
  getchar__done:
 RTS
 
+JMP_AJL_0_BF6E:
+JMP AJL_0_BF6E
 
  getchar__csif:
   MOVE.l linenumat,ciflineat                               ;csif
@@ -10707,7 +10916,17 @@ ezerr:   Ds.w 1                                            ;for simple errors
   MOVEA.l (A7)+,A0
   CMP.l #"NORE",reqmode                                    ;for used functions
   BEQ handle_compileerror__skip_Lxx2
-  JSR save_errorfile
+  !basic
+  If CLIMode
+    !asm
+    JSR stdout_error
+    !basic
+  Else
+    !asm
+    JSR save_errorfile
+    !basic
+  End If
+  !asm
 
 ;  MOVEA.l comdata,A1
 ;  MOVEA.l $C(A1),A1                                        ; show errorrequester
@@ -19309,7 +19528,7 @@ BRA bc1
   MOVE.l (A7)+,destbufferend
   MOVE.l (A7)+,destpointer
   MOVE.w (A7)+,regnum
-BRA.w reget
+JMP reget
 
 
 oldlibat:   Ds.l 1
@@ -19422,16 +19641,10 @@ BRA.w JL_0_C0CA
    *tn.preprocessor = Peek.l(?include_preprocessor)
    If ido
      nilen.l = preproc_Tokenize{*tn,ibase,ibase,ilen}
-     ;error{"Tokenizing the include! length:"+Str$(ilen)+ "=>" +Str$(nilen)}
      If nilen>0
        For n.l=nilen To ilen-1
          Poke.b ibase+n,0
        Next
-       ;fid.l = file_Open{"ram:tokenized.include.bb2",#file_forcewrite}
-       ;If fid>=0
-       ;  file_WriteMem{fid,ibase,nilen}
-       ;  file_Close{fid}
-       ;End If
        Poke.l ?include_length,nilen
      End If
    End If
@@ -20489,12 +20702,16 @@ BRA.w JL_0_C96C
    ;BSR.w get1bytemain                                      ;data writestring
    MOVEQ #0,d0
    MOVE.b (a5)+,d0
-   BEQ.w notqerr
+   BEQ.w JMP_notqerr
   CMP.w #$22,D0
    BEQ.w JL_0_C9A2
    BSR.w JL_0_C210
   ADDQ.w #1,D1
 BRA.w JL_0_C988
+
+JMP_notqerr:
+JMP notqerr
+
 
  JL_0_C9A2:
   CLR.w instringon
@@ -20808,6 +21025,7 @@ JMP illdirerr
     MOVE.b (a0)+,(a1)+
   BNE 'l1
   JSR save_includename
+
   MOVE.l #0,include_process
 
   CMP.l #$62623200,-4(a0)                                  ;.bb2
@@ -23534,7 +23752,8 @@ BRA 'negi2
 
  .do_let:
   MOVE.l A5,letstart
-  BSR.w getparameter
+  ;BSR.w getparameter
+  JSR getparameter
 
  AJL_0_DEA6:
   ;bsr.w pushstart
@@ -23563,7 +23782,8 @@ BRA 'negi2
 
  'l1a
   CLR.w regnum
-  BSR.w JL_0_B5D2
+;  BSR.w JL_0_B5D2
+  JSR JL_0_B5D2
   CLR.w commode
   CLR.w stackcorrect
   CLR.w pcodd
@@ -23619,7 +23839,8 @@ BRA.s 'l1
 
  ;end 457a
   MOVEQ.l #$07,D2
-   BSR.w eval
+   ;BSR.w eval
+   JSR eval
   MOVE.w (A7)+,varmode
   MOVE.l (A7)+,lastoffset_org
   MOVE.w moved0a3,D1
@@ -23632,7 +23853,8 @@ BRA.s 'l1
 BRA.w JL_0_DF3C
 
  JL_0_DF38:
-  BSR.w JL_0_B63C
+  ;BSR.w JL_0_B63C
+  JSR JL_0_B63C
 
  JL_0_DF3C:
   MOVEM.w (A7)+,D2-D3
@@ -23652,7 +23874,8 @@ BRA.w JL_0_DF3C
     ADDQ.w #1,D1
 
  JL_0_DF70:
-  BSR.w Atokejsr
+  ;BSR.w Atokejsr
+  JSR Atokejsr
   CMP.w #$2C,D0
   BNE.w JL_0_E0C6
 
@@ -23760,11 +23983,13 @@ JL_0_DF9C:
   MOVE.w varmode,-(A7)
   ANDI.w #$FF,D2
   MOVE.l lastoffset_org,-(A7)
-   BSR.w eval
+   ;BSR.w eval
+   JSR eval
   MOVE.l (A7)+,lastoffset_org
   MOVE.w commode,D1
    BNE.w JL_0_DFCC
-   BSR.w JL_0_B63C
+   ;BSR.w JL_0_B63C
+   JSR JL_0_B63C
 
  JL_0_DFCC:
   MOVE.w (A7)+,varmode
@@ -24581,7 +24806,7 @@ BRA write_dim_code__care_l2
   ADDQ.w #3,D1
 
  write_dim_code__isrg:
-BRA.w Atokejsr
+JMP Atokejsr
 
 
 fpupi:
@@ -25186,7 +25411,7 @@ RTS
   Dc.b $00,$01                                             ; 1 byte schreiben ;one byte stuff...
   Dc.l xtra_versionnumber                                  ; vers org source
   Dc.l create_iconfile                                     ; create icon for executable
-  Ds.l 1
+  Dc.l $0 ; stop!
 
   Dc.b $00,$02                                             ; 2 bytes schreiben  ;two byte stuff...
     ;
@@ -25208,7 +25433,7 @@ RTS
   Dc.l default_overflowcheck                               ;+obsolet: overflow vorgabe
     ;
 ;jimi1  ;org source
-  Ds.l 1
+  Dc.l $0 ; stop
     ;
   Dc.b $00,$04                                             ; 4 bytes schreiben..  ;four byte stuff...
 
@@ -25225,7 +25450,7 @@ bufferlist:
   Dc.l stringbuffer
 
 ;jimi3   ;org source
-  Ds.l 1
+  Dc.l $0 ; stop!
     ;
     ;Resident Buffer...
     ;
@@ -25236,7 +25461,7 @@ bufferlist:
     ;
   Dc.b $01,$80                                             ;dc 192*2; 384 bytes schreiben
   Dc.l exepath,0                                           ; exepath und exefilename jeweils 192 bytes
-  Ds.w 1
+  Dc.w $0
 ;optspntsf   ;                                             ;??looks like not used??
 
 optssave: ;ds.b ((jimi1-jimi0)/4*2)+(jimi3-jimi2)+(68*8)+(192*2)+2 org source ; 982 bytes
@@ -25250,27 +25475,33 @@ comsettings_message:  Ds.w 1                               ;allchg org source
 xtra_versionnumber:   Ds.w 1                               ;vers org source
 
 
-.read_xtrafile:                                            ;load xtrafile, filehandle via PED in D7
+.read_xtrafile:                                            ;load xtrafile, filehandle via PED in D7 and D0(?)
+  !DPrint "Entering read_xtrafile..."
   CLR.b exefilename
   TST.l d0
   BNE read_xtrafile__l10
 RTS
 
- read_xtrafile__l10                                         ;??begin org source??
+ read_xtrafile__l10
+  !DPrint "Free Residents"                                      ;??begin org source??
   JSR free_residents                                       ;jsr freeres2 org source
+  !DPrint "Readin XtraData..."
   LEA ptr_xtradata,A2
   MOVEQ.l #$00,D4
 
  read_xtrafile__loop:
+    !DPrint "Xtra Loop"
     MOVE.w (A2)+,D4                                        ; anzahl bytes zum lesen
     BEQ.b read_xtrafile__done
 
  read_xtrafile__loop2:
+   !DPrint "Xtra Loop 2"
     MOVE.l (A2)+,D2
   BEQ.b read_xtrafile__loop
 
   MOVE.l D4,D3
   MOVE.l D7,D1
+
   JSR _Read(A6)                                            ; d1: file, d2: buffer, d3:length
   TST.l D0
   BNE.b read_xtrafile__loop2
@@ -25328,6 +25559,7 @@ BRA.b read_xtrafile__ver0
 BRA.b read_xtrafile__dloop
 
  read_xtrafile__done2:
+   !DPrint "Load residents..."
     ;
     ;load in residents
     ;
@@ -25338,15 +25570,19 @@ BRA.b read_xtrafile__dloop
     CLR.l $40(A0)
     LEA $44(A0),A0
   DBF D0,read_xtrafile__loop3
-
   MOVEM.l D7/A6,-(A7)
+  !DPrint "Init buffers..."
   JSR init_buffers
+  !DPrint "ReLoad residents..."
   JSR reloadresident
   MOVEM.l (A7)+,D7/A6
+  !DPrint "Done Xtra Load..."
 RTS
 
 
 .write_xtrafile:                                           ;savextra org source ; D7 = filepointer A6 = dosbase
+  !DPrint "Entering write_xtrafile..."
+
   MOVE.b #$1,xtra_versionnumber                            ;.xtra version number...
 
 ;  LEA ptr_xtradata,A2
@@ -25361,6 +25597,7 @@ RTS
 
   ; -- boolean options speichern
  write_xtrafile__loop:
+  !DPrint{"writing..."}
   MOVE.w (A2)+,D4                                          ; anzahl bytes zu schreiben
   BEQ.b write_xtrafile__done
 
@@ -25438,7 +25675,7 @@ RTS
  menu_compileroptions__loop3:
       MOVE.b (A2)+,(A0)+
   DBF D1,menu_compileroptions__loop3
-
+  !DPrint "Done write_xtrafile..."
 BRA.w menu_compileroptions__loop2
 
  menu_compileroptions__done:
@@ -25685,7 +25922,7 @@ AL_0_11A20:            Ds.l 1
         Select WZGadName
         Case "CALC_EXPRESSION"
           calc_expression$ = WZGetString("CALC_EXPRESSION")
-          Poke$ ?str_calcexpression,calc_expression$
+          Poke.s ?str_calcexpression,calc_expression$
 
         Case "BIN"
           Poke.w ?button_bin_flags, $80
@@ -25707,7 +25944,7 @@ AL_0_11A20:            Ds.l 1
           !asm
           BSR examine_expression
           !basic
-          calc_expression$ = Peek$(?str_calcexpression)
+          calc_expression$ = Peek.s(?str_calcexpression)
           WZPrint "CALC_EXPRESSION",&calc_expression$
         EndIf
       Case #IDCMP_CLOSEWINDOW
@@ -25963,8 +26200,12 @@ RTS
   MOVE.l a5,d0
   !basic
   _myD0.l = PutD0
-  verstring$ = Left$(Peek.s(_myD0),9+3)
-  verstring$ = UnRight$(verstring$,3)                      ; Compilerkonstantenbeginn \__ entfernen
+  If _myD0
+    verstring$ = Left$(Peek.s(_myD0),9+3)
+    verstring$ = UnRight$(verstring$,3)                      ; Compilerkonstantenbeginn \__ entfernen
+  Else
+    error{"INTERNAL: Invalid pointer in version_string!"}
+  End If
 
   ; Version coded as : Majorversion Minorversion Patchlevel
   ;                    00           00           00
@@ -26021,8 +26262,12 @@ RTS
   MOVE.l a5,d0
   !basic
   _myD0.l = PutD0
-  verstring$ = Left$(Peek.s(_myD0),9+3)
-  verstring$ = UnRight$(verstring$,3)                      ; Compilerkonstantenbeginn \__ entfernen
+  If _myD0
+    verstring$ = Left$(Peek.s(_myD0),9+3)
+    verstring$ = UnRight$(verstring$,3)                      ; Compilerkonstantenbeginn \__ entfernen
+  Else
+    error{"INTERNAL: Invalid pointer in version_string_dc!"}
+  End If
 
   ; Version coded as : Majorversion Minorversion Patchlevel
   ;                    00           00           00
@@ -26075,13 +26320,24 @@ RTS
   MOVE.l a5,d0
   !basic
   _myD0.l = PutD0
-  constring$ = Left$(Peek.s(_myD0),13 + 3)
-  constring$ = UnRight$(constring$,3)                      ; Compilerkonstantenbeginn \__ entfernen
+  If _myD0
+    constring$ = Left$(Peek.s(_myD0),13 + 3)
+    constring$ = UnRight$(constring$,3)                      ; Compilerkonstantenbeginn \__ entfernen
+  Else
+    error{"INTERNAL: Invalid pointer in insert_functionname!"}
+  End If
+
   Select LCase$(constring$)
 
    Case "this_function"
     If Peek.l(?currentfunction)<>0
-      condata$ = Peek.s(Peek.l(?currentfunction) + 48 + 1)
+      currentfuncP.l = Peek.l(?currentfunction)
+      If currentfuncP
+        condata$ = Peek.s(currentfuncP + 48 + 1)
+      Else
+        condata$ = "???"
+        error{"INTERNAL: Invalid pointer in currentfunction!"}
+      End If
     Else
       condata$ = "GLOBAL"
     EndIf
@@ -26090,7 +26346,8 @@ RTS
     condata$ = constring$
 
   End Select
-  GetD0 Len(condata$)                                      ; laenge zielstring -> Stack
+
+  GetD0 FLen(condata$)                                      ; laenge zielstring -> Stack
   MOVE.l d0,d2
   MOVE.l d2,-(a7)
 
@@ -26116,8 +26373,13 @@ RTS
   MOVE.l a5,d0
   !basic
   _myD0.l = PutD0
-  constring$ = Left$(Peek.s(_myD0),8 + 3)
-  constring$ = UnRight$(constring$,3)                      ; Compilerkonstantenbeginn \__ entfernen
+  If _myD0
+    constring$ = Left$(Peek.s(_myD0),8 + 3)
+    constring$ = UnRight$(constring$,3)                      ; Compilerkonstantenbeginn \__ entfernen
+  Else
+    error{"INTERNAL: Invalid pointer in insert_codeline!"}
+    constring$ = "???"
+  End If
   Select LCase$(constring$)
 
    Case "codeline"
@@ -26154,18 +26416,18 @@ RTS
 .check_incdir:
   !basic
   If Peek.l(?incd)
-    includedir$ = Peek$(Peek.l(?incd))
+    includedir$ = Peek.s(Peek.l(?incd))
   Else
-    includedir$ = dos_AddPart{Peek$(?str_blitz3assign),"Sourcecodes/Includes"}
+    includedir$ = dos_AddPart{Peek.s(?str_blitz3assign),"Sourcecodes/Includes"}
   End If
-  inc$ = Peek$(?ptr_parameterstore)
+  inc$ = Peek.s(?ptr_parameterstore)
   CLR.l tempstore
 
   If dos_Exist{inc$} = 0
     incfile$ = dos_FilePart{inc$}
     inccomplete$ = dos_AddPart{includedir$,incfile$}
     If dos_Exist{inccomplete$}
-      Poke$ ?ptr_parameterstore,inccomplete$
+      Poke.s ?ptr_parameterstore,inccomplete$
       i = FLen(inccomplete$)
       GetReg d0,i
       MOVE.l d0,tempstore
@@ -26173,7 +26435,7 @@ RTS
       ; -- additional checking if includedir$+<completely given includename> exists
       incfile$ = dos_AddPart{includedir$,inc$}
       If dos_Exist{incfile$}
-        Poke$ ?ptr_parameterstore,incfile$
+        Poke.s ?ptr_parameterstore,incfile$
         i = FLen(incfile$)
         GetReg d0,i
         MOVE.l d0,tempstore
@@ -26221,7 +26483,7 @@ JSR handle_compileerror
   MOVE.l a5,d0
   !basica7
   i.l = PutD0
-  a$ = Peek$(i)
+  a$ = Peek.s(i)
   b$ = Peeks$(i-7,7)
   i = Request(!TRANS{"Do workaround ?"},b$ + a$,!TRANS{"Yes|No"})
   MOVE.l d0,result
@@ -26238,13 +26500,13 @@ RTS
   !ComData_LEA{comStr_SourceName,D0}
   fileNameP.l = PutD0
 
-  check_dirname$  = Peek$(currentDirP)
-  check_filename$ = Peek$(fileNameP)
+  check_dirname$  = Peek.s(currentDirP)
+  check_filename$ = Peek.s(fileNameP)
   If (olddirname$<>check_dirname$) OR (oldfilename$<>check_filename$)
     JSR free_unusedfunctions
   End If
-  olddirname$ = Peek$(check_dirname$)
-  oldfilename$ = Peek$(check_filename$)
+  olddirname$ = Peek.s(check_dirname$)
+  oldfilename$ = Peek.s(check_filename$)
   For i = 0 To 39
     incline(i) = 0
   Next
@@ -26372,26 +26634,37 @@ RTS
 
 .save_includename:
   !basic
-  For i = 0 To 40
-    If dos_FilePart{incdim(i)} = dos_FilePart{Peek$(?includetemp2)}
-;      !cout{"schon drin: " + Peek$(?includetemp2)}
+;  For i = 0 To #maxincludes-1
+;    If dos_FilePart{incdim(i)} = dos_FilePart{peek.s(?includetemp2)}
+;      !cout{"schon drin: " + peek.s(?includetemp2)}
 ;      Pop For
 ;      !asm
 ;      RTS
-    EndIf
-  Next i
-;  !cout{"storing: ",Peek$(?includetemp2),Peek.l(?includeline)}
-  incdim(Peek.w(?ininclude)) = Peek$(?includetemp2)
-  incline(Peek.w(?ininclude)) = Peek.l(?includeline)
+;    EndIf
+;  Next i
+;  !cout{"storing: ",peek.s(?includetemp2),Peek.l(?includeline)}
+  i.l = Peek.w(?ininclude)
+  If i>=0 AND i<#maxincludes
+    incdim (i) = Peek.s(?includetemp2)
+    incline(i) = Peek.l(?includeline)
+
+    If CLIMode
+     NPrint "\\n  -> Compiling ",incdim(i),"..."
+    End If
+  End If
+
   !asm
 RTS
 
 
 .zero_includename:
   !basic
-  incdim(Peek.w(?ininclude)) = ""
-  incline(Peek.w(?ininclude)) = 0
-  Poke.l (?includeline),incline(Peek.w(?ininclude)-1)+1
+  i.l = Peek.w(?ininclude)
+  If i>=0 AND i<#maxincludes
+    incdim (i) = ""
+    incline(i) = 0
+    If i>0 Then Poke.l (?includeline),incline(i-1)+1
+  End If
   !asm
 RTS
 
@@ -26605,53 +26878,6 @@ unusedfunc      Dc.l 0
 Even
 
 
-.save_errorfile
-  MOVE.l a0,-(a7)
-  MOVE.l a0,d0
-  MOVE.l a5,a0                                             ;macro title
-  !basic
-  i = PutD0
-  MOVEQ #20,d0
-
- 'l2:
-    MOVE.b -(a0),d1
-    BEQ 'l1
-    CMP.b #":",d1
-    BEQ 'l1
-    SUBQ.l #1,d0
-    BNE 'l2
-
- 'l1
-  ADDQ #1,a0
-  MOVE.l a0,d0
-  i2.l = PutD0
-  fid.l = file_Open{dos_AddPart{my_systemdir$,"ab_compileerror.txt"},#file_forcewrite}
-  If fid <> -1
-    If Peek.w (?ininclude)>0
-      Poke$(?includetemp2),incdim(Peek.w(?ininclude)-1)
-    Else
-      Poke$(?includetemp2),""
-    End If
-    a$ = Peek$(?includetemp2)
-    x$ = Replace$(Peek$(i),"\\0a","\n")
-    file_WriteLine{fid,x$}
-    file_WriteLine{fid,Str$(Peek.l(?compilelinecounter) + 1)}
-    If a$
-      file_WriteLine{fid,a$}
-      file_WriteLine{fid,Str$(Peek.l(?includeline)-1)}
-      Poke.l ?compilelinecounter,Peek.l(?includeline) - 1
-    Else
-      file_WriteLine{fid,"none"}
-    End If
-    file_WriteLine{fid,Peek$(i2)}
-    file_WriteLine{fid,Str$(Peek.l(?globallinecount))+" line(s) compiled"}
-    file_WriteLine{fid,Hex$(Peek.w(?globalvarpointer))+" global var base"}
-    file_Close{fid}
-  End If
-  !asm
-  MOVE.l (a7)+,a0
-RTS
-
 
 .update_progressbar
   !basic
@@ -26664,17 +26890,19 @@ RTS
   If pass><pass_old.l OR typ><typ_old.l
     pass_old = pass
     typ_old  = typ
+    comstatus$ = "Initializing Compiler..."
+    If typ=0
+      comstatus$ = !TRANS{"Pass"}+" "+Str$(pass)+": "+!TRANS{"Compiling Sources..."}
+    End If
+    If typ=1
+      comstatus$ = !TRANS{"Pass"}+" "+Str$(pass)+": "+!TRANS{"Building Executable..."}
+    End If
+
     If Peek.l(Addr Window(4))<>0
       Use Window 4
-      comstatus$ = "Initializing Compiler..."
-      If typ=0
-        comstatus$ = !TRANS{"Pass"}+" "+Str$(pass)+": "+!TRANS{"Compiling Sources..."}
-      End If
-      If typ=1
-        comstatus$ = !TRANS{"Pass"}+" "+Str$(pass)+": "+!TRANS{"Building Executable..."}
-      End If
-
       WZPrint "COMPILE_INFO",&comstatus$
+    Else
+      NPrint comstatus$
     End If
   End If
 
@@ -26683,9 +26911,14 @@ RTS
       If (((calcpro & $7)=0) OR (calcpro=100))
         testpr$ = Str$(calcpro)+"%%"
         WZPrint "COMPILE_GAUGE",calcpro,100,&testpr$
-        calcpro_old = calcpro
       End If
+    Else
+      If ((calcpro & $7)=0)
+        ;Print "."
+      End If
+      NPrint calcpro,"% compiled..."
     EndIf
+    calcpro_old = calcpro
   EndIf
   !asm
 RTS
@@ -26718,18 +26951,18 @@ RTS
     For i = 0 To Peek.w(?number_of_objects)-1
       a$ = ""
       GetD0 &a$,i:JSR getobjectentry : a.l = PutD0
-      WZ_AddRow{"OBJECTS",Peek$(&a$),Str$(a)}
+      WZ_AddRow{"OBJECTS",Peek.s(&a$),Str$(a)}
     Next
     WZ_DrawTable{"OBJECTS"}
     ; Fuellt die Tabelle mit den Werten, die mit WZAddRow{} erstellt wurden
     WZ_UpdateTable{"OBJECTS"}
     winon = 1
     var.l = ?residents_table
-    a$ = Peek$(var)
+    a$ = Peek.s(var)
     For i = 0 To 6
       a$ = a$ + "\\0a"
       var + $44
-      a$ = a$ + Peek$(var)
+      a$ = a$ + Peek.s(var)
     Next
     WZPrint "RESIDENTS",&a$
 
@@ -26835,7 +27068,7 @@ RTS
      Case "residents"
 
      Case "stringbuffer"
-      ;Poke$ ?str_stringbuffer,Str$(WZInput)
+      ;poke.s ?str_stringbuffer,Str$(WZInput)
       Poke.l ?stringbuffer,WZInput
       mess = $6
 
@@ -26875,9 +27108,9 @@ RTS
       mess = $12 : exit = 1
 
      Case "ce"                                             ; compile und create exe in compile prefs
-      Poke$ (?exefilename),""
+      Poke.s (?exefilename),""
       mess = $13 : exit = 1
-;      Poke$ (?exefilename),""
+;      poke.s (?exefilename),""
 ;      !asm
 ;      JSR menu_newcreate
 ;      !basic
@@ -26920,12 +27153,12 @@ Return
 
 .stringtores
   i.l = WZInput("RESIDENTS")
-  a$ = Peek$(i)
+  a$ = Peek.s(i)
   InitArgParse a$
   var.l = ?residents_table
   For i = 0 To 7
     p$ = NextArgChar$ ($a)
-    Poke$ var,p$
+    Poke.s var,p$
     var + $44
   Next
 Return
@@ -27028,7 +27261,7 @@ usedpath:  Ds.l 32
 
 
 .do_USEPATH:
-  BEQ.w JUMP_syntaxerr
+  BEQ.w JUMP_syntaxerr2
   LEA lastpath,A0
   MOVEM.l a0-a1/d0,-(a7)
   LEA lastpath2,a1
@@ -27048,7 +27281,7 @@ usedpath:  Ds.l 32
 
  JL_0_4AA8:
   TST.w D0
-   BMI.w JUMP_syntaxerr
+   BMI.w JUMP_syntaxerr2
   MOVE.b D0,(A0)+
   BSR.w JUMP_get1bytemain
    BNE.w JL_0_4AA8
@@ -27057,7 +27290,7 @@ RTS
 
 
 .do_usepath2:
-  BEQ.w JUMP_syntaxerr
+  BEQ.w JUMP_syntaxerr2
   LEA path2,A0
 ;  MOVEM.l a0-a1/d0,-(a7)
 ;  LEA lastpath,a1
@@ -27069,7 +27302,7 @@ RTS
 
  JL_0_4AA8b:
   TST.w D0
-   BMI.w JUMP_syntaxerr
+   BMI.w JUMP_syntaxerr2
   MOVE.b D0,(A0)+
   BSR.w JUMP_get1bytemain
    BNE.w JL_0_4AA8b
@@ -27189,7 +27422,7 @@ JMP toovarerr
   TST.w d0
    BEQ 'nopar
   CMP.w #",",d0
-  BNE JUMP_syntaxerr
+  BNE JUMP_syntaxerr2
 BRA 'l2
 
  'nopar
@@ -27203,9 +27436,12 @@ RTS
   JSR findvariable
   CLR.b newvariable
   CMP.l #-1,d0
-  BEQ.w JUMP_notypeerr
+  BEQ.w JUMP_notypeerr2
   MOVE.l fpucodelocal,fpucode
 BRA 'go
+
+JUMP_notypeerr2:
+JMP notypeerr
 
  _extb                                                     ;020 instr extb
   CMP.b #".",d0
@@ -27220,13 +27456,15 @@ BRA 'go
   BSR JUMP_get1bytemain
   SUB.b #$30,d0
   CMP.b #$7,d0
-   BGT JUMP_syntaxerr
+   BGT JUMP_syntaxerr2
   MOVE.w #$49c0,d1
   ADD.b d0,d1
   JSR writeword
   BSR JUMP_get1bytemain
 RTS
 
+JUMP_syntaxerr2:
+JMP syntaxerr
 
 .do_uselastpath
   LEA lastpath,a0
@@ -27318,7 +27556,12 @@ JMP get1bytemain
   MOVE.l a5,-(a7)
   !basic
   MOVE.l (a7)+,d0 : _myD0.l = PutD0
-  newconst$ = UCase$(Peek$(_myD0))
+  If _myD0
+    newconst$ = UCase$(Peek.s(_myD0))
+  Else
+    error{"INTERNAL: invalid pointer in chec_newconstants!"}
+    nwconst$="xxx"
+  End If
   condata$ =""
   Poke.b ?skip_bytes,0
   If Left$(newconst$,2) = "__"
@@ -27376,7 +27619,7 @@ JMP get1bytemain
        Case "THIS_INCL"
         Poke.b ?skip_bytes,14
         If Peek.l(?includetemp2)<>0
-          condata$ = dos_FilePart{Peek$(?includetemp2)}
+          condata$ = dos_FilePart{Peek.s(?includetemp2)}
         EndIf
 
        Case "THIS_POIN"
@@ -27730,18 +27973,18 @@ tstend:                    Dc.l $000003EC
 tstsize3:                  Ds.l 2
 tstdone:                   Dc.l $000003F2
 
-
-edstruct:                  Dc.l tokens                     ;data for ted
-
-
-;                          Dc.l compilermenu_entries
-                           Dc.l 0
-
-                           Dc.l read_xtrafile              ;load .xtra routine
-                           Dc.l write_xtrafile             ;save .xtra routine
-                           Dc.l call_menuentry             ;Menu Routine
-                           Ds.l 1                          ;cleanup (?)
-                           Dc.b ":",34,".;"
+; this is obsolete and can be found under teddata
+;edstruct:                  Dc.l tokens                     ;data for ted
+;
+;
+;;                          Dc.l compilermenu_entries
+;                           Dc.l 0
+;
+;                           Dc.l read_xtrafile              ;load .xtra routine
+;                           Dc.l write_xtrafile             ;save .xtra routine
+;                           Dc.l call_menuentry             ;Menu Routine
+;                           Ds.l 1                          ;cleanup (?)
+;                           Dc.b ":",34,".;"
 Even4
 
 asmpnts:                   Ds.l 63                                                  ;Ds.l tnum-fnum org source  hat was mit tok zu tun

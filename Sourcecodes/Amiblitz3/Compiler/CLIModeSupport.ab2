@@ -1,80 +1,438 @@
 
-; load bb, bb2, ab2 and ab3
-Function.l LoadSource{filename.s }
-!ComData_GetL{comPtr_FirstSourceLine,D0}
-*sourceBase.sourceline = PutD0
-!ComData_GetL{comPtr_PreProcessor,D0}
-*PreProcessor.preprocessor = PutD0
+;Macro ab3_newalloc
+;  ADDQ.l #4,d0
+;  MOVE.l _execbase,a6
+;  MOVE.l mempool,a0
+;  MOVE.l d0,-(a7)
+;  JSR _AllocPooled(a6)
+;  MOVE.l (a7)+,d1
+;  TST.l d0
+;  BEQ 'lab1`@
+;  MOVE.l d0,a0
+;  MOVE.l d1,(a0)+
+;  MOVE.l a0,d0
+; 'lab1`@
+;End Macro
+;
+;Macro ab3_newfree
+;  MOVE.l _execbase,a6
+;  MOVE.l mempool,a0
+;  MOVE.l -(a1),d0
+;  JSR _FreePooled(a6)        ; a0: poo lHeader, a1: memory, d0: memsize
+;End Macro
+;
+;
+;.ab3_clear_actualsource:
+;  MOVEA.l _execbase,A6
+;  MOVEA.l comPtr_FirstSourceLine,A2
+;  MOVE.l maxlines,D2
+;  SUBQ.l #1,D2
+;  ;!basic
+;  ;dummy.l = RTEZRequest("maxlines",Hex$(Peek.l(?maxlines)),"OK")
+;  ;!asm
+;  JL_0_6C40:
+;    MOVEA.l A2,A1
+;    MOVEA.l (A1),A2
+;    !newfree
+;  DBF D2,JL_0_6C40
+;
+;  ST AL_0_86C0
+;  JSR clear_labellist
+;RTS
+;
 
-fid.l = file_Open{filename,#file_read}
-If fid>=0
-  bytelength.l = file_GetLength{fid}
-  tempbuffer.l = AllocVec_(bytelength,#MEMF_ANY)
-  If tempbuffer
-    If file_ReadMem{fid,tempbuffer,bytelength}
-      ex.s = dos_GetExt{filename}
-      If ex="ab2" OR ex="ab3" OR ex="asc"
-        preproc_Tokenize{*PreProcessor,tempbuffer,tempbuffer,bytelength}
-      End If
-      offset.l = 0
-      *sourceline.sourceline = !_NULL
-      *prevline.sourceline   = !_NULL
-      *firstline.sourceline  = !_NULL
-      While offset<bytelength
-        text.s = Peek.s(tempbuffer+offset)
-        offset+FLen(text)+1
-        *sourceline = AllocMem_(SizeOf.sourceline+FLen(text)+1,#MEMF_ANY)
-        *sourceline\PrevLine   = *prevline
-        *sourceline\NextLine   = !_NULL
-        *sourceline\linelength = FLen(text)+1
-        Poke.s &*sourceline\text,text
-        *prevline.sourceline = *sourceline
-        If *firstline=!_NULL Then *firstline = *sourceline
-      Wend
-      FreeVec_ tempbuffer
-      GetD0 *firstline
-      !ComData_SetL{comPtr_FirstSourceLine,D0}
-    End If
-  End If
-End If
-Function Return *firstline
-End Function
+;/* this function emulated a minimalistic PED environment */
+Function.l InitEmulatedPED{}
+succ.l = True
 
-Function.l SaveXtra{filename.s}
-succ.l = False
-fid.l = file_Open{filename,#file_forcewrite}
-If fid>=0
-  GetD0 file_GetFH{fid}
-  MOVE.l D0,D7
-;  JSR write_xtrafile:
-;  Read_ xtrafilehandle,?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin ; xtrabuf,36
-  file_Close{fid}
+#columnsize = 250
+!ComData_SetW{comWord_MaxColumns    ,##columnsize}
+!ComData_SetL{comData_Magic         ,#$7E3A3A7E}             ; "~::~"
+!ComData_SetL{comPtr_CurrentDir     ,#comStr_CurrentDir }
+!ComData_SetL{comPtr_SourceName     ,#comStr_SourceName }
+!ComData_SetL{comPtr_TokenBase      ,#tokens }
+!ComData_SetL{comPtr_TokenBase2     ,#0}
+!ComData_SetL{comFunc_ReadXtraFile  ,#read_xtrafile }
+!ComData_SetL{comFunc_WriteXtraFile ,#write_xtrafile}
+!ComData_SetL{comFunc_CallMenuEntry ,#call_menuentry}
+!ComData_SetL{comFunc_CallDummy     ,#0}
+!ComData_SetL{comLong_AB3IsAvailable,#teddata}
+MOVE.l #100,progressbar_width
+
+*tedlibbase.Library = OpenLibrary_ ("ted.library",0)
+If *tedlibbase
+  LEA COMDATABASE,A0
+;  TEDSetJumpTable_
+;  TEDSetFirstLine_ ?comPtr_FirstSourceLine
+;  TEDSetCurrentLine_ ?comPtr_CurrentSourceLine
+;  If Peek.l(?comPtr_CurrentSourceLine) > 0
+;    TEDSetCurrentLine_ ?comPtr_CurrentSourceLine
+;  EndIf
+;  TEDSetLabelList_ ?comPtr_LabelList
+;  TEDSetLabelCount_ ?ptr_labelcounter
+  CloseLibrary_ *tedlibbase
+EndIf
+
+mempool.l = CreatePool_(#MEMF_CLEAR,40000,40000)
+
+If mempool
+  GetD0 mempool
+  !ComData_SetL{comPtr_MemPool,d0}
+Else
+  error{"Could not allocate enough memory. PED closes down now."}
+  succ=False
 End If
 Function Return succ
 End Function
+
+
+
+Function.l DeinitEmulatedPED{}
+succ.l = True
+
+!ComData_GetL{comPtr_MemPool,d0}
+pool.l = PutD0
+If pool
+  CLR.l d0
+  !ComData_SetL{comPtr_MemPool,d0}
+  DeletePool_ pool
+End If
+
+Function Return succ
+End Function
+
+
+
+
+Statement ClearSource{}
+ !ComData_GetL{comPtr_FirstSourceLine,D0}
+ *SourceLine.SourceLine_t = PutD0
+ *NextLine.SourceLine_t = !_NULL
+ !ComData_GetL{comLong_TotalLines,D0}
+ SUBQ.l #1,D0
+ maxlines.l = PutD0
+
+ While *SourceLine
+   *NextLine =  *SourceLine\NextLine
+   memsize.l = Peek.l(*SourceLine-4)
+   FreePooled_ Peek.l(?mempool),*SourceLine-4,memsize
+   *SourceLine = *NextLine
+ Wend
+
+ !ComData_SetL{comLong_TotalLines,#$0001}
+; JSR clear_actualsource
+; JSR clearlabels ; was clear labellist
+End Statement
 
 
 Function.l LoadXtra{filename.s}
 succ.l = False
-fid.l = file_Open{filename,#file_read}
-If fid>=0
-  GetD0 file_GetFH{fid}
+fp.l = Open_ (&filename,#MODE_OLDFILE)
+If fp
+  error{"LoadXtra!"}
+  GetD0 fp
+  !asm
   MOVE.l D0,D7
- ; JSR read_xtrafile:
+  MOVEA.l _dosbase,A6
+  JSR read_xtrafile
+;  !ComData_JSR{comFunc_ReadXtraFile}
+  !basic
  ; Read_ xtrafilehandle,?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin ; xtrabuf,36
- file_Close{fid}
+  Close_ fp
+  succ.l = True
+Else
+  error{"WARNING: Unable to open .xtra file!"}
 End If
 Function Return succ
 End Function
+
+Macro SetBoolXtra
+If (`2)
+  Poke.b ?`1, (Peek.b(?`1)|$80)
+Else
+  Poke.b ?`1, (Peek.b(?`1)|$80) - $80
+End If
+End Macro
+
+
+; load bb, bb2, ab2 and ab3
+Function.l LoadSource{filename.s }
+!ComData_GetL{comPtr_FirstSourceLine,D0}
+*sourceBase.SourceLine_t = PutD0
+!ComData_GetL{comPtr_PreProcessor,D0}
+*PreProcessor.preprocessor = PutD0
+!ComData_GetL{comPtr_MemPool,D0}
+mempoolP.l = PutD0
+
+*firstLine.SourceLine_t  = !_NULL
+
+fid.l = file_Open{filename,#file_read}
+If fid>=0
+  byteLength.l = file_GetLength{fid}
+  tempBuffer.l = AllocVec_(byteLength,#MEMF_ANY)
+  If tempBuffer
+    If file_ReadMem{fid,tempBuffer,byteLength}
+      ex.s = dos_GetExt{filename}
+      If ex="ab2" OR ex="ab3" OR ex="asc"
+        offset.l = 0
+        If ex="ab3"
+          headerDone.l = False
+          file_Seek{fid,0}
+          Repeat
+            lin.s = file_ReadLine{fid}
+            If file_EOF{fid} Then headerDone=True
+            eqpos.l = Instr(lin,"=")
+            If eqpos>0
+              rawtoken.s = Left$(lin,eqpos-1)
+              value.s    = Right$(lin,FLen(lin)-eqpos-1)
+            Else
+              rawtoken.s = lin
+              value.s    =  ""
+            End If
+
+              token.s    = ""
+
+              For n.l=0 To FLen(rawtoken)-1    ; trim token
+                c.b = Peek.b(&rawtoken+n)
+                If c>=@"A" AND c<=@"Z" Then c = c - @"A" + @"a"
+                If (c>=@"a" AND c<=@"z") OR c=@"_" OR c=@"/"
+                  token + Chr$(c)
+                End If
+              Next
+
+              ltrim.l = 0
+              lmax.l  = FLen(value)
+              While Peek.b(&value+ltrim)<33 AND ltrim<lmax: ltrim+1 : Wend
+              rtrim.l = lmax
+              While Peek.b(&value+rtrim)<33 AND rtrim>=0 : rtrim-1 : Wend
+              If Peek.b(&value+rtrim)=$22 AND Peek.b(&value+ltrim)=$22 Then rtrim-1:ltrim+1
+              value = Mid$(value,ltrim+1,rtrim-ltrim+1)
+              NPrint "Found: ",token," = ",value
+              lvalue.l = Vallong(value)
+
+              If token
+                Select token
+                  Case "/xtra"          : headerDone = True
+                  Case "sourcename"     : ; not needed ;
+                  Case "exepath"        : Poke.s ?exepath,value
+                  Case "exefile"        : Poke.s ?exefilename,value
+                  Case "residents"
+                    resptr.l = ?residents_table
+                    resN.l   = 0
+                    While value><""
+                      cpos.l = Instr(value,",")
+                      If cpos>0
+                        resident.s = Left$(value,cpos)
+                        value = Right$(value,FLen(value)-cpos-1)
+                      Else
+                        resident = value
+                        value = ""
+                      End If
+                      NPrint "Set resident: <",resident,">"
+                      Poke.s resptr,resident
+                      resptr+$44
+                      resN + 1
+                      If resN=7 Then value="" : error{"Warning: could not load all residents"}
+                    Wend
+                  Case "stringbuffer"   : Poke.l ?stringbuffer,lvalue
+                  Case "makesmallest"   : !SetBoolXtra{make_smallestcode,lvalue}
+                  Case "version"
+                    mpos.l = Instr(value,".",1)
+                    ppos.l = Instr(value,".",mpos)
+                    MajorVersion.l = Vallong(Left$(value,mpos))
+                    MinorVersion.l = Vallong(Mid$(value,mpos+1,ppos-mpos+1))
+                    PatchVersion.l = Vallong(Right$(value,FLen(value)-ppos-1))
+                    VersionInfo.l = (MajorVersion LSL 24) | (MinorVersion LSL 16) | (PatchVersion LSL 8)
+                    Poke.l ?versioninformation,VersionInfo
+                  Case "numberofbuilds" : Poke.l ?number_of_builds,lvalue
+                  Case "cliargs"        : value = Left$(value,120) : Poke.s ?str_cliarguments,value
+                  Case "createicon"     : !SetBoolXtra{create_iconfile,lvalue}
+                  Case "runtimedebug"   : !SetBoolXtra{use_debugger   ,lvalue}
+                  Case "debuginfo"      : !SetBoolXtra{link_debuginfo ,lvalue}
+                  Case "overflowcheck"  : !SetBoolXtra{overflowcheck  ,lvalue}
+                  Case "assemblercheck" : !SetBoolXtra{assemblercheck ,lvalue}
+                  Case "interruptcheck" : !SetBoolXtra{interruptcheck ,lvalue}
+                  Case "autorun"        : !SetBoolXtra{autorun        ,lvalue}
+                  Case "cursorline"     : cursorline.l = lvalue
+                  Case "cursorcolumn"   : cursorcol.l  = lvalue
+                  Default
+                    If Left$(token,3)="max"
+                      bobj.s = Right$(token,FLen(token)-3)
+;                      For i = 1 To Peek.w(?number_of_objects)
+;                        a$ = WZ_GetCell{"OBJECTS",i,2}
+;                        i2 = Val(a$):If i2 = 0 Then i2 = 1
+;                        Poke.w ?maxobjects_value,i2
+;                        Poke.w ?maxobject_pos,i-1
+;                        Gosub storemaxobjects
+;                      Next
  
 
+                    End If
+                    ; unknown token
+                End Select
+              End If
+
+          Until headerDone
+          ; remove embedded XTRA Header
+          offset = file_GetSeekPos{fid}
+        End If
+        byteLength = preproc_Tokenize{*PreProcessor,tempBuffer+offset,tempBuffer,byteLength-offset}
+      End If
+
+      offset.l = 0
+      ;error{"Clearing source!"}
+      ;ClearSource{}
+      *sourceNode.SourceNode_t = !_NULL
+      *prevLine.SourceLine_t   = !_NULL
+
+      count.l = 1
+      While offset<byteLength
+        text.s = Peek.s(tempBuffer+offset)
+        charLength.l = FLen(text)+1
+        offset+charLength
+        If charLength>#columnsize Then charLength =#columnsize : text = Left$(text,#columnsize-1)
+        allocsize.l = SizeOf.SourceNode_t+FLen(text)   ; the SizeOf contains already the terminating 0-Byte
+        *sourceNode = AllocPooled_(mempoolP,allocsize)
+        If *sourceNode
+          *sourceNode\AllocSize             = allocsize
+          *sourceNode\SourceLine\PrevLine   = *prevLine
+          *sourceNode\SourceLine\NextLine   = !_NULL
+          *sourceNode\SourceLine\CharLength = charLength
+          Poke.s &*sourceNode\SourceLine\Text,text
+          If *prevLine Then *prevLine\NextLine = &*sourceNode\SourceLine
+          *prevLine = &*sourceNode\SourceLine
+          If *firstLine=!_NULL Then *firstLine = &*sourceNode\SourceLine
+          count+1
+        End If
+      Wend
+      FreeVec_ tempBuffer
+
+      GetD0 *firstLine
+      !ComData_SetL{comPtr_FirstSourceLine   ,D0}
+      !ComData_SetL{comPtr_CurrentSourceLine ,D0}
+      GetD0 count
+      !ComData_SetL{comLong_TotalLines       ,D0}
+      MOVE.l D0,numlines
+
+      !ComData_SetW{comWord_TextBufferOffset ,#0}
+      !ComData_SetW{comWord_Column           ,#0}
+      !ComData_SetW{comWord_ColumnsOffset    ,#0}
+      !ComData_SetL{comLong_DisplayLineOffset,#0}
+      !ComData_SetL{comLong_DisplayLine      ,#0}
+
+    End If
+
+    If ex="bb2" OR ex="bb" OR ex="ab2"    ; write xtra file
+      LoadXtra{filename+".xtra"}
+    Else
+      !asm
+      MOVEM.l D7/A6,-(A7)
+      !DPrint ".ab3: Init buffers..."
+      JSR init_buffers
+      !DPrint ".ab3: ReLoad residents..."
+      JSR reloadresident
+      MOVEM.l (A7)+,D7/A6
+      !DPrint ".ab3: Done..."
+      !basic
+    End If
+
+    ; update AB3 context
+    !ComData_SetW{comWord_SourceChanged,#0}
+  Else
+    error{"Not enough memory to load file!"}
+  End If
+End If
+Function Return *firstLine
+End Function
+
+
+Function.l SaveXtra{filename.s}
+succ.l = False
+fp.l = Open_ (&filename,#MODE_NEWFILE)
+If fp
+  error{"SaveXtra!"}
+  GetD0 fp
+  !asm
+  MOVE.l D0,D7
+  MOVEA.l _dosbase,A6
+  ;!ComData_JSR{comFunc_WriteXtraFile}
+  JSR write_xtrafile
+  !basic
+;  Write_ fp,?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin ; xtrabuf,36
+  Close_ fp
+  error{"we are done saving!"}
+  succ.l = True
+Else
+  error{"WARNING: Unable to save .xtra file!"}
+End If
+Function Return succ
+End Function
+
+Function.l CompileSource{exefilename.s,debuginfo.l,release.l}
+
+If debuginfo ; set debugger
+  Poke.b ?link_debuginfo, (Peek.b(?link_debuginfo)|$80)
+Else
+  Poke.b ?link_debuginfo, (Peek.b(?link_debuginfo)|$80) - $80
+End If
+
+If release   ; set make smallest (for release)
+  Poke.b ?make_smallestcode, (Peek.b(?make_smallestcode)|$80)
+Else
+  Poke.b ?make_smallestcode, (Peek.b(?make_smallestcode)|$80) - $80
+End If
+
+; do some cleaup before invoking compiler */
+CLR.w anyerrs
+CLR.w debugversion
+CLR.w flag_noPED
+CLR.w flag_noCLI
+MOVE.l #$FFFFffff,linenumat
+MOVE.l #$FFFFffff,compilelinecounter
+
+If exefilename
+  If cli_verbose>=2 Then NPrint "Compiling for executable: ",exefilename
+  exefile.s = dos_FilePart{exefilename}
+  exepath.s = dos_PathPart{exefilename}
+
+  Poke.s ?ptr_newexefilename,exefilename
+  Poke.s ?exepath,exepath
+  Poke.s ?exefilename,exefile
+
+  !asm
+  !ComData_GetL{comPtr_FirstSourceLine,A5}
+  !ComData_GetL{comLong_TotalLines,D7}
+  MOVEQ #$b,d6   ; create exe
+  !ComData_JSR{comFunc_CallMenuEntry}
+  !basic
+  counter.l = PutD0
+
+Else
+  If cli_verbose>=2 Then NPrint "Just compiling."
+  Poke.s ?ptr_newexefilename,"RAM:test"
+  Poke.s ?exepath,"RAM:"
+  Poke.s ?exefilename,"test"
+  !asm
+
+ __xl1:
+    MOVE.w #0,makeexec                                     ;MOVE.w #$FFFF,debugversion
+    BSR.w startcompile
+    CMP.l #"NORE",reqmode
+  BEQ __xl1
+
+  !basic
+  counter.l = PutD0
+End If
+If cli_verbose>=2 Then NPrint "Compiling done."
+succ.l = True
+Function Return counter
+End Function
 
 ; this function can save .bb2, .ab2 and .ab3
 Function.l SaveSource{filename.s}
-SHARED exepathname$,exefilename$
 Format ""
 !ComData_GetL{comPtr_FirstSourceLine,D0}
-*sourceBase.sourceline = PutD0
+*sourceBase.SourceLine_t = PutD0
 !ComData_GetL{comPtr_PreProcessor,D0}
 *PreProcessor.preprocessor = PutD0
 succ.l = False
@@ -82,10 +440,10 @@ fid.l = file_Open{filename,#file_write}
 If fid>=0
 
   totalLength.l = 0
-  *sourceLine.sourceline = *sourceBase
+  *sourceLine.SourceLine_t = *sourceBase
 
   While *sourceLine
-    baseptr.l = &*sourceLine\text[0]
+    baseptr.l = &*sourceLine\Text
     sptr.l = baseptr
     While Peek.b(sptr) : sptr+1 : Wend
     totalLength + sptr-baseptr+1
@@ -94,10 +452,10 @@ If fid>=0
 
   tmp.l      = AllocVec_(totalLength,#MEMF_CLEAR)
   If tmp
-    *sourceLine.sourceline = *sourceBase
+    *sourceLine = *sourceBase
     dptr.l     = tmp
     While *sourceLine
-      baseptr.l = &*sourceLine\text[0]
+      baseptr.l = &*sourceLine\Text
       sptr.l = baseptr
       Repeat
         char.b = Peek.b(sptr)
@@ -134,12 +492,11 @@ If fid>=0
         If (Peek.b(?interruptcheck    )&$80) Then InterruptCheck.l = 1:Else InterruptCheck = 0
         If (Peek.b(?overflowcheck     )&$80) Then OverflowCheck.l  = 1:Else OverflowCheck  = 0
 
-        !ComData_GetL{startdisplayline,d0}
-        !ComData_GetL{displayoffset   ,d1}
+        !ComData_GetL{comLong_DisplayLineOffset,d0}
+        !ComData_GetL{comLong_DisplayLine      ,d1}
         ADD.l d1,d0
         ADD.l #1,d0
         CursorLine.l = PutD0
-        ;CursorLine.l   = Peek.l(?startdisplayline)      + Peek.l(?displayoffset)  +1
 
         CLR.l d0
         !ComData_GetW{comWord_ColumnsOffset,d0}
@@ -149,28 +506,14 @@ If fid>=0
         ADD.l d1,d0
         ADD.l #1,d0
         CursorColumn.l = PutD0
-        ;CursorColumn.l = Peek.w(?comWord_ColumnsOffset) + Peek.w(?comWord_Column) +1
 
-        VersionInfo.l = Peek.l(?versioninformation)
+        VersionInfo.l  = Peek.l(?versioninformation)
         MajorVersion.l = (VersionInfo & $FF000000) LSR 24
         MinorVersion.l = (VersionInfo & $00FF0000) LSR 16
         PatchVersion.l = (VersionInfo & $0000FF00) LSR 8
 
-
-
-
-        ExeFile.s = "";Peek.s(?actualfile)
-        !ComData_GetL{comPtr_CurrentDir,d0}
-        ExePathP.l = PutD0
-        If ExePathP
-          ExePath.s = Peek.s(ExePathP)
-        Else
-          ExePath.s = ""
-        End If
-
         ExePath.s = Peek.s(?exepath)
         ExeFile.s = Peek.s(?exefilename)
-
 
         file_WriteLine{fid,"; XTRA"}
         file_WriteLine{fid,"; Embedded .xtra Header"}
@@ -180,6 +523,7 @@ If fid>=0
         file_WriteLine{fid,"; SourceName      = \\22"+dos_FilePart{filename}+"\\22"}
         file_WriteLine{fid,"; ExePath         = \\22"+ExePath+"\\22"}
         file_WriteLine{fid,"; ExeFile         = \\22"+ExeFile+"\\22"}
+        file_WriteLine{fid,"; CreateIcon      = "+Str$(CreateIcon)}
         file_WriteLine{fid,"; Residents       = \\22"+residents+"\\22"}
         file_WriteLine{fid,"; "}
         file_WriteLine{fid,"; Compiler"}
@@ -218,15 +562,12 @@ If fid>=0
       EndIf
       file_Flush{fid}
       plainLength.l = preproc_DetokenizeFP{*PreProcessor,tmp,totalLength,file_GetFH{fid}}
-      If ex="ab3"
-        file_WriteLine{fid,"</source>"}
-      End If
       succ.l = True
     End If
     FreeVec_ tmp
 
     If ex="bb2" OR ex="bb" OR ex="ab2"    ; write xtra file
-      SaveXtra{dos_SetExt{filename,"xtra"}}
+      SaveXtra{filename+".xtra"}
     End If
   Else
     error{!TRANS{"Not enough memory for temp buffer!"}}
@@ -236,57 +577,7 @@ End If
 Function Return succ
 End Function
  
- 
-Statement EmulatePED{}
-*tedlibbase.Library = OpenLibrary_ ("ted.library",0)
-If *tedlibbase
-  LEA COMDATABASE,A0
-;  TEDSetJumpTable_
-;  TEDSetFirstLine_ ?comPtr_FirstSourceLine
-;  TEDSetCurrentLine_ ?comPtr_CurrentSourceLine
-;  If Peek.l(?comPtr_CurrentSourceLine) > 0
-;    TEDSetCurrentLine_ ?comPtr_CurrentSourceLine
-;  EndIf
-;  TEDSetLabelList_ ?comPtr_LabelList
-;  TEDSetLabelCount_ ?ptr_labelcounter
-  CloseLibrary_ *tedlibbase
-EndIf
-End Statement
 
 
-Statement ClearSource{}
- !ComData_GetL{comPtr_FirstSourceLine,D0}
- *sourceline.sourceline = PutD0
- MOVE.l maxlines,D0
- SUBQ.l #1,D0
- maxlines.l = PutD0
- While *sourceline
-   FreePooled_ Peek.l(?mempool),*sourceline,*sourceline\linelength
-   *sourceline = *sourceline\NextLine
- Wend
- JSR clearlabels ; was clear labellist
-End Statement
 
-
-Macro xnewalloc
-  ADDQ.l #4,d0
-  MOVE.l _execbase,a6
-  MOVE.l mempool,a0
-  MOVE.l d0,-(a7)
-  JSR _AllocPooled(a6)
-  MOVE.l (a7)+,d1
-  TST.l d0
-  BEQ 'lab1`@
-  MOVE.l d0,a0
-  MOVE.l d1,(a0)+
-  MOVE.l a0,d0
- 'lab1`@
-End Macro
-
-Macro xnewfree
-  MOVE.l _execbase,a6
-  MOVE.l mempool,a0
-  MOVE.l -(a1),d0
-  JSR _FreePooled(a6)        ; a0: poo lHeader, a1: memory, d0: memsize
-End Macro
 

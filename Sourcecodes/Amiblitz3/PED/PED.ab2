@@ -83,7 +83,7 @@ CNIF #use_NTUI
   XINCLUDE "ped.ntui.bb2"
 CEND
 XINCLUDE "translation.include.bb2"
-                    e
+
 #MAX_STRINGSIZE = 512
 #MAX_TEMPLATES  = 16
 
@@ -372,7 +372,7 @@ End Macro
 Macro newalloc
   ADDQ.l #4,d0
   MOVE.l _execbase,a6
-  MOVE.l mempool,a0
+  MOVE.l comPtr_MemPool,a0
   MOVE.l d0,-(a7)
   JSR _AllocPooled(a6)
   MOVE.l (a7)+,d1
@@ -386,7 +386,7 @@ End Macro
 
 Macro newfree
   MOVE.l _execbase,a6
-  MOVE.l mempool,a0
+  MOVE.l comPtr_MemPool,a0
   MOVE.l -(a1),d0
   JSR _FreePooled(a6)        ; a0: poolHeader, a1: memory, d0: memsize
 End Macro
@@ -716,7 +716,7 @@ End Statement
 
 
 Function.s check_constructs{currentline.l}
-  DEFTYPE.sourceline *sourceline
+  DEFTYPE.SourceLine_t *sourceline
     a$ = ""
     *sourceline = Peek.l(currentline)
     *sourceline = *sourceline\NextLine
@@ -1237,6 +1237,7 @@ End Function
 
 .STARTUP_PED
 FindScreen 0
+
 !asm
 ;
 ; -- checking for TEDY as input of D1 ...
@@ -1245,7 +1246,7 @@ FindScreen 0
 CMP.l #"TEDY",D1
 BEQ 'no_exit
   !basic
-  error{!TRANS{"PED is not a standalone editor anymore.\\nPlease start the AmiBlitz3-IDE via Compiler."}}
+  error{"PED is not a standalone editor anymore.\\nPlease start the AmiBlitz3-IDE via Compiler."}
   Goto abnormal_exit
 'no_exit
 !basic
@@ -1578,8 +1579,8 @@ begin1:
   MOVE.b #1,$20(a0)
 
   !basic
-  Poke.l ?mempool, CreatePool_(#MEMF_CLEAR,40000,40000)
-  If Peek.l(?mempool) = 0
+  Poke.l ?comPtr_MemPool, CreatePool_(#MEMF_CLEAR,40000,40000)
+  If Peek.l(?comPtr_MemPool) = 0
     !cout{"Could not allocate enough memory. PED closes down now."}
     !asm
     !exitasm
@@ -1856,7 +1857,7 @@ Exit_main:                                           ; insert to remove the evil
 
  exit_ped:
   MOVEA.l _execbase,A6
-  MOVE.l mempool,a0
+  MOVE.l comPtr_MemPool,a0
   JSR _DeletePool(a6)
 
   ; -- check if there is any message left and reply it
@@ -1933,8 +1934,8 @@ CEND
   BEQ.w JL_0_CC6
     !basic
     ; --- get address of actual source line ---
-    MOVE.l displayoffset,D1
-    ADD.l startdisplayline,D1
+    MOVE.l comLong_DisplayLine,D1
+    ADD.l comLong_DisplayLineOffset,D1
     MOVE.l d1,lastedited_line
     MOVE.w comWord_KeyBeforeReturn,D0
     MOVE.w D0,comWord_SourceChanged
@@ -1966,8 +1967,8 @@ CEND
     TST.l blockendy
     BMI.w exit_updateblock
       MOVEM.l D0-D3/A0-A2,-(A7)
-      MOVE.l displayoffset,D1
-      ADD.l startdisplayline,D1
+      MOVE.l comLong_DisplayLine,D1
+      ADD.l comLong_DisplayLineOffset,D1
       CMP.l blockstarty,D1
        BLT.w JL_0_C66
       CMP.l blockendy,D1
@@ -1983,8 +1984,8 @@ CEND
       MOVE.w visiblecolumns,D2
 
  JL_0_C50:
-      SUB.l startdisplayline,D3
-      SUB.l startdisplayline,D1
+      SUB.l comLong_DisplayLineOffset,D3
+      SUB.l comLong_DisplayLineOffset,D1
       JSR JL_0_59BC
       ST comByte_StateBlockMark
 
@@ -2012,8 +2013,8 @@ CEND
         MOVE.w visiblecolumns,D2
 
  JL_0_CB2:
-        SUB.l startdisplayline,D3
-        SUB.l startdisplayline,D1
+        SUB.l comLong_DisplayLineOffset,D3
+        SUB.l comLong_DisplayLineOffset,D1
         JSR JL_0_59BC
         MOVEM.l (A7)+,D0-D3/D7/A0-A2
 
@@ -3361,11 +3362,48 @@ RTS
   MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
   MOVE.b #1,menuload
   MOVE.l D7,ptr_sourcefilename
+
+  !basic
+  filenameP.l = Peek.l(?ptr_sourcefilename)
+  If filenameP
+    filename.s = Peek.s(filenameP)
+    ex.s = dos_GetExt{filename}
+  Else
+    ex.s = "???"
+  End If
+  ;error{"Extention is: "+ex+" / filename is: "+filename}
+  If ex.s = "ab3"
+    error{"Warning: Load .ab3 source via new code!"}
+    !asm
+    MOVE.l ptr_sourcefilename,D0
+    !ComData_JMP{comFunc_LoadSource}
+
+    MOVE.l comLong_CursorPosStore,d0
+    MOVEA.l comPtr_CurrentSourceLine,A4
+    JSR gotoline
+    MOVEA.l actualfile,A0
+    JSR delete_tempprefs
+    JSR save_tempprefs
+    JSR JL_0_E28
+    JSR update_horizscroller
+    JSR update_labelstuff
+    JSR StoreXtraData
+    JSR _redraw
+    JSR set_pointernormal
+    JSR analyze_loadedsource
+    JSR update_statusline
+    CLR.b convert
+    MOVEQ.l #-$01,D0
+    JMP 'skipoldloader
+  End If
+  !asm
+
   JSR open_sourcefile
   CLR.w comWord_SourceChanged
   JSR source_readin
   BNE.w JL_0_F50
-  JSR JL_0_4E4A
+  JSR close_sourcefile
+'skipoldloader
 JMP JL_0_6B7C
 
 JL_0_F50:
@@ -3397,7 +3435,7 @@ JL_0_F50:
   JSR JL_0_572C
   JSR clear_actualsource
 
-  MOVE.l #$0001,maxlines
+  MOVE.l #$0001,comLong_TotalLines
   MOVE.l temp_tokenstring2,tempstore
   JSR JL_0_4F5A
   JSR JL_0_4F1A
@@ -3414,18 +3452,19 @@ JL_0_F50:
     JSR JL_0_4F1A
     MOVE.l A0,AL_0_854A
     MOVE.l A0,(A4)
-    ADDQ.l #1,maxlines
+    ADDQ.l #1,comLong_TotalLines
     MOVE.l A4,$4(A0)
   BRA.b JL_0_FB4
 
   JL_0_FD6:
-  JSR JL_0_4E4A
+  ;JSR JL_0_4E4A
+  JSR close_sourcefile
 ;  CLR.l AL_0_868A
   CLR.w comWord_TextBufferOffset
   CLR.w comWord_Column        ; was .l
   CLR.w comWord_ColumnsOffset ; was .l
-  CLR.l startdisplayline
-  CLR.l displayoffset
+  CLR.l comLong_DisplayLineOffset
+  CLR.l comLong_DisplayLine
 
   MOVE.l comFunc_ReadXtraFile,D0
   BEQ.w JL_0_100C
@@ -3499,9 +3538,8 @@ JL_0_F50:
   JSR delete_tempprefs
   JSR save_tempprefs
 
-  skip_loadingxtrafile:
+skip_loadingxtrafile:
   JSR JL_0_E28
-
   JL_0_100C:
   JSR update_horizscroller
   JSR update_labelstuff
@@ -3842,11 +3880,11 @@ RTS
   RTS
 
  'saveab3
-  ;!basic
-  ;error{"Save via new code!"}
+  !basic
+  error{"Save via new code!"}
   ;a.s = "Ram:Test.ab3"
   ;GetReg d0,&a.s
-  ;!asm
+  !asm
   MOVE.l #comStr_SourceFileComplete,d0
   !ComData_JMP{comFunc_SaveSource}
   RTS
@@ -3857,7 +3895,7 @@ RTS
   JSR open_sourcefile
   JSR set_pointerbusy
   MOVEA.l comPtr_FirstSourceLine,A2
-  MOVE.l maxlines,D5                 ;save routine
+  MOVE.l comLong_TotalLines,D5                 ;save routine
   ;SUBQ.l #1,D5
   TST.w AL_0_B7E0
   BEQ.w JL_0_1288
@@ -3975,7 +4013,8 @@ RTS
   JSR show_errorrequester
   JL_0_1380:
 
-  JSR JL_0_4E4A
+;  JSR JL_0_4E4A
+  JSR close_sourcefile
   MOVE.l comFunc_WriteXtraFile,D0
   BEQ.w JL_0_13A8
   MOVEA.l D0,A5
@@ -3986,8 +4025,8 @@ RTS
   JSR (A5)
 
   !basic
-  MOVE.l startdisplayline,d0
-  ADD.l displayoffset,d0
+  MOVE.l comLong_DisplayLineOffset,d0
+  ADD.l comLong_DisplayLine,d0
   MOVE.l d0,comLong_CursorPosStore
   Poke$ ?labelsearchstring,search_label$
   MOVE.l pos3@(a5),comLong_ClickPos3Store
@@ -4312,8 +4351,8 @@ RTS
   MOVE.b str_searchstring,D0         ;find
   BEQ.w setpointer_to_normal
   JSR set_pointerbusy
-  MOVE.l startdisplayline,D7
-  ADD.l displayoffset,D7
+  MOVE.l comLong_DisplayLineOffset,D7
+  ADD.l comLong_DisplayLine,D7
   ADD.l D6,D7
 
   JL_0_176A:
@@ -4321,7 +4360,7 @@ RTS
      BPL.w JL_0_1790
     ADD.l D6,D7
     BMI.w setpointer_to_normal
-    CMP.l maxlines,D7
+    CMP.l comLong_TotalLines,D7
     BCC.w setpointer_to_normal
     TST.l D6
     BPL.w JL_0_178C
@@ -4813,12 +4852,12 @@ RTS
         Pop Select
       !asm
       !stack2regs
-      MOVE.l startdisplayline,D0
-      ADD.l displayoffset,D0
+      MOVE.l comLong_DisplayLineOffset,D0
+      ADD.l comLong_DisplayLine,D0
       ADD.l viewablelines,D0
-      CMP.l maxlines,D0
+      CMP.l comLong_TotalLines,D0
        BCS.w gotoline
-      MOVE.l maxlines,D0
+      MOVE.l comLong_TotalLines,D0
       SUBQ.l #1,D0
       BRA.w gotoline
 
@@ -4852,7 +4891,7 @@ BRA movelinedown
     MOVE.l (a7)+,a0
   CELSE
     MOVE.l a0,-(a7)
-    MOVE.l startdisplayline,-(a7)
+    MOVE.l comLong_DisplayLineOffset,-(a7)
     MOVE.l comPtr_CurrentSourceLine,a0
     CMP.l #";@@1",9(a0)
     BNE 'l1
@@ -4861,7 +4900,7 @@ BRA movelinedown
     MOVE.l (a0),d0
     BEQ 'l1
     MOVE.l d0,a0
-    ADDQ.l #1,startdisplayline
+    ADDQ.l #1,comLong_DisplayLineOffset
     CMP.l #";@@1",9(a0)
     BEQ 'l1
     CMP.l #";@@0",9(a0)
@@ -4873,7 +4912,7 @@ BRA movelinedown
   RTS
 
    'l1
-    MOVE.l (a7)+,startdisplayline
+    MOVE.l (a7)+,comLong_DisplayLineOffset
     MOVE.l (a7)+,a0
   CEND
   MOVE.l (A4),D0
@@ -4888,16 +4927,16 @@ JL_0_252E:
   MOVE.l D0,comPtr_CurrentSourceLine
 
  JL_0_2534:
-  MOVE.l startdisplayline,D0
+  MOVE.l comLong_DisplayLineOffset,D0
   ADD.l viewablelines,D0
-  CMP.l maxlines,D0
+  CMP.l comLong_TotalLines,D0
   BCC.w JUMP_JL_0_640C
-  MOVE.l displayoffset,D0
+  MOVE.l comLong_DisplayLine,D0
   ADDQ.l #1,D0
-  ADD.l boundlines,D0
+  ADD.l comLong_BoundLines,D0
   CMP.l viewablelines,D0
   BCS.w JUMP_JL_0_640C
-  ADDQ.l #1,startdisplayline
+  ADDQ.l #1,comLong_DisplayLineOffset
   JSR source_fullscroll_down
 JMP JL_0_5B60
 
@@ -4962,8 +5001,8 @@ JMP JL_0_640C
       Pop Select
       !asm
       !stack2regs
-      MOVE.l startdisplayline,D0
-      ADD.l displayoffset,D0
+      MOVE.l comLong_DisplayLineOffset,D0
+      ADD.l comLong_DisplayLine,D0
       CMP.l viewablelines,D0
        BCC.w JL_0_2588
       MOVEQ.l #$00,D0
@@ -5021,7 +5060,7 @@ BRA.w movelineup
    MOVE.l 4(a2),d0
    BEQ 'l1
    MOVE.l d0,a2
-   SUBQ.l #1,startdisplayline
+   SUBQ.l #1,comLong_DisplayLineOffset
    CMP.l #";@@1",9(a2)
    BNE 'l2
    MOVE.l a2,comPtr_CurrentSourceLine
@@ -5035,12 +5074,12 @@ BRA.w movelineup
   MOVE.l $4(A4),D0
   BEQ.b setpointer_to_normal
   MOVE.l D0,comPtr_CurrentSourceLine
-  MOVE.l startdisplayline,D0
+  MOVE.l comLong_DisplayLineOffset,D0
   BEQ.w JUMP_JL_0_642A
-  MOVE.l displayoffset,D0
-  CMP.l boundlines,D0
+  MOVE.l comLong_DisplayLine,D0
+  CMP.l comLong_BoundLines,D0
   BHI.w JUMP_JL_0_642A
-  SUBQ.l #1,startdisplayline
+  SUBQ.l #1,comLong_DisplayLineOffset
   JSR source_fullscroll_up
 JMP JL_0_5B24
 
@@ -5059,8 +5098,8 @@ JMP JL_0_642A
   CMPI.b #$20,(A0)+
   BEQ.b JL_0_25CC
   MOVEA.l A4,A1
-  MOVE.l startdisplayline,D1
-  ADD.l displayoffset,D1
+  MOVE.l comLong_DisplayLineOffset,D1
+  ADD.l comLong_DisplayLine,D1
   MOVE.w D1,D2
 
  JL_0_25E0:
@@ -5161,10 +5200,10 @@ RTS
 
  JL_0_265E:
   MOVE.w #$FFFF,comWord_SourceChanged
-  MOVE.l startdisplayline,D0
-  ADD.l displayoffset,D0
+  MOVE.l comLong_DisplayLineOffset,D0
+  ADD.l comLong_DisplayLine,D0
   JSR JL_0_57B6
-  ADDQ.l #1,maxlines
+  ADDQ.l #1,comLong_TotalLines
   MOVE.l $4(A4),D1
   BEQ.w JL_0_268C
   MOVEA.l D1,A1
@@ -5179,7 +5218,7 @@ JL_0_268C:
   MOVE.l A4,(A0)
   MOVE.l A0,$4(A4)
   MOVE.l A0,comPtr_CurrentSourceLine
-  MOVE.l displayoffset,D7
+  MOVE.l comLong_DisplayLine,D7
   JSR source_partscroll_up
 JMP JL_0_57E0
 
@@ -5200,8 +5239,8 @@ JMP JL_0_4942
   BSR.b JL_0_265E
   JSR print_current_sourceline
   MOVEQ.l #$00,D0
-  MOVE.l startdisplayline,D0
-  ADD.l displayoffset,D0
+  MOVE.l comLong_DisplayLineOffset,D0
+  ADD.l comLong_DisplayLine,D0
   JSR JL_0_57B6
 RTS
 
@@ -5213,8 +5252,8 @@ JMP JL_0_76E8
   MOVE.w #$FFFF,comWord_SourceChanged
   CMPI.l #$ffffFFFF,blockendy
    BEQ.w JL_0_2738
-  MOVE.l startdisplayline,D0
-  ADD.l displayoffset,D0
+  MOVE.l comLong_DisplayLineOffset,D0
+  ADD.l comLong_DisplayLine,D0
   CMP.l blockstarty,D0
    BCS.w JL_0_272C
   CMP.l blockendy,D0
@@ -5232,7 +5271,7 @@ JMP JL_0_76E8
  JL_0_2738:                         ;delete line
   MOVE.l (A4),D7
    BEQ.w JL_0_2776
-  SUBQ.l #1,maxlines
+  SUBQ.l #1,comLong_TotalLines
   MOVE.l $4(A4),D6
    JSR JL_0_6BD2
   MOVEA.l D7,A1
@@ -5247,7 +5286,7 @@ BRA.w JL_0_2764
 
  JL_0_2764:
   MOVE.l D7,comPtr_CurrentSourceLine
-  MOVE.l displayoffset,D7
+  MOVE.l comLong_DisplayLine,D7
   JSR source_partscroll_down
 JMP JL_0_5B60
 
@@ -5255,23 +5294,23 @@ JMP JL_0_5B60
 JL_0_2776:
   MOVE.l $4(A4),D6
   BEQ.w JL_0_27C2
-  SUBQ.l #1,maxlines
+  SUBQ.l #1,comLong_TotalLines
   JSR JL_0_6BD2
   MOVEA.l D6,A0
   MOVE.l A0,comPtr_CurrentSourceLine
   MOVE.l A0,AL_0_854A
   CLR.l (A0)
-  MOVE.l startdisplayline,D0
+  MOVE.l comLong_DisplayLineOffset,D0
   BEQ.w JL_0_27B6
-  SUBQ.l #1,startdisplayline
-  MOVE.l displayoffset,D7
+  SUBQ.l #1,comLong_DisplayLineOffset
+  MOVE.l comLong_DisplayLine,D7
   JSR source_partscroll_down
   JSR source_fullscroll_up
 JMP JL_0_5B24
 
 
 JL_0_27B6:
-  MOVE.l displayoffset,D7
+  MOVE.l comLong_DisplayLine,D7
   JSR source_partscroll_down
 JMP JL_0_642A
 
@@ -5300,8 +5339,8 @@ JMP JL_0_5B00
   ADDQ.w #1,D0
   CMPI.l #$ffffFFFF,blockendy
    BEQ.w JL_0_2880
-  MOVE.l startdisplayline,D1
-  ADD.l displayoffset,D1
+  MOVE.l comLong_DisplayLineOffset,D1
+  ADD.l comLong_DisplayLine,D1
   CMP.l blockendy,D1
    BCC.w JL_0_2880
   ADDQ.l #1,D1
@@ -5402,7 +5441,7 @@ BRA.w JL_0_28E8
   MOVEA.l _execbase,A6
   ST AL_0_86C0
    !newfree
-  SUBQ.l #1,maxlines
+  SUBQ.l #1,comLong_TotalLines
 JMP _redraw
 
 
@@ -5416,8 +5455,8 @@ JL_0_2906:
   ADD.w comWord_Column,D0
   CMPI.l #$ffffFFFF,blockendy
   BEQ.w JL_0_29BC
-  MOVE.l startdisplayline,D2
-  ADD.l displayoffset,D2
+  MOVE.l comLong_DisplayLineOffset,D2
+  ADD.l comLong_DisplayLine,D2
   CMP.l blockendy,D2
   BHI.w JL_0_29BC
   BEQ.w JL_0_2962
@@ -5553,7 +5592,7 @@ BRA.w JL_0_2A3A
 
  JL_0_2A3A:
   MOVE.l A0,(A4)
-  ADDQ.l #1,maxlines
+  ADDQ.l #1,comLong_TotalLines
   TST.b new_editmode
   BNE 'l1
   CLR.w comWord_Column
@@ -5605,11 +5644,11 @@ RTS
   JSR allocnewline
    BEQ.w JUMP_JL_0_4942
   MOVE.w #$FFFF,comWord_SourceChanged
-  MOVE.l startdisplayline,D0
-  ADD.l displayoffset,D0
+  MOVE.l comLong_DisplayLineOffset,D0
+  ADD.l comLong_DisplayLine,D0
   ADDQ.w #1,D0
    JSR JL_0_57B6
-  ADDQ.l #1,maxlines
+  ADDQ.l #1,comLong_TotalLines
    BSR.b JL_0_2A46
   ;MOVE.l comPtr_CurrentSourceLine,d1
   MOVE.l (A4),D1
@@ -5635,14 +5674,14 @@ BRA.w JL_0_2ADE
 
  JL_0_2AF6:
   JSR update_horizscroller
-  MOVE.l displayoffset,D0
+  MOVE.l comLong_DisplayLine,D0
   ADDQ.w #1,D0
-  ADD.w boundlines,D0
+  ADD.w comLong_BoundLines,D0
   CMP.l viewablelines,D0
   BCS.w JL_0_2B6C
-  ADDQ.l #1,startdisplayline
+  ADDQ.l #1,comLong_DisplayLineOffset
   MOVE.l viewablelines,-(A7)
-  MOVE.l displayoffset,D0
+  MOVE.l comLong_DisplayLine,D0
   ADDQ.l #1,D0
   MOVE.l D0,viewablelines
   MOVE.w ypos_statusarea,-(A7)
@@ -5653,8 +5692,8 @@ BRA.w JL_0_2ADE
   MOVE.l (A7)+,viewablelines
   MOVEM.w D0-D1,-(A7)
   MOVEQ.l #$00,D0
-  MOVE.l displayoffset,D1
-  ADD.l startdisplayline,D1
+  MOVE.l comLong_DisplayLine,D1
+  ADD.l comLong_DisplayLineOffset,D1
   JSR JL_0_3154
   MOVEM.w (A7)+,D0-D1
   TST.b comByte_StateBlockMark
@@ -5665,14 +5704,14 @@ RTS
 JMP _redraw
 
  JL_0_2B6C:
-  MOVE.l displayoffset,D7
+  MOVE.l comLong_DisplayLine,D7
   ADDQ.w #1,D7
   JSR source_partscroll_up
   JSR JL_0_2534
   MOVEM.w D0-D1,-(A7)
   MOVEQ.l #$00,D0
-  MOVE.l displayoffset,D1
-  ADD.l startdisplayline,D1
+  MOVE.l comLong_DisplayLine,D1
+  ADD.l comLong_DisplayLineOffset,D1
   JSR JL_0_3154
   MOVEM.w (A7)+,D0-D1
   TST.b comByte_StateBlockMark
@@ -5691,20 +5730,20 @@ BRA.w sub_gotoline
 
 .menu_bottom:
   JSR jump_addhistory
-  MOVE.l maxlines,D0
+  MOVE.l comLong_TotalLines,D0
   SUBQ.l #1,D0
 BRA.w sub_gotoline
 
 
 .event_vertscroller:
   MOVE.l viewablelines,D0
-  CMP.l maxlines,D0
+  CMP.l comLong_TotalLines,D0
    BCS.w JL_0_2BC2
 RTS
 
  JL_0_2BC2:
-  MOVE.l startdisplayline,D0
-  ADD.l displayoffset,D0
+  MOVE.l comLong_DisplayLineOffset,D0
+  ADD.l comLong_DisplayLine,D0
   MOVE.l D0,lineposx
   JSR switch_cursordisplay
 
@@ -5721,12 +5760,12 @@ RTS
     !asm
     MOVE.w pos_vertiprop,D0
 ;    fmove.l d0,fp0
-;    fmul.l maxlines,fp0
+;    fmul.l comLong_TotalLines,fp0
 ;    fdiv.s #65536,fp0
     ;Dc.l $F2000003
 ;    fmove.l fp0,d0
     ;LSR.l #5,d0
-    ;MOVE.l maxlines,d1
+    ;MOVE.l comLong_TotalLines,d1
     ;MULU.l d1,d0
     ;LSR.l #8,d0
     ;LSR.l #3,d0
@@ -5748,12 +5787,12 @@ RTS
   MOVEQ #0,d0
   MOVE.w pos_vertiprop,D0
 ;  fmove.l d0,fp0
-;  fmul.l maxlines,fp0
+;  fmul.l comLong_TotalLines,fp0
 ;  fdiv.s #65536,fp0
   ;Dc.l $F2000003
 ;  fmove.l fp0,d0
   ;LSR.l #5,d0
-  ;MOVE.l maxlines,d1
+  ;MOVE.l comLong_TotalLines,d1
   ;MULU.l d1,d0
   ;LSR.l #8,d0
   ;LSR.l #3,d0
@@ -5770,15 +5809,15 @@ gotoline:
   CLR.w -(A7)
 
  JL_0_2C2E:
-  CMP.l maxlines,d0
+  CMP.l comLong_TotalLines,d0
   BLE 'l10
-  MOVE.l maxlines,d0
+  MOVE.l comLong_TotalLines,d0
   SUBQ.l #1,d0
 
  'l10
-  MOVE.l startdisplayline,D1
+  MOVE.l comLong_DisplayLineOffset,D1
   MOVE.l D1,-(A7)
-  ADD.l displayoffset,D1
+  ADD.l comLong_DisplayLine,D1
   CMP.l D1,D0
   BEQ.w JL_0_2C58
   BCC.w JL_0_2C50
@@ -5791,7 +5830,7 @@ gotoline:
 BRA.w JL_0_2C58
 
  JL_0_2C58b
-  MOVE.l maxlines,d0
+  MOVE.l comLong_TotalLines,d0
   SUBQ.l #1,d0
   MOVE.l d0,d1
   BRA JL_0_2C58
@@ -5811,39 +5850,39 @@ BRA.w JL_0_2C58
   JSR syntax_new1
 
  'l10
-  MOVE.l boundlines,D1
+  MOVE.l comLong_BoundLines,D1
   CLR.b newsyntax
   MOVE.l D0,D2
   SUB.l D1,D0
   BPL.w JL_0_2C7C
 
  JL_0_2C6C:
-  CLR.l startdisplayline
-  MOVE.w D2,displayoffset+2
+  CLR.l comLong_DisplayLineOffset
+  MOVE.w D2,comLong_DisplayLine+2
 BRA.w JL_0_2CBA
 
  JL_0_2C7C:
-  MOVE.l maxlines,D3
+  MOVE.l comLong_TotalLines,D3
   CMP.l viewablelines,D3
   BLS.b JL_0_2C6C
   SUB.l viewablelines,D3
-  ADD.l boundlines,D3
+  ADD.l comLong_BoundLines,D3
   CMP.l D3,D2
   BCS.w JL_0_2CAE
-  SUB.l boundlines,D3
-  MOVE.l D3,startdisplayline
+  SUB.l comLong_BoundLines,D3
+  MOVE.l D3,comLong_DisplayLineOffset
   SUB.l D3,D2
-  MOVE.w D2,displayoffset+2
+  MOVE.w D2,comLong_DisplayLine+2
 BRA.w JL_0_2CBA
 
  JL_0_2CAE:
-  MOVE.w D1,displayoffset+2
-  MOVE.l D0,startdisplayline
+  MOVE.w D1,comLong_DisplayLine+2
+  MOVE.l D0,comLong_DisplayLineOffset
 
  JL_0_2CBA:
   JSR JL_0_775E
   MOVE.l (A7)+,D1
-  CMP.l startdisplayline,D1
+  CMP.l comLong_DisplayLineOffset,D1
   BEQ.w JL_0_2CCC
   JSR _redraw
 
@@ -5911,7 +5950,7 @@ RTS
     MOVEQ #$b,d6
     MOVE.l comFunc_CallMenuEntry,a0
     MOVEA.l comPtr_FirstSourceLine,A5
-    MOVE.l maxlines,D7
+    MOVE.l comLong_TotalLines,D7
     ;MOVE.l d0,-(A7)
     JSR (A0)
     JSR check_state_of_debuggertoggle
@@ -5972,7 +6011,7 @@ RTS
   MOVE.l (a7)+,d0
   MOVE.l comFunc_CallMenuEntry,a0
   MOVEA.l comPtr_FirstSourceLine,A5
-  MOVE.l maxlines,D7
+  MOVE.l comLong_TotalLines,D7
   MOVE.l D6,-(A7)                    ;menu num
 
  L_0_2D2A:
@@ -6758,8 +6797,8 @@ RTS
 
 JL_0_3318:
   MOVEQ.l #$00,D7
-  MOVE.l displayoffset,D0
-  ADD.l startdisplayline,D0
+  MOVE.l comLong_DisplayLine,D0
+  ADD.l comLong_DisplayLineOffset,D0
   CMP.l blockstarty,D0
    BLT.w JL_0_3348
    BGT.w JL_0_337C
@@ -6770,8 +6809,8 @@ JL_0_3318:
 
   JL_0_3348:
   MOVE.l blockstarty,D0
-  SUB.l displayoffset,D0
-  SUB.l startdisplayline,D0
+  SUB.l comLong_DisplayLine,D0
+  SUB.l comLong_DisplayLineOffset,D0
   SUBQ.l #1,D0
   MOVEA.l comPtr_CurrentSourceLine,A0
 
@@ -6941,17 +6980,17 @@ RTS
 
   JL_0_351C:
   JSR JL_0_572C
-  MOVE.l startdisplayline,D0
-  ADD.l displayoffset,D0
-  CMP.l maxlines,D0
+  MOVE.l comLong_DisplayLineOffset,D0
+  ADD.l comLong_DisplayLine,D0
+  CMP.l comLong_TotalLines,D0
   BCS.w JL_0_3552
-  MOVE.l maxlines,D0
+  MOVE.l comLong_TotalLines,D0
   SUBQ.l #1,D0
-  MOVE.l D0,startdisplayline
-  CLR.l displayoffset
+  MOVE.l D0,comLong_DisplayLineOffset
+  CLR.l comLong_DisplayLine
   JSR update_currsourceline
   JSR _redraw
-  MOVE.l startdisplayline,D0
+  MOVE.l comLong_DisplayLineOffset,D0
   BRA.w gotoline
 
   JL_0_3552:
@@ -6991,7 +7030,7 @@ BRA saveab
 
   MOVE.l D0,ptr_asciifile
   MOVEQ.l #$00,D7
-  MOVE.l maxlines,D7
+  MOVE.l comLong_TotalLines,D7
    BEQ.w saveascii_done
 
   MOVE.b #$A,comByte_EnteredCharacter
@@ -7199,7 +7238,8 @@ RTS
 RTS
 
 JL_0_4E4Ab
-JMP JL_0_4E4A
+;JMP JL_0_4E4A
+JMP close_sourcefile
 
 
 JL_0_3748:
@@ -7333,7 +7373,8 @@ JL_0_3748:
   JSR JL_0_4E36
 
   JL_0_37F6:
-   JSR JL_0_4E4A
+   ;JSR JL_0_4E4A
+   JSR close_sourcefile
   MOVEA.l (A7)+,A2
   CLR.b instring
 
@@ -7365,8 +7406,8 @@ RTS
    BEQ.w setpointer_to_normal
   CLR.w AL_0_8AD8
   MOVE.w #$FFFF,comWord_SourceChanged
-  MOVE.l startdisplayline,D7
-  ADD.l displayoffset,D7
+  MOVE.l comLong_DisplayLineOffset,D7
+  ADD.l comLong_DisplayLine,D7
   CMP.l blockstarty,D7
    BCS.w JL_0_387E
    BNE.w JL_0_386A
@@ -7433,7 +7474,7 @@ JL_0_38FA:
    BNE.b JL_0_38FA
   MOVEA.l D0,A0
 JL_0_3900:
-  ADDQ.l #1,maxlines
+  ADDQ.l #1,comLong_TotalLines
   MOVE.b D5,$8(A0)
   MOVE.l $4(A4),D1
    BNE.w JL_0_3920
@@ -7500,8 +7541,8 @@ JL_0_39A8:
    JSR JL_0_55A2
   MOVE.w comWord_ColumnsOffset,D0
   ADD.w comWord_Column,D0
-  MOVE.l startdisplayline,D7
-  ADD.l displayoffset,D7
+  MOVE.l comLong_DisplayLineOffset,D7
+  ADD.l comLong_DisplayLine,D7
   CMP.l blockendy,D7
    BHI.w JL_0_3A42
    BNE.w JL_0_39D0
@@ -7571,7 +7612,7 @@ BRA.w _redrawb
 .jump_to_keyword:                    ; A0 = pointer zieltextzeile
   MOVEA.l comPtr_FirstSourceLine,A1
   MOVEQ.l #$00,D0
-  MOVE.l maxlines,D1
+  MOVE.l comLong_TotalLines,D1
   SUBQ.l #1,D1
   BEQ JL_0_3A9A
 
@@ -7602,8 +7643,8 @@ RTS
 ;   BCC.b AJL_0_3A5E
 
   MOVE.l D3,D1                       ; ab hier: blockmarkieren bis loslassen
-  ADD.l startdisplayline,D1
-  CMP.l maxlines,D1
+  ADD.l comLong_DisplayLineOffset,D1
+  CMP.l comLong_TotalLines,D1
    BCC.w exit_leftmousebutton
 
   ;MOVE.l blockstartx,-(A7)
@@ -7622,7 +7663,7 @@ RTS
 
   JL_0_3ADC:
   MOVE.l D3,D1
-  ADD.l startdisplayline,D1
+  ADD.l comLong_DisplayLineOffset,D1
   MOVE.l D1,linepos2
   MOVE.l D1,linepos3
   ADD.w comWord_ColumnsOffset,D2
@@ -7634,7 +7675,7 @@ RTS
   MOVE.w D2,D0
   MOVE.l D3,D1
   CLR.w AL_0_86B8
-  MOVE.l startdisplayline,-(A7)
+  MOVE.l comLong_DisplayLineOffset,-(A7)
   MOVE.w comWord_ColumnsOffset,-(A7)
   MOVE.l A4,-(A7)
   JSR JL_0_59BC
@@ -7651,20 +7692,20 @@ RTS
    BCS.w JL_0_3BCE
   MOVE.l viewablelines,D3
   MOVE.l D3,D0
-  ADD.l startdisplayline,D0
-  CMP.l maxlines,D0
+  ADD.l comLong_DisplayLineOffset,D0
+  CMP.l comLong_TotalLines,D0
    BCC.b JL_0_3B1E
   SUBQ.l #1,D3
   MOVE.w comWord_MaxColumns,D2
-  MOVE.l startdisplayline,D0
+  MOVE.l comLong_DisplayLineOffset,D0
   ADD.l viewablelines,D0
-  CMP.l maxlines,D0
+  CMP.l comLong_TotalLines,D0
    BCC.w JL_0_3D06
   MOVEM.l D5-D6,-(A7)
    JSR source_fullscroll_down
   MOVEA.l (A4),A4
   MOVE.l A4,comPtr_CurrentSourceLine
-  ADDQ.l #1,startdisplayline
+  ADDQ.l #1,comLong_DisplayLineOffset
    JSR JL_0_5B60
   MOVEM.l (A7)+,D5-D6
   SUBQ.w #1,D6
@@ -7672,7 +7713,7 @@ RTS
   MOVE.l viewablelines,D3
   SUBQ.l #1,D3
   MOVE.l D3,D1
-  ADD.l startdisplayline,D1
+  ADD.l comLong_DisplayLineOffset,D1
   CMP.l linepos2,D1
    BHI.w JL_0_3D06
   MOVE.l D1,-(A7)
@@ -7697,19 +7738,19 @@ RTS
   JL_0_3BCE:
   MOVEQ.l #$00,D2
   MOVEQ.l #$00,D3
-  MOVE.l startdisplayline,D0
+  MOVE.l comLong_DisplayLineOffset,D0
    BEQ.w JL_0_3D06
   MOVEM.l D5-D6,-(A7)
    JSR source_fullscroll_up
   MOVEA.l $4(A4),A4
   MOVE.l A4,comPtr_CurrentSourceLine
-  SUBQ.l #1,startdisplayline
+  SUBQ.l #1,comLong_DisplayLineOffset
    JSR JL_0_5B24
   MOVEM.l (A7)+,D5-D6
   ADDQ.w #1,D6
   MOVEQ.l #$00,D3
   MOVEQ.l #$00,D2
-  MOVE.l startdisplayline,D1
+  MOVE.l comLong_DisplayLineOffset,D1
   CMP.l linepos2,D1
    BCS.w JL_0_3D06
   MOVE.w D5,D2
@@ -7721,7 +7762,7 @@ RTS
   MOVEQ.l #$00,D3
   MOVEQ.l #-$01,D5
   MOVEQ.l #$00,D6
-  MOVE.l startdisplayline,D1
+  MOVE.l comLong_DisplayLineOffset,D1
   CMP.l linepos2,D1
    BNE.w JL_0_3D06
   MOVE.w lineposx,D5
@@ -7731,11 +7772,11 @@ RTS
   JL_0_3C38:
   ADD.w comWord_ColumnsOffset,D2
   MOVE.l D3,D1
-  ADD.l startdisplayline,D1
-  CMP.l maxlines,D1
+  ADD.l comLong_DisplayLineOffset,D1
+  CMP.l comLong_TotalLines,D1
    BCS.w JL_0_3C54
-  MOVE.l maxlines,D3
-  SUB.l startdisplayline,D3
+  MOVE.l comLong_TotalLines,D3
+  SUB.l comLong_DisplayLineOffset,D3
   SUBQ.l #1,D3
 
   JL_0_3C54:
@@ -7749,7 +7790,7 @@ RTS
   MOVE.w D5,AL_0_86AC
   EXT.l d6
   MOVE.l D6,D1
-  ADD.l startdisplayline,D1
+  ADD.l comLong_DisplayLineOffset,D1
   MOVE.l D1,linepos3
   MOVE.w lineposx,blockstartx
   MOVE.l linepos2,blockstarty
@@ -7777,7 +7818,7 @@ RTS
   MOVEM.l D2-D3/D5-D6,-(A7)
   MOVE.w D5,AL_0_86AC
   MOVE.l D6,D1
-  ADD.l startdisplayline,D1
+  ADD.l comLong_DisplayLineOffset,D1
   MOVE.l D1,linepos3
   MOVE.w lineposx,blockstartx
   MOVE.l linepos2,blockstarty
@@ -7802,7 +7843,7 @@ RTS
    JSR JL_0_57F2
   MOVE.w D2,AL_0_86AC
   MOVE.l D3,D1
-  ADD.l startdisplayline,D1
+  ADD.l comLong_DisplayLineOffset,D1
   MOVE.l D1,linepos3
   CMP.l linepos2,D1
    BCS.w JL_0_3D5A
@@ -7841,7 +7882,7 @@ RTS
   MOVE.w D6,D3
   MOVE.w lineposx,D0
   MOVE.l linepos2,D1
-  SUB.l startdisplayline,D1
+  SUB.l comLong_DisplayLineOffset,D1
   BPL.w JL_0_3D9E
   MOVEQ.l #$00,D0
   MOVEQ.l #$00,D1
@@ -7871,11 +7912,11 @@ RTS
 
 
 JL_0_3DD0:
-  MOVE.l startdisplayline,AL_0_3EE2
+  MOVE.l comLong_DisplayLineOffset,AL_0_3EE2
   MOVE.w comWord_ColumnsOffset,AL_0_3EE4
   MOVE.l (A7)+,comPtr_CurrentSourceLine
   MOVE.w (A7)+,comWord_ColumnsOffset
-  MOVE.l (A7)+,startdisplayline
+  MOVE.l (A7)+,comLong_DisplayLineOffset
   MOVE.w AL_0_86AC,D0
    BPL.w JL_0_3E16
   MOVE.l linepos3,D1
@@ -7935,8 +7976,8 @@ JL_0_3E5E:
   SUB.w comWord_ColumnsOffset,D0
   MOVE.w D0,comWord_Column
   CLR.l foldnum
-  MOVE.l startdisplayline,D0
-  ADD.l displayoffset,D0
+  MOVE.l comLong_DisplayLineOffset,D0
+  ADD.l comLong_DisplayLine,D0
   MOVEA.l comPtr_CurrentSourceLine,A4
 
 CNIF #hardfold = 1
@@ -7967,7 +8008,7 @@ JL_0_3E84:                           ;mouseclick get comPtr_CurrentSourceLine
 'l2
   TST.l foldnum
   BNE JL_0_3E84
-  ;SUBQ.l #1,startdisplayline
+  ;SUBQ.l #1,comLong_DisplayLineOffset
   ;SUBQ.l #1,linepos2
 'l1  SUBQ.l #1,D0
  BRA.b JL_0_3E84
@@ -7997,7 +8038,7 @@ JL_0_3E98:
 'l2
   TST.l foldnum
   BNE JL_0_3E98
-  ;ADDQ.l #1,startdisplayline
+  ;ADDQ.l #1,comLong_DisplayLineOffset
   ;ADDQ.l #1,linepos2
 'l3  ADDQ.l #1,D0
  BRA.b JL_0_3E98
@@ -8016,9 +8057,9 @@ JL_0_3E98:
  BRA.b JL_0_3E84
 CEND
   JL_0_3E9E:
-  SUB.l startdisplayline,D0
+  SUB.l comLong_DisplayLineOffset,D0
 
-  MOVE.w D0,displayoffset+2
+  MOVE.w D0,comLong_DisplayLine+2
   MOVE.l A4,comPtr_CurrentSourceLine
   JSR JL_0_775E
   MOVE.w message_qualifier,d1
@@ -8064,7 +8105,7 @@ CEND
 BRA.w _redrawb
 
 JL_0_3EC6:
-  MOVE.l startdisplayline,D0
+  MOVE.l comLong_DisplayLineOffset,D0
   CMP.l AL_0_3EE2,D0
    BNE.w _redrawb
   MOVE.w comWord_ColumnsOffset,D0
@@ -8088,9 +8129,9 @@ JMP _redraw
 AL_0_3EE4:    Ds.w 1
 
 ;Dc.b "09"
-;Dc.l displayoffset
+;Dc.l comLong_DisplayLine
 ;  JL_0_3EEC:
-;  MOVE.w D3,displayoffset+2
+;  MOVE.w D3,comLong_DisplayLine+2
 ;  MOVEA.l comPtr_CurrentSourceLine,A0
 ;
 ;  JL_0_3EF6:
@@ -8105,7 +8146,7 @@ AL_0_3EE4:    Ds.w 1
 ;  ADDQ.w #1,D0
 ;
 ;  JL_0_3F0E:
-;  MOVE.w D0,displayoffset+2
+;  MOVE.w D0,comLong_DisplayLine+2
 ;  MOVE.l A4,comPtr_CurrentSourceLine
 ;  MOVEA.l A4,A2
 ;  LEA $9(A2),A2
@@ -8114,8 +8155,8 @@ AL_0_3EE4:    Ds.w 1
 ;
 ;
 ;JL_0_3F26:
-;  MOVE.l displayoffset,D0
-;  MOVE.w D3,displayoffset+2
+;  MOVE.l comLong_DisplayLine,D0
+;  MOVE.w D3,comLong_DisplayLine+2
 ;  MOVEA.l comPtr_CurrentSourceLine,A0
 ;
 ;  JL_0_3F36:
@@ -8130,7 +8171,7 @@ AL_0_3EE4:    Ds.w 1
 ;  SUBQ.w #1,D0
 ;
 ;  JL_0_3F4C:
-;  MOVE.w D0,displayoffset+2
+;  MOVE.w D0,comLong_DisplayLine+2
 ;  MOVE.l A4,comPtr_CurrentSourceLine
 ;  MOVEA.l A4,A2
 ;  LEA $9(A2),A2
@@ -8187,8 +8228,8 @@ AL_0_4280:        Dc.b $FF,$FF
 
 .set_blockstart:                     ; D0: Startposition
   MOVE.w D0,AL_0_4280
-  MOVE.l startdisplayline,D0
-  ADD.l displayoffset,D0
+  MOVE.l comLong_DisplayLineOffset,D0
+  ADD.l comLong_DisplayLine,D0
   MOVE.l D0,AL_0_4282
 RTS
 
@@ -8199,8 +8240,8 @@ RTS
   MOVE.w D0,blockstartx
   MOVE.l AL_0_4282,D3
 
-  MOVE.l startdisplayline,D1
-  ADD.l displayoffset,D1
+  MOVE.l comLong_DisplayLineOffset,D1
+  ADD.l comLong_DisplayLine,D1
 
   MOVE.l (a7)+,D0
 ;  MOVE.w comWord_ColumnsOffset,D0
@@ -8435,7 +8476,7 @@ TokenizeSource:
    BNE.w JUMP_setpointer_to_normal
   NOT.w comWord_DoTokenize
   MOVEA.l comPtr_FirstSourceLine,A4
-  MOVE.l maxlines,-(A7)
+  MOVE.l comLong_TotalLines,-(A7)
 
  JL_0_450E:
     MOVEQ.l #$00,D1
@@ -8464,7 +8505,7 @@ DetokenizeSource:
 
  JL_0_454C:
   MOVEA.l comPtr_FirstSourceLine,A4
-  MOVE.l maxlines,-(A7)
+  MOVE.l comLong_TotalLines,-(A7)
 
  JL_0_4554:
     LEA $9(A4),A0
@@ -8518,7 +8559,7 @@ RTS
   MOVE.l (a2),straddr
   !asm
   MOVEA.l comPtr_FirstSourceLine,A0
-  MOVE.l maxlines,D0
+  MOVE.l comLong_TotalLines,D0
   MOVE.b AL_0_8BCE,D1
   MOVE.l A1,-(A7)
   TST.w button_all
@@ -8614,7 +8655,7 @@ RTS
 .alladd
   MOVEM.l d2-d3/a2/a3,-(a7)
 
-  MOVE.l maxlines,D0
+  MOVE.l comLong_TotalLines,D0
 
 .click_all
   MOVE.b AL_0_8BCE,D1
@@ -8947,8 +8988,8 @@ JL_0_4942:
   JSR _Close(A6)
   JL_0_4956:
 
-  CLR.l startdisplayline
-  CLR.l displayoffset
+  CLR.l comLong_DisplayLineOffset
+  CLR.l comLong_DisplayLine
   MOVE.l comPtr_FirstSourceLine,comPtr_CurrentSourceLine
   JSR _redraw
 JMP JL_0_CE2
@@ -9131,7 +9172,7 @@ RTS
 RTS
 
 JL_0_4E08:
-  ADDQ.l #1,maxlines
+  ADDQ.l #1,comLong_TotalLines
   MOVE.l (A4),D0
   BEQ.w JL_0_4E20
   MOVEA.l D0,A1
@@ -9162,7 +9203,7 @@ JL_0_4E36:
   SUBQ.w #1,A3
 RTS
 
-JL_0_4E4A:
+close_sourcefile:
   TST.w comWord_PasteMode
    BNE.w JL_0_4E64
   CLR.l comPtr_SourceFileHandle
@@ -10414,9 +10455,9 @@ RTS
 RTS
 
 JL_0_5474:
-  CMPI.l #$1,maxlines
+  CMPI.l #$1,comLong_TotalLines
   BEQ.w JL_0_54EA
-  SUBQ.l #1,maxlines
+  SUBQ.l #1,comLong_TotalLines
   MOVE.l (A5),D1
   MOVE.l $4(A5),D2
   BEQ.w JL_0_54A4
@@ -10464,8 +10505,8 @@ BRA.b JL_0_54BE
 
 .move_to_blockstarty:                ; in A4: currentsourceline, out A5: adjusted currentsourceline
   MOVEA.l A4,A5                      ; -- copy currentline to A5
-  MOVE.l startdisplayline,D7
-  ADD.l displayoffset,D7
+  MOVE.l comLong_DisplayLineOffset,D7
+  ADD.l comLong_DisplayLine,D7
   MOVE.l D7,D6
 
   CMP.l blockstarty,D6
@@ -10545,8 +10586,8 @@ RTS
 
 .update_currsourceline:
   MOVEA.l comPtr_FirstSourceLine,A4
-  MOVE.l startdisplayline,D0
-  ADD.l displayoffset,D0
+  MOVE.l comLong_DisplayLineOffset,D0
+  ADD.l comLong_DisplayLine,D0
   BEQ.w JL_0_558E
   ;SUBQ.l #1,D0
 
@@ -10810,7 +10851,7 @@ RTS
 JL_0_57F2:
   ;MOVE.l comWord_Column,-(A7)
   MOVE.w comWord_Column,-(A7)
-  MOVE.l displayoffset,-(A7)
+  MOVE.l comLong_DisplayLine,-(A7)
   MOVEM.w D2-D3/D5,-(A7)
   SUB.w comWord_ColumnsOffset,D2
    BPL.w JL_0_5808
@@ -10825,12 +10866,12 @@ JL_0_57F2:
 
   JL_0_5816:
   MOVE.w D2,comWord_Column
-  MOVE.w D3,displayoffset+2
+  MOVE.w D3,comLong_DisplayLine+2
    JSR update_horizscroller
    JSR update_vertscroller
   MOVEM.w (A7)+,D2-D3/D5
   ;MOVE.l (A7)+,comWord_Column
-  MOVE.l (A7)+,displayoffset
+  MOVE.l (A7)+,comLong_DisplayLine
   MOVE.w (A7)+,comWord_Column
 RTS
 
@@ -10888,7 +10929,7 @@ JL_0_58B6:
   JSR getfoldstatus
   CEND
 
-  MOVE.l displayoffset,D1
+  MOVE.l comLong_DisplayLine,D1
 
   JL_0_58BA:
   BEQ.w JL_0_58C6
@@ -10975,7 +11016,7 @@ RTS
 
 
 JL_0_58C6:
-  MOVE.w D1,displayoffset+2
+  MOVE.w D1,comLong_DisplayLine+2
 ;  CLR.l AL_0_868A
   CLR.w comWord_TextBufferOffset
   CLR.l foldnum
@@ -10997,8 +11038,8 @@ JL_0_58C6:
       BNE 'l2
       MOVE.l #0,foldnum
      'l2
-      MOVE.l displayoffset,d0
-      CMP.l store_displayoffset,d0
+      MOVE.l comLong_DisplayLine,d0
+      CMP.l store_comLong_DisplayLine,d0
       BNE 'l3b
       ;MOVE.l a2,comPtr_CurrentSourceLine
      'l3b
@@ -11033,7 +11074,7 @@ JL_0_58C6:
 
   MOVE.w #0,D0
 
-  MOVE.l displayoffset,D1
+  MOVE.l comLong_DisplayLine,D1
   MULU fontheight,D1
 
  ; MOVE.w $26(A1),D1
@@ -11055,7 +11096,7 @@ JL_0_58C6:
   MOVE.w blockendx,D2
   MOVE.l blockendy,D3
   MOVE.l blockstarty,D1
-  MOVE.l startdisplayline,D4
+  MOVE.l comLong_DisplayLineOffset,D4
   MOVE.l D4,D5
   ADD.l viewablelines,D5
   SUB.w comWord_ColumnsOffset,D0
@@ -11065,7 +11106,7 @@ JL_0_58C6:
   JL_0_5954:
   CMP.l D4,D3
    BLT.w JL_0_59BA
-  SUB.l startdisplayline,D1
+  SUB.l comLong_DisplayLineOffset,D1
    BPL.w JL_0_5968
   MOVEQ.l #$00,D0
   MOVEQ.l #$00,D1
@@ -11076,7 +11117,7 @@ JL_0_58C6:
   MOVEQ.l #$00,D2
 
   JL_0_5974:
-  SUB.l startdisplayline,D3
+  SUB.l comLong_DisplayLineOffset,D3
    BPL.w JL_0_5980
   MOVEQ.l #$00,D3
 
@@ -11272,7 +11313,7 @@ JL_0_5B24:
    JSR save_cursorposition
 ;  CLR.l AL_0_868A
   CLR.w comWord_TextBufferOffset
-  MOVE.l displayoffset,D1
+  MOVE.l comLong_DisplayLine,D1
 
   JL_0_5B3C:
     BEQ.w JL_0_5B4E
@@ -11283,7 +11324,7 @@ JL_0_5B24:
   BRA.b JL_0_5B3C
 
 JL_0_5B4E:                           ;Print 1 Line down
-  MOVE.w D1,displayoffset+2
+  MOVE.w D1,comLong_DisplayLine+2
   JSR print_sourceline
   JL_0_5B58:
   JSR restore_cursorposition
@@ -11293,7 +11334,7 @@ JL_0_5B60:
   MOVEA.l comPtr_CurrentSourceLine,A2
   JSR save_cursorposition
   JL_0_5B68:
-    MOVE.l displayoffset,D0
+    MOVE.l comLong_DisplayLine,D0
     ADDQ.l #1,D0
     CMP.l viewablelines,D0
      BCC.w JL_0_5B84
@@ -11404,7 +11445,7 @@ RTS
   MOVEA.l _graphicsbase,A6
   MOVEA.l rp_sourcewindow,A1
 
-  MOVE.l displayoffset,D1 ; calculate line y
+  MOVE.l comLong_DisplayLine,D1 ; calculate line y
   MULU fontheight,D1
 
 ;  MOVEA.l textbufferaddr,A0
@@ -11651,7 +11692,7 @@ RTS
   SUB.w comWord_ColumnsOffset,d0
  'c2
   MOVE.l A0,-(A7)
-  MOVE.l displayoffset,D1
+  MOVE.l comLong_DisplayLine,D1
   MULU fontheight,D1
   MOVEQ #0,d4
   MOVE.w d0,d4
@@ -11991,7 +12032,7 @@ RTS
   MOVEA.l A2,A0
   MOVEQ.l #$00,D0
   MOVEQ.l #$00,D1
-  MOVE.l displayoffset,D1
+  MOVE.l comLong_DisplayLine,D1
   MULU fontheight,D1
   MOVE.w comWord_ColumnsOffset,AL_0_869A
   MOVE.l AL_0_5BAA,templine
@@ -12011,7 +12052,7 @@ RTS
   MOVEA.l _graphicsbase,A6
   MOVEA.l rp_sourcewindow,A1
   MOVE.w #0,D0
-  MOVE.l displayoffset,D1
+  MOVE.l comLong_DisplayLine,D1
   MULU fontheight,D1
   MOVE.w win_InnerWidth,D2
   MOVE.w D1,D3
@@ -12021,7 +12062,7 @@ RTS
   MOVEA.l _graphicsbase,A6           ; move to next line
   MOVEA.l rp_sourcewindow,A1
   MOVE.w #0,D0
-  MOVE.l displayoffset,D1
+  MOVE.l comLong_DisplayLine,D1
   MULU fontheight,D1
   ADD.w  fontheight,D1
   JSR _Move(a6)
@@ -12294,8 +12335,8 @@ JL_0_5EA0:
   BSR process_highlightning
   CMPI.l #$ffffFFFF,blockendy
    BEQ.w JL_0_5ED8
-  MOVE.l startdisplayline,D0
-  ADD.l displayoffset,D0
+  MOVE.l comLong_DisplayLineOffset,D0
+  ADD.l comLong_DisplayLine,D0
   CMP.l blockstarty,D0
    BCS.w JL_0_5ED8
   CMP.l blockendy,D0
@@ -12614,7 +12655,7 @@ JL_0_60FE:
   MOVE.w comWord_Column,D0
   MOVE.l viewablelines_m1,D1
   ADD.w comWord_ColumnsOffset,D0
-  ADD.l startdisplayline,D1
+  ADD.l comLong_DisplayLineOffset,D1
   MOVE.l viewablelines_m1,D6
   BRA.w JL_0_6150
 
@@ -12625,7 +12666,7 @@ JL_0_612C:
   TST.l blockendy
    BMI.w JL_0_614E
   MOVE.w comWord_Column,D0
-  MOVE.l startdisplayline,D1
+  MOVE.l comLong_DisplayLineOffset,D1
   ADD.w comWord_ColumnsOffset,D0
   MOVEQ.l #$00,D6
  BRA.w JL_0_6150
@@ -12859,7 +12900,7 @@ RTS
 
 
 JL_0_640C:
-  ADDQ.l #1,displayoffset
+  ADDQ.l #1,comLong_DisplayLine
   MOVEQ.l #$00,D0
 ;  MOVE.w AL_0_86CC,D0
 ;  ADD.l D0,AL_0_868A
@@ -12868,7 +12909,7 @@ JL_0_640C:
 RTS
 
 JL_0_642A:
-  SUBQ.l #1,displayoffset
+  SUBQ.l #1,comLong_DisplayLine
   MOVEQ.l #$00,D0
 ;  MOVE.w AL_0_86CC,D0
 ;  SUB.l D0,AL_0_868A
@@ -12880,8 +12921,8 @@ JL_0_6448:
   MOVEA.l rp_sourcewindow,A1
   MOVE.w comWord_Column,D0
   ADD.w comWord_ColumnsOffset,D0
-  MOVE.l displayoffset,D1
-  ADD.l startdisplayline,D1
+  MOVE.l comLong_DisplayLine,D1
+  ADD.l comLong_DisplayLineOffset,D1
 
   TST.l blockendy
    BMI.w source_scroll_line_to_right
@@ -12941,7 +12982,7 @@ RTS
   MOVE.w comWord_Column,D2
   MULU fontwidth,d2                  ; xmin
 
-  MOVE.l displayoffset,D3
+  MOVE.l comLong_DisplayLine,D3
   MULU fontheight,D3                 ; ymin
 
   MOVE.w visiblecolumns,D4
@@ -12963,9 +13004,9 @@ JL_0_653C:
    BMI.w JL_0_65A4
   MOVEQ.l #$00,D0
   MOVE.w comWord_Column,D0
-  MOVE.l displayoffset,D1
+  MOVE.l comLong_DisplayLine,D1
   ADD.w comWord_ColumnsOffset,D0
-  ADD.l startdisplayline,D1
+  ADD.l comLong_DisplayLineOffset,D1
   CMP.l blockstarty,D1
    BLT.w JL_0_65A4
   CMP.l blockendy,D1
@@ -13005,7 +13046,7 @@ RTS
   MOVEA.l _graphicsbase,A6
   MOVEA.l comPtr_SourceAreaRastPort,A1
 
-  MOVE.l startdisplayline,D1
+  MOVE.l comLong_DisplayLineOffset,D1
   MOVE.w D1,D2
   ADD.l viewablelines,D2
   MOVE.w comWord_ColumnsOffset,D0    ; D0
@@ -13023,11 +13064,11 @@ RTS
   JSR JL_0_6658                      ; blockmark first line of selected block until mousex
 
   MOVE.l blockstarty,D1              ; ymin
-  SUB.l startdisplayline,D1          ; ymin
+  SUB.l comLong_DisplayLineOffset,D1          ; ymin
   ADDQ.l #1,D1                       ; ymin
 
   MOVE.l blockendy,D3                ; ymax
-  SUB.l startdisplayline,D3          ; ymax
+  SUB.l comLong_DisplayLineOffset,D3          ; ymax
   CMP.l viewablelines,D3             ; ymax
    BLE.w JL_0_6630
   MOVE.l viewablelines,D3            ; ymax
@@ -13040,8 +13081,8 @@ RTS
 ;  MOVEM.l D0-D4/A1,-(A7)
   !basic
   xmin.w = (Peek.w(?comWord_ColumnsOffset)-Peek.w(?comWord_ColumnsOffset)) * Peek.w(?fontwidth)
-  ymin.w = (Peek.l(?blockstarty)-Peek.l(?startdisplayline) + 1) * Peek.w(?fontheight)
-  ymax.w =  Peek.l(?blockendy ) -Peek.l(?startdisplayline)
+  ymin.w = (Peek.l(?blockstarty)-Peek.l(?comLong_DisplayLineOffset) + 1) * Peek.w(?fontheight)
+  ymax.w =  Peek.l(?blockendy ) -Peek.l(?comLong_DisplayLineOffset)
   If ymax > Peek.l(?viewablelines) Then ymax = Peek.l(?viewablelines)
   xmax.w = xmin + Peek.w(?fontwidth)*2 - 1   ; warum 15 ?? muesste eigentlich die Fontbreite sein
   ymax.w = ymax * Peek.w(?fontheight) - 1
@@ -13061,7 +13102,7 @@ JL_0_6658:                          ; mark first line of selected source
   xmin.w = (Peek.w(?comWord_ColumnsOffset)-Peek.w(?comWord_ColumnsOffset)) * Peek.w(?fontwidth)
   xmax.w = xmin + Peek.w(?fontwidth)*2 - 1
 
-  ymin.w = (Peek.l(?blockstarty)-Peek.l(?startdisplayline)) * Peek.w(?fontheight)
+  ymin.w = (Peek.l(?blockstarty)-Peek.l(?comLong_DisplayLineOffset)) * Peek.w(?fontheight)
   ymax.w = ymin + Peek.w(?font_Heightm1)
   RectFill_ Peek.l(?comPtr_SourceAreaRastPort),xmin,ymin,xmax,ymax
   !asm
@@ -13080,7 +13121,7 @@ JL_0_669A:
     xmax_temp.w = (Peek.l(?blockendx)-Peek.w(?comWord_ColumnsOffset)+1) * Peek.w(?fontwidth) -1
     If xmax_temp <(Peek.w(?fontwidth)*2-1) Then xmax_temp = Peek.w(?fontwidth)*2 - 1
     xmax.w      = xmin + xmax_temp
-    ymin.w      = (Peek.l(?blockendy)-Peek.l(?startdisplayline)) * Peek.w(?fontheight)
+    ymin.w      = (Peek.l(?blockendy)-Peek.l(?comLong_DisplayLineOffset)) * Peek.w(?fontheight)
     ymax.w      = ymin + Peek.w(?font_Heightm1)
 
     RectFill_ Peek.l(?comPtr_SourceAreaRastPort),xmin,ymin,xmax,ymax
@@ -13101,7 +13142,7 @@ JL_0_66F2:
   xmax_temp.w = (Peek.l(?blockendx)-Peek.w(?comWord_ColumnsOffset)+1) * Peek.w(?fontwidth) -1
   If xmax_temp < $2 Then xmax_temp = $2 * Peek.w(?fontwidth) -1
   xmax.w      = xmin + xmax_temp
-  ymin.w      = (Peek.l(?blockstarty)-Peek.l(?startdisplayline)) * Peek.w(?fontheight)
+  ymin.w      = (Peek.l(?blockstarty)-Peek.l(?comLong_DisplayLineOffset)) * Peek.w(?fontheight)
   ymax.w      = ymin + Peek.w(?font_Heightm1)
   RectFill_ Peek.l(?comPtr_SourceAreaRastPort),xmin,ymin,xmax,ymax
   !asm
@@ -13138,7 +13179,7 @@ RTS
   JSR save_cursorposition
   ;CLR.l comWord_Column
   CLR.w comWord_Column
-  CLR.l displayoffset
+  CLR.l comLong_DisplayLine
 ;  CLR.l AL_0_868A
   CLR.w comWord_TextBufferOffset
   MOVEA.l textbufferaddr,A5
@@ -13153,7 +13194,7 @@ RTS
     MOVE.b $1(A5),$1(A0)
     MOVEQ.l #$00,D0
     MOVE.w comWord_Column,D0
-    MOVE.l displayoffset,D1
+    MOVE.l comLong_DisplayLine,D1
     MULU fontheight,D1
     ;ASL.w #3,D0
     MULU fontwidth,d0
@@ -13195,7 +13236,7 @@ RTS
     MOVE.w comWord_MaxColumns,D0
     ADDA.w D0,A5
     ADD.w D0,comWord_TextBufferOffset
-    ADDQ.l #1,displayoffset
+    ADDQ.l #1,comLong_DisplayLine
   DBF D2,JL_0_67AA
   JSR restore_cursorposition
 RTS
@@ -13212,7 +13253,7 @@ update_blockmark2:
    BMI.w JL_0_68C2
   MOVEA.l _graphicsbase,A6
   MOVEA.l comPtr_SourceAreaRastPort,A1
-  MOVE.l startdisplayline,D1
+  MOVE.l comLong_DisplayLineOffset,D1
   MOVE.l D1,D2
   ADD.l viewablelines,D2
   MOVE.w comWord_ColumnsOffset,D0
@@ -13227,10 +13268,10 @@ update_blockmark2:
    BEQ.w JL_0_695E
    JSR JL_0_68C4
   MOVE.l blockstarty,D1
-  SUB.l startdisplayline,D1
+  SUB.l comLong_DisplayLineOffset,D1
   ADDQ.l #1,D1
   MOVE.l blockendy,D3
-  SUB.l startdisplayline,D3
+  SUB.l comLong_DisplayLineOffset,D3
   CMP.l viewablelines,D3
    BLE.w JL_0_689C
   MOVE.l viewablelines,D3
@@ -13263,7 +13304,7 @@ JL_0_68C4:
   MOVE.w D0,D2
   ADDI.w #$F,D2
   MOVE.l blockstarty,D1
-  SUB.l startdisplayline,D1
+  SUB.l comLong_DisplayLineOffset,D1
   MOVE.l D1,D3
   MULU fontheight,D1
   MULU fontheight,D3
@@ -13296,7 +13337,7 @@ JL_0_6906:
   ADD.w D5,D2
   SUBQ.w #1,D2
   MOVE.l blockendy,D1
-  SUB.l startdisplayline,D1
+  SUB.l comLong_DisplayLineOffset,D1
   MOVE.l D1,D3
   MULU fontheight,D1
   MULU fontheight,D3
@@ -13330,7 +13371,7 @@ JL_0_695E:
   MOVE.w D0,D2
   ADD.w D4,D2
   MOVE.l blockstarty,D1
-  SUB.l startdisplayline,D1
+  SUB.l comLong_DisplayLineOffset,D1
   MOVE.w D1,D3
   MULU fontheight,D1
   MULU fontheight,D3
@@ -13369,7 +13410,7 @@ draw_new_columns:
   MOVE.w visiblecolumns,D0
   SUBQ.w #2,D0
   MOVE.w D0,comWord_Column
-  CLR.l displayoffset
+  CLR.l comLong_DisplayLine
 ;  CLR.l AL_0_868A
   CLR.w comWord_TextBufferOffset
   MOVEA.l textbufferaddr,A5
@@ -13385,7 +13426,7 @@ draw_new_columns:
     MOVE.b $1(A5),$1(A0)
     MOVEQ.l #$00,D0
     MOVE.w comWord_Column,D0
-    MOVE.l displayoffset,D1
+    MOVE.l comLong_DisplayLine,D1
     MULU fontheight,D1
     ;ASL.w #3,D0
     MULU fontwidth,d0
@@ -13424,7 +13465,7 @@ draw_new_columns:
     MOVE.w comWord_MaxColumns,D0
     ADDA.w D0,A5
     ADD.w D0,comWord_TextBufferOffset
-    ADDQ.l #1,displayoffset
+    ADDQ.l #1,comLong_DisplayLine
   DBF D2,JL_0_6AFA
   JSR restore_cursorposition
 RTS
@@ -13452,16 +13493,16 @@ JL_0_6B7C:
   JSR JL_0_572C
   ;CLR.l comWord_Column
   CLR.w comWord_Column
-  CLR.l displayoffset
+  CLR.l comLong_DisplayLine
 ;  CLR.l AL_0_868A
   CLR.w comWord_TextBufferOffset
-  CLR.l startdisplayline
+  CLR.l comLong_DisplayLineOffset
   CLR.w comWord_ColumnsOffset
   CLR.w comWord_SourceChanged
   CLR.l comPtr_LabelList
   CLR.w ptr_labelcounter
   CLR.b comStr_SourceName
-  MOVE.l #$0001,maxlines
+  MOVE.l #$0001,comLong_TotalLines
   JSR JL_0_5B00
   JSR update_horizscroller
   JSR update_modifiermark
@@ -13529,10 +13570,10 @@ RTS
 .clear_actualsource:
   MOVEA.l _execbase,A6
   MOVEA.l comPtr_FirstSourceLine,A2
-  MOVE.l maxlines,D2
+  MOVE.l comLong_TotalLines,D2
   SUBQ.l #1,D2
   ;!basic
-  ;dummy.l = RTEZRequest("maxlines",Hex$(Peek.l(?maxlines)),"OK")
+  ;dummy.l = RTEZRequest("comLong_TotalLines",Hex$(Peek.l(?comLong_TotalLines)),"OK")
   ;!asm
   JL_0_6C40:
     MOVEA.l A2,A1
@@ -14021,9 +14062,9 @@ RTS
   MOVE.w win_InnerHeight,D0 : wih.l = PutD0
   MOVE.l fontheightl,D0     : fhl.l = PutD0
 
-  maxlines.l = (wih - 8) / fhl          ; 6 Pixel fehlen wg. Trennlinie etc.
-  If maxlines > 125 Then maxlines = 125
-  GetD0 maxlines
+  comLong_TotalLines.l = (wih - 8) / fhl          ; 6 Pixel fehlen wg. Trennlinie etc.
+  If comLong_TotalLines > 125 Then comLong_TotalLines = 125
+  GetD0 comLong_TotalLines
   SUBQ.l #1,D0
   MOVE.l d0,viewablelines
   !asm
@@ -14098,8 +14139,8 @@ AL_0_7356:    Ds.l 1
 .print_actualsourceline:
   MOVE.l #$20202020,str_actualline
   MOVE.l #$20000000,str_actualline+4    ; loeschen von "str_actualline"
-  MOVE.l startdisplayline,D0
-  ADD.l displayoffset,D0
+  MOVE.l comLong_DisplayLineOffset,D0
+  ADD.l comLong_DisplayLine,D0
   ADDQ.l #1,D0
   LEA str_actualline,A0
   JSR format_value
@@ -14376,13 +14417,13 @@ RTS
 
 .save_cursorposition:
   MOVE.w comWord_Column,store_column
-  MOVE.l displayoffset,store_displayoffset
+  MOVE.l comLong_DisplayLine,comLong_StoreDisplayLine
   MOVE.w comWord_TextBufferOffset,store_textbufferoffset
 RTS
 
 .restore_cursorposition:
   MOVE.w store_column,comWord_Column
-  MOVE.l store_displayoffset,displayoffset
+  MOVE.l comLong_StoreDisplayLine,comLong_DisplayLine
   MOVE.w store_textbufferoffset, comWord_TextBufferOffset
 RTS
 
@@ -14435,14 +14476,14 @@ JL_0_76EA:
   MOVE.b D0,(A0)
   MOVE.b D0,comByte_EnteredCharacter
   MOVEQ.l #$00,D0
-  MOVE.l displayoffset,D1
+  MOVE.l comLong_DisplayLine,D1
   MOVE.w comWord_Column,D0
 
   TST.l blockendy
    BMI.w JL_0_7742
   MOVEM.l D0-D1,-(A7)
   ADD.w comWord_ColumnsOffset,D0
-  ADD.l startdisplayline,D1
+  ADD.l comLong_DisplayLineOffset,D1
   JSR JL_0_3154
   MOVEM.l (A7)+,D0-D1
   TST.b comByte_StateBlockMark
@@ -14460,10 +14501,10 @@ JL_0_76EA:
 RTS
 
 JL_0_775E:
-;  MOVE.l displayoffset,D1
+;  MOVE.l comLong_DisplayLine,D1
 ;  MULU AL_0_86CC,D1
 ;  MOVE.l D1,AL_0_868A
-  MOVE.l displayoffset,D1
+  MOVE.l comLong_DisplayLine,D1
   MULU comWord_MaxColumns,D1
   MOVE.w D1, comWord_TextBufferOffset
 RTS
@@ -14504,11 +14545,11 @@ state_of_cursor:  Ds.w 1
   draw_cursor:
   MOVEM.l D0-D3/A0-A1/A6,-(A7)
   !basic
-  If Peek.l(?displayoffset) > Peek.l(?viewablelines)-1
-    Poke.l ?displayoffset, Peek.l(?viewablelines)-1
+  If Peek.l(?comLong_DisplayLine) > Peek.l(?viewablelines)-1
+    Poke.l ?comLong_DisplayLine, Peek.l(?viewablelines)-1
   EndIf
   xmin.w = Peek.w(?comWord_Column) * Peek.w(?fontwidth)
-  ymin.w = Peek.l(?displayoffset) * Peek.w(?fontheight)
+  ymin.w = Peek.l(?comLong_DisplayLine) * Peek.w(?fontheight)
   xmax.w = xmin + Peek.w(?fontwidth) - 1
   ymax.w = ymin + Peek.w(?font_Heightm1)
   RectFill_ Peek.l(?comPtr_SourceAreaRastPort),xmin,ymin,xmax,ymax
@@ -14522,10 +14563,10 @@ RTS
   BSR.b print_actualsourceline
   !basic
   ypot.l = PutD0
-  MOVE.l startdisplayline,d0
-  ADD.l displayoffset,d0
+  MOVE.l comLong_DisplayLineOffset,d0
+  ADD.l comLong_DisplayLine,d0
   yact.l = PutD0
-  MOVE.l maxlines,d0
+  MOVE.l comLong_TotalLines,d0
   ymax_slider.l = PutD0 + 8
   MOVE.l viewablelines,d0
   yvis.l = PutD0
@@ -14603,7 +14644,7 @@ JL_0_7962:                        ;horiz scroll
   MOVEQ.l #$00,D7
   MOVE.l viewablelines,D7
   SUBQ.l #1,D7
-  CLR.l displayoffset
+  CLR.l comLong_DisplayLine
   CLR.w comWord_Column
   MOVEA.l textbufferaddr,A5
   ADDA.w comWord_TextBufferOffset,A5
@@ -14649,7 +14690,7 @@ JL_0_7962:                        ;horiz scroll
     MOVE.w (A7)+,D7
     SF AL_0_8668
     JSR process_highlightning
-    ADDQ.l #1,displayoffset
+    ADDQ.l #1,comLong_DisplayLine
     ADD.w #columnsize, comWord_TextBufferOffset
     MOVEQ.l #$00,D0
     ADD.l #columnsize,A5
@@ -14659,8 +14700,8 @@ JL_0_7962:                        ;horiz scroll
 JMP JL_0_590C
 
 JL_0_79CC:
-  MOVE.l startdisplayline,D2
-  ADD.l displayoffset,D2
+  MOVE.l comLong_DisplayLineOffset,D2
+  ADD.l comLong_DisplayLine,D2
   CMP.l blockstarty,D2
   BNE.w JL_0_79EE
   MOVE.w comWord_Column,D2
@@ -14673,8 +14714,8 @@ JL_0_79CC:
 RTS
 
 JL_0_79F0:
-  MOVE.l startdisplayline,D2
-  ADD.l displayoffset,D2
+  MOVE.l comLong_DisplayLineOffset,D2
+  ADD.l comLong_DisplayLine,D2
   CMP.l blockendy,D2
   BNE.w JL_0_7A12
   MOVE.w comWord_Column,D2
@@ -14827,8 +14868,8 @@ BRA.w JL_0_7AA0
    BMI.w JL_0_7BB0
   MOVE.w comWord_Column,D0
   ADD.w comWord_ColumnsOffset,D0
-  MOVE.l displayoffset,D1
-  ADD.l startdisplayline,D1
+  MOVE.l comLong_DisplayLine,D1
+  ADD.l comLong_DisplayLineOffset,D1
   JSR JL_0_3154
   CMP.l blockstarty,D1
    BEQ.w JL_0_7B3A
@@ -15038,7 +15079,7 @@ RTS
           EndIf
 ;        Else
 ;          search_instruction$ = ""
-;          ypos.l = Peek.l (?displayoffset)*Peek.w (?fontheight)+(Peek.w (?fontheight)*3)
+;          ypos.l = Peek.l (?comLong_DisplayLine)*Peek.w (?fontheight)+(Peek.w (?fontheight)*3)
 ;          wtemp\ibrowser_x = Peek.w (?comWord_Column)*Peek.w (?fontwidth):wtemp\ibrowser_y = ypos
 ;          Gosub open_instructionbrowser
         EndIf
@@ -15128,7 +15169,7 @@ RTS
           ; kein bekanntes token, Instruction Browser aufmachen
           If (Len(strhelp$) = Len(tokname$)) OR (strhelp$="")
             search_instruction$ = tokname$
-            ypos.l = Peek.l (?displayoffset)*Peek.w (?fontheight)+(Peek.w (?fontheight)*3)
+            ypos.l = Peek.l (?comLong_DisplayLine)*Peek.w (?fontheight)+(Peek.w (?fontheight)*3)
             wtemp\ibrowser_x = Peek.w (?comWord_Column)*Peek.w (?fontwidth):wtemp\ibrowser_y = ypos
             Gosub open_instructionbrowser
             strhelp$ = Peek$(?str_screentitle)
@@ -15186,7 +15227,7 @@ RTS
         If popfound > 0
           WZ_SetPopUpMenu{tokenliste$,1}
           xpos.l = Peek.w(?win_TopLeft)+ Peek.w(?win_BorLef) + (Peek.w (?comWord_Column)-2) * Peek.w (?fontwidth)
-          ypos.l = Peek.w(?win_TopEdge) + Peek.w(?win_BorTop) + Peek.l (?displayoffset) * Peek.w(?fontheight) + Peek.w(?fontheight) + 2
+          ypos.l = Peek.w(?win_TopEdge) + Peek.w(?win_BorTop) + Peek.l (?comLong_DisplayLine) * Peek.w(?fontheight) + Peek.w(?fontheight) + 2
           WZ_PopUp_Nonmodal{xpos,ypos}
           Gosub activatesource
         Else
@@ -15321,8 +15362,8 @@ RTS
 
 
 JL_0_7BE6:
-  MOVE.l startdisplayline,D1
-  ADD.l displayoffset,D1
+  MOVE.l comLong_DisplayLineOffset,D1
+  ADD.l comLong_DisplayLine,D1
   BEQ.w JL_0_7AA0
 
   MOVE.l A0,-(A7)
@@ -15476,8 +15517,8 @@ BRA.w JL_0_7AA0
    BEQ JL_0_7AA0
 
   MOVEM.l a0-a3/a5/d0-d6,-(a7)
-  MOVE.l startdisplayline,d0
-  ADD.l displayoffset,d0
+  MOVE.l comLong_DisplayLineOffset,d0
+  ADD.l comLong_DisplayLine,d0
   CMPI.l #$ffffFFFF,blockendy
   BEQ.w 'weit
   MOVEM.l (a7)+,a0-a3/a5/d0-d6
@@ -16935,8 +16976,8 @@ BRA message_vanillakey
   CMP.w #$21,d7               ; check for ""
   BNE 'no1
   MOVE.l d1,-(a7)
-  MOVE.l displayoffset,D1
-  ADD.l startdisplayline,D1
+  MOVE.l comLong_DisplayLine,D1
+  ADD.l comLong_DisplayLineOffset,D1
   MOVE.l d1,storeline1
   MOVE.l (a7)+,d1
   CLR.l d7
@@ -16945,8 +16986,8 @@ BRA message_vanillakey
   CMP.w #$22,d7               ; check for ""
   BNE 'no2
   MOVE.l d1,-(a7)
-  MOVE.l displayoffset,D1
-  ADD.l startdisplayline,D1
+  MOVE.l comLong_DisplayLine,D1
+  ADD.l comLong_DisplayLineOffset,D1
   MOVE.l d1,storeline2
   MOVE.l (a7)+,d1
   CLR.l d7
@@ -16955,8 +16996,8 @@ BRA message_vanillakey
   CMP.w #$23,d7               ; check for ""
   BNE 'no3
   MOVE.l d1,-(a7)
-  MOVE.l displayoffset,D1
-  ADD.l startdisplayline,D1
+  MOVE.l comLong_DisplayLine,D1
+  ADD.l comLong_DisplayLineOffset,D1
   MOVE.l d1,storeline3
   MOVE.l (a7)+,d1
   CLR.l d7
@@ -17195,7 +17236,7 @@ Even                   ; make sure To have enough space reserved
  AL_0_B7F4:                                  ; ???
                         Dc.b $00,$0C
 
- ;boundlines:
+ ;comLong_BoundLines:
                         Dc.b $00 ;.
                         Dc.b $06 ;.
  ;AL_0_B7F8:
@@ -19600,7 +19641,7 @@ RTS
 
 .arexxfunc_numlines:
   MOVEQ.l #$00,D0
-  MOVE.l maxlines,D0
+  MOVE.l comLong_TotalLines,D0
   LEA L_0_EF02,A0
   JSR format_value
   LEA L_0_EF02,A0
@@ -20513,7 +20554,7 @@ RTS
   MOVE.l D0,D7
    BEQ.w JL_0_F5F4
    CLR.b instring
-  MOVE.l maxlines,D6
+  MOVE.l comLong_TotalLines,D6
   MOVEA.l comPtr_FirstSourceLine,A4
 
   JL_0_F58E:
@@ -20679,8 +20720,8 @@ RTS
   LEA history,a0
    MOVEQ #0,d1
   MOVE.w historypointer,d1
-  MOVE.l startdisplayline,d0
-  ADD.l displayoffset,d0
+  MOVE.l comLong_DisplayLineOffset,d0
+  ADD.l comLong_DisplayLine,d0
   MOVE.l d0,0(a0,d1)
   ADDQ.w #4,d1
   CMP.w  #maxhistory,d1
@@ -20881,7 +20922,7 @@ RTS
 
 
 .jumpline     ; D0: Zielzeile
-  CMP.l maxlines,d0
+  CMP.l comLong_TotalLines,d0
   BGE 'ret
   MOVEA.l comPtr_CurrentSourceLine,A4
   JSR cursor_off
@@ -21341,7 +21382,7 @@ Return
        CloseFile 0
        fontheight.l = Peek.w(?fontheight)
        sourcewiny.l = Peek.w(?win_TopEdge)
-       ypos.l = Peek.l (?displayoffset)*fontheight+fontheight*3+sourcewiny
+       ypos.l = Peek.l (?comLong_DisplayLine)*fontheight+fontheight*3+sourcewiny
        help2_y.l = ypos
 
        DEFTYPE.List helpme
@@ -22602,8 +22643,8 @@ Return
       Select LCase$(WZGadName)
 
         Case "addcode"
-          MOVE.l startdisplayline,d0
-          ADD.l displayoffset,d0
+          MOVE.l comLong_DisplayLineOffset,d0
+          ADD.l comLong_DisplayLine,d0
           CMP.l ctrlhelpline,d0
           BNE skip2
           a$ = addstr$
@@ -23064,8 +23105,8 @@ RTS
   TST.l blockendy
    BMI.w exit_updateblocka
   MOVEM.l D0-D3/A0-A2,-(A7)
-  MOVE.l displayoffset,D1
-  ADD.l startdisplayline,D1
+  MOVE.l comLong_DisplayLine,D1
+  ADD.l comLong_DisplayLineOffset,D1
   CMP.l blockstarty,D1
    BLT.w JL_0_C66a
   CMP.l blockendy,D1
@@ -23080,8 +23121,8 @@ RTS
    BNE.w JL_0_C50a
   MOVE.w visiblecolumns,D2
   JL_0_C50a:
-  SUB.l startdisplayline,D3
-  SUB.l startdisplayline,D1
+  SUB.l comLong_DisplayLineOffset,D3
+  SUB.l comLong_DisplayLineOffset,D1
   JSR JL_0_59BC
   ST comByte_StateBlockMark
   JL_0_C66a:
@@ -23106,8 +23147,8 @@ RTS
   MOVE.w visiblecolumns,D2
 
   JL_0_CB2a:
-  SUB.l startdisplayline,D3
-  SUB.l startdisplayline,D1
+  SUB.l comLong_DisplayLineOffset,D3
+  SUB.l comLong_DisplayLineOffset,D1
   JSR JL_0_59BC
   MOVEM.l (A7)+,D0-D3/D7/A0-A2
 
@@ -24130,7 +24171,7 @@ constantbase          Dc.l 0
 newtypebase           Dc.l 0
 newsyntax             Dc.l 0
 nohelp                Dc.l 0
-mempool               Dc.l 0
+;mempool               Dc.l 0 ; => moved to common.bb2/comPtr_MemPool
 str_oldsearchgadget   Ds.b 260
 instrtab              Ds.l 32769
 newted                Dc.l 0
