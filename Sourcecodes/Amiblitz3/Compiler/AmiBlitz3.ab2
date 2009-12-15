@@ -127,17 +127,18 @@ If dynassign <> ""
   dos_CreateDir{my_residentsdir$}
   dos_CreateDir{my_systemdir$}
 
-  ; --
-  ; -- check, if there is an alternative PED-executable set via Tooltype
-  pedfile$ = dos_GetToolString{"EDITOR",dos_AddPart{my_systemdir$,"PED"}}
-  Poke.s ?str_pedfile,pedfile$
-  If dos_GetToolState{"START_WITHOUT_LIBS"} = -1
-    Poke.b ?start_without_libs,1
-  Else
-    Poke.b ?start_without_libs,0
-  EndIf
-
 EndIf
+; --
+; -- check, if there is an alternative PED-executable set via Tooltype
+pedfile$ = dos_GetToolString{"EDITOR",dos_AddPart{my_systemdir$,"PED"}}
+Poke.s ?str_pedfile,pedfile$
+
+If dos_GetToolState{"START_WITHOUT_LIBS"} = -1
+  Poke.b ?start_without_libs,1
+Else
+  Poke.b ?start_without_libs,0
+EndIf
+
 
 !TRANS_INIT{"AmiBlitz3"}     ; init localization via translation.include
 
@@ -230,7 +231,7 @@ If dos_FromCLI{}
       Case "run"      : cli_run         = True
       Case "release"  : cli_release     = True
       Case "ped"      : cli_gui         = True
-      Case "dumpform" : cli_dumpform.l  = Vallong(dos_GetNextArg{})
+      Case "dform"    : cli_dumpform.l  = Vallong(dos_GetNextArg{})
       Case "dump"     : cli_info        = dos_GetNextArg{}
                         Select LCase$(cli_info)
                           Case "token"    : cli_dumptoken    = dos_GetNextArg{}
@@ -257,22 +258,24 @@ If dos_FromCLI{}
   ; Show the help if something went wrong or help was requested
   If err><False OR showhelp = True
     If showhelp
-    NPrint "Syntax: AmiBlitz3 [options]"
+    NPrint "AmiBlitz ",Peek.s(?myversion)
+    NPrint "\\nSyntax: AmiBlitz3 [options]"
     NPrint "\\nOptions:"
-    NPrint "  -(s)ource <file>    : source code filename (.bb2,.ab2 or .ab3)"
+    NPrint "  -(s)ource <file>    : input source code filename (bb2, ab2 or ab3)"
     NPrint "  -(e)xe <file>       : output executable filename"
-    NPrint "  -(d)ebug            : compile with debuginfo"
+    NPrint "  -(d)ebug            : compile with debug info"
     NPrint "  -(r)elease          : create release executable (size optimized)"
     NPrint "  -run                : run compiled program"
     NPrint "  -dump <info> <file> : dump compiler internals to file"
     NPrint "                        (info=token|label|var|func|const|macro|type|lib)"
-    NPrint "  -dumpform <n>       : format of compiler internals (0=bin, 1=ASCII, default=0)"
+    NPrint "  -dform <n>          : format of compiler internals dump (0=bin, 1=ASCII; default=0)"
     NPrint "  -PED                : start Amiblitz3 IDE (PED)"
-    NPrint "  -(v)erbose <n>      : set verbose level 0,1,2 (default=1)"
+    NPrint "  -save <file>        : re-save source code as <file> (converts format, if different)"
+    NPrint "  -(v)erbose <n>      : set verbose level (0, 1 or 2; default=1)"
     NPrint "  -(h)elp             : show this help"
     NPrint "\\nExample:"
     NPrint "  AmiBlitz3 -s \\22DH0:Sourcecodes\MyProgram.ab3\\22 -e RAM:MyProgram.exe"
-    NPrint "\\nNote: To start the AmiBlitz3 IDE, run this exectuable from Workbench."
+    NPrint "\\nNote: To start the AmiBlitz3 IDE, run from Workbench or with -PED option."
     End If
     Pop If:Pop If
     Goto abnormal_exit
@@ -287,7 +290,7 @@ Poke.l ?CLIMode,CLIMode
 ; --
 ; -- Konstanten- und Variableninitialisierung
 .DEFINITIONS
-  #maxincludes   = 1024
+  #maxincludes   = 128
   Dim incdim.s (#maxincludes)
   Dim incline.l(#maxincludes)
 
@@ -797,6 +800,22 @@ BRA.w JL_0_2D0E
   ADD.l macrobuffer_size,D0
   MOVE.l D0,ptr_macrobuffer_end
 
+  !ComData_SetL{comPtr_Trap15            ,#directTrap15 }
+  !ComData_SetL{comPtr_DirectBuffer      ,#directbuffer}
+  !ComData_SetL{comPtr_MacroBase         ,#macrobase}
+  !ComData_SetL{comPtr_VarBase           ,#varbase }
+  !ComData_SetL{comPtr_InstrBase         ,#instrtab}
+  !ComData_SetL{comPtr_LibPointer        ,#libpointer}
+  !ComData_SetL{comPtr_CompilerVersion   ,#myversion }
+  !ComData_SetL{comPtr_VersionInformation,#versioninformation}
+  !ComData_SetL{comPtr_NumberOfBuilds    ,#number_of_builds}
+  !ComData_SetL{comFunc_SaveSource       ,#ab3_SaveSource}
+  !ComData_SetL{comFunc_LoadSource       ,#ab3_LoadSource}
+  !ComData_SetL{comFunc_ClearSource      ,#ab3_ClearSource}
+ 
+
+
+
   TST.l CLIMode
   BEQ load_ped
 
@@ -841,7 +860,7 @@ JMP skip_ped
   !ComData_GetL{comData_Magic,D0}
   CMP.l #$7E3A3A7E,D0                                      ;"~::~",D0
   BNE unload_ped
-
+  !DPrint "PED was accepted!"
   ; -- extent_comdatas:
   !ComData_SetL{comPtr_Trap15            ,#directTrap15 }
   !ComData_SetL{comPtr_DirectBuffer      ,#directbuffer}
@@ -9168,9 +9187,9 @@ BRA.w JL_0_6F5C
 JMP writeword
 
 
-ptr_acidlibs:   Ds.l 1                                     ;deflibsat org source
-ptr_deflibs:    Ds.l 1                                     ;acidlibsat org source
-ptr_userlibs:   Ds.l 1                                     ;blitzlibsat org source  ;;start of blitzlibs list!
+ptr_acidlibs:   Dc.l 0                                     ;deflibsat org source
+ptr_deflibs:    Dc.l 0                                     ;acidlibsat org source
+ptr_userlibs:   Dc.l 0                                     ;blitzlibsat org source  ;;start of blitzlibs list!
 
 
 ; input  : D0: size,D1: ptr_strname
@@ -20702,14 +20721,14 @@ BRA.w JL_0_C96C
    ;BSR.w get1bytemain                                      ;data writestring
    MOVEQ #0,d0
    MOVE.b (a5)+,d0
-   BEQ.w JMP_notqerr
+   BEQ.w JUMP_notqerr
   CMP.w #$22,D0
    BEQ.w JL_0_C9A2
    BSR.w JL_0_C210
   ADDQ.w #1,D1
 BRA.w JL_0_C988
 
-JMP_notqerr:
+JUMP_notqerr:
 JMP notqerr
 
 
@@ -25477,6 +25496,19 @@ xtra_versionnumber:   Ds.w 1                               ;vers org source
 
 .read_xtrafile:                                            ;load xtrafile, filehandle via PED in D7 and D0(?)
   !DPrint "Entering read_xtrafile..."
+  MOVE.l d7,d0
+  !basic
+  fp.l = PutD0
+  If fp
+    name.s="                                                                                                                          "
+    NameFromFH_ fp,&name,64
+    name = Peek.s(&name)
+    NPrint "Reading file : ",name
+  Else
+    NPrint "ERROR: reading invalid file!"
+  End If
+  !asm
+  MOVE.l d7,d0
   CLR.b exefilename
   TST.l d0
   BNE read_xtrafile__l10
@@ -25540,18 +25572,19 @@ BRA.b read_xtrafile__ver0
   MOVE.l #read_xtrafile__done2,errcont
   MOVE.w #$FFFF,ezerr
 
- read_xtrafile__dloop:
+read_xtrafile__dloop:
+   !DPrint "xtra dloop..."
     MOVE.l #temp1,D2                                   ;LOAD maxobjectsvalues
     MOVEQ.l #$04,D3
     MOVE.l D7,D1
-    JSR _Read(A6)
+    JSR _Read(A6) ; read a long
     TST.l D0
     BEQ.b read_xtrafile__done2
     MOVE.w temp1,D1
     TST.w d1                                               ;new
     BEQ read_xtrafile__done2                                         ;new
      JSR AJL_0_6F1A
-     ;BEQ.b read_xtrafile__done2
+     BEQ.b read_xtrafile__done2
     CMP.l #0,a1
     BEQ read_xtrafile__dloop
     MOVE.l $12(A1),D0
@@ -27110,7 +27143,7 @@ RTS
      Case "ce"                                             ; compile und create exe in compile prefs
       Poke.s (?exefilename),""
       mess = $13 : exit = 1
-;      poke.s (?exefilename),""
+;      Poke.s (?exefilename),""
 ;      !asm
 ;      JSR menu_newcreate
 ;      !basic
@@ -27559,7 +27592,7 @@ JMP get1bytemain
   If _myD0
     newconst$ = UCase$(Peek.s(_myD0))
   Else
-    error{"INTERNAL: invalid pointer in chec_newconstants!"}
+    error{"INTERNAL: invalid pointer in check_newconstants!"}
     nwconst$="xxx"
   End If
   condata$ =""
