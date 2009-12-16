@@ -1,47 +1,5 @@
 
-;Macro ab3_newalloc
-;  ADDQ.l #4,d0
-;  MOVE.l _execbase,a6
-;  MOVE.l mempool,a0
-;  MOVE.l d0,-(a7)
-;  JSR _AllocPooled(a6)
-;  MOVE.l (a7)+,d1
-;  TST.l d0
-;  BEQ 'lab1`@
-;  MOVE.l d0,a0
-;  MOVE.l d1,(a0)+
-;  MOVE.l a0,d0
-; 'lab1`@
-;End Macro
-;
-;Macro ab3_newfree
-;  MOVE.l _execbase,a6
-;  MOVE.l mempool,a0
-;  MOVE.l -(a1),d0
-;  JSR _FreePooled(a6)        ; a0: poo lHeader, a1: memory, d0: memsize
-;End Macro
-;
-;
-;.ab3_clear_actualsource:
-;  MOVEA.l _execbase,A6
-;  MOVEA.l comPtr_FirstSourceLine,A2
-;  MOVE.l maxlines,D2
-;  SUBQ.l #1,D2
-;  ;!basic
-;  ;dummy.l = RTEZRequest("maxlines",Hex$(Peek.l(?maxlines)),"OK")
-;  ;!asm
-;  JL_0_6C40:
-;    MOVEA.l A2,A1
-;    MOVEA.l (A1),A2
-;    !newfree
-;  DBF D2,JL_0_6C40
-;
-;  ST AL_0_86C0
-;  JSR clear_labellist
-;RTS
-;
-
-;/* this function emulated a minimalistic PED environment */
+;/* this function emulates a minimalistic PED environment */
 Function.l InitEmulatedPED{}
 succ.l = True
 
@@ -73,35 +31,32 @@ If *tedlibbase
   CloseLibrary_ *tedlibbase
 EndIf
 
-mempool.l = CreatePool_(#MEMF_CLEAR,40000,40000)
-
-If mempool
-  GetD0 mempool
+mempoolP.l = CreatePool_(#MEMF_CLEAR,40000,40000)
+If mempoolP
+  GetD0 mempoolP
   !ComData_SetL{comPtr_MemPool,d0}
 Else
   error{"Could not allocate enough memory. PED closes down now."}
   succ=False
 End If
+
 Function Return succ
 End Function
-
 
 
 Function.l DeinitEmulatedPED{}
 succ.l = True
 
 !ComData_GetL{comPtr_MemPool,d0}
-pool.l = PutD0
-If pool
+mempoolP.l = PutD0
+If mempoolP
   CLR.l d0
   !ComData_SetL{comPtr_MemPool,d0}
-  DeletePool_ pool
+  DeletePool_ mempoolP
 End If
 
 Function Return succ
 End Function
-
-
 
 
 Statement ClearSource{}
@@ -112,11 +67,18 @@ Statement ClearSource{}
  SUBQ.l #1,D0
  maxlines.l = PutD0
 
- While *SourceLine
+ !ComData_GetL{comPtr_MemPool,D0}
+ mempoolP.l = PutD0
+
+ !ComData_GetL{comLong_TotalLines,D0}
+ totalLines.l = PutD0
+
+ While *SourceLine><!_NULL AND totalLines>0
    *NextLine =  *SourceLine\NextLine
    memsize.l = Peek.l(*SourceLine-4)
-   FreePooled_ Peek.l(?mempool),*SourceLine-4,memsize
+   FreePooled_ mempoolP,*SourceLine-4,memsize
    *SourceLine = *NextLine
+   totalLines-1
  Wend
 
  !ComData_SetL{comLong_TotalLines,#$0001}
@@ -129,7 +91,7 @@ Function.l LoadXtra{filename.s}
 succ.l = False
 fp.l = Open_ (&filename,#MODE_OLDFILE)
 If fp
-  error{"LoadXtra!"}
+  ;error{"LoadXtra!"}
   GetD0 fp
   !asm
   MOVE.l D0,D7
@@ -137,7 +99,12 @@ If fp
   JSR read_xtrafile
 ;  !ComData_JSR{comFunc_ReadXtraFile}
   !basic
- ; Read_ xtrafilehandle,?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin ; xtrabuf,36
+  !ComData_LEA{comDef_XtraExtendBegin,D0}
+  aptr.l = PutD0
+  !ComData_LEA{comDef_XtraExtendEnd,D0}
+  eptr.l = PutD0
+
+  Read_ fp,aptr,eptr-aptr
   Close_ fp
   succ.l = True
 Else
@@ -194,8 +161,8 @@ If fid>=0
 
               For n.l=0 To FLen(rawtoken)-1    ; trim token
                 c.b = Peek.b(&rawtoken+n)
-                If c>=@"A" AND c<=@"Z" Then c = c - @"A" + @"a"
-                If (c>=@"a" AND c<=@"z") OR c=@"_" OR c=@"/"
+                If (c>=@"a" AND c<=@"z") OR (c>=@"A" AND c<=@"Z") OR c=@"_" OR c=@"/" OR c=@"-"
+                  If (c=@"-") Then c=32 ; - to SPACE
                   token + Chr$(c)
                 End If
               Next
@@ -207,11 +174,10 @@ If fid>=0
               While Peek.b(&value+rtrim)<33 AND rtrim>=0 : rtrim-1 : Wend
               If Peek.b(&value+rtrim)=$22 AND Peek.b(&value+ltrim)=$22 Then rtrim-1:ltrim+1
               value = Mid$(value,ltrim+1,rtrim-ltrim+1)
-              NPrint "Found: ",token," = ",value
               lvalue.l = Vallong(value)
 
               If token
-                Select token
+                Select LCase$(token)
                   Case "/xtra"          : headerDone = True
                   Case "sourcename"     : ; not needed ;
                   Case "exepath"        : Poke.s ?exepath,value
@@ -222,13 +188,13 @@ If fid>=0
                     While value><""
                       cpos.l = Instr(value,",")
                       If cpos>0
-                        resident.s = Left$(value,cpos)
-                        value = Right$(value,FLen(value)-cpos-1)
+                        resident.s = Left$(value,cpos-1)
+                        value = Right$(value,FLen(value)-cpos-1+1)
                       Else
                         resident = value
                         value = ""
                       End If
-                      NPrint "Set resident: <",resident,">"
+                      ;NPrint "Set resident: <",resident,">"
                       Poke.s resptr,resident
                       resptr+$44
                       resN + 1
@@ -243,9 +209,9 @@ If fid>=0
                     MinorVersion.l = Vallong(Mid$(value,mpos+1,ppos-mpos+1))
                     PatchVersion.l = Vallong(Right$(value,FLen(value)-ppos-1))
                     VersionInfo.l = (MajorVersion LSL 24) | (MinorVersion LSL 16) | (PatchVersion LSL 8)
-                    Poke.l ?versioninformation,VersionInfo
+
                   Case "numberofbuilds" : Poke.l ?number_of_builds,lvalue
-                  Case "cliargs"        : value = Left$(value,120) : Poke.s ?str_cliarguments,value
+                  Case "cliargs"        : cliargs.s = Left$(value,120)
                   Case "createicon"     : !SetBoolXtra{create_iconfile,lvalue}
                   Case "runtimedebug"   : !SetBoolXtra{use_debugger   ,lvalue}
                   Case "debuginfo"      : !SetBoolXtra{link_debuginfo ,lvalue}
@@ -255,15 +221,15 @@ If fid>=0
                   Case "autorun"        : !SetBoolXtra{autorun        ,lvalue}
                   Case "cursorline"     : cursorline.l = lvalue
                   Case "cursorcolumn"   : cursorcol.l  = lvalue
+                  Case "searchlabel"    : searchlabel.s = Left$(value,29)
                   Default
-                    If Left$(token,3)="max"
+                    If LCase$(Left$(token,3))="max"
                       bobjName.s = Right$(token,FLen(token)-3)
                       bobjMax.l  = Peek.w(?number_of_objects)
-
                       For i.l = 0 To bobjMax-1 ; find the obj's name...
                        name.s = "                                "
                        GetD0 &name,i:JSR getobjectentry : a.l = PutD0
-                       name = LCase$(Peek.s(&name))
+                       name = Peek.s(&name)
                        If (name=bobjName) ; this is the one...
                          Poke.w ?maxobjects_value,lvalue
                          Poke.w ?maxobject_pos,i
@@ -277,6 +243,17 @@ If fid>=0
               End If
 
           Until headerDone
+
+          ; set data
+          GetD0 cursorline
+          !ComData_SetL{comLong_CursorPosStore,d0}
+          Poke.l ?versioninformation,VersionInfo
+          !ComData_LEA{comStr_LabelSearchString,d0}
+          labelP.l = PutD0
+          Poke.s labelP,searchlabel
+
+          Poke.s ?str_cliarguments,cliargs
+
           ; remove embedded XTRA Header
           offset = file_GetSeekPos{fid}
         End If
@@ -284,12 +261,11 @@ If fid>=0
       End If
 
       offset.l = 0
-      ;error{"Clearing source!"}
-      ;ClearSource{}
+
       *sourceNode.SourceNode_t = !_NULL
       *prevLine.SourceLine_t   = !_NULL
 
-      count.l = 1
+      count.l = 0
       While offset<byteLength
         text.s = Peek.s(tempBuffer+offset)
         charLength.l = FLen(text)+1
@@ -326,17 +302,16 @@ If fid>=0
 
     End If
 
-    If ex="bb2" OR ex="bb" OR ex="ab2"    ; write xtra file
+    If ex="bb2" OR ex="bb" OR ex="ab2"    ; read xtra file
       LoadXtra{filename+".xtra"}
-    Else
+    End If
+
+    If ex="ab3"        ; apply xtra data
       !asm
       MOVEM.l D7/A6,-(A7)
-      ;!DPrint ".ab3: Init buffers..."
       JSR init_buffers
-      ;!DPrint ".ab3: ReLoad residents..."
       JSR reloadresident
       MOVEM.l (A7)+,D7/A6
-      ;!DPrint ".ab3: Done..."
       !basic
     End If
 
@@ -354,7 +329,7 @@ Function.l SaveXtra{filename.s}
 succ.l = False
 fp.l = Open_ (&filename,#MODE_NEWFILE)
 If fp
-  error{"SaveXtra!"}
+;  error{"SaveXtra!"}
   GetD0 fp
   !asm
   MOVE.l D0,D7
@@ -362,9 +337,13 @@ If fp
   ;!ComData_JSR{comFunc_WriteXtraFile}
   JSR write_xtrafile
   !basic
-;  Write_ fp,?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin ; xtrabuf,36
+  !ComData_LEA{comDef_XtraExtendBegin,D0}
+  aptr.l = PutD0
+  !ComData_LEA{comDef_XtraExtendEnd,D0}
+  eptr.l = PutD0
+  Write_ fp,aptr,eptr-aptr
   Close_ fp
-  error{"we are done saving!"}
+;  error{"we are done saving!"}
   succ.l = True
 Else
   error{"WARNING: Unable to save .xtra file!"}
@@ -373,7 +352,6 @@ Function Return succ
 End Function
 
 Function.l CompileSource{exefilename.s,debuginfo.l,release.l}
-SHARED cli_verbose.l
 If debuginfo ; set debugger
   Poke.b ?link_debuginfo, (Peek.b(?link_debuginfo)|$80)
 Else
@@ -396,6 +374,7 @@ MOVE.l #$FFFFffff,compilelinecounter
 
 If exefilename
   If cli_verbose>=2 Then NPrint "Compiling for executable: ",exefilename
+
   exefile.s = dos_FilePart{exefilename}
   exepath.s = dos_PathPart{exefilename}
 
@@ -439,8 +418,18 @@ Function.l SaveSource{filename.s}
 Format ""
 !ComData_GetL{comPtr_FirstSourceLine,D0}
 *sourceBase.SourceLine_t = PutD0
+
 !ComData_GetL{comPtr_PreProcessor,D0}
 *PreProcessor.preprocessor = PutD0
+
+!ComData_GetL{comLong_DisplayLineOffset,D0}
+!ComData_GetL{comLong_DisplayLine,D1}
+ADD.l d1,d0
+!ComData_SetL{comLong_CursorPosStore,d0}
+;  Poke$ ?labelsearchstring,search_label$
+;MOVE.l pos3@(a5),D0
+;!ComData_SetL{comLong_ClickPos3Store,d0}
+
 succ.l = False
 fid.l = file_Open{filename,#file_write}
 If fid>=0
@@ -526,7 +515,6 @@ If fid>=0
         file_WriteLine{fid,"; "}
         file_WriteLine{fid,"; General Info"}
         file_WriteLine{fid,"; -------------------------------------------------------"}
-        file_WriteLine{fid,"; SourceName      = \\22"+dos_FilePart{filename}+"\\22"}
         file_WriteLine{fid,"; ExePath         = \\22"+ExePath+"\\22"}
         file_WriteLine{fid,"; ExeFile         = \\22"+ExeFile+"\\22"}
         file_WriteLine{fid,"; CreateIcon      = "+Str$(CreateIcon)}
@@ -554,12 +542,13 @@ If fid>=0
         file_WriteLine{fid,"; CursorLine      = "+Str$(CursorLine)}
         file_WriteLine{fid,"; CursorColumn    = "+Str$(CursorColumn)}
         file_WriteLine{fid,"; "}
-        file_WriteLine{fid,"; Max Blitz Objects"}
+        file_WriteLine{fid,"; Blitz Objects"}
         file_WriteLine{fid,"; -------------------------------------------------------"}
         For i.l = 0 To Peek.w(?number_of_objects)-1
           name.s = "                                "
           GetD0 &name,i:JSR getobjectentry : a.l = PutD0
-          maxname.s = "; Max"+Peek.s(&name)
+          name.s = Replace$(Peek.s(&name)," ","-")
+          maxname.s = "; Max "+name
           If FLen(maxname)<18 Then maxname + LSet$(" ",18-FLen(maxname))
           file_WriteLine{fid,maxname+"= "+Str$(a)}
         Next
