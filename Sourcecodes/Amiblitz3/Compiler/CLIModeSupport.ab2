@@ -17,6 +17,9 @@ Function.l InitEmulatedPED{}
   !ComData_SetL{comLong_AB3IsAvailable,#teddata}
   MOVE.l #100,progressbar_width
 
+  MOVE.l #str_path_deflibs ,deflib
+  MOVE.l #str_path_includes,incd
+
   *tedlibbase.Library = OpenLibrary_ ("ted.library",0)
   If *tedlibbase
     LEA COMDATABASE,A0
@@ -351,6 +354,7 @@ End If
 Function Return succ
 End Function
 
+
 Function.l CompileSource{exefilename.s,debuginfo.l,release.l}
 If debuginfo ; set debugger
   Poke.b ?link_debuginfo, (Peek.b(?link_debuginfo)|$80)
@@ -372,13 +376,14 @@ CLR.w flag_noCLI
 MOVE.l #$FFFFffff,linenumat
 MOVE.l #$FFFFffff,compilelinecounter
 
+
 If exefilename
   If cli_verbose>=2 Then NPrint "Compiling for executable: ",exefilename
 
   exefile.s = dos_FilePart{exefilename}
   exepath.s = dos_PathPart{exefilename}
 
-  Poke.s ?ptr_newexefilename,exefilename
+  Poke.l ?ptr_newexefilename,&exefilename
   Poke.s ?exepath,exepath
   Poke.s ?exefilename,exefile
 
@@ -386,18 +391,23 @@ If exefilename
   !ComData_GetL{comPtr_FirstSourceLine,A5}
   !ComData_GetL{comLong_TotalLines,D7}
   MOVEQ #$b,d6   ; create exe
-  !ComData_JSR{comFunc_CallMenuEntry}
+;  !ComData_JSR{comFunc_CallMenuEntry}
+  JSR call_menuentry
   !basic
   counter.l = PutD0
 
 Else
   If cli_verbose>=2 Then NPrint "Just compiling."
-  Poke.s ?ptr_newexefilename,"RAM:test"
+  exefilename = "RAM:Test"
+  Poke.l ?ptr_newexefilename,&exefilename
   Poke.s ?exepath,"RAM:"
-  Poke.s ?exefilename,"test"
+  Poke.s ?exefilename,"Test"
   !asm
   !ComData_GetL{comPtr_FirstSourceLine,A5}
   !ComData_GetL{comLong_TotalLines,D7}
+MOVE.l A5,firstitem_
+MOVE.w D7,numlines_org
+MOVE.l d7,numlines
 
  ___xl1:
     MOVE.w #0,makeexec                                     ;MOVE.w #$FFFF,debugversion
@@ -409,7 +419,6 @@ Else
   counter.l = PutD0
 End If
 If cli_verbose>=2 Then NPrint "Compiling done."
-succ.l = True
 Function Return counter
 End Function
 
@@ -617,20 +626,83 @@ dummy1.b            ; $0C
 nameA.b             ; $0D
 End NEWTYPE
 
+#DUMPFLG_CONSTANTS = $01
+#DUMPFLG_VARS      = $02
+#DUMPFLG_NEWTYPES  = $04
+#DUMPFLG_MACROS    = $08
+#DUMPFLG_FUNCTIONS = $10
+#DUMPFLG_LABELS    = $20
+#DUMPFLG_TOKENS    = $40
+#DUMPFLG_LIBS      = $80
 
-Function.l DumpConstants{filename.s,mode.l}
+Function.l WriteDump{fid.l,dumpFlags.l,mode.l}
+  MOVE.l realconstbase,d0            : constantbaseP.l  = PutD0 : If constantbaseP Then *constant.Constant_t = Peek.l(constantbaseP)
+  !ComData_GetL{comPtr_VarBase,d0}   : varbaseP.l       = PutD0 : If varbaseP      Then *var.Var_t           = Peek.l(varbaseP)
+  MOVE.l newtypebase,d0              : newtypebaseP.l   = PutD0 : If newtypebaseP  Then *typ.NewType_t       = Peek.l(newtypebaseP)
+  !ComData_GetL{comPtr_MacroBase,d0} : macrobaseP.l     = PutD0 : If macrobaseP    Then *mac.Macro_t         = Peek.l(macrobaseP)
+  !ComData_GetL{comPtr_TokenBase,D0} : *token.tokeninfo = PutD0
+
+  Select mode
+    Case 0 ; binary hashmaps
+
+    Default ; ASCII
+  If dumpFlags&#DUMPFLG_CONSTANTS
+    While *constant
+      file_WriteLine{fid,"CONSTANT "+Peek.s(&*constant\nameA)+" $"+Hex$(*constant\value)}
+      *constant = *constant\next_
+    Wend
+  End If
+
+  If dumpFlags&#DUMPFLG_VARS
+    While *var
+      file_WriteLine{fid,"VAR "+Peek.s(&*var\nameA)+"."+Peek.s(&*var\typ\nameA)}
+      *var = *var\next_
+    Wend
+  End If
+
+  If dumpFlags&#DUMPFLG_NEWTYPES
+    While *typ
+      file_WriteLine{fid,"NEWTYPE "+Peek.s(&*typ\nameA)}
+      ; todo output members
+      *typ = *typ\next_
+    Wend
+  End If
+
+  If dumpFlags&#DUMPFLG_MACROS
+    While *mac
+      file_WriteLine{fid,"MACRO "+Peek.s(&*mac\nameA)}
+      *mac = *mac\next_
+    Wend
+  End If
+
+  If dumpFlags&#DUMPFLG_FUNCTIONS
+  End If
+
+  If dumpFlags&#DUMPFLG_LABELS ; <= same like constants!?
+  End If
+
+  If dumpFlags&#DUMPFLG_LIBS
+  End If
+
+  If dumpFlags&#DUMPFLG_TOKENS ; <= all available tokens
+    While *token
+      name.s    = Peek.s(&*token\dat)
+      help.s    = Peek.s(&*token\dat+FLen(name)+1)
+      libid.l   = (*token\number LSR 7) &$FF
+      tokenid.l = *token\number & $7F
+      file_WriteLine{fid,"TOKEN "+Str$(libid)+"/"+Str$(tokenid)+" "+name+" "+help}
+      *token = *token\next_token
+    Wend
+  End If
+  End Select
+End Function
+
+
+Function.l DumpFile{filename.s,dumpFlags.l,mode.l}
   succ.l = False
   fid.l = file_Open{filename,#file_forcewrite}
   If fid>=0
-    MOVE.l realconstbase,d0
-    constantbaseP.l = PutD0
-    If constantbaseP
-      *constant.Constant_t = Peek.l(constantbaseP)
-      While *constant
-        file_WriteLine{fid,Peek.s(&*constant\nameA)+" $"+Hex$(*constant\value)}
-        *constant = *constant\next_
-      Wend
-    End If
+    WriteDump{fid,dumpFlags,mode}
     file_Close{fid}
     succ.l = True
   End If
@@ -638,66 +710,5 @@ Function.l DumpConstants{filename.s,mode.l}
 End Function
 
 
-Function.l DumpVars{filename.s,mode.l}
-  succ.l = False
-  fid.l = file_Open{filename,#file_forcewrite}
-  If fid>=0
 
-    !ComData_GetL{comPtr_VarBase,d0}
-    varbaseP.l = PutD0
-    If varbaseP
-      *var.Var_t = Peek.l(varbaseP)
-      While *var
-        file_WriteLine{fid,Peek.s(&*var\nameA)+"."+Peek.s(&*var\typ\nameA)}
-        *var = *var\next_
-      Wend
-    End If
-    file_Close{fid}
-    succ.l = True
-  End If
-  Function Return succ
-End Function
-
-
-Function.l DumpNewTypes{filename.s,mode.l}
-  succ.l = False
-  fid.l = file_Open{filename,#file_forcewrite}
-  If fid>=0
-
-    MOVE.l newtypebase,d0
-    newtypebaseP.l = PutD0
-    If newtypebaseP
-      *typ.NewType_t = Peek.l(newtypebaseP)
-      While *typ
-        file_WriteLine{fid,Peek.s(&*typ\nameA)}
-        ; todo output members
-        *typ = *typ\next_
-      Wend
-    End If
-    file_Close{fid}
-    succ.l = True
-  End If
-  Function Return succ
-End Function
-
-
-Function.l DumpMacros{filename.s,mode.l}
-  succ.l = False
-  fid.l = file_Open{filename,#file_forcewrite}
-  If fid>=0
-
-    !ComData_GetL{comPtr_MacroBase,d0}
-    macrobaseP.l = PutD0
-    If macrobaseP
-      *mac.Macro_t = Peek.l(macrobaseP)
-      While *mac
-        file_WriteLine{fid,Peek.s(&*mac\nameA)}
-        *mac = *mac\next_
-      Wend
-    End If
-    file_Close{fid}
-    succ.l = True
-  End If
-  Function Return succ
-End Function
 
