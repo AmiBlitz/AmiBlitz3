@@ -1,3 +1,25 @@
+SHARED cli_progdir.s
+SHARED cli_sourcedir.s
+SHARED cli_sourcefile.s
+
+Statement SetCurrentDir{path.s}
+current_lock.l = Lock_(&path,#ACCESS_READ)
+If current_lock
+  old_lock.l = CurrentDir_ (current_lock)
+  If old_lock Then UnLock_ old_lock
+End If
+End Statement
+
+
+Statement SetSourceDir{}
+SetCurrentDir{cli_sourcedir}
+End Statement
+
+Statement SetProgDir{}
+SetCurrentDir{cli_progdir}
+End Statement
+
+
 
 ;/* this function emulates a minimalistic PED environment */
 Function.l InitEmulatedPED{}
@@ -127,6 +149,7 @@ End Macro
 
 ; load bb, bb2, ab2 and ab3
 Function.l LoadSource{filename.s }
+SHARED cli_sourcefile.s,cli_sourcedir.s
 !ComData_GetL{comPtr_FirstSourceLine,D0}
 *sourceBase.SourceLine_t = PutD0
 !ComData_GetL{comPtr_PreProcessor,D0}
@@ -139,6 +162,9 @@ mempoolP.l = PutD0
 fid.l = file_Open{filename,#file_read}
 If fid>=0
   byteLength.l = file_GetLength{fid}
+  cli_sourcefile.s = file_GetDosName{fid}
+  cli_sourcedir.s  = dos_PathPart{cli_sourcefile}
+
   tempBuffer.l = AllocVec_(byteLength,#MEMF_ANY)
   If tempBuffer
     If file_ReadMem{fid,tempBuffer,byteLength}
@@ -303,10 +329,14 @@ If fid>=0
       !ComData_SetL{comLong_DisplayLineOffset,#0}
       !ComData_SetL{comLong_DisplayLine      ,#0}
 
+      !ComData_LEA{comStr_CurrentDir,D0}
+      currentDirP.l = PutD0
+      Poke.s currentDirP,cli_sourcedir
+
     End If
 
     If ex="bb2" OR ex="bb" OR ex="ab2"    ; read xtra file
-      LoadXtra{filename+".xtra"}
+      LoadXtra{cli_sourcefile+".xtra"}
     End If
 
     If ex="ab3"        ; apply xtra data
@@ -356,28 +386,33 @@ End Function
 
 
 Function.l CompileSource{exefilename.s,debuginfo.l,release.l}
-If debuginfo ; set debugger
-  Poke.b ?link_debuginfo, (Peek.b(?link_debuginfo)|$80)
-Else
-  Poke.b ?link_debuginfo, (Peek.b(?link_debuginfo)|$80) - $80
-End If
+  If debuginfo ; set debugger
+    Poke.b ?link_debuginfo, (Peek.b(?link_debuginfo)|$80)
+  Else
+    Poke.b ?link_debuginfo, (Peek.b(?link_debuginfo)|$80) - $80
+  End If
 
-If release   ; set make smallest (for release)
-  Poke.b ?make_smallestcode, (Peek.b(?make_smallestcode)|$80)
-Else
-  Poke.b ?make_smallestcode, (Peek.b(?make_smallestcode)|$80) - $80
-End If
+  If release   ; set make smallest (for release)
+    Poke.b ?make_smallestcode, (Peek.b(?make_smallestcode)|$80)
+  Else
+    Poke.b ?make_smallestcode, (Peek.b(?make_smallestcode)|$80) - $80
+  End If
 
-; do some cleaup before invoking compiler */
-CLR.w anyerrs
-CLR.w debugversion
-CLR.w flag_noPED
-CLR.w flag_noCLI
-MOVE.l #$FFFFffff,linenumat
-MOVE.l #$FFFFffff,compilelinecounter
+  ; do some cleaup before invoking compiler */
+  CLR.w anyerrs
+  CLR.w debugversion
+  CLR.w flag_noPED
+  CLR.w flag_noCLI
+  MOVE.l #$FFFFffff,linenumat
+  MOVE.l #$FFFFffff,compilelinecounter
 
-If exefilename
-  If cli_verbose>=2 Then NPrint "Compiling for executable: ",exefilename
+  SetSourceDir{}
+
+  If exefilename
+    MOVE.w #1,makeexec_remember
+  Else
+    MOVE.w #0,makeexec_remember
+  End If
 
   exefile.s = dos_FilePart{exefilename}
   exepath.s = dos_PathPart{exefilename}
@@ -390,41 +425,40 @@ If exefilename
   !asm
   !ComData_GetL{comPtr_FirstSourceLine,A5}
   !ComData_GetL{comLong_TotalLines,D7}
-  MOVEQ #$b,d6   ; create exe
-;  !ComData_JSR{comFunc_CallMenuEntry}
-  JSR call_menuentry
-
-  !basic
-  MOVE.l (a7)+,A4
-  counter.l = PutD0
-
-Else
-  If cli_verbose>=2 Then NPrint "Just compiling."
-  exefilename = "RAM:Test"
-  Poke.l ?ptr_newexefilename,&exefilename
-  Poke.s ?exepath,"RAM:"
-  Poke.s ?exefilename,"Test"
-  MOVE.l A4,-(a7)
-  !asm
-  !ComData_GetL{comPtr_FirstSourceLine,A5}
-  !ComData_GetL{comLong_TotalLines,D7}
 
   MOVE.l A5,firstitem_
   MOVE.w D7,numlines_org
   MOVE.l d7,numlines
 
   _ab3_compileloop:
-    MOVE.w #0,makeexec                                     ;MOVE.w #$FFFF,debugversion
-    BSR.w startcompile
+    MOVE.w makeexec_remember,makeexec                                     ;MOVE.w #$FFFF,debugversion
+    JSR startcompile
     CMP.l #"NORE",reqmode
   BEQ _ab3_compileloop
 
   !basic
   MOVE.l (a7)+,A4
+
+  MOVE.l globallinecount,D0
   counter.l = PutD0
-End If
-If cli_verbose>=2 Then NPrint "Compiling done."
-Function Return counter
+
+  MOVE.l anyerrs,d0
+  err.l = PutD0
+
+  If cli_verbose>=1 Then NPrint counter," line(s) compiled."
+
+  SetProgDir{}
+
+  If err=0
+   If exefilename
+     If cli_verbose>=1 Then NPrint "Saving executable as \\22",exefilename,"\\22."
+     !asm
+      JSR savefile
+     !basic
+   End If
+  End If
+
+  Function Return err
 End Function
 
 ; this function can save .bb2, .ab2 and .ab3
