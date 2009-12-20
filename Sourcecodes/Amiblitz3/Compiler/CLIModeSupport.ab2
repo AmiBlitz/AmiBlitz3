@@ -116,14 +116,15 @@ Function.l LoadXtra{filename.s}
   succ.l = False
   fp.l = Open_ (&filename,#MODE_OLDFILE)
   If fp
-    ;error{"LoadXtra!"}
     GetD0 fp
+    MOVE.l A4,-(A7)
     !asm
     MOVE.l D0,D7
     MOVEA.l _dosbase,A6
     JSR read_xtrafile
   ;  !ComData_JSR{comFunc_ReadXtraFile}
     !basic
+    MOVE.l (A7)+,A4
     !ComData_LEA{comDef_XtraExtendBegin,D0}
     aptr.l = PutD0
     !ComData_LEA{comDef_XtraExtendEnd,D0}
@@ -174,6 +175,28 @@ If fid>=0
         If ex="ab3"
           headerDone.l = False
           file_Seek{fid,0}
+
+          ; set defaults: /////////////////////////////////////
+          ExePath.s        = "RAM:"
+          ExeFile.s        = "Prog.exe"
+          StringBuffer.l   = 8192
+          MakeSmallest.l   = False
+          StackSize.l      = 32768
+          CliArgs.s        = ""
+          NumberOfBuilds.l = 0
+          VersionInfo.l    = 0
+          CreateIcon.l     = False
+          UseDebugger.l    = False
+          DebugInfo.l      = False
+          OverflowCheck.l  = False
+          AssemblerCheck.l = True
+          InterruptCheck.l = True
+          AutoRun.l        = True
+          CursorLine.l     = 0
+          CursorCol.l      = 0
+          LabelSearch.s    = ""
+          ; end defaults ///////////////////////////////////////
+
           Repeat
             lin.s = file_ReadLine{fid}
             If file_EOF{fid} Then headerDone=True
@@ -185,9 +208,7 @@ If fid>=0
               rawtoken.s = lin
               value.s    =  ""
             End If
-
               token.s    = ""
-
               For n.l=0 To FLen(rawtoken)-1    ; trim token
                 c.b = Peek.b(&rawtoken+n)
                 If (c>=@"a" AND c<=@"z") OR (c>=@"A" AND c<=@"Z") OR c=@"_" OR c=@"/" OR c=@"-"
@@ -208,9 +229,8 @@ If fid>=0
               If token
                 Select LCase$(token)
                   Case "/xtra"          : headerDone = True
-                  Case "sourcename"     : ; not needed ;
-                  Case "exepath"        : Poke.s ?exepath,value
-                  Case "exefile"        : Poke.s ?exefilename,value
+                  Case "exepath"        : ExePath = value
+                  Case "exefile"        : ExeFile = value
                   Case "residents"
                     resptr.l = ?residents_table
                     resN.l   = 0
@@ -229,8 +249,9 @@ If fid>=0
                       resN + 1
                       If resN=7 Then value="" : error{"Warning: could not load all residents"}
                     Wend
-                  Case "stringbuffer"   : Poke.l ?stringbuffer,lvalue
-                  Case "makesmallest"   : !SetBoolXtra{make_smallestcode,lvalue}
+                  Case "stringbuffer"   : StringBuffer = lvalue : If StringBuffer<4096 Then StringBuffer=4096
+                  Case "stacksize"      : StackSize    = lvalue : If StackSize<4096 Then StackSize=4096
+                  Case "makesmallest"   : MakeSmallest = lvalue
                   Case "version"
                     mpos.l = Instr(value,".",1)
                     ppos.l = Instr(value,".",mpos)
@@ -238,19 +259,18 @@ If fid>=0
                     MinorVersion.l = Vallong(Mid$(value,mpos+1,ppos-mpos+1))
                     PatchVersion.l = Vallong(Right$(value,FLen(value)-ppos-1))
                     VersionInfo.l = (MajorVersion LSL 24) | (MinorVersion LSL 16) | (PatchVersion LSL 8)
-
-                  Case "numberofbuilds" : Poke.l ?number_of_builds,lvalue
-                  Case "cliargs"        : cliargs.s = Left$(value,120)
-                  Case "createicon"     : !SetBoolXtra{create_iconfile,lvalue}
-                  Case "runtimedebug"   : !SetBoolXtra{use_debugger   ,lvalue}
-                  Case "debuginfo"      : !SetBoolXtra{link_debuginfo ,lvalue}
-                  Case "overflowcheck"  : !SetBoolXtra{overflowcheck  ,lvalue}
-                  Case "assemblercheck" : !SetBoolXtra{assemblercheck ,lvalue}
-                  Case "interruptcheck" : !SetBoolXtra{interruptcheck ,lvalue}
-                  Case "autorun"        : !SetBoolXtra{autorun        ,lvalue}
-                  Case "cursorline"     : cursorline.l = lvalue
-                  Case "cursorcolumn"   : cursorcol.l  = lvalue
-                  Case "labelsearch"    : labelsearch.s = Left$(value,29)
+                  Case "numberofbuilds" : NumberOfBuilds = lvalue
+                  Case "cliargs"        : CliArgs.s      = Left$(value,120)
+                  Case "createicon"     : CreateIcon     = lvalue
+                  Case "runtimedebug"   : UseDebugger    = lvalue
+                  Case "debuginfo"      : DebugInfo      = lvalue
+                  Case "overflowcheck"  : OverflowCheck  = lvalue
+                  Case "assemblercheck" : AssemblerCheck = lvalue
+                  Case "interruptcheck" : InterruptCheck = lvalue
+                  Case "autorun"        : AutoRun        = lvalue
+                  Case "cursorline"     : CursorLine     = lvalue
+                  Case "cursorcolumn"   : CursorCol      = lvalue
+                  Case "labelsearch"    : LabelSearch    = Left$(value,29)
                   Default
                     If LCase$(Left$(token,3))="max"
                       bobjName.s = Right$(token,FLen(token)-3)
@@ -274,14 +294,24 @@ If fid>=0
           Until headerDone
 
           ; set data
-          GetD0 cursorline
-          !ComData_SetL{comLong_CursorPosStore,d0}
+          Poke.s ?exepath    ,ExePath
+          Poke.s ?exefilename,ExeFile
+          GetD0 CursorLine : !ComData_SetL{comLong_CursorPosStore,d0}
           Poke.l ?versioninformation,VersionInfo
-          !ComData_LEA{comStr_LabelSearchString,d0}
-          labelP.l = PutD0
-          Poke.s labelP,labelsearch
-
-          Poke.s ?str_cliarguments,cliargs
+          !ComData_LEA{comStr_LabelSearchString,d0} : labelP.l = PutD0 : Poke.s labelP,LabelSearch
+          Poke.s ?str_cliarguments,CliArgs
+          Poke.l ?stringbuffer,StringBuffer
+          Poke.l ?number_of_builds,NumberOfBuilds
+          !SetBoolXtra{make_smallestcode,MakeSmallest}
+          !SetBoolXtra{create_iconfile  ,CreateIcon}
+          !SetBoolXtra{use_debugger     ,UseDebugger}
+          !SetBoolXtra{link_debuginfo   ,DebugInfo}
+          !SetBoolXtra{overflowcheck    ,OverflowCheck}
+          !SetBoolXtra{assemblercheck   ,AssemblerCheck}
+          !SetBoolXtra{interruptcheck   ,InterruptCheck}
+          !SetBoolXtra{autorun          ,AutoRun}
+          Poke.l ?stacksize,StackSize
+          ; cursorcol
 
           ; remove embedded XTRA Header
           offset = file_GetSeekPos{fid}
@@ -363,13 +393,16 @@ succ.l = False
 fp.l = Open_ (&filename,#MODE_NEWFILE)
 If fp
 ;  error{"SaveXtra!"}
+
   GetD0 fp
+  MOVE.l A4,-(A7)
   !asm
   MOVE.l D0,D7
   MOVEA.l _dosbase,A6
   ;!ComData_JSR{comFunc_WriteXtraFile}
   JSR write_xtrafile
   !basic
+  MOVE.l (A7)+,A4
   !ComData_LEA{comDef_XtraExtendBegin,D0}
   aptr.l = PutD0
   !ComData_LEA{comDef_XtraExtendEnd,D0}
@@ -384,79 +417,105 @@ End If
 Function Return succ
 End Function
 
+Statement RunSource{}
+MOVE.l A4,-(A7)
+!asm
+JSR menu_run
+!basic
+MOVE.l (A7)+,A4
+End Statement
 
-Function.l CompileSource{exefilename.s,debuginfo.l,release.l}
-  If debuginfo ; set debugger
-    Poke.b ?link_debuginfo, (Peek.b(?link_debuginfo)|$80)
+
+Function.l CompileSource{exefilename.s,debug.l,release.l}
+  If debug ; set debugger
+    !SetBoolXtra{use_debugger     ,1}
+    !SetBoolXtra{link_debuginfo   ,1}
+
+    !SetBoolXtra{overflowcheck    ,1}
+    !SetBoolXtra{assemblercheck   ,1}
+    !SetBoolXtra{interruptcheck   ,1}
+    !SetBoolXtra{autorun          ,1}
   Else
-    Poke.b ?link_debuginfo, (Peek.b(?link_debuginfo)|$80) - $80
+    !SetBoolXtra{use_debugger     ,0}
+    !SetBoolXtra{link_debuginfo   ,0}
   End If
 
   If release   ; set make smallest (for release)
-    Poke.b ?make_smallestcode, (Peek.b(?make_smallestcode)|$80)
+    !SetBoolXtra{make_smallestcode,1}
   Else
-    Poke.b ?make_smallestcode, (Peek.b(?make_smallestcode)|$80) - $80
+    !SetBoolXtra{make_smallestcode,0}
   End If
 
-  ; do some cleaup before invoking compiler */
-  CLR.w anyerrs
-  CLR.w debugversion
-  CLR.w flag_noPED
-  CLR.w flag_noCLI
-  MOVE.l #$FFFFffff,linenumat
-  MOVE.l #$FFFFffff,compilelinecounter
+  newexesize.l = $7FFFFFFF
 
-  SetSourceDir{}
+  Repeat
+    oldexesize.l = newexesize
 
-  If exefilename
-    MOVE.w #1,makeexec_remember
-  Else
-    MOVE.w #0,makeexec_remember
-  End If
+    ; do some cleaup before invoking compiler */
+    CLR.w anyerrs
+    CLR.w debugversion
+    CLR.w flag_noPED
+    CLR.w flag_noCLI
+    MOVE.l #$FFFFffff,linenumat
+    MOVE.l #$FFFFffff,compilelinecounter
 
-  exefile.s = dos_FilePart{exefilename}
-  exepath.s = dos_PathPart{exefilename}
+    SetSourceDir{}
 
-  Poke.l ?ptr_newexefilename,&exefilename
-  Poke.s ?exepath,exepath
-  Poke.s ?exefilename,exefile
+    If exefilename
+      MOVE.w #1,makeexec_remember
 
-  MOVE.l A4,-(a7)
-  !asm
-  !ComData_GetL{comPtr_FirstSourceLine,A5}
-  !ComData_GetL{comLong_TotalLines,D7}
+      exefile.s = dos_FilePart{exefilename}
+      exepath.s = dos_PathPart{exefilename}
+      Poke.l ?ptr_newexefilename,&exefilename
+      Poke.s ?exepath,exepath
+      Poke.s ?exefilename,exefile
+    Else
+      MOVE.w #0,makeexec_remember
+      ; use exe settings from xtra information
+    End If
 
-  MOVE.l A5,firstitem_
-  MOVE.w D7,numlines_org
-  MOVE.l d7,numlines
+    MOVE.l A4,-(a7)
+    !asm
+    !ComData_GetL{comPtr_FirstSourceLine,A5}
+    !ComData_GetL{comLong_TotalLines,D7}
 
-  _ab3_compileloop:
-    MOVE.w makeexec_remember,makeexec                                     ;MOVE.w #$FFFF,debugversion
-    JSR startcompile
-    CMP.l #"NORE",reqmode
-  BEQ _ab3_compileloop
+    MOVE.l A5,firstitem_
+    MOVE.w D7,numlines_org
+    MOVE.l d7,numlines
 
-  !basic
-  MOVE.l (a7)+,A4
+    _ab3_compileloop:
+      MOVE.w makeexec_remember,makeexec                                     ;MOVE.w #$FFFF,debugversion
+      JSR startcompile
+      CMP.l #"NORE",reqmode
+    BEQ _ab3_compileloop
 
-  MOVE.l globallinecount,D0
-  counter.l = PutD0
+    !basic
+    MOVE.l (a7)+,A4
 
-  MOVE.l anyerrs,d0
-  err.l = PutD0
+    MOVE.l globallinecount,D0
+    counter.l = PutD0
 
-  If cli_verbose>=1 Then NPrint counter," line(s) compiled."
+    MOVE.l anyerrs,d0
+    err.l = PutD0
+
+    If cli_verbose>=1 Then NPrint counter," line(s) compiled."
+
+    If err=0
+      If exefilename
+        If cli_verbose>=1 Then NPrint "Saving executable as \\22",exefilename,"\\22."
+        !asm
+        JSR savefile
+        !basic
+        If release
+          newexesize.l = dos_GetFileSize{exefilename}
+          If newexesize<=0 Then newexesize = $7FFFFFFF
+        End If
+      End If
+    End If
+
+  Until newexesize>=oldexesize
 
   SetProgDir{}
-
-  If err=0
-   If exefilename
-     If cli_verbose>=1 Then NPrint "Saving executable as \\22",exefilename,"\\22."
-     !asm
-      JSR savefile
-     !basic
-   End If
-  End If
 
   Function Return err
 End Function
@@ -583,6 +642,7 @@ If fid>=0
         file_WriteLine{fid,"; Debugger"}
         file_WriteLine{fid,"; -------------------------------------------------------"}
         file_WriteLine{fid,"; CliArgs         = \\22"+cliargs+"\\22"}
+        file_WriteLine{fid,"; StackSize       = "+Str$(Peek.l(?stacksize))}
         file_WriteLine{fid,"; RuntimeDebug    = "+Str$(RuntimeDebug)}
         file_WriteLine{fid,"; DebugInfo       = "+Str$(DebugInfo)}
         file_WriteLine{fid,"; OverflowCheck   = "+Str$(OverflowCheck)}
