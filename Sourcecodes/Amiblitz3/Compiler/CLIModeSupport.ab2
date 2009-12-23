@@ -1,28 +1,51 @@
-SHARED cli_progdir.s
-SHARED cli_sourcedir.s
-SHARED cli_sourcefile.s
+SHARED global_exefilename.s
 
+Statement OpenConsoleFake{}
+  SHARED pr_CIS.l,pr_COS.l,*ab3proc.Process
+
+  *myproc.Process   = FindTask_(0)
+  pr_CIS.l = *myproc\pr_CIS
+  pr_COS.l = *myproc\pr_COS
+
+  If *ab3proc
+    *myproc\pr_CIS = *ab3proc\pr_CIS
+    *myproc\pr_COS = *ab3proc\pr_COS
+  Else
+    error{"AB3 Process is not initialized!"}
+  End If
+
+End Statement
+
+
+Statement CloseConsoleFake{}
+  SHARED pr_CIS.l,pr_COS.l
+  *myproc.Process = FindTask_(0)
+  *myproc\pr_CIS = pr_CIS
+  *myproc\pr_COS=  pr_COS
+  pr_COS = !_NULL
+  pr_CIS = !_NULL
+End Statement
+
+
+; set the current directory
 Statement SetCurrentDir{path.s}
+MaxLen tempstr.s = 1024
+
+;Print "Set lock to ",path
 current_lock.l = Lock_(&path,#ACCESS_READ)
 If current_lock
+  NameFromLock_ current_lock,&tempstr,1024
+ ; Print " ( = ",Peek.s(&tempstr)
   old_lock.l = CurrentDir_ (current_lock)
   If old_lock Then UnLock_ old_lock
 End If
+;NPrint "..."
 End Statement
-
-
-Statement SetSourceDir{}
-SetCurrentDir{cli_sourcedir}
-End Statement
-
-Statement SetProgDir{}
-SetCurrentDir{cli_progdir}
-End Statement
-
 
 
 ;/* this function emulates a minimalistic PED environment */
 Function.l InitEmulatedPED{}
+  SHARED *tedlibbase.Library,*ab3proc.Process
   succ.l = True
 
   #columnsize = 250
@@ -34,6 +57,8 @@ Function.l InitEmulatedPED{}
   !ComData_SetL{comPtr_TokenBase2     ,#0}
   !ComData_SetL{comFunc_ReadXtraFile  ,#read_xtrafile }
   !ComData_SetL{comFunc_WriteXtraFile ,#write_xtrafile}
+  !ComData_SetL{comFunc_OpenConsole   ,#ab3_OpenConsole}
+  !ComData_SetL{comFunc_CloseConsole  ,#ab3_CloseConsole}
   !ComData_SetL{comFunc_CallMenuEntry ,#call_menuentry}
   !ComData_SetL{comFunc_CallDummy     ,#0}
   !ComData_SetL{comLong_AB3IsAvailable,#teddata}
@@ -45,15 +70,23 @@ Function.l InitEmulatedPED{}
   *tedlibbase.Library = OpenLibrary_ ("ted.library",0)
   If *tedlibbase
     LEA COMDATABASE,A0
-  ;  TEDSetJumpTable_
-  ;  TEDSetFirstLine_ ?comPtr_FirstSourceLine
-  ;  TEDSetCurrentLine_ ?comPtr_CurrentSourceLine
+    TEDSetJumpTable_
+    !ComData_LEA{comPtr_FirstSourceLine,d0}
+    FirstSourceLineP.l = PutD0
+    TEDSetFirstLine_ FirstSourceLineP
+    !ComData_LEA{comPtr_CurrentSourceLine,d0}
+    CurrentSourceLineP.l = PutD0
+    TEDSetCurrentLine_ CurrentSourceLineP
   ;  If Peek.l(?comPtr_CurrentSourceLine) > 0
   ;    TEDSetCurrentLine_ ?comPtr_CurrentSourceLine
   ;  EndIf
-  ;  TEDSetLabelList_ ?comPtr_LabelList
-  ;  TEDSetLabelCount_ ?ptr_labelcounter
-    CloseLibrary_ *tedlibbase
+    !ComData_LEA{comPtr_LabelList,d0}
+    LabelListP.l = PutD0
+    TEDSetLabelList_ LabelListP
+    MOVE.l ptr_labelcounter,A0
+    MOVE.l a0,d0
+    LabelCounterP.l = PutD0
+    TEDSetLabelCount_ LabelCounterP
   EndIf
 
   mempoolP.l = CreatePool_(#MEMF_CLEAR,40000,40000)
@@ -65,11 +98,14 @@ Function.l InitEmulatedPED{}
     succ=False
   End If
 
+  *ab3proc.Process = FindTask_(0)
+
   Function Return succ
 End Function
 
-
+;/* deinit what has been inited before */
 Function.l DeinitEmulatedPED{}
+  SHARED *tedlibbase.Library
   succ.l = True
 
   !ComData_GetL{comPtr_MemPool,d0}
@@ -80,10 +116,13 @@ Function.l DeinitEmulatedPED{}
     DeletePool_ mempoolP
   End If
 
+  If *tedlibbase Then CloseLibrary_ *tedlibbase : *tedlibbase = !_NULL
+
   Function Return succ
 End Function
 
 
+;/* clear the source buffer */
 Statement ClearSource{}
   !ComData_GetL{comPtr_FirstSourceLine,D0}
   *SourceLine.SourceLine_t = PutD0
@@ -149,8 +188,7 @@ End Macro
 
 
 ; load bb, bb2, ab2 and ab3
-Function.l LoadSource{filename.s }
-SHARED cli_sourcefile.s,cli_sourcedir.s
+Function.l LoadSource{sourcefile.s}
 !ComData_GetL{comPtr_FirstSourceLine,D0}
 *sourceBase.SourceLine_t = PutD0
 !ComData_GetL{comPtr_PreProcessor,D0}
@@ -160,16 +198,16 @@ mempoolP.l = PutD0
 
 *firstLine.SourceLine_t  = !_NULL
 
-fid.l = file_Open{filename,#file_read}
+fid.l = file_Open{sourcefile,#file_read}
 If fid>=0
   byteLength.l = file_GetLength{fid}
-  cli_sourcefile.s = file_GetDosName{fid}
-  cli_sourcedir.s  = dos_PathPart{cli_sourcefile}
+  sourcefile.s = file_GetDosName{fid}
 
-  tempBuffer.l = AllocVec_(byteLength,#MEMF_ANY)
+  tempBuffer.l = AllocVec_(byteLength+8,#MEMF_ANY)
   If tempBuffer
     If file_ReadMem{fid,tempBuffer,byteLength}
-      ex.s = dos_GetExt{filename}
+      Poke.b tempBuffer+byteLength,0
+      ex.s = dos_GetExt{sourcefile}
       If ex="ab2" OR ex="ab3" OR ex="asc"
         offset.l = 0
         If ex="ab3"
@@ -228,7 +266,11 @@ If fid>=0
 
               If token
                 Select LCase$(token)
-                  Case "/xtra"          : headerDone = True
+                  Case "/xtra"
+                    headerDone = True
+                    ; remove embedded XTRA Header
+                    offset = file_GetSeekPos{fid}
+                                                                                                                                                                                                                                      
                   Case "exepath"        : ExePath = value
                   Case "exefile"        : ExeFile = value
                   Case "residents"
@@ -313,8 +355,6 @@ If fid>=0
           Poke.l ?stacksize,StackSize
           ; cursorcol
 
-          ; remove embedded XTRA Header
-          offset = file_GetSeekPos{fid}
         End If
         byteLength = preproc_Tokenize{*PreProcessor,tempBuffer+offset,tempBuffer,byteLength-offset}
       End If
@@ -327,6 +367,7 @@ If fid>=0
       count.l = 0
       While offset<byteLength
         text.s = Peek.s(tempBuffer+offset)
+        ;NPrint "Adding <",text.s,">"
         charLength.l = FLen(text)+1
         offset+charLength
         If charLength>#columnsize Then charLength =#columnsize : text = Left$(text,#columnsize-1)
@@ -359,30 +400,34 @@ If fid>=0
       !ComData_SetL{comLong_DisplayLineOffset,#0}
       !ComData_SetL{comLong_DisplayLine      ,#0}
 
+      If ex="bb2" OR ex="bb" OR ex="ab2"    ; read xtra file
+        LoadXtra{sourcefile+".xtra"}
+      End If
+
+      If ex="ab3"        ; apply xtra data
+        !asm
+        MOVEM.l D7/A6,-(A7)
+        JSR init_buffers
+        JSR reloadresident
+        MOVEM.l (A7)+,D7/A6
+        !basic
+      End If
+
+      ; update AB3 context
+      !ComData_SetW{comWord_SourceChanged,#0}
+
+      currdir.s = dos_PathPart{sourcefile}
       !ComData_LEA{comStr_CurrentDir,D0}
       currentDirP.l = PutD0
-      Poke.s currentDirP,cli_sourcedir
+      Poke.s currentDirP,currdir
+      SetCurrentDir{currdir}
 
     End If
-
-    If ex="bb2" OR ex="bb" OR ex="ab2"    ; read xtra file
-      LoadXtra{cli_sourcefile+".xtra"}
-    End If
-
-    If ex="ab3"        ; apply xtra data
-      !asm
-      MOVEM.l D7/A6,-(A7)
-      JSR init_buffers
-      JSR reloadresident
-      MOVEM.l (A7)+,D7/A6
-      !basic
-    End If
-
-    ; update AB3 context
-    !ComData_SetW{comWord_SourceChanged,#0}
   Else
     error{"Not enough memory to load file!"}
   End If
+
+  file_Close{fid}
 End If
 Function Return *firstLine
 End Function
@@ -392,8 +437,6 @@ Function.l SaveXtra{filename.s}
 succ.l = False
 fp.l = Open_ (&filename,#MODE_NEWFILE)
 If fp
-;  error{"SaveXtra!"}
-
   GetD0 fp
   MOVE.l A4,-(A7)
   !asm
@@ -409,7 +452,6 @@ If fp
   eptr.l = PutD0
   Write_ fp,aptr,eptr-aptr
   Close_ fp
-;  error{"we are done saving!"}
   succ.l = True
 Else
   error{"WARNING: Unable to save .xtra file!"}
@@ -417,16 +459,19 @@ End If
 Function Return succ
 End Function
 
+
 Statement RunSource{}
-MOVE.l A4,-(A7)
-!asm
-JSR menu_run
-!basic
-MOVE.l (A7)+,A4
+  workpath.s = Peek.s(?exepath)
+  SetCurrentDir{workpath}
+  MOVE.l A4,-(A7)
+  !asm
+  JSR menu_run
+  !basic
+  MOVE.l (A7)+,A4
 End Statement
 
 
-Function.l CompileSource{exefilename.s,debug.l,release.l}
+Function.l CompileSource{exefile.s,debug.l,release.l}
   If debug ; set debugger
     !SetBoolXtra{use_debugger     ,1}
     !SetBoolXtra{link_debuginfo   ,1}
@@ -448,6 +493,10 @@ Function.l CompileSource{exefilename.s,debug.l,release.l}
 
   newexesize.l = $7FFFFFFF
 
+  !ComData_LEA{comStr_CurrentDir,D0}
+  currentDirP.l = PutD0
+  sourcepath.s = Peek.s(currentDirP)
+
   Repeat
     oldexesize.l = newexesize
 
@@ -459,16 +508,15 @@ Function.l CompileSource{exefilename.s,debug.l,release.l}
     MOVE.l #$FFFFffff,linenumat
     MOVE.l #$FFFFffff,compilelinecounter
 
-    SetSourceDir{}
+    SetCurrentDir{sourcepath}
 
-    If exefilename
+    If exefile
       MOVE.w #1,makeexec_remember
 
-      exefile.s = dos_FilePart{exefilename}
-      exepath.s = dos_PathPart{exefilename}
-      Poke.l ?ptr_newexefilename,&exefilename
-      Poke.s ?exepath,exepath
-      Poke.s ?exefilename,exefile
+      global_exefilename = exefile
+      Poke.l ?ptr_newexefilename,&global_exefilename
+      Poke.s ?exepath     ,dos_PathPart{exefile}
+      Poke.s ?exefilename ,dos_FilePart{exefile}
     Else
       MOVE.w #0,makeexec_remember
       ; use exe settings from xtra information
@@ -498,16 +546,16 @@ Function.l CompileSource{exefilename.s,debug.l,release.l}
     MOVE.l anyerrs,d0
     err.l = PutD0
 
-    If cli_verbose>=1 Then NPrint counter," line(s) compiled."
+    If cli_verbose>=1 Then NPrint counter-1," line(s) compiled."
 
     If err=0
-      If exefilename
-        If cli_verbose>=1 Then NPrint "Saving executable as \\22",exefilename,"\\22."
+      If exefile
+        If cli_verbose>=1 Then NPrint "Saving executable as \\22",exefile,"\\22."
         !asm
         JSR savefile
         !basic
         If release
-          newexesize.l = dos_GetFileSize{exefilename}
+          newexesize.l = dos_GetFileSize{exefile}
           If newexesize<=0 Then newexesize = $7FFFFFFF
         End If
       End If
@@ -515,10 +563,9 @@ Function.l CompileSource{exefilename.s,debug.l,release.l}
 
   Until newexesize>=oldexesize
 
-  SetProgDir{}
-
   Function Return err
 End Function
+
 
 ; this function can save .bb2, .ab2 and .ab3
 Function.l SaveSource{filename.s}
@@ -686,6 +733,7 @@ End If
 Function Return succ
 End Function
 
+
 NEWTYPE.Constant_t
 *next_.Constant_t   ; $00
 *prev_.Constant_t   ; $04
@@ -745,54 +793,54 @@ Function.l WriteDump{fid.l,dumpFlags.l,mode.l}
     Case 0 ; binary hashmaps
 
     Default ; ASCII
-  If dumpFlags&#DUMPFLG_CONSTANTS
-    While *constant
-      file_WriteLine{fid,"CONSTANT "+Peek.s(&*constant\nameA)+" $"+Hex$(*constant\value)}
-      *constant = *constant\next_
-    Wend
-  End If
+      If dumpFlags&#DUMPFLG_CONSTANTS
+        While *constant
+          file_WriteLine{fid,"CONSTANT "+Peek.s(&*constant\nameA)+" $"+Hex$(*constant\value)}
+          *constant = *constant\next_
+        Wend
+      End If
 
-  If dumpFlags&#DUMPFLG_VARS
-    While *var
-      file_WriteLine{fid,"VAR "+Peek.s(&*var\nameA)+"."+Peek.s(&*var\typ\nameA)}
-      *var = *var\next_
-    Wend
-  End If
+      If dumpFlags&#DUMPFLG_VARS
+        While *var
+          file_WriteLine{fid,"VAR "+Peek.s(&*var\nameA)+"."+Peek.s(&*var\typ\nameA)}
+          *var = *var\next_
+        Wend
+      End If
 
-  If dumpFlags&#DUMPFLG_NEWTYPES
-    While *typ
-      file_WriteLine{fid,"NEWTYPE "+Peek.s(&*typ\nameA)}
-      ; todo output members
-      *typ = *typ\next_
-    Wend
-  End If
+      If dumpFlags&#DUMPFLG_NEWTYPES
+        While *typ
+          file_WriteLine{fid,"NEWTYPE "+Peek.s(&*typ\nameA)}
+          ; todo output members
+          *typ = *typ\next_
+        Wend
+      End If
 
-  If dumpFlags&#DUMPFLG_MACROS
-    While *mac
-      file_WriteLine{fid,"MACRO "+Peek.s(&*mac\nameA)}
-      *mac = *mac\next_
-    Wend
-  End If
+      If dumpFlags&#DUMPFLG_MACROS
+        While *mac
+          file_WriteLine{fid,"MACRO "+Peek.s(&*mac\nameA)}
+          *mac = *mac\next_
+        Wend
+      End If
 
-  If dumpFlags&#DUMPFLG_FUNCTIONS
-  End If
+      If dumpFlags&#DUMPFLG_FUNCTIONS
+      End If
 
-  If dumpFlags&#DUMPFLG_LABELS ; <= same like constants!?
-  End If
+      If dumpFlags&#DUMPFLG_LABELS ; <= same like constants!?
+      End If
 
-  If dumpFlags&#DUMPFLG_LIBS
-  End If
+      If dumpFlags&#DUMPFLG_LIBS
+      End If
 
-  If dumpFlags&#DUMPFLG_TOKENS ; <= all available tokens
-    While *token
-      name.s    = Peek.s(&*token\dat)
-      help.s    = Peek.s(&*token\dat+FLen(name)+1)
-      libid.l   = (*token\number LSR 7) &$FF
-      tokenid.l = *token\number & $7F
-      file_WriteLine{fid,"TOKEN "+Str$(libid)+"/"+Str$(tokenid)+" "+name+" "+help}
-      *token = *token\next_token
-    Wend
-  End If
+      If dumpFlags&#DUMPFLG_TOKENS ; <= all available tokens
+        While *token
+          name.s    = Peek.s(&*token\dat)
+          help.s    = Peek.s(&*token\dat+FLen(name)+1)
+          libid.l   = (*token\number LSR 7) &$FF
+          tokenid.l = *token\number & $7F
+          file_WriteLine{fid,"TOKEN "+Str$(libid)+"/"+Str$(tokenid)+" "+name+" "+help}
+          *token = *token\next_token
+        Wend
+      End If
   End Select
 End Function
 
