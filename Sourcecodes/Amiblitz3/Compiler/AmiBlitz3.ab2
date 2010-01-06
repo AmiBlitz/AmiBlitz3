@@ -178,6 +178,8 @@ If errorout <> ""                                          ; check if something 
    error{!TRANS{errorout}}
 End If
 
+dbg_fid.l = -1 ; no debug file id yet!
+
 
 ;--- End if needed library or Version is not available
 If ende Then Goto abnormal_exit                            ; remove Assigns
@@ -1305,7 +1307,7 @@ BRA newcreate2
   LEA exepath,A0
   LEA exefilename,A1
 
- L_0_332A:                                                 ;??looks like not used anymore??
+ L_0_332A:                                                ;??looks like not used anymore??
   JSR (A3)                                                 ;open ped filerequest
   BEQ.w cancel_createexe
 
@@ -1320,7 +1322,9 @@ BRA newcreate2
 
  'l1
     MOVE.w #1,makeexec
+    JSR ab3_OpenDebugFile
     BSR.w startcompile
+    JSR ab3_CloseDebugFile
     CMP.l #"NORE",reqmode
   BEQ 'l1
 
@@ -1344,6 +1348,60 @@ RTS
   MOVE.w #-1,flag_noCLI
 RTS
 
+ab3_CloseDebugFile:
+  !basic
+    If dbg_fid>=0 Then file_Close{dbg_fid} : dbg_fid = -1
+  !asm
+RTS
+
+ab3_OpenDebugFile:
+  !basic
+  If dbg_fid>=0
+    file_Close{dbg_fid} : dbg_fid = -1
+  End If
+  If dbg_fid.l<0
+    ;If (Peek.b(?use_debugger)&$80) ; only in debug mode!
+      exefileP.l = Peek.l (?ptr_newexefilename)
+      exefile.s = ""
+      If exefileP Then exefile.s = Peek.s(exefileP)
+      If exefile><""
+        dbg_fid = file_Open{exefile+".dbg",#file_forcewrite}
+      End If
+    ;End If
+  End If
+  !asm
+RTS
+
+ab3_WriteDebugFile:
+!basic
+  If dbg_fid>=0
+
+    If Peek.w (?ininclude)>0
+      ;Poke.s (?includetemp2),incdim(Peek.w(?ininclude)-1)
+      codeline.l = Peek.l(?includeline);-1
+      ;Poke.l ?compilelinecounter,Peek.l(?includeline) - 1
+      codefile.s = dos_FilePart{Peek.s(?includetemp2)}
+    Else
+      ;Poke.s (?includetemp2),Peek.s(?ptr_parameterstore)
+      ;codeline.l = Peek.l(?compilelinecounter) + 1
+      ;!ComData_LEA{comStr_CurrentDir,A0}
+      ;MOVE.l A0,D0
+      ;dirP.l = PutD0
+      ;codefile.s = Peek.s(dirP)
+
+      !ComData_LEA{comStr_SourceName,A0}
+      MOVE.l A0,D0
+      sourceP.l = PutD0
+      codefile.s = Peek.s(sourceP)
+      codeline.l = Peek.l(?linenumat)
+    End If
+    ;hunkoffset.l = Peek.l(?allat)
+    hunkoffset.l = Peek.l(?destpointer)-Peek.l(?destbufferstart)
+
+    file_WriteLine{dbg_fid,Hex$(hunkoffset)+" "+Str$(codeline)+" / "+codefile}
+  End If
+!asm
+RTS
 
 flag_noPED:  Ds.w 1                                        ;closeed org source
 flag_noCLI:  Ds.w 1                                        ;nocli org source
@@ -10466,7 +10524,7 @@ BRA JL_0_7576b
 BRA.w JL_0_755Eb
 
  JL_0_757Cb
-  BSR.w call_setpointernormal
+  JSR call_setpointernormal
   MOVEM.l (a7)+,d2-d7/a2-a6
   AL_0_7790:
 RTS
@@ -19597,11 +19655,12 @@ BRA.w JL_0_C0CA
    ido.l   = Peek.l(?include_process)
    *tn.preprocessor = Peek.l(?include_preprocessor)
    If ido
-     nilen.l = preproc_Tokenize{*tn,ibase,ibase,ilen}
+     ioffset.l = SkipXtraHeader{ibase,ilen}
+     nilen.l = preproc_Tokenize{*tn,ibase+ioffset,ibase,ilen-ioffset}
      If nilen>0
-       For n.l=nilen To ilen-1
-         Poke.b ibase+n,0
-       Next
+       ;For n.l=nilen To ilen-1
+       ;  Poke.b ibase+n,0
+       ;Next
        Poke.l ?include_length,nilen
      End If
    End If
@@ -26399,45 +26458,6 @@ RTS
  'l1
 RTS
 
-
-.check_incdir_old:
-  !basic
-  If Peek.l(?incd)
-    includedir$ = Peek$(Peek.l(?incd))
-  Else
-    includedir$ = dos_AddPart{Peek$(?str_blitz3assign),"Sourcecodes/Includes"}
-  End If
-  inc$ = Peek$(?ptr_parameterstore)
-  CLR.l tempstore
-
-  If dos_Exist{inc$} = 0
-    incfile$ = dos_FilePart{inc$}
-    inccomplete$ = dos_AddPart{includedir$,incfile$}
-    If dos_Exist{inccomplete$}
-      Poke$ ?ptr_parameterstore,inccomplete$
-      i = FLen(inccomplete$)
-      GetReg d0,i
-      MOVE.l d0,tempstore
-    Else
-      ; -- additional checking if includedir$+<completely given includename> exists
-      incfile$ = dos_AddPart{includedir$,inc$}
-      If dos_Exist{incfile$}
-        Poke$ ?ptr_parameterstore,incfile$
-        i = FLen(incfile$)
-        GetReg d0,i
-        MOVE.l d0,tempstore
-      EndIf
-    End If
-  End If
-  !asm
-  TST.l tempstore
-   BEQ 'l1
-  MOVE.l tempstore,d2
-
- 'l1
-RTS
-
-
 .gotoendsource
   ; MOVE.w #1,dontwrite
 
@@ -26470,10 +26490,12 @@ JSR handle_compileerror
   MOVE.l a5,d0
   !basica7
   i.l = PutD0
-  a$ = Peek$(i)
-  b$ = Peeks$(i-7,7)
-  i = Request(!TRANS{"Do workaround ?"},b$ + a$,!TRANS{"Yes|No"})
-  MOVE.l d0,result
+  If i
+    a$ = Peek$(i)
+    b$ = Peeks$(i-7,7)
+    i = Request(!TRANS{"Do workaround ?"},b$ + a$,!TRANS{"Yes|No"})
+    MOVE.l d0,result
+  End If
   !asma7
   MOVE.l (a7)+,d0
 RTS
@@ -26494,7 +26516,7 @@ RTS
   End If
   olddirname$ = Peek$(check_dirname$)
   oldfilename$ = Peek$(check_filename$)
-  For i = 0 To 39
+  For i = 0 To #maxincludes-1
     incline(i) = 0
   Next
   !asm
@@ -26621,14 +26643,14 @@ RTS
 
 .save_includename:
   !basic
-  For i = 0 To  #maxincludes-1
-    If dos_FilePart{incdim(i)} = dos_FilePart{Peek$(?includetemp2)}
+;  For i = 0 To  #maxincludes-1
+;    If dos_FilePart{incdim(i)} = dos_FilePart{Peek$(?includetemp2)}
 ;      !cout{"schon drin: " + Peek$(?includetemp2)}
 ;      Pop For
 ;      !asm
 ;      RTS
-    EndIf
-  Next i
+;    EndIf
+;  Next i
 ;  !cout{"storing: ",Peek$(?includetemp2),Peek.l(?includeline)}
   i.l = Peek.w(?ininclude)
   If i>=0 AND i<#maxincludes
@@ -26999,7 +27021,10 @@ RTS
     EndIf
     calcpro_old = calcpro
   EndIf
+
+
   !asm
+  JSR ab3_WriteDebugFile
 RTS
  
 
