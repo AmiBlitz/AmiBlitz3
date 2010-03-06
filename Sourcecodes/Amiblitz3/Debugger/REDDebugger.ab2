@@ -44,7 +44,7 @@
 ;***********************************************************
 
 optimize 5     ;don't use fpu because all calc must in FFP!!!!
-;Syntax 2
+Syntax 2
 
 XINCLUDE "dos.include.bb2"
 XINCLUDE "/Shared/common.ab3"
@@ -251,6 +251,12 @@ XINCLUDE "rastport.include.bb2"
 
 #RK_HELP                = $5F
 
+; OS Version to enable/disable various features
+#AmigaOS3 = 1
+#AmigaOS4 = 2
+#MorphOS  = 3
+#AROS     = 4
+
 ;***********************************************************
 ; Newtypes
 
@@ -389,12 +395,12 @@ old_active_win = -1
 active_win     = -1
 breakpoint_adr = ?breakpoint
 breakstore.l   = ?breakstore
+watch0.l       = False ; this check the NULL pointer, works only on OS3 wihtout enforcer
 ;***********************************************************
 ; Some strings......
 
 typetitle$ = ""
-warn1$     = "REDDebugger is attempting to close its screen.  Please"+Chr$(10)
-warn1$     + "close all visitor windows."
+warn1$     = "REDDebugger is attempting to close its screen.\\nPlease close all visitor windows."
 
 sr$   = String$(Chr$(0),5)
 rega$ = String$(" ",31+16)
@@ -450,13 +456,19 @@ If ende Then End
 ;-----
 
 ;--- OS Check for set ASM window to prevend a Crash on OS4
-os4_present.b = False                                      ; for OS3 and MOS
-os4succ.l     = dos_CheckLib{"exec.library",50}
-mossucc.l     = FindResident_("MorphOS")
+SHARED OSVersion.l
+OSVersion = #AmigaOS3
+;OSVersion = #MorphOS
+If ( dos_CheckLib{"exec.library",50} ) Then OSVersion = #AmigaOS4
+If ( FindResident_("MorphOS") ) Then OSVersion = #MorphOS
 
-If os4succ AND (NOT mossucc)                               ; check for OS4 and no MOS
-  os4_present = True                                       ; OS 4 is used
-EndIf
+;os4_present.b = False                                      ; for OS3 and MOS
+;os4succ.l     = dos_CheckLib{"exec.library",50}
+;mossucc.l     = FindResident_("MorphOS")
+
+;If os4succ AND (NOT mossucc)                               ; check for OS4 and no MOS
+;  os4_present = True                                       ; OS 4 is used
+;EndIf
 ;-----
 Gosub StartOfDayInit
 
@@ -618,6 +630,8 @@ End Function
 
 Function.l getad {ad.l}
   SHARED startcode.l
+  If (ad=0) Then error{"\\__THIS_FUNCTION: Null pointer exception!"} : Function Return 0
+
   i2.l=Peek.l(ad)
   If Peek.l(ad) AND $80000000
        i2=i2 AND $7fffffff
@@ -651,6 +665,8 @@ End Function
 .getad2
 Function.l getad2 {ad.l}
   SHARED startcode.l
+  If (ad=0) Then error{"\\__THIS_FUNCTION: Null pointer exception!"} : Function Return 0
+
   i2.l=Peek.l(ad)
   If Peek.l(ad) AND $80000000
        i2=i2 AND $7fffffff
@@ -752,7 +768,6 @@ Statement add_event{t.l,s$}
   Permit_
 End Statement
 
-error{"I shouldnt be here!"}
 
 progversion:
   Dc.b "$VER: REDDebugger "
@@ -1004,6 +1019,22 @@ Statement DoHelp{a$}
   EndIf
 End Statement
 
+  #_winSource       = 0
+  #_winControl      = 1
+  #_winRegisters    = 2
+  #_winBackdrop     = 3
+  #_winMemory1      = 4
+  #_winMemory2      = 5
+  #_winSearch       = 6
+  #_winVariables    = 7
+  #_winDisAsm       = 8
+  #_winDisCop       = 9
+  #_winCustom       =10
+  #_winArray        =11
+  #_winMouseables   =12
+  #_winObject0      =13
+  #_winObject9      =22
+
 
 ;Open a new window, based on the wininfo() array
 Statement NewWindow{win.w}
@@ -1013,6 +1044,19 @@ Statement NewWindow{win.w}
 
   DEFTYPE.w x,y,w,h,typ
   DEFTYPE.l f
+
+  If (OSVersion=#AmigaOS4 OR OSVersion=#MorphOS)
+    If (win = #_winRegisters) OR (win = #_winMemory1) OR (win = #_winMemory2) OR (win = #_winDisAsm) OR (win = #_winDisCop) OR (win = #_winCustom) OR (win = #_winSearch)
+       error{"This feature is disabled on AmigaOS4/MorphOS."}
+       Statement Return
+     End If
+  End If
+
+  If win=#_winMouseables
+    If ask{"This feature is currently broken.\\nDo you want to open the window anyway?","Yes, please.|Ooops!"}=0
+      Statement Return
+    End If
+  End If
 
   If win=#_winMemory1 OR win=#_winMemory2
     typ=1
@@ -1060,21 +1104,7 @@ Statement NewWindow{win.w}
   WindowTags win,f,wininfo(win)\title,?__Taglist
   winstatus(win)    = -1
   wininfo(win)\w    = w,h
-  #_winSource       = 0
-  #_winControl      = 1
-  #_winRegisters    = 2
-  #_winBackdrop     = 3
-  #_winMemory1      = 4
-  #_winMemory2      = 5
-  #_winSearch       = 6
-  #_winVariables    = 7
-  #_winDisAsm       = 8
-  #_winDisCop       = 9
-  #_winCustom       =10
-  #_winArray        =11
-  #_winMouseables   =12
-  #_winObject0      =13
-  #_winObject9      =22
+
 
   GTSetMenu 0
     WindowFont 1
@@ -1123,8 +1153,10 @@ Statement Domemtitle{num.w}
   If memlock$(num)
     a$+" ("+UCase$(memlock$(num))+")"
   EndIf
-  Use Window win
-  WTitle a$
+  If (Peek.l(Addr Window(win)))
+    Use Window win
+    WTitle a$
+  End If
 End Statement
 
 
@@ -1149,6 +1181,8 @@ End Statement
 ;Stores data so that the window can be reopened easily.
 Statement DelWindow{win.w}
   SHARED wininfo(),winstatus()
+  If (Peek.l(Addr Window(win))=0) Then Use Window 0 :Statement Return
+
   If win>22
     Use Window win
     wininfo(win)\x=WindowX,WindowY,WindowWidth,WindowHeight
@@ -1195,6 +1229,7 @@ Statement RedrawArray{refreshtype.b}
   SHARED arraylabelsize
 
   DEFTYPE.w x,y,w,h
+  If (Peek.l(Addr Window(#_winArray))=0) Then Statement Return
 
   Use Window #_winArray
   Use BitMap 1
@@ -1301,6 +1336,7 @@ End Statement
 
 Statement RedrawSearchWin{ad.l}
   SHARED searchtype
+  If (Peek.l(Addr Window(#_winSearch))=0) Then Statement Return
 
   Use Window #_winSearch
 
@@ -1315,6 +1351,8 @@ End Statement
 
 
 Statement RedrawCustomWin{}
+  If (Peek.l(Addr Window(#_winCustom))=0) Then Statement Return
+
   Use Window #_winCustom
 
   WLocate   4,04 : Print "Address$:"
@@ -1324,6 +1362,7 @@ End Statement
 
 Statement UpdateDisCop{}
   SHARED discop_ad,ix,iy
+  If (Peek.l(Addr Window(#_winDisCop))=0) Then Statement Return
 
   Use Window #_winDisCop
   Use BitMap 1
@@ -1335,8 +1374,10 @@ Statement UpdateDisCop{}
   WLocate 0,0
   ad.l=discop_ad
   For h.w=1 To (hi/WinFontHeight)
-    NPrint Hex$(ad)+" "+GetCopIns$(ad)
-    ad+4
+    If ad
+      NPrint Hex$(ad)+" "+GetCopIns$(ad)
+      ad+4
+    End If
   Next h
   RefreshWindowFrame_(!windowaddr)
   ;BitMaptoWindow 1,#_winDisCop,0,0,ix,iy,w,hi
@@ -1348,6 +1389,8 @@ Statement UpdateDisAsm{}
   SHARED dis(),asmstep,breakstore,winstatus()
   DEFTYPE.w bitm
   If winstatus(#_winDisAsm)=0 Then Statement Return
+  If (Peek.l(Addr Window(#_winDisAsm))=0) Then Statement Return
+
   MOVE.l mybuffer,d0
   BEQ nobuff
   ad.l = PutD0
@@ -1431,6 +1474,7 @@ End Statement
 
 Statement UpdateVarWindow{}
   SHARED varinfo(),ix,iy,winstatus(),ffp,i
+  If (Peek.l(Addr Window(#_winVariables))=0) Then Statement Return
 
   Use Window #_winVariables
   inw.w=InnerWidth
@@ -1530,6 +1574,7 @@ End Statement
 
 Statement RedrawVarWindow{}
   SHARED varinfo(),ix,iy,objtype$
+  If (Peek.l(Addr Window(#_winVariables))=0) Then Statement Return
 
   Use Window #_winVariables
   Use BitMap 1
@@ -1609,6 +1654,8 @@ Statement RefreshTypeWindow{}
   DEFTYPE.q mq
   DEFTYPE.f mf
 
+  If (Peek.l(Addr Window(objwins()\winnum))=0) Then Statement Return
+
   Use Window objwins()\winnum
   ad.l=objwins()\typepointer
 
@@ -1683,6 +1730,7 @@ End Function
 
 Statement RedrawMouseables{n.w}
   SHARED mouseables,num_mouseables,mouseables_off,ix,iy
+  If Peek.l(Addr Window(#_winMouseables))=0 Then Statement Return
 
   Use Window #_winMouseables
   Use BitMap 1
@@ -1703,17 +1751,17 @@ Statement RedrawMouseables{n.w}
   ad.l = mouseables
   If mouseables_off
     For loop.w=1 To mouseables_off
-      ad=Peek.l(ad)
+      If ad Then ad=Peek.l(ad)
     Next loop
   EndIf
 
   If ad<>0
     While y<h AND y<num_mouseables
-      ad2.l=Peek.l(ad+4)
-      a$=ExtractLabel(ad2)
+      If ad Then ad2.l=Peek.l(ad+4)
+      If ad2 Then a$=ExtractLabel(ad2)
       NPrint a$
       y+1
-      ad=Peek.l(ad)
+      If ad Then ad=Peek.l(ad)
     Wend
   EndIf
   ;BitMaptoWindow 1,#_winMouseables,0,0,ix,iy,w,hi
@@ -1806,10 +1854,12 @@ Return
 ;    MOVE.l $1F0(a0),a0                                    ; -- get "programstart" out of comdata-struct
     !ComData_GetL{comPtr_DestBufferStart,A0}
     MOVE.l a0,programstart                                 ; --
-    If os4_present=False                                   ; for OS3 and MOS
-     MOVE.l -4(a0),programsize                             ; -- get some unknown data
+    If OSVersion = #AmigaOS4                               ; -- get some unknown data
+      MOVE.l #10,programsize                               ; for OS4
     Else
-     MOVE.l #10,programsize                                ; for OS4
+     MOVE.l -4(a0),programsize                             ; for OS3 and MOS
+    Else
+
     EndIf
     !ComData_LEA{comPtr_LabelList,d0}     : mouseables     = PutD0  ;replaced TEDGetLabelList{}  ;was TEDGetLabelList_()
     !ComData_LEA{comWord_LabelCounter,d0} : num_mouseables = PutD0  ;replaced TEDGetLabelCount{} ;was TEDGetLabelCount_()
@@ -2030,6 +2080,8 @@ Goto prtcode
 
 prtcode2
   bitm=3
+  If (Peek.l(Addr Window(#_winSource)))
+
   Use Window #_winSource
   *rp.RastPort = RastPort(#_winSource)
   *win.Window = Peek.l(Addr Window(#_winSource))
@@ -2079,7 +2131,7 @@ prtcode2
   If *rp
     rp_RemClipExt{*rp}
   End If
-
+  EndIf
   prtbusy=0
 Return
 
@@ -2172,6 +2224,8 @@ Return
 
 
 SearchGadgets:
+  If (Peek.l(Addr Window(#_winSearch))=0) Then Return
+
   Use Window #_winSearch
   Select gad
 
@@ -2925,11 +2979,13 @@ CheckKeyboard:
             disasmlock$=a$
             disasmlockpf$=Peek$(&evalbuffer$)
             Poke$ ?disasmlockstr,a$
-            Use Window #_winDisAsm
-            t$="Disassembly"
-            If disasmlock$<>"" Then t$+" ("+disasmlock$+")"
-            WTitle t$
-            UpdateDisAsm{}
+            If (Peek.l(Addr Window(#_winDisAsm)))
+              Use Window #_winDisAsm
+              t$="Disassembly"
+              If disasmlock$<>"" Then t$+" ("+disasmlock$+")"
+              WTitle t$
+              UpdateDisAsm{}
+            End If
           EndIf
         EndIf
       EndIf
@@ -3191,12 +3247,15 @@ goto_objectwin:
   EndIf
   objwins()\tracenum=a
   objwins()\typepointer=objwins()\objbaseadr+(a*objwins()\type_sizeof)
-  Use Window objwins()\winnum
-  WTitle "Newtype: "+objwins()\t+" #"+Str$(objwins()\tracenum)+"/"+Str$(objwins()\maxobject-1)
+  If (Peek.l(Addr Window(objwins()\winnum)))
 
-  MoveProp objwins()\winnum,#OBJ_SGAD,a,objwins()\winnum
+    Use Window objwins()\winnum
+    WTitle "Newtype: "+objwins()\t+" #"+Str$(objwins()\tracenum)+"/"+Str$(objwins()\maxobject-1)
 
-  RefreshTypeWindow{}
+    MoveProp objwins()\winnum,#OBJ_SGAD,a,objwins()\winnum
+
+    RefreshTypeWindow{}
+  End If
 Return
 
 
@@ -3394,9 +3453,15 @@ hardquit: Dc.b "Perform hard Quit?",10,"Warning: Debug process will not",10,"exi
         asmstep=NOT asmstep
 
       Case 17
-        Poke $0,$beaddeef
-        addr0.l=Peek.l (0)
-        watch0.l=NOT watch0
+        If watch0=False
+          If ask{"This feature bangs the address 0!","Go ahead!|Oopps!"}
+            Poke $0,$beaddeef
+            addr0.l=Peek.l (0)
+            watch0.l=NOT watch0
+          End If
+        Else
+          watch0=False
+        End If
 
     End Select
   EndIf
@@ -3784,16 +3849,18 @@ Return
 
 
 .wprint:
-  Use Window #_winSource
-  lt$=t$
-  y.l=wprinty.l
-  Gosub printlin
-  If syntax_=0 Then NPrint "                                                                                                       " : Return
- syntaxprint:
-  Use Window #_winSource
-  y=wprinty-WinFontHeight-5
-  t$=syntax_$
-  Gosub printlin
+  If (Peek.l(Addr Window(#_winSource)))
+    Use Window #_winSource
+    lt$=t$
+    y.l=wprinty.l
+    Gosub printlin
+    If syntax_=0 Then NPrint "                                                                                                       " : Return
+   syntaxprint:
+    Use Window #_winSource
+    y=wprinty-WinFontHeight-5
+    t$=syntax_$
+    Gosub printlin
+  End If
 Return
 
 
@@ -4610,8 +4677,8 @@ Return
            Else
              t$=d_e()\s
              lasteval$=t$
-             If Len(t$)<11
-               optimize 7
+             If FLen(t$)<11
+               optimize 7  ; this would require an FPU
                t$=t$+" $"+Hex$(Val(t$))+" %"+Bin$(Val(t$))
                optimize 5
              End If
@@ -4955,6 +5022,8 @@ End Statement
 
 
 .MemEdit:
+  If (Peek.l(Addr Window(winnum))=0) Then Return
+
   Use Window winnum
   Activate winnum
   WTitle "Edit mode"
@@ -5079,11 +5148,11 @@ Return
 
 FindString:
   ad =Peek.l(?mybuffer)
-  ad2=Peek.l(ad+52)
+  If (ad) Then ad2=Peek.l(ad+52)
   ad =D_FindStringPtr(ad2,mem)
   If ad=-1
     ad =Peek.l(?mybuffer)
-    ad2=Peek.l(ad+60)
+    If ad Then ad2=Peek.l(ad+60)
     ad =D_FindStringPtr(ad2+$8000,mem)                     ;search in stack
   End If
 Return
@@ -5100,7 +5169,7 @@ Return
 
   If nt<4 Then si=Vallong(searchfor$)
   If nt=4 Then si=&searchfor$
-  optimize 7
+  optimize 7 ; this would require an FPU
   If nt=5 Then mq=Val(searchfor$) : si=Peek.l(&mq)
   If nt=6 Then mf=Val(searchfor$) : si=Peek.l(&mf)
   optimize 5
@@ -6023,7 +6092,7 @@ Return
 
 setfpu
   fp$(temp)=RTEZGetString("Insert FPU Value","Insert FPU Value",80,fp$(temp))
-  optimize 7
+  optimize 7 ; this requires an FPU
   ffp=Val(fp$(temp))
   optimize 5
   ffp2.f=SPTieee_(ffp2)                                    ;for mathtranspointer
