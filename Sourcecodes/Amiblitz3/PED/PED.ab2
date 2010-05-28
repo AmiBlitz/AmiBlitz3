@@ -500,21 +500,32 @@ End NEWTYPE
 Dim List HelpIndexCache.HelpIndexCacheItem(0)
 
 
-Statement TED_CacheHelpIndexFile{HelpIndexFile$}
+Statement TED_LoadHelpIndexFile{HelpIndexFile$}
   SHARED HelpIndexCache()
-
+  ;fidW.l = file_Open{"sys:pedbug.txt",#file_forcewrite}
   fid.l = file_Open{HelpIndexFile$,#file_read}
   If fid<>-1
     ClearList HelpIndexCache()
     file_Cache{fid}
     While file_EOF{fid}=False
       zeile$ = file_ReadLine{fid}
-      If Left$(zeile$,4) = "file"
-        filename$ = Mid$(zeile$,12,50)
+
+      pos_name.l  = Instr(zeile$,"\\09",1)
+      If pos_name=0 Then pos_name=FLen(zeile$)+1
+
+      pos_desc.l  = Instr(zeile$,"\\09",pos_name+1)
+      If pos_desc=0 Then pos_desc=FLen(zeile$)+1
+
+      typ$  = Mid$(zeile$,1,pos_name-1)
+      name$ = Mid$(zeile$,pos_name+1,pos_desc-pos_name-1)
+      help$ = Mid$(zeile$,pos_desc+1)
+
+      ;file_WriteLine{fidW,typ$+"::"+name$+"::"+help$}
+
+      If typ$ = "FILE"
+        filename$ = name$
       Else
-        name$  = StripTrail$(Mid$(zeile$,12,50),32)
         lname$ = LCase$(name$)
-        help$  = Mid$(zeile$,61)
         If name$><""
           If AddItem(HelpIndexCache())
             HelpIndexCache()\name  = name$
@@ -527,6 +538,8 @@ Statement TED_CacheHelpIndexFile{HelpIndexFile$}
     Wend
     file_Close{fid}
   End If
+  ;If fidW><-1 Then file_Close{fidW}
+
 End Statement
 
 
@@ -545,6 +558,7 @@ End Statement
 
 Statement TED_ReadHelpIndexCache{HelpIndexCacheFile$}
   SHARED HelpIndexCache()
+;  fidW.l = file_Open{"sys:pedbug.txt",#file_forcewrite}
 
   If OpenFile(1,HelpIndexCacheFile$)
     ClearList HelpIndexCache()
@@ -553,6 +567,8 @@ Statement TED_ReadHelpIndexCache{HelpIndexCacheFile$}
       If AddLast(HelpIndexCache())
         ReadType 1,HelpIndexCache()
         ;!cout{"*"+HelpIndexCache()\name+"*"}
+        ;file_WriteLine{fidW,HelpIndexCache()\name}
+
       Else
         error{!TRANS{"Could not build index cache."}}
         Pop While: Goto exit_while
@@ -563,10 +579,10 @@ Statement TED_ReadHelpIndexCache{HelpIndexCacheFile$}
   Else
     error{HelpIndexCacheFile$ + " "+!TRANS{"not found."}}
   End If
+
+;  If fidW><-1 Then file_Close{fidW}
+
 End Statement
-
-
-
 
 
 Function.s TED_GetIncludeHelp{tname$}
@@ -613,6 +629,7 @@ Function.s TED_GetIncludeName{tname$}
   Function Return "" ; function not found
 End Function
 
+
 Function.s TED_GetMacroHelp{macrobase.l,mname$}
   *mpointer.b = macrobase : mfound.b = False : mcounter.l = 0 : mname$ = StripLead$(StrLower(mname$),Asc("!"))
 ;  MOVE.l macrobase,a0:MOVE.l (a0),token@(a5)
@@ -626,7 +643,6 @@ Function.s TED_GetMacroHelp{macrobase.l,mname$}
     *mpointer = Peek.l(*mpointer)
   Until *mpointer = 0
 End Function
-
 
 
 Statement move_cursor {a$,lst.l,pos.l}
@@ -1563,8 +1579,12 @@ preproc_LoadTokens{*PreProcessor,TokenHashMapFile}
 
 *rc_fib.FileInfoBlock = AllocDosObject_ (#DOS_FIB,0)
 
-ResetList HelpIndexCache()
-If NextItemFast(HelpIndexCache()) = False Then TED_ReadHelpIndexCache{HelpIndexCacheFile$}
+If dos_Exist{HelpIndexCacheFile$}
+  TED_ReadHelpIndexCache{HelpIndexCacheFile$}
+Else
+  Gosub build_HelpIndexFile
+End If
+
 
 If ReadFile (0,addonprefs$)
   ReadType 0,wpref(0)
@@ -6077,8 +6097,10 @@ RTS
 ;  error {"Compilepath: "+dos_AddPart{exepathname$,exefilename$}}
   comp_exit.b = False : comp_counter.b = 0
   oldexesize.l = $7FFFFFFF
+  total_counter.l = 0
   Repeat
     comp_counter + 1
+    total_counter + 1
     !asm
     MOVEQ #$b,d6
     MOVE.l comFunc_CallMenuEntry,a0
@@ -6089,10 +6111,11 @@ RTS
     JSR check_state_of_debuggertoggle
     !basic
     newexesize.l = dos_GetFileSizeEx{dos_AddPart{exepathname$,exefilename$}}
+    If newexesize<1 Then newexesize=oldexesize
 ;    !cout{"old: ",oldexesize,"newexelngth:",newexesize}
     If (oldexesize = newexesize) AND (comp_counter>2) Then comp_exit    = True
     If oldexesize>newexesize                          Then comp_counter = 0 : oldexesize=newexesize
-  Until comp_exit
+  Until comp_exit OR total_counter>20
   !asm
 RTS
 
@@ -20990,6 +21013,7 @@ RTS
   JSR arexxfunc_getword
   JSR reset_currsourceline
   JSR jump_addhistory
+  MOVE.l #0,clickjump_fromfile ; in-same-file search first
 
   MOVEQ #0,d3
   begin_search:
@@ -21083,55 +21107,92 @@ RTS
   BRA begin_search
 
  'l20                                 ;not found search other files
+  TST.l clickjump_fromfile
+  BNE clickjump_exit
+  MOVE.l #1,clickjump_fromfile
+
   JSR set_pointerbusy
   !basic
   ;TEDSetCurrentLine_ ?comPtr_CurrentSourceLine
   TEDSetCurrentLine{?comPtr_CurrentSourceLine}
   Gosub getstring_new
-  word1$ = actualword$
+  word1$ = dos_Trim{actualword$}
   ;  !cout{word1$}
   ; -- searching in HelpIndexFile for macro or function name
-  fid.l = file_Open{HelpIndexFile$,#file_read}
-  If (fid<>-1) AND (dos_Trim{word1$} <> "")
-    file_Cache{fid}
-    CaseSense Off
-    temp_lof.l = file_GetLength{fid}
-    Repeat
-      a$ = file_ReadLine{fid}
-      entry$ = Mid$(a$,12,50)
-      entry$ = dos_Trim{entry$}
-      If entry$
-        If Left$(a$,4) = "file"
-          filename$ = entry$
-        EndIf
+;  fid.l = file_Open{HelpIndexFile$,#file_read}
+;  If (fid<>-1) AND (dos_Trim{word1$} <> "")
+;    file_Cache{fid}
+;    CaseSense Off
+;    temp_lof.l = file_GetLength{fid}
+;    Repeat
+;      a$ = file_ReadLine{fid}
+;      entry$ = Mid$(a$,12,50)
+;      entry$ = dos_Trim{entry$}
+;      If entry$
+;        If Left$(a$,4) = "file"
+;          filename$ = entry$
+;        EndIf
+;
+;        If Instr(entry$,word1$) OR Instr(filename$,word1$)
+;          file_Close{fid}
+;          Pop Repeat
+;          temp_filename$ = dos_AddPart{includedir$,filename$}
+;          GetD0 &temp_filename$
+;          !asm
+;          JSR loadfile
+;          JSR update_vertscroller
+;          JSR update_statusline
+;          JSR set_pointernormal
+;          ; --
+;          ; -- jump to first line of source and search again
+;          MOVEA.l comPtr_CurrentSourceLine,A4
+;          JSR reset_currsourceline
+;          MOVEQ #0,D3
+;          BRA begin_search
+;        EndIf
+;      EndIf
+;    Until file_GetSeekPos{fid} = temp_lof
+;    file_Close{fid}
+;  End If
 
-        If Instr(entry$,word1$) OR Instr(filename$,word1$)
-          file_Close{fid}
-          Pop Repeat
-          temp_filename$ = dos_AddPart{includedir$,filename$}
-          GetD0 &temp_filename$
-          !asm
-          JSR loadfile
-          JSR update_vertscroller
-          JSR update_statusline
-          JSR set_pointernormal
-          ; --
-          ; -- jump to first line of source and search again
-          MOVEA.l comPtr_CurrentSourceLine,A4
-          JSR reset_currsourceline
-          MOVEQ #0,D3
-          BRA begin_search
-        EndIf
-      EndIf
-    Until file_GetSeekPos{fid} = temp_lof
-    file_Close{fid}
+  ; actually, now that we have everything in cache, do this: (Thilo)
+  found.l = False
+  If word1$><""
+    ResetList HelpIndexCache()
+    While NextItemFast(HelpIndexCache()) AND found=False
+      If word1$=HelpIndexCache()\name OR word1$=HelpIndexCache()\includefile
+        temp_filename$ = dos_AddPart{includedir$,HelpIndexCache()\includefile}
+        found=True
+        ;error{"Looking for "+temp_filename$+" (from search string"+word1$+"=="+HelpIndexCache()\name+")"}
+        GetD0 &temp_filename$
+        !asm
+        JSR loadfile
+        JSR update_vertscroller
+        JSR update_statusline
+        JSR set_pointernormal
+        !basic
+      End If
+    Wend
   End If
+
+  If found
+    !asm
+    ; -- jump to first line of source and search again
+    MOVEA.l comPtr_CurrentSourceLine,A4
+    JSR reset_currsourceline
+    MOVEQ #0,D3
+    BRA begin_search
+    !basic
+  End If
+
   !asm
+  clickjump_exit:
   JSR set_pointernormal
   MOVE.l olda4,a4
   MOVEM.l (a7)+,d2-d7/a1/a5-a6
 RTS
 
+clickjump_fromfile: Dc.l 0
 
 .jumpline     ; D0: Zielzeile
   CMP.l comLong_TotalLines,d0
@@ -21562,67 +21623,136 @@ RTS
   EndIf
 Return
 
-
+; the bubble help is acutally not used (Thilo)
 .showbubblehelp
- If ReadFile(0,HelpIndexFile$)
-   FileInput 0
-   b2$ = "!" + b$
-   Repeat
-     a$ = Edit$("",200)
-     If Left$(a$,5) = "file " Then libfile$ = Mid$(a$,12)
-     c$ = Mid$(a$,12,50)
-     c$ = StripTrail$(c$,32)
-     If c$ = b$ OR c$ = b2$
-       command$ = c$ + Mid$(a$,62)
-       c$ = c$+" ;"+Mid$(a$,62)
-;       MOVE.l (a2),d1
-;       MOVEQ #0,d0
-;       JSR showtitle
-       MOVE.l a0,-(a7)
-       i = 0:help$(0) = ""
-       fontheight.l = Peek.w(?fontheight)
-       fontwidth.l = Peek.w(?fontwidth)
-       textwidth.l = (StrLen(libfile$)+12) * fontwidth
-       morehelp:
-       a$ = Edit$("",200)
-       If Left$(a$,2) = ";/"
-         help$(i) = Mid$(a$,3)
-         textwidth2.l = (StrLen(help$(i))+3)*fontwidth
-         If textwidth2>textwidth Then textwidth = textwidth2
-         i+1
-         If i < 398 Then Goto morehelp
-       End If
-       For i2 = i To 398:help$(i2) = "" : Next
-       CloseFile 0
-       fontheight.l = Peek.w(?fontheight)
-       sourcewiny.l = Peek.w(?win_TopEdge)
-       ypos.l = Peek.l (?comLong_DisplayLine)*fontheight+fontheight*3+sourcewiny
-       help2_y.l = ypos
+; If ReadFile(0,HelpIndexFile$)
+;   FileInput 0
+;   b2$ = "!" + b$
+;   Repeat
+;     a$ = Edit$("",200)
+;     If Left$(a$,5) = "file " Then libfile$ = Mid$(a$,12)
+;     c$ = Mid$(a$,12,50)
+;     c$ = StripTrail$(c$,32)
+;     If c$ = b$ OR c$ = b2$
+;       command$ = c$ + Mid$(a$,62)
+;       c$ = c$+" ;"+Mid$(a$,62)
+;;       MOVE.l (a2),d1
+;;       MOVEQ #0,d0
+;;       JSR showtitle
+;       MOVE.l a0,-(a7)
+;       i = 0:help$(0) = ""
+;       fontheight.l = Peek.w(?fontheight)
+;       fontwidth.l = Peek.w(?fontwidth)
+;       textwidth.l = (StrLen(libfile$)+12) * fontwidth
+;       morehelp:
+;       a$ = Edit$("",200)
+;       If Left$(a$,2) = ";/"
+;         help$(i) = Mid$(a$,3)
+;         textwidth2.l = (StrLen(help$(i))+3)*fontwidth
+;         If textwidth2>textwidth Then textwidth = textwidth2
+;         i+1
+;         If i < 398 Then Goto morehelp
+;       End If
+;       For i2 = i To 398:help$(i2) = "" : Next
+;       CloseFile 0
+;       fontheight.l = Peek.w(?fontheight)
+;       sourcewiny.l = Peek.w(?win_TopEdge)
+;       ypos.l = Peek.l (?comLong_DisplayLine)*fontheight+fontheight*3+sourcewiny
+;       help2_y.l = ypos
+;
+;       DEFTYPE.List helpme
+;       WZListRemove helpme
+;       WZWindow WZID("WIN_CONTEXTHELP") ,?wzgui,4,8,help2_y,48 + textwidth,64 + (fontheight+1) * (i+1),WZID("WIN_CONTEXTHELP")
+;       WTitle libfile$
+;       WZPrint "HELP_OBJECT",&command$
+;       If help$(0) <> ""
+;         For i = 0 To 398
+;           If help$(i)<>""
+;             WZListAdd helpme.List,help$(i),-2
+;           EndIf
+;           If help$(i+1) = "" Then i = 500
+;         Next
+;      Else
+;        WZListAdd helpme.List,"No context help available."
+;      End If
+;      WZPrint "HELPDESK",-1,&helpme
+;
+;       MOVE.l (a7)+,a0
+;       MOVE.l a0,d0
+;       RTS
+;     End If
+;   Until Eof(0) = True
+;  CloseFile 0
+; End If
 
-       DEFTYPE.List helpme
-       WZListRemove helpme
-       WZWindow WZID("WIN_CONTEXTHELP") ,?wzgui,4,8,help2_y,48 + textwidth,64 + (fontheight+1) * (i+1),WZID("WIN_CONTEXTHELP")
-       WTitle libfile$
-       WZPrint "HELP_OBJECT",&command$
-       If help$(0) <> ""
-         For i = 0 To 398
-           If help$(i)<>""
-             WZListAdd helpme.List,help$(i),-2
-           EndIf
-           If help$(i+1) = "" Then i = 500
-         Next
-      Else
-        WZListAdd helpme.List,"No context help available."
-      End If
-      WZPrint "HELPDESK",-1,&helpme
 
-       MOVE.l (a7)+,a0
-       MOVE.l a0,d0
-       RTS
+;   b2$ = "!" + b$
+  error{"Bubble hlep!?"}
+   ResetList HelpIndexCache()
+   While NextItemFast(HelpIndexCache())
+     If b$=HelpIndexCache()\name
+
      End If
-   Until Eof(0) = True
-  CloseFile 0
- End If
+   Wend
+;     a$ = Edit$("",200)
+;     If Left$(a$,5) = "file " Then libfile$ = Mid$(a$,12)
+;     c$ = Mid$(a$,12,50)
+;     c$ = StripTrail$(c$,32)
+;     If c$ = b$ OR c$ = b2$
+;       command$ = c$ + Mid$(a$,62)
+;       c$ = c$+" ;"+Mid$(a$,62)
+;;       MOVE.l (a2),d1
+;;       MOVEQ #0,d0
+;;       JSR showtitle
+;       MOVE.l a0,-(a7)
+;       i = 0:help$(0) = ""
+;       fontheight.l = Peek.w(?fontheight)
+;       fontwidth.l = Peek.w(?fontwidth)
+;       textwidth.l = (StrLen(libfile$)+12) * fontwidth
+;       morehelp:
+;       a$ = Edit$("",200)
+;       If Left$(a$,2) = ";/"
+;         help$(i) = Mid$(a$,3)
+;         textwidth2.l = (StrLen(help$(i))+3)*fontwidth
+;         If textwidth2>textwidth Then textwidth = textwidth2
+;         i+1
+;         If i < 398 Then Goto morehelp
+;       End If
+;       For i2 = i To 398:help$(i2) = "" : Next
+;       CloseFile 0
+;       fontheight.l = Peek.w(?fontheight)
+;       sourcewiny.l = Peek.w(?win_TopEdge)
+;       ypos.l = Peek.l (?comLong_DisplayLine)*fontheight+fontheight*3+sourcewiny
+;       help2_y.l = ypos
+;
+;       DEFTYPE.List helpme
+;       WZListRemove helpme
+;       WZWindow WZID("WIN_CONTEXTHELP") ,?wzgui,4,8,help2_y,48 + textwidth,64 + (fontheight+1) * (i+1),WZID("WIN_CONTEXTHELP")
+;       WTitle libfile$
+;       WZPrint "HELP_OBJECT",&command$
+;       If help$(0) <> ""
+;         For i = 0 To 398
+;           If help$(i)<>""
+;             WZListAdd helpme.List,help$(i),-2
+;           EndIf
+;           If help$(i+1) = "" Then i = 500
+;         Next
+;      Else
+;        WZListAdd helpme.List,"No context help available."
+;      End If
+;      WZPrint "HELPDESK",-1,&helpme
+;
+;       MOVE.l (a7)+,a0
+;       MOVE.l a0,d0
+;       RTS
+;     End If
+;   Until Eof(0) = True
+;  CloseFile 0
+; End If
+
+
+
+
  MOVEQ #0,d0
 RTS
 
@@ -22097,33 +22227,42 @@ Return
 
     ;
     If browse_includes
-      If ReadFile(0,HelpIndexFile$)
-        FileInput 0
-        Repeat
-          a$ = Edit$("",200)
-          If Instr(a$,".bb2") = 0
-
-           loop2:
-            b$ = Mid$(a$,12,50)
-            If Instr(b$,word1$) AND numcount<#maxlabels
-              If Instr(b$,word2$)
-                numcount = numcount+1
-                ;                    WZTags #WENTRYA_TextPen,Peek.l(?functioncolor)
-                b$ = StripTrail$(b$,32)
-                ;                    WZListAdd lst,b$+" ;"+Mid$(a$,63)
-                WZ_AddRow{"INSTRUCTIONTABLE",b$,Mid$(a$,62)}
-                FileInput 0
-
-               loop1:
-                a$ = Edit$("",200)
-                If Instr(a$,";*") Then Goto loop1
-                If Eof(0) = False Then Goto loop2
-              End If
-            End If
-          EndIf
-        Until Eof(0) = True
-        CloseFile 0
-      End If
+;      If ReadFile(0,HelpIndexFile$)
+;        FileInput 0
+;        Repeat
+;          a$ = Edit$("",200)
+;          If Instr(a$,".bb2") = 0
+;
+;           loop2:
+;            b$ = Mid$(a$,12,50)
+;            If Instr(b$,word1$) AND numcount<#maxlabels
+;              If Instr(b$,word2$)
+;                numcount = numcount+1
+;                ;                    WZTags #WENTRYA_TextPen,Peek.l(?functioncolor)
+;                b$ = StripTrail$(b$,32)
+;                ;                    WZListAdd lst,b$+" ;"+Mid$(a$,63)
+;                WZ_AddRow{"INSTRUCTIONTABLE",b$,Mid$(a$,62)}
+;                FileInput 0
+;
+;               loop1:
+;                a$ = Edit$("",200)
+;                If Instr(a$,";*") Then Goto loop1
+;                If Eof(0) = False Then Goto loop2
+;              End If
+;            End If
+;          EndIf
+;        Until Eof(0) = True
+;        CloseFile 0
+;      End If
+      ResetList HelpIndexCache()
+      While NextItemFast(HelpIndexCache())
+        If Instr(HelpIndexCache()\name,word1$) AND numcount<#maxlabels
+          If Instr(HelpIndexCache()\name,word2$)
+            numcount = numcount+1
+            WZ_AddRow{"INSTRUCTIONTABLE",HelpIndexCache()\name,HelpIndexCache()\help}
+          End If
+        End If
+      Wend
     End If
     pos = 0
     ;          WZPrint "list",pos,lst,0
@@ -23975,10 +24114,35 @@ RTS
   exit_loadfile:
 RTS
 
+Function.l ab3_IsTokenChar{char.l}
+If char>=@"a" AND char<=@"z" Then Function Return True
+If char>=@"A" AND char<=@"Z" Then Function Return True
+If char>=@"0" AND char<=@"9" Then Function Return True
+If char=@"_" OR char=@"@" OR char=@"`" Then Function Return True
+Function Return False
+End Function
+
+Function.l ab3_InstrToken{code.s,token.s}
+pos.l = Instr(code,token)
+If pos
+If ab3_IsTokenChar{Peek.b(&code+pos-1+FLen(token))} Then pos=0
+If pos>1
+  If ab3_IsTokenChar{Peek.b(&code+pos-1-1)} Then pos=0
+End If
+End If
+Function Return pos
+End Function
+
 
 .build_HelpIndexFile
   DosBuffLen 32000
   CaseSense On
+    #TOKEN_Function  = $8009
+    #TOKEN_Statement = $8008
+    #TOKEN_Object    = $80d7
+    #TOKEN_Macro     = $800d
+    #TOKEN_End       = $8002
+    #TOKEN_Return    = $8007
 
   Statement writeentry{mode$,instruction$}
 
@@ -23986,52 +24150,71 @@ RTS
     If Instr(instruction$,"@H") Then Statement Return
 
     ; -- token return found
-    If Instr(instruction$,Mki$($8007)) Then Statement Return
+    If Instr(instruction$,Mki$(#TOKEN_Return)) Then Statement Return
+
+    ; -- token End found
+    If Instr(instruction$,Mki$(#TOKEN_End)) Then Statement Return
+
+    startpos.l = 0
+    Select mode$
+      Case "FUNC"  : startpos = Instr(instruction$,Mki$(#TOKEN_Function)) +2
+        i3.l = Instr (instruction$,".",startpos)
+        If (i3 < startpos+5) AND (i3 <> 0)
+          startpos = i3+2
+        End If
+
+        If Instr(instruction$,"FAST",startpos)
+          startpos.l = Instr(instruction$,"FAST",startpos) + 4
+        End If
+
+      Case "STAT" : startpos = Instr(instruction$,Mki$(#TOKEN_Statement)) +2
+        If Instr(instruction$,"FAST",startpos)
+          startpos.l = Instr(instruction$,"FAST",startpos) + 4
+        End If
+
+      Case "MACR"     : startpos = Instr(instruction$,Mki$(#TOKEN_Macro))     +2
+    End Select
 
     ; -- get string positions --
-    ; skip token FAST
-    startpos.l = Instr(instruction$,"FAST")
-    If startpos Then instruction$ = Mid$(instruction$,startpos)
-    ; skip space
-    startpos.l = Instr(instruction$," ") + 1
-    instruction$ = Mid$(instruction$,startpos)
-    ; skip typedefinition
-    i3.l = Instr (instruction$,".")
-    If (i3 < 5) AND (i3 <> 0)
-      instruction$ = Mid$(instruction$,i3 + 2)
-    End If
+    instruction$ = dos_Trim{Mid$(instruction$,startpos)}
 
-    ; -- get endposition of instructionname
-    If mode$ = "macro"
-      endpos.l = Instr(instruction$," ",startpos)
-    Else
-      endpos.l = Instr(instruction$,"{",startpos)
-    EndIf
+    endpos.l  =1
+    stopchar.l=False
+    While endpos<=FLen(instruction$) AND stopchar=False
+      If ab3_IsTokenChar{Peek.b(&instruction$+endpos-1)}=False Then stopchar=True:Else endpos+1
+    Wend
 
     ; -- write infos to indexfile
     If endpos <> 0
       funcname$ = Mid$( instruction$ , 1 , endpos - 1)
-      If Right$(funcname$,1)=";" Then funcname$ = UnLeft$(funcname$,1)
-      funcname$ = StripLead$(StrLeft(funcname$,50,32),32)
-      If mode$ = "macro" Then funcname$ = "!" + funcname$
+      ;If Right$(funcname$,1)=";" Then funcname$ = UnLeft$(funcname$,1)
+      ;funcname$ = StripLead$(StrLeft(funcname$,50,32),32)
+      funcname$ = StripLead$(funcname$,32)
+      If mode$ = "MACR" Then funcname$ = "!" + funcname$
 
       description$ = Mid$(instruction$,endpos)
       description$ = StripLead$(description$,32)
       If Left$(description$,1)=";" Then description$ = UnRight$(description$,1)
-
-      NPrint LSet$(mode$,11) + LSet$(funcname$,50) + description$
+      description$ = StripLead$(description$,32)
+      ;NPrint LSet$(mode$,11) + LSet$(funcname$,50) + description$
+      NPrint mode$+"\\09"+funcname$+"\\09"+description$
     End If
   End Statement
 
-  Statement scanfile{filename$}
+  Statement scanfile{rootpath$,filename$}
     functoken$      = Mki$($8009)
     statementtoken$ = Mki$($8008)
     objecttoken$    = Mki$($80d7)
     macrotoken$     = Mki$($800d)
+    endtoken$       = Mki$($8002)
+    returntoken$    = Mki$($8007)
     tok80.s         = Str$($80)
+    fid.l = file_Open{dos_AddPart{rootpath$,filename$},#file_read}
+    If dos_GetExt{filename$}="bb2" Then tokenized.l=True:Else tokenized=False
 
-    If ReadFile(0,filename$)
-      FileInput 0
+    If fid>=0 ; ReadFile(0,filename$)
+      file_Cache{fid}
+      ;FileInput 0
       ; -- get current path
       ;dir_name$ = SPACE$(512)
       ;GetCurrentDirName_ &dir_name$,FLen(dir_name$)
@@ -24043,20 +24226,66 @@ RTS
       ;If LCase$(dir_name$)<>"includes" Then filename$ = dos_AddPart{dir_name$,filename$}
 
       ; -- print filename into indexfile
-      NPrint "file       ",filename$
+      NPrint "FILE\\09",filename$
 
       Repeat
-        a$ = ReadLine$
+        ;code.s = ReadLine$
+        If tokenized
+          code.s = file_ReadBB2Line{fid}
+        Else
+          code.s = file_ReadLine{fid}
+        End If
 
+        maxpos.l = Instr(a$,";")
+        If maxpos = 0 Then maxpos = FLen(code)-1
+
+        ; in case its ASCII...
+        If tokenized=False
+          pos.l = ab3_InstrToken{code,"Function"}
+          If pos
+            code.s = Left$(code,pos-1) + functoken$ + Right$(code,FLen(code)-pos-8+1)
+            If pos<maxpos Then maxpos=pos
+          End If
+
+          pos = ab3_InstrToken{code,"Statement"}
+          If pos
+            code.s = Left$(code,pos-1) + statementtoken$ + Right$(code,FLen(code)-pos-9+1)
+            If pos<maxpos Then maxpos=pos
+          End If
+
+          pos = ab3_InstrToken{code,"Macro"}
+          If pos
+              code.s = Left$(code,pos-1) + macrotoken$ + Right$(code,FLen(code)-pos-5+1)
+              If pos<maxpos Then maxpos=pos
+          End If
+
+          pos = ab3_InstrToken{code,"End "}
+          If pos
+              code.s = Left$(code,pos-1) + endtoken$ + Right$(code,FLen(code)-pos-3+1)
+              If pos<maxpos Then maxpos=pos
+          End If
+
+          pos = ab3_InstrToken{code,"Return"}
+          If pos
+              code.s = Left$(code,pos-1) + returntoken$ + Right$(code,FLen(code)-pos-6+1)
+              If pos<maxpos Then maxpos=pos
+          End If
+        End If
 ;        If Left$(a$,2) = ";/"
 ;          NPrint a$
 ;        Else
-          If Instr(a$,functoken$)<>0      Then writeentry{"function",a$}
-          If Instr(a$,statementtoken$)<>0 Then writeentry{"statement",a$}
-          If Instr(a$,macrotoken$)<>0     Then writeentry{"macro",a$}
+          pos = Instr(code,functoken$)
+          If pos>0 AND pos<=maxpos Then writeentry{"FUNC",code}
+
+          pos = Instr(code,statementtoken$)
+          If pos>0 AND pos<=maxpos Then writeentry{"STAT",code}
+
+          pos = Instr(code,macrotoken$)
+          If pos>0 AND pos<=maxpos Then writeentry{"MACR",code}
+
 ;        EndIf
-      Until Eof(0)<>0
-      CloseFile 0
+      Until file_EOF{fid}
+      file_Close{fid}
     Else
       dummy.l= RTEZRequest( "","Cant open file "+filename$,"ok")
     End If
@@ -24087,13 +24316,19 @@ RTS
       Wend
       If FirstItem(dirs()) Then dirname$ = dirs()\name Else exitscan.l = True
       ChDir (includedir$)
+      subpath.s = ""
       act_file.l = 0
       Repeat
         While MoreEntries
           If (NOT EntryDIR)
-            If (Right$(EntryName$,12) = ".include.bb2")
+            ex.s = dos_GetExt{EntryName$}
+            If (ex="bb2" OR ex="ab2" OR ex="ab3")
               FileOutput 1
-              scanfile{EntryName$}
+              If subpath
+                scanfile{includedir$,dos_AddPart{subpath,EntryName$}}
+              Else
+                scanfile{includedir$,EntryName$}
+              End If
 ;              !cout{"scanned:",EntryName$}
 ;           Else
 ;              !cout{"no include:",EntryName$}
@@ -24106,6 +24341,8 @@ RTS
         Wend
         If dirname$ <> ""
           ChDir dos_AddPart{includedir$,dirname$}
+          ;ChDir (includedir$)
+          subpath = dirname$
 ;          !cout{"chdir:",includedir$+dirname$,"++++++ ",includedir$ +  dirs()\name}
           If NextItem(dirs()) Then dirname$ = dirs()\name Else dirname$ = ""
         Else
@@ -24126,7 +24363,7 @@ RTS
   ;   End If
     CloseFile 1
     WZ_ShowMessage{!TRANS{"Updating Helpindex..."}}
-    TED_CacheHelpIndexFile{HelpIndexFile$}
+    TED_LoadHelpIndexFile{HelpIndexFile$}
     WZ_ShowMessage{!TRANS{"Saving Helpindex to Disc..."}}
     TED_WriteHelpIndexCache{HelpIndexCacheFile$}
     WZ_ShowMessage{!TRANS{"Creating Hashmaps..."}}
