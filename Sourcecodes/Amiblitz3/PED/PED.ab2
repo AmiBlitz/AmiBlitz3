@@ -483,7 +483,8 @@ Function.s TED_GetTokenHelp{*tokeninfo.tokeninfo,tname$}
   lname$ = LCase$(tname$)
   While *tokeninfo
     If LCase$(Peek.s(&*tokeninfo\dat)) = lname$
-      Function Return tname$ + "  ; " + Peek.s(&*tokeninfo\dat+FLen(tname$)+1)
+      ;Function Return tname$ + "  ; " + Peek.s(&*tokeninfo\dat+FLen(tname$)+1)
+      Function Return Peek.s(&*tokeninfo\dat+FLen(tname$)+1)
     End If
     *tokeninfo = *tokeninfo\next_token
   Wend
@@ -638,10 +639,28 @@ Function.s TED_GetMacroHelp{macrobase.l,mname$}
     If StrLower(b$) = mname$
       i.l = Peek.w(*mpointer + 8)
       If i > 90 Then i = 90
-      Function Return "!" + b$ + " ;"+Peek.s(Peek.l(*mpointer + 4))
+      macroP.l = Peek.l(*mpointer + 4)
+      If macroP Then help.s = StripLead$(Peek.s(macroP),32)
+      help = StripLead$(help,@";")
+      Function Return help
     End If
     *mpointer = Peek.l(*mpointer)
   Until *mpointer = 0
+  Function Return ""
+End Function
+
+
+Function.s TED_GetMacroName{macrobase.l,mname$}
+  *mpointer.b = macrobase : mfound.b = False : mcounter.l = 0 : mname$ = StripLead$(StrLower(mname$),Asc("!"))
+;  MOVE.l macrobase,a0:MOVE.l (a0),token@(a5)
+  Repeat
+    b$ = Peek$(*mpointer + 13)
+    If StrLower(b$) = mname$
+      Function Return b$
+    End If
+    *mpointer = Peek.l(*mpointer)
+  Until *mpointer = 0
+  Function Return ""
 End Function
 
 
@@ -15258,7 +15277,8 @@ RTS
 
 .startguide:
   !basic
-  Gosub getactualword
+ ; Gosub getactualword
+  Gosub getstring_new2
   If actualword$<> ""
     Gosub instructionbrowser_startguide
   Else
@@ -15276,27 +15296,50 @@ RTS
   MOVE.l A2,d0 : lineaddr.l = PutD0   ; get pointer to current textline
   already_displayed.b = False
 ;!cout{Hex$(_key)}
-  If (_key=$20) OR (_key = $28) OR (_key = $7b)  ; " " "(" "{"
+  If (_key=$20) OR (_key = $28) OR (_key = $7b) OR (*PreProcessor\tokenFlags[_key&$FF]&#TOKENF_IS); " " "(" "{"
+
     If Peek.w(?comWord_Column) > 0
+
       If WZ_CheckOpen{"WIN_POPUP"} Then Gosub close_popupwindow
-      strline$ = Peeks$(lineaddr,Peek.w(?comWord_Column))
-      slen.w = FLen(strline$) : found.l = False
-      tokname$ = "" : strhelp$ = ""
-      While (slen > 0) AND (found = False)
-        schar$ = Mid$(strline$,slen,1)
-        If (schar$ = " ") OR (schar$="=")
-          found = True
-        Else
-          tokname$ = schar$ + tokname$
-          slen - 1
-        EndIf
-      Wend
-      If tokname$<>"" Then Gosub syntax_help
+      strline$ = Peek.s(lineaddr) ;Peeks$(lineaddr,Peek.w(?comWord_Column))
+      ;slen.w = FLen(strline$) : found.l = False
+      ;Gosub getstring_new2
+      ;tokname$ = actualword$
+      ;error{"Line Pre:"+strline$}
+      ;MaxLen linebuff$ = 256
+      ;preproc_Detokenize{*PreProcessor,&strline$,&linebuff$,FLen(strline$)}
+      ;strline$ = Peek.s(&linebuff$)
+      ;error{"Line Post:"+strline$}
+      tokname$ = preproc_CropToken{*PreProcessor,strline$,Peek.w(?comWord_Column)}
+      If tokname$><""
+        If *PreProcessor\tokenFlags[_key&$FF]&#TOKENF_IS
+          tokname$+Chr$(_key)
+        End If
+      End If
+;      tokname$ = "" : strhelp$ = ""
+;      While (slen > 0) AND (found = False)
+;        schar$ = Mid$(strline$,slen,1)
+;        If (schar$ = " ") OR (schar$="=")
+;          found = True
+;        Else
+;          tokname$ = schar$ + tokname$
+;          slen - 1
+;        EndIf
+;      Wend
+
+;      Gosub getstring_new2
+      If tokname$
+        Gosub syntax_help
+        If strhelp$=""
+          Gosub intellisense
+        End If
+      End If
     EndIf
   Else
     Select _key
     Case $8b ; "HELP"
-      Gosub getactualword_new
+      ;Gosub getactualword_new
+      Gosub getstring_new2
       If NOT already_displayed
         tokname$ = actualword$
         If tokname$ <> ""
@@ -15318,6 +15361,7 @@ RTS
 ;          Gosub open_instructionbrowser
         EndIf
       EndIf
+
      Case $0D ; ENTER
        If Peek.b(?use_intellisense) = 1
          If WZ_CheckOpen{"WIN_POPUP"}
@@ -15353,74 +15397,101 @@ RTS
   !asm
 RTS
 
+Function.s FindTokenHelpStr{tokname$}
+
+  If Left$(tokname$,1) = "!"
+    MOVE.l comPtr_MacroBase,d0 : *macrobase.l = PutD0
+    tokname$ = TED_GetMacroName{*macrobase,tokname$}
+    strhelp$ = tokname$ + " "  + TED_GetMacroHelp{*macrobase,tokname$} + " // Macro"
+  Else
+    MOVE.l comPtr_TokenBase,D0  : *tokenbase.l = PutD0
+    tokid.l = TED_GetTokenID{*tokenbase,tokname$}
+    If tokid>=0
+      tokname$ = TED_GetTokenName{*tokenbase,tokid}
+      libnum.l = TED_GetTokenLibnum{*tokenbase,tokname$}
+      If libnum>=0
+        strhelp$ = tokname$ + " " + TED_GetTokenHelp{*tokenbase,tokname$} + " // BlitzLib: "+TED_GetLibname{libnum}
+      End If
+    Else
+      tokname$ = TED_GetIncludeFunction{tokname$}
+      If tokname$<>""
+        strhelp$ = tokname$ + " " + TED_GetIncludeHelp{tokname$} + " // File: "+TED_GetIncludeName{tokname$}
+      End If
+    End If
+  End If
+  strhelp$ = Replace$(strhelp$,"  "," ")
+  Function Return strhelp$
+End Function
+
 .syntax_help:
     strhelp$ = ""
     If tokname$ <> ""
-      If StrLeft(tokname$,1) = "!"
-        MOVE.l comPtr_MacroBase,d0 : *macrobase.l = PutD0
-        strhelp$= TED_GetMacroHelp{*macrobase,tokname$}
-      Else
-        Select _key
-        Case $20 ; Space pressed, search for tokenhelp
-          MOVE.l comPtr_TokenBase,D0  : *tokenbase.l = PutD0
-          strhelp$ = TED_GetTokenHelp{*tokenbase,tokname$}
-          ; error: hier erscheint immer ein ";" hinter einem eingegeben Token
-          commata.l = Instr(strhelp$,";")
-          strhelp$ = StrLeft(strhelp$,commata-1)+"  "+Mid$(strhelp$,commata+1,Len(strhelp$)-commata+1)
-
-        Case $28 ; "("
-          MOVE.l comPtr_TokenBase,D0  : *tokenbase.l = PutD0
-          strhelp$ = TED_GetTokenHelp{*tokenbase,tokname$}
-          strhelp$ = StrChg(strhelp$,";","")
-
-        Case $7B ; "{"  -> search for includes
-          tokname$ = TED_GetIncludeFunction{tokname$}
-          If tokname$<>""
-            strhelp$ = tokname$ + TED_GetIncludeHelp{tokname$}
-            strhelp$ = StrChg(strhelp$,";","")
-
-            ; replace text in textbuffer
-            ; MOVE.l textbufferaddr,d0
-            ; ADD.w comWord_TextBufferOffset,d0
-            ; ADD.w comWord_ColumnsOffset,d0
-            ; ADD.w comWord_Column,d0
-            ; faddr.l = PutD0
-            ; poke.s faddr-Len(tokname$), tokname$,Len(tokname$)
-          EndIf
-        Case $8b ; just Help
-          MOVE.l comPtr_TokenBase,D0  : *tokenbase.l = PutD0
-          strhelp$ = TED_GetTokenHelp{*tokenbase,tokname$}
-          If strhelp$ = "" Then strhelp$ = TED_GetTokenHelp{*tokenbase,tokname$+"$"}
-
-          If strhelp$ <> ""
-            commata = Instr(strhelp$,";")
-            strhelp$ = StrLeft(strhelp$,commata-1)+"  " + Mid$(strhelp$,commata+1,Len(strhelp$)-commata+1)
-          Else
-            strhelp$ = TED_GetIncludeFunction{tokname$}
-            strhelp$ + TED_GetIncludeHelp{tokname$}
-            strhelp$ = StrChg(strhelp$,";","")
-          EndIf
-          ; kein bekanntes token, Instruction Browser aufmachen
-          If (Len(strhelp$) = Len(tokname$)) OR (strhelp$="")
-            search_instruction$ = tokname$
-            ypos.l = Peek.l (?comLong_DisplayLine)*Peek.w (?fontheight)+(Peek.w (?fontheight)*3)
-            wtemp\ibrowser_x = Peek.w (?comWord_Column)*Peek.w (?fontwidth):wtemp\ibrowser_y = ypos
-            Gosub open_instructionbrowser
-            strhelp$ = Peek$(?str_screentitle)
-          EndIf
-
-        Default
-          strhelp$ = ""
-        End Select
-      EndIf
+      strhelp$ =  FindTokenHelpStr{tokname$}
+;      If StrLeft(tokname$,1) = "!"
+;        MOVE.l comPtr_MacroBase,d0 : *macrobase.l = PutD0
+;        strhelp$= TED_GetMacroHelp{*macrobase,tokname$}
+;      Else
+;        Select _key
+;         Case $20 ; Space pressed, search for tokenhelp
+;           strhelp$ = FindTokenHelpStr{tokname$}
+;
+;        Case $28 ; "("
+;          strhelp$ = FindTokenHelpStr{tokname$}
+;
+;        Case $7B ; "{"  -> search for includes
+;          strhelp$ = FindTokenHelpStr{tokname$}
+;          ;strhelp$ = FindTokenHelpStr{tokname$}
+;          ;tokname$ = TED_GetIncludeFunction{tokname$}
+;          ;If tokname$<>""
+;          ;  strhelp$ = tokname$ + TED_GetIncludeHelp{tokname$}
+;          ;  strhelp$ = StrChg(strhelp$,";","")
+;
+;            ; replace text in textbuffer
+;            ; MOVE.l textbufferaddr,d0
+;            ; ADD.w comWord_TextBufferOffset,d0
+;            ; ADD.w comWord_ColumnsOffset,d0
+;            ; ADD.w comWord_Column,d0
+;            ; faddr.l = PutD0
+;            ; poke.s faddr-Len(tokname$), tokname$,Len(tokname$)
+;          ;EndIf
+;
+;        Case $8b ; just Help
+;          strhelp$ = FindTokenHelpStr{tokname$}
+;          ;MOVE.l comPtr_TokenBase,D0  : *tokenbase.l = PutD0
+;          ;strhelp$ = TED_GetTokenHelp{*tokenbase,tokname$}
+;          ;If strhelp$ = "" Then strhelp$ = TED_GetTokenHelp{*tokenbase,tokname$+"$"}
+;
+;          ;If strhelp$ <> ""
+;          ;  commata.l = Instr(strhelp$,";")
+;          ;  strhelp$ = StrLeft(strhelp$,commata-1)+"  " + Mid$(strhelp$,commata+1,Len(strhelp$)-commata+1)
+;          ;Else
+;          ;  strhelp$ = TED_GetIncludeFunction{tokname$}
+;          ;  strhelp$ + TED_GetIncludeHelp{tokname$}
+;          ;  strhelp$ = StrChg(strhelp$,";","")
+;          ;EndIf
+;          ; kein bekanntes token, Instruction Browser aufmachen
+;          ;If (Len(strhelp$) = Len(tokname$)) OR
+;          If (strhelp$="")
+;            search_instruction$ = tokname$
+;            ypos.l = Peek.l (?comLong_DisplayLine)*Peek.w (?fontheight)+(Peek.w (?fontheight)*3)
+;            wtemp\ibrowser_x = Peek.w (?comWord_Column)*Peek.w (?fontwidth):wtemp\ibrowser_y = ypos
+;            Gosub open_instructionbrowser
+;            strhelp$ = Peek$(?str_screentitle)
+;          EndIf
+;
+;        Default
+;          strhelp$ = ""
+;          strhelp$ = FindTokenHelpStr{tokname$}
+;        End Select
+;      EndIf
     EndIf
 
-    If Len(strhelp$) < 3
+    If strhelp$=""
       ; keine Hilfe und kein Word unter Cursor
-      strhelp$ = Peek$(?str_screentitle)
+      PrintScreenTitle{Peek$(?str_screentitle)}
+    Else
+      PrintScreenTitle{strhelp$}
     EndIf
-;    !cout{strhelp$}
-    PrintScreenTitle{strhelp$}
 RTS
 
 .intellisense:
@@ -15428,8 +15499,10 @@ RTS
   If Peek.b(?use_intellisense) = 1
     If Peek.w(?comWord_Column) > 1
       ; -- get everything left of cursor until " " or "="
+      If lineaddr.l
+
       strline$ = Peeks$(lineaddr,Peek.w(?comWord_Column))
-      slen.w = Len(strline$) : found = False
+      slen.w = Len(strline$) : found.l = False
       tokname$ = "" : strhelp$ = ""
       While (slen > 0) AND (found = False)
         schar$ = Mid$(strline$,slen,1)
@@ -15440,6 +15513,7 @@ RTS
           slen - 1
         EndIf
       Wend
+      End If
 
       tokname$ + Chr$(_key)
       ; -- search for any text that equals entered text
@@ -20079,6 +20153,14 @@ RTS
 RTS
 
 
+.getstring_new2
+  *textline.l = TEDGetCurrentLine{} + 9
+  *detokened.l = TEDDetoke{*textline}
+  text$ = Peek$(*detokened)
+  cursorpos.l = Peek.w(?comWord_Column)
+  actualword$ = preproc_CropToken{*PreProcessor,text$,cursorpos}
+RTS
+
 
 
 .getstring_new
@@ -20095,19 +20177,21 @@ RTS
   tlen = FLen(text$)
   nextpos.l = cursorpos
   backpos.l = cursorpos - 1
+  ;error{"Search here: "+text$}
   Repeat
     aword$ = char$ + aword$
     char$ = Mid$(text$,backpos,1)
     backpos - 1
-  Until (char$=" ") OR (char$="(") OR (char$="{") OR (char$=Chr$(34)) OR (char$ = "{") OR (char$="}") OR (char$=",") OR (backpos<0)
+  Until (char$=" ") OR (char$="(") OR (char$=")") OR (char$="{") OR (char$=Chr$(34)) OR (char$ = "{") OR (char$="}") OR (char$=",") OR (backpos<0)
   char$ = ""
 
   Repeat
     aword$ = aword$ + char$
     char$ = Mid$(text$,nextpos,1)
     nextpos + 1
-  Until (char$=" ") OR (char$=")") OR (char$="}") OR (char$=Chr$(34)) OR (char$ = "{") OR (char$="}") OR (char$=",") OR (nextpos>(tlen+1))
+  Until (char$=" ") OR (char$=")") OR (char$="(") OR (char$="}") OR (char$=Chr$(34)) OR (char$ = "{") OR (char$="}") OR (char$=",") OR (nextpos>(tlen+1))
   actualword$ = aword$
+  ;error{"Found: "+actualword$}
 RTS
 
 .getstring:
@@ -21131,7 +21215,7 @@ RTS
   !basic
   ;TEDSetCurrentLine_ ?comPtr_CurrentSourceLine
   TEDSetCurrentLine{?comPtr_CurrentSourceLine}
-  Gosub getstring_new
+  Gosub getstring_new2
   word1$ = dos_Trim{actualword$}
   ;  !cout{word1$}
   ; -- searching in HelpIndexFile for macro or function name
@@ -21241,7 +21325,8 @@ RTS
 
 .diag_redraw
   If diag = 0 Then Return
-  Gosub getactualword
+  ;Gosub getactualword
+  Gosub getstring_new2   ; getstring_new2 should be better (uses preprocessor)
   w$ = actualword$
   tokname$ = actualword$
   res$ = ""
@@ -22384,9 +22469,9 @@ Return
   myhelpdir$ = helpdir$
 
   If tokid <= 0
-    tokid = TED_GetTokenID{*tokenbase,tokname$+"$"}
-    libnumber = TED_GetTokenLibnum{*tokenbase,tokname$+"$"}
-    If tokid>0 Then tokname$ = tokname$ + "$"
+    tokname$ = Left$(tokname$,FLen(tokname$)-1)
+    tokid = TED_GetTokenID{*tokenbase,tokname$}
+    libnumber = TED_GetTokenLibnum{*tokenbase,tokname$}
   EndIf
 
   If tokid>0
