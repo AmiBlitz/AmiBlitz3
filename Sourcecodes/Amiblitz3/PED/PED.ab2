@@ -85,7 +85,7 @@ CNIF #use_NTUI
   XINCLUDE "ped.ntui.bb2"
 CEND
 XINCLUDE "translation.include.bb2"
-
+XINCLUDE "convert.include.bb2"
 #MAX_STRINGSIZE = 512
 #MAX_TEMPLATES  = 16
 
@@ -5931,17 +5931,26 @@ RTS
   JSR switch_cursordisplay
 
  JL_0_2BD4:
-    MOVEQ #0,d0
+
+    ; Thilo's integer code (>65536 lines possible!)
     !basic
-
-    If *vertiprop.Gadget Then GetAttr_ #PGA_Top    ,*vertiprop,&pos_vprop.l
-    If *vertiprop.Gadget Then GetAttr_ #PGA_Visible,*vertiprop,&pos_vvis.l
-
-    ;yadd.q = (yact/ymax) * yvis
-    Poke.w ?pos_vertiprop,pos_vprop ;+ yadd
-;    !cout{"vertical scroller pressed:",pos_vprop,yadd,pos_vvis}
+    #max_slider_res = 32768
+    If *vertiprop.Gadget
+      GetAttr_ #PGA_Top    ,*vertiprop,&pos_vprop.l
+      totallines.l = Peek.l(?comLong_TotalLines)
+      realline.l   = con_Mul48{pos_vprop,totallines,#max_slider_res }
+      realline + Peek.l(?comLong_DisplayLine)
+    Else
+      realline = 0
+    End If
+    GetD0 realline
     !asm
-    MOVE.w pos_vertiprop,D0
+
+    ; old 16 bit code
+    ;MOVEQ #0,d0
+    ;MOVE.w pos_vertiprop,D0
+
+    ; Bernd's float code
 ;    fmove.l d0,fp0
 ;    fmul.l comLong_TotalLines,fp0
 ;    fdiv.s #65536,fp0
@@ -5952,6 +5961,7 @@ RTS
     ;MULU.l d1,d0
     ;LSR.l #8,d0
     ;LSR.l #3,d0
+
     CMP.l comLong_LinePosX,D0
     BEQ.w JL_0_2C02
       MOVE.l D0,comLong_LinePosX
@@ -5967,8 +5977,25 @@ RTS
   BEQ.b JL_0_2BD4
 
   JSR switch_cursordisplay
-  MOVEQ #0,d0
-  MOVE.w pos_vertiprop,D0
+
+  ; Thilo's integer code (>65536 lines possible!)
+  !basic
+  If *vertiprop.Gadget
+    GetAttr_ #PGA_Top    ,*vertiprop,&pos_vprop.l
+    totallines.l = Peek.l(?comLong_TotalLines)
+    realline.l = con_Mul48{pos_vprop,totallines,#max_slider_res }
+    realline + Peek.l(?comLong_DisplayLine)
+  Else
+    realline = 0
+  End If
+  GetD0 realline
+  !asm
+
+  ; old 16 bit code
+  ;MOVEQ #0,d0
+  ;MOVE.w pos_vertiprop,D0
+
+  ; Bernd's float code
 ;  fmove.l d0,fp0
 ;  fmul.l comLong_TotalLines,fp0
 ;  fdiv.s #65536,fp0
@@ -5979,6 +6006,7 @@ RTS
   ;MULU.l d1,d0
   ;LSR.l #8,d0
   ;LSR.l #3,d0
+
 BRA.w gotoline
 
 
@@ -14815,20 +14843,39 @@ RTS
 .update_vertscroller:
   BSR.b print_actualsourceline
   !basic
-  ypot.l = PutD0
-  MOVE.l comLong_DisplayLineOffset,d0
-  ADD.l comLong_DisplayLine,d0
-  yact.l = PutD0
-  MOVE.l comLong_TotalLines,d0
-  ymax_slider.l = PutD0 + 8
-  MOVE.l viewablelines,d0
-  yvis.l = PutD0
-  SetGadgetAttrsA_ *vertiprop,*sourcewin,0,Tags(@@;#PGA_VertBody,ypot,@@
-                                            #PGA_HorizPot,-1,@@
-                                            #PGA_HorizBody,-1,@@
-                                            #PGA_Top,yact,@@
-                                            #PGA_Total,ymax_slider,@@
-                                            #PGA_Visible,yvis)
+
+  ; Honitos' old code
+;  ypot.l = PutD0
+;  MOVE.l comLong_DisplayLineOffset,d0
+;  ;ADD.l comLong_DisplayLine,d0
+;  yact.l = PutD0
+;  MOVE.l comLong_TotalLines,d0
+;  ymax_slider.l = PutD0 ;+ 8
+;  MOVE.l viewablelines,d0
+;  yvis.l = PutD0
+;  SetGadgetAttrsA_ *vertiprop,*sourcewin,0,Tags(@@;#PGA_VertBody,ypot,@@
+;                                            #PGA_HorizPot,-1,@@
+;                                            #PGA_HorizBody,-1,@@
+;                                            #PGA_Top,yact,@@
+;                                            #PGA_Total,ymax_slider,@@
+;                                            #PGA_Visible,yvis)
+;
+
+  ; Thilo's new code for fix slider base
+  MOVE.l comLong_DisplayLineOffset,d0  : slider_top.l     = PutD0
+  MOVE.l comLong_TotalLines,d0         : slider_total.l   = PutD0
+  MOVE.l viewablelines,d0              : slider_visible.l = PutD0
+
+  ;/ scale
+  If slider_total>0
+    slider_visible = con_Mul48{slider_visible,#max_slider_res,slider_total} : If slider_visible<1 Then slider_visible=1
+    slider_top     = con_Mul48{slider_top    ,#max_slider_res,slider_total}
+    slider_total   = #max_slider_res
+    SetGadgetAttrsA_ *vertiprop,*sourcewin,0,Tags(@@
+                                            #PGA_Total  ,slider_total,@@
+                                            #PGA_Top    ,slider_top,@@
+                                            #PGA_Visible,slider_visible)
+  End If
   !asm
 RTS
 
@@ -24822,7 +24869,7 @@ deftypefound          Ds.w 1
 bold_tokens           Dc.w 0
 italic_remarks        Dc.w 0
 onlinehelp            Dc.b 1
-pos_vertiprop         Ds.w 1
+;pos_vertiprop         Ds.w 1
 pos_horizprop         Ds.w 1
 blockmarking          Dc.l 0
 correct_functions     Dc.b 0
