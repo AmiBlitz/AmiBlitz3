@@ -1,0 +1,2613 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "ram:"
+; ExeFile         = "NTUIDemo"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 1
+; Version         = 0.1.0
+; NumberOfBuilds  = 1160
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 80000
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 2146
+; CursorColumn    = 36
+; LabelSearch     = "cal"
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 5
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 5
+; Max GadgetList  = 5
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 20
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 5
+; Max BlitzFont   = 4
+; Max GTList      = 20
+; /XTRA
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Name: ntui.include                                                          /
+;/                                                                             /
+;/ Platforms: Classic, WinUAE, Amithlon, MorphOS, AmigaOS4                     /
+;/                                                                             /
+;/ Date: 06/01/2009                                                            /
+;/                                                                             /
+;/ Author: Thilo Koehler                                                       /
+;/                                                                             /
+;/ Requirements:  Amiblitz3                                                    /
+;/                                                                             /
+;/ Purpose:                                                                    /
+;/ Implementation of NTUI Toolkit (New Thilo's User Interface)                 /
+;/                                                                             /
+;/ Abstract:                                                                   /
+;/ * no abstract available *                                                   /
+;/                                                                             /
+;/ User Constants:                                                             /
+;/ #TUIINQUEUE_MAX = 16 ; define the maximum events in input queue                                                          /
+;/ #TUI_DEBUG      = 0  ; define debug mode                                         /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+optimize 7
+Syntax 2
+#TUI_DEBUG = 0;1
+
+XINCLUDE "NTUI/definitions.ab3"
+
+;/* get the window of a tuiObject, if it has any */
+Function.l FAST ntui_FindObjectWindow{*tui.tuiObject}
+  !_ASSERT{*tui}
+
+  *tuiWindow.tuiWindow = #NULL
+  breakme.l = False
+
+  Repeat
+    If *tui
+      If *tui\typeID = #TUIOBJ_WINDOW Then *tuiWindow = *tui : breakme=True
+      *tui = *tui\parent
+    Else
+      breakme=True
+    End If
+
+  Until breakme
+
+  Function Return *tuiWindow
+End Function
+
+
+;/* get the rastport of a tuiObject */
+Function.l FAST ntui_ObtainRastPort{*tui.tuiObject}
+  !_ASSERT{*tui}
+
+  *rp.RastPort = #NULL
+
+  *tuiWindow.tuiWindow = ntui_FindObjectWindow{*tui}
+  If *tuiWindow
+    If *tuiWindow\win
+      ObtainSemaphore_ *tuiWindow\lock
+      *rp = *tuiWindow\win\RPort
+    End If
+  Else
+    ObtainSemaphore_ *tui\tuiEngine\lock
+    *rp = *tui\tuiEngine\buildRP
+  End If
+
+  Function Return *rp
+End Function
+
+
+;/* release the rastport of a tuiObject */
+Statement FAST ntui_ReleaseRastPort{*tui.tuiObject}
+  !_ASSERT{*tui}
+
+  *tuiWindow.tuiWindow = ntui_FindObjectWindow{*tui}
+  If *tuiWindow
+    If *tuiWindow\win
+      ReleaseSemaphore_ *tuiWindow\lock
+    End If
+  Else
+    ReleaseSemaphore_ *tui\tuiEngine\lock
+  End If
+
+End Statement
+
+
+;/ include utility functions */
+XINCLUDE "mousepointer.ab3"
+XINCLUDE "tempbuffer.ab3"
+XINCLUDE "png.ab3"
+XINCLUDE "bitmap.ab3"
+XINCLUDE "border.ab3"
+XINCLUDE "asl.ab3"
+XINCLUDE "arexx.ab3"
+XINCLUDE "global.ab3"
+XINCLUDE "drawing.ab3"
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _ntui_FreeObject {*tui.tuiObject}                                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ private: free a tui object and all children                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tui.tuiObject    : tuiObject to free                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_FreeObject{*tui.tuiObject}
+  !_ASSERT{*tui}
+
+  If *tui\Deinit Then !_CallFuncPointer{*tui\Deinit,ret.l,*tui}
+
+  While (*tui\child)      ; free all children
+    ntui_FreeObject{*tui\child}
+  Wend
+  If *tui\child Then error{"\\__THIS_FUNCTION: Tui object still has children after free! typeID="+Str$(*tui\typeID)+"!"} : Statement Return
+
+  If *tui\prev  Then *tui\prev\next_ = *tui\next_   ; relink previous
+  If *tui\next_ Then *tui\next_\prev = *tui\prev    ; relink next
+
+  If *tui\parent                                    ; relink parent
+    If *tui\parent\child = *tui
+      *tui\parent\child = *tui\prev
+      If *tui\parent\child = #NULL Then *tui\parent\child = *tui\next_  ;: *tui\next_\parent = *tui\parent
+    End If
+  End If
+
+  str_Free{&*tui\string}
+  str_Free{&*tui\help}
+  str_Free{&*tui\nameID}
+  str_Free{&*tui\onClick}
+  str_Free{&*tui\onMouseOver}
+  str_Free{&*tui\onDoubleClick}
+  str_Free{&*tui\onTouch}
+  str_Free{&*tui\onRelease}
+  str_Free{&*tui\onKey}
+  str_Free{&*tui\onBeginRefresh}
+  str_Free{&*tui\onRefresh}
+  str_Free{&*tui\onFocus}
+  str_Free{&*tui\onLoseFocus}
+  str_Free{&*tui\onHelp}
+
+  If *tui\fgImage Then ntui_FreeTBImage{*tui\fgImage}  : *tui\fgImage = #NULL
+  If *tui\bgImage Then ntui_FreeTBImage{*tui\bgImage}  : *tui\bgImage = #NULL
+
+  FreeVec_ *tui
+
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = _ntui_GetMinSize {*tui.tuiObject,*rp.RastPort}           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ private: calculate the minimum size needed by the tui object            /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tui.tuiObject  : ???                                                   /
+;/ - *rp.RastPort    : ???                                                     /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l _ntui_CalculateMinSize{*tui.tuiObject,*rp.RastPort}
+  !_ASSERT{*tui}
+  !_ASSERT{*rp}
+
+  initsize.tuiPixel\x = *tui\minsize\x,*tui\minsize\y
+  If (*tui\CalculateMinSize)
+    !_CallFuncPointer{*tui\CalculateMinSize,ret.l,*tui,*rp}
+  Else
+    _ntui_GetBorderSize{*tui\tuiEngine,*tui\borderType,*tui\flags,*tui\border}
+    *tui\minsize\x = *tui\border\left + *tui\border\right + *tui\padding\left + *tui\padding\right
+    *tui\minsize\y = *tui\border\top  + *tui\border\bottom+ *tui\padding\top  + *tui\padding\bottom
+  End If
+
+  If initsize\x>*tui\minsize\x Then *tui\minsize\x = initsize\x
+  If initsize\y>*tui\minsize\y Then *tui\minsize\y = initsize\y
+
+  Function Return *tui\minsize
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: ntui_Draw {*tui.tuiObject,*rp.RastPort}                             /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Draw a tuiObject into the given rastport.
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tui.tuiObject  : tuiObject                                                   /
+;/ - *rp.RastPort    : destination rastport                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _ntui_Draw{*tui.tuiObject,*rp.RastPort}
+  !_ASSERT{*tui}
+  !_ASSERT{*rp}
+
+  If *tui\Draw Then !_CallFuncPointer{*tui\Draw,res.l,*tui,*rp}
+
+End Statement
+
+Statement _ntui_RestoreBG{*tui.tuiObject,*rp.RastPort}
+  !_ASSERT{*tui}
+  !_ASSERT{*rp}
+
+  If *tui\typeID=#TUIOBJ_ENGINE Then Statement Return
+
+  If *tui\typeID><#TUIOBJ_WINDOW
+    If *tui\parent
+      _ntui_RestoreBG{*tui\parent,*rp}
+    End If
+  End If
+
+  If (*tui\flags&#TUIF_ONSCREEN)
+    _ntui_Draw{*tui,*rp}
+  End If
+
+End Statement
+
+Statement _ntui_Redraw2{*tui.tuiObject,*rp.RastPort}
+  !_ASSERT{*tui}
+  !_ASSERT{*rp}
+
+  If (*tui\flags&#TUIF_ONSCREEN=0) Then Statement Return
+
+  ;If (*tui\flags&#TUIF_DIRTY)
+    _ntui_Draw{*tui,*rp}
+    *tui\flags = (*tui\flags | #TUIF_DIRTY) - #TUIF_DIRTY
+  ;End If
+
+  *tui = *tui\child
+  While (*tui><#NULL)
+    If (*tui\flags&#TUIF_ONSCREEN) Then _ntui_Redraw2{*tui,*rp}
+    *tui = *tui\next_
+  Wend
+
+End Statement
+
+
+; re-draw a tuiObject and recursively all its child objects dependent on the #TUIF_DIRTY flag.
+; The tuiObject must be visible, otherwise it will be ignored.
+Statement _ntui_Redraw{*tui.tuiObject,*rp.RastPort}
+  !_ASSERT{*tui}
+  !_ASSERT{*rp}
+
+  If (*tui\flags&#TUIF_ONSCREEN=0) Then Statement Return
+
+  If (*tui\flags&#TUIF_DIRTY)
+    If *tui\typeID><#TUIOBJ_WINDOW
+      If *tui\parent
+        ntui_SetClip{*rp,*tui\bbox}
+        _ntui_RestoreBG{*tui\parent,*rp}
+        ntui_RemClip{*rp}
+      End If
+    End If
+
+    _ntui_Draw{*tui,*rp}
+    *tui\flags = (*tui\flags | #TUIF_DIRTY) - #TUIF_DIRTY
+
+    *tui = *tui\child
+    While (*tui><#NULL)
+      If (*tui\flags&#TUIF_ONSCREEN) Then _ntui_Redraw2{*tui,*rp}
+      *tui = *tui\next_
+    Wend
+  End If
+End Statement
+
+
+; /* calculate the layout of a tui Object and all its children */
+Statement _ntui_Layout{*tui.tuiObject,*rp.RastPort,*bbox.tuiRect}
+  !_ASSERT{*tui}
+  !_ASSERT{*rp}
+  ; !_ASSERT{*bbox} <= might be NULL if not defined yet!
+
+  *tui\flags = *tui\flags | (#TUIF_ONSCREEN|#TUIF_DIRTY)
+
+  If (*tui\Layout)
+    !_CallFuncPointer{*tui\Layout,ret.l,*tui,*rp,*bbox}
+  Else ; default layout function
+    If *bbox
+      !tuiCopyRect{*tui\bbox,*bbox}
+    End If
+    !tuiRemBorder{*tui\ibox,*tui\bbox,*tui\border}
+    !tuiRemBorder{*tui\cbox,*tui\ibox,*tui\padding}
+  End If
+
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = ntui_GetObjectByID {*tui.tuiObject,@userID.l,@typeID.l:: /
+;/ ,@notify.l}                                                                 /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Find a tui object by userID
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tui.tuiObject : tuiObject from were to start the search (typically a tuiEngine or tuiWindow)                                                   /
+;/ - userID.l       : userID of the tuiObject                                                         /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l       : pointer to the tuiObject or NULL if not found                                                       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+;Function.l ntui_FindObjectByID{*tui.tuiObject,userID.l}
+;  !_ASSERT{*tui}
+;
+;  If *tui\userID=userID Then Function Return *tui
+;
+;  *tui = *tui\child
+;  While (*tui><#NULL)
+;    *tuifind.tuiObject = ntui_FindObjectByID{*tui,userID}
+;    If *tuifind Then Function Return *tuifind
+;    *tui=*tui\next_
+;  Wend
+;
+;  Function Return #NULL
+;
+;End Function
+
+Function.l ntui_FindObjectByID{*tui.tuiObject,nameID.s}
+  !_ASSERT{*tui}
+
+  If (str_Comp{*tui\nameID,&nameID-4}=0) Then Function Return *tui
+
+  *tui = *tui\child
+  While (*tui><#NULL)
+    *tuifind.tuiObject = ntui_FindObjectByID{*tui,nameID}
+    If *tuifind Then Function Return *tuifind
+    *tui=*tui\next_
+  Wend
+
+  Function Return #NULL
+
+End Function
+
+
+;Function.l ntui_String2ID{*tuiEngine.tuiEngine, stringId.s}
+;
+;  slen.l = FLen(stringId)
+;
+;  If (*tuiEngine\idL)
+;    For id.l=0 To *tuiEngine\idN-1
+;      *str.str = *tuiEngine\idL + id*SizeOf.str
+;      If (*str\len = slen)
+;        stringID2.s = str_Read{&*str}
+;        If stringID2 = stringID Then Function Return id+1
+;      End If
+;    Next
+;  End If
+;
+;  !_EXPAND{*tuiEngine\id}
+;
+;End Function
+
+Function.l ntui_FindPrevObject{*current.tuiObject}
+
+  While *current><#NULL
+    If *current\child            ; descend
+      *current = *current\child
+      While *current\next_ : *current=*current\next_ : Wend ; go to the last child
+      Function Return *current
+    Else
+      If *current\prev
+        Function Return *current\prev  ; go side
+      Else
+        While *current\parent><#NULL ; go up
+          *current = *current\parent
+          If *current\prev
+            Function Return *current\prev  ; go side
+          End If
+        Wend
+        *current=#NULL
+      End If
+    End If
+  Wend
+
+  Function Return *current
+
+End Function
+
+
+Function.l ntui_FindNextObject{*current.tuiObject}
+
+  While *current><#NULL
+    If *current\child            ; descend
+      Function Return *current\child
+    Else
+      If *current\next_
+        Function Return *current\next_  ; go side
+      Else
+        While *current\parent><#NULL
+          *current = *current\parent
+          If *current\next_
+            Function Return *current\next_  ; go side
+          End If
+        Wend
+        *current=#NULL
+      End If
+    End If
+  Wend
+
+  Function Return *current
+
+End Function
+
+
+Statement ntui_BeginBuild{*tuiParent.tuiObject}
+  ObtainSemaphore_ tuiGlobal\buildHelper\lock
+
+  If *tuiParent
+    tuiGlobal\buildHelper\tuiEngine = *tuiParent\tuiEngine
+  Else
+    tuiGlobal\buildHelper\tuiEngine = #NULL
+  End If
+  tuiGlobal\buildHelper\tuiParent   = *tuiParent
+  tuiGlobal\buildHelper\tuiCurrent  = #NULL
+  tuiGlobal\buildHelper\tuiPrev     = #NULL
+  tuiGlobal\buildHelper\windowDepth = 0
+  tuiGlobal\buildHelper\tuiRootWin  = #NULL
+
+End Statement
+
+
+Statement ntui_EndBuild{}
+  tuiGlobal\buildHelper\tuiEngine   = #NULL
+  tuiGlobal\buildHelper\tuiParent   = #NULL
+  tuiGlobal\buildHelper\tuiCurrent  = #NULL
+  tuiGlobal\buildHelper\tuiPrev     = #NULL
+  tuiGlobal\buildHelper\windowDepth = 0
+  tuiGlobal\buildHelper\tuiRootWin  = #NULL
+
+  ReleaseSemaphore_ tuiGlobal\buildHelper\lock
+
+End Statement
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = ntui_GetObjectByID {*tui.tuiObject,@userID.l,@typeID.l:: /
+;/ ,@notify.l}                                                                 /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Find a tui object by userID, optionally add typeID and notify value for more restricted search */    /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tui.tuiObject : tuiObject from were to start the search (typically a tuiEngine or tuiWindow)                                                   /
+;/ - userID.l       : userID of the tuiObject                                                         /
+;/ - typeID.l       : typeID of the tuiObject                                                         /
+;/ - notify.l       : notify value of the tuiObject                                                         /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l       : pointer to the tuiObject or NULL if not found                                                       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+;Function.l _ntui_GetObjectByID{*tui.tuiObject,*objID.str}
+;!_ASSERT{*tui}
+;If str_Comp{*tui\objID,*objID}=0 Then Function Return *tui
+;*tui = *tui\child
+;While *tui><#NULL
+;  *tuifind.tuiObject = _ntui_GetObjectByID{*tui,*objID}
+;  If *tuifind Then Function Return *tuifind
+;  *tui=*tui\next_
+;Wend
+;Function Return #NULL
+;End Function
+;
+;; Amiblitz Stub
+;Function.l ntui_GetObjectByID{*tui.tuiObject,userID.s}
+;str_Write{&*userID.str,userID}
+;*tui = _ntui_GetObjectByID{*tui,*userID}
+;str_Free{&*userID}
+;Function Return *tui
+;End Function
+
+XINCLUDE "event.ab3"
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: ntui_SetFlags {flags.l,@nochildren.l,@*tui.tuiObject}               /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Set flags of a tuiObject                              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - flags.l        : tuiFlags to set (#TUIF_...)                                                         /
+;/ - nochildren.l   : if false, the flags are recursively set for all its children tuiObjects                                                     /
+;/ - *tui.tuiObject : tuiObject, if not during build-time                                                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_SetFlags{flags.l,@nochildren.l,@*tui.tuiObject}
+If *tui=#NULL OR *tui=-1 Then *tui=tuiGlobal\buildHelper\tuiCurrent
+If *tui=#NULL Then Statement Return
+*tui\flags|flags
+If nochildren=False
+  *tui = *tui\child
+  While *tui><#NULL
+    ntui_SetFlags{flags,nochildren,*tui}
+    *tui = *tui\next_
+  Wend
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: ntui_ClearFlags {flags.l,@nochildren.l,@*tui.tuiObject}             /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Reset flags of a tui object                          /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - flags.l        : tuiFlags to reset (#TUIF_...)                                                         /
+;/ - nochildren.l   : if false, the flags are recursively set for all its children tuiObjects                                                     /
+;/ - *tui.tuiObject : tuiObject, if not during build-time                                                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_ClearFlags{flags.l,@nochildren.l,@*tui.tuiObject}
+If *tui=#NULL OR *tui=-1 Then *tui=tuiGlobal\buildHelper\tuiCurrent
+If *tui=#NULL Then Statement Return
+*tui\flags = (*tui\flags|flags) - flags
+If nochildren=False
+  *tui = *tui\child
+  While *tui><#NULL
+    ntui_ClearFlags{flags,nochildren,*tui}
+    *tui = *tui\next_
+  Wend
+End If
+End Statement
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: ntui_Refresh {*tui.tuiObject}                                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Make a tuiObject dirty, so that it need refresh.
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tui.tuiObject    : tuiObject to refresh                                                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_Refresh{*tui.tuiObject}
+;If ((*tui\flags&(#TUIF_ONSCREEN|#TUIF_DIRTY))=#TUIF_ONSCREEN )
+;If (*tui\flags&(#TUIF_DIRTY)=0)
+;  *tui\flags|#TUIF_DIRTY
+  ntui_SetFlags{#TUIF_DIRTY,False,*tui}
+  ntui_PostEvent{*tui,#TUIEV_REFRESH}
+;End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: ntui_SetFocus {*tui.tuiObject}                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Set the foucs to a given tuiObject.
+;/ The tuiObject will receive the user input then. Most tuiObjects change their visual appearance slightly.                                                /
+;/ Note: This is the same as if the tuiObject was hit with the mouse. If the user selects another tuiObject, the foucs is gone.
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tui.tuiObject    : tuiObject                                                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_SetFocus{*tuiEngine.tuiEngine,*tui.tuiObject}
+!_ASSERT{*tuiEngine}
+If *tui=*tuiEngine\focus Then Statement Return ; has already the focus
+
+If *tuiEngine\focus ; remove the focus
+  *tuiEngine\focus\flags|#TUIF_FOCUS - #TUIF_FOCUS
+  ntui_Refresh{*tuiEngine\focus}
+  *tuiEngine\focus = #NULL
+End If
+
+If *tui ; set the focus
+  If ((*tui\flags&#TUIF_DISABLED)=0)
+    *tuiEngine\focus = *tui
+    *tuiEngine\focus\flags|#TUIF_FOCUS
+    ntui_Refresh{*tuiEngine\focus}
+    *tuiWindow.tuiWindow = ntui_FindObjectWindow{*tui}
+    If *tuiWindow Then *tuiWindow\lastFocus = *tui
+  End If
+End If
+End Statement
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _ntui_SetMover {*tuiWindow.tuiWindow,*tui.tuiObject}                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ private
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tuiWindow.tuiWindow    : ???                                             /
+;/ - *tui.tuiObject    : ???                                                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _ntui_SetMover{*tuiEngine.tuiEngine,*tui.tuiObject}
+!_ASSERT{*tuiEngine}
+If *tui=*tuiEngine\mover Then Statement Return ; has already the mover
+
+*tuiEngine\restingTime=0
+If *tuiEngine\mover
+  *tuiEngine\mover\flags|#TUIF_MOVER - #TUIF_MOVER
+  ntui_Refresh{*tuiEngine\mover}
+  *tuiEngine\mover = #NULL
+End If
+
+If *tui
+  If ((*tui\flags&#TUIF_WANTMOVER)><0)
+   *tuiEngine\mover = *tui
+   *tuiEngine\mover\flags|#TUIF_MOVER
+    ntui_Refresh{*tuiEngine\mover}
+  End If
+  *tuiWindow.tuiWindow = ntui_FindObjectWindow{*tui}
+  If *tuiWindow
+    _ntui_UsePointer{*tuiWindow,*tui\pointerID}
+  End If
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _ntui_PropagateBind {*tuiMaster.tuiObject}                          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ private                                                                     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tuiMaster.tuiObject    : ???                                             /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _ntui_PropagateBind{*tuiMaster.tuiObject,bindEvent.l,value.l,*string.str}
+*tui.tuiObject =*tuiMaster\bind
+While *tui><#NULL AND *tui><*tuiMaster
+  *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiMaster,bindEvent}
+  *tuiEvent\value = value
+  If *string Then str_WritePtr{&*tuiEvent\string,&*string\str,*string\size}
+  If *tui\DispatchEvent Then !_CallFuncPointer{*tui\DispatchEvent,done.w,*tui,*tuiEvent}
+  If done=False Then _ntui_DestroyEvent{*tuiEvent}
+  *tui=*tui\bind
+Wend
+End Statement
+
+
+Statement _ntui_PropagateBindxxx{*tuiMaster.tuiObject}
+If *tuiMaster\bind=#NULL Then Statement Return
+bindFlags.l = #TUIBIND_ABLE
+If (*tuiMaster\flags&#TUIF_DISABLED) Then ableMaster.l=0:Else ableMaster=1
+CNIF @#TUIINC
+Select *tuiMaster\typeID
+  Case #TUIOBJ_SLIDER   : valueMaster.l  = *tuiMaster\value             : bindFlags | #TUIBIND_VALUE
+  Case #TUIOBJ_SCROLLER
+    *tuiScroller.tuiScroller  = *tuiMaster
+    If *tuiScroller\orientation=#TUIORIENT_HORIZONTAL Then bindFlags | #TUIBIND_HSCROLL : topH.l = *tuiScroller\obj\value : visibleH.l = *tuiScroller\visible : totalH.l = *tuiScroller\total
+    If *tuiScroller\orientation=#TUIORIENT_VERTICAL   Then bindFlags | #TUIBIND_VSCROLL : topV.l = *tuiScroller\obj\value : visibleV.l = *tuiScroller\visible : totalV.l = *tuiScroller\total
+  Case #TUIOBJ_VIEW
+    *tuiView.tuiView = *tuiMaster
+    bindFlags | #TUIBIND_HSCROLL : topH.l = *tuiView\offsetH : visibleH.l = *tuiView\visibleH : totalH.l = *tuiView\totalH
+    bindFlags | #TUIBIND_VSCROLL : topV.l = *tuiView\offsetV : visibleV.l = *tuiView\visibleV : totalV.l = *tuiView\totalV
+  Case #TUIOBJ_LISTVIEW
+    *tuiListView.tuiListView = *tuiMaster
+    bindFlags | #TUIBIND_HSCROLL : topH.l = *tuiListView\offset  : visibleH.l = *tuiListView\visibleWidth : totalH.l = *tuiListView\totalWidth
+    bindFlags | #TUIBIND_VSCROLL : topV.l = *tuiListView\topRow  : visibleV.l = *tuiListView\visibleRows  : totalV.l = *tuiListView\totalRows
+    bindFlags | #TUIBIND_VALUE   : valueMaster.l = *tuiListView\obj\value
+  Case #TUIOBJ_TEXTBOX
+    *tuiTextBox.tuiTextBox = *tuiMaster
+    Select *tuiTextBox\subTypeID
+      Case #TUIOBJ_TEXTBOX
+      Default
+        bindFlags | #TUIBIND_STRING
+        tline.l = ntui_GetTextBoxAttr{*tuiTextBox,#TUITBA_LINE,0}
+        tlen.l  = ntui_GetTextBoxAttr{*tuiTextBox,#TUITBA_LINELENGTH,0}
+        If tline>0 Then stringMaster.s = Peeks$(tline,tlen)
+    End Select
+    bindFlags | #TUIBIND_HSCROLL : topH.l = *tuiTextBox\leftOffset : visibleH.l = *tuiTextBox\visibleWidth : totalH.l = *tuiTextBox\totalWidth
+    bindFlags | #TUIBIND_VSCROLL : topV.l = *tuiTextBox\topLine    : visibleV.l = *tuiTextBox\visibleLines : totalV.l = *tuiTextBox\totalLines
+  Case #TUIOBJ_BUTTON
+    *tuiButton.tuiButton = *tuiMaster
+    Select *tuiButton\subTypeID
+      Case #TUIBUTTON_CHECKBOX    : bindFlags | #TUIBIND_ABLE : ableMaster.l = *tuiButton\obj\value
+      Case #TUIBUTTON_ARROWUP     : bindFlags | #TUIBIND_VDELTA : deltaV.l = -1
+      Case #TUIBUTTON_ARROWDOWN   : bindFlags | #TUIBIND_VDELTA : deltaV.l =  1
+      Case #TUIBUTTON_ARROWLEFT   : bindFlags | #TUIBIND_HDELTA : deltaH.l = -1
+      Case #TUIBUTTON_ARROWRIGHT  : bindFlags | #TUIBIND_HDELTA : deltaH.l =  1
+      Case #TUIBUTTON_PLUS        : bindFlags | #TUIBIND_DELTA  : delta.l  =  1
+      Case #TUIBUTTON_MINUS       : bindFlags | #TUIBIND_DELTA  : delta.l  = -1
+      Case #TUIBUTTON_PLUSMINUS   : bindFlags | #TUIBIND_DELTA  : delta.l  = *tuiButton\obj\value
+      Case #TUIBUTTON_FILE        : bindFlags | #TUIBIND_STRING : stringMaster.s = str_Read{&*tuiButton\obj\string}
+      Case #TUIBUTTON_PATH        : bindFlags | #TUIBIND_STRING : stringMaster.s = str_Read{&*tuiButton\obj\string}
+      Case #TUIBUTTON_SCREEN      : bindFlags | #TUIBIND_STRING : stringMaster.s = str_Read{&*tuiButton\obj\string}
+      Case #TUIBUTTON_FONT        : bindFlags | #TUIBIND_STRING : stringMaster.s = str_Read{&*tuiButton\obj\string}
+      Case #TUIBUTTON_SAVE        : bindFlags | #TUIBIND_STRING : stringMaster.s = str_Read{&*tuiButton\obj\string}
+    End Select
+  Case #TUIOBJ_CYCLE   :  valueMaster.l  = *tuiMaster\value             : bindFlags | #TUIBIND_VALUE : stringMaster.s = str_Read{&*tuiMaster\string} : bindFlags | #TUIBIND_STRING
+  Case #TUIOBJ_PAGE    :  valueMaster.l  = *tuiMaster\value             : bindFlags | #TUIBIND_VALUE
+
+End Select
+
+
+*tui.tuiObject =*tuiMaster\bind
+While *tui><#NULL AND *tui><*tuiMaster
+  If (*tui\bindFlags&bindFlags&#TUIBIND_VALUE)
+    If valueMaster><*tui\value
+      Select *tui\typeID
+        Case #TUIOBJ_PAGE : ntui_SetPage{*tui,valueMaster}
+        Default
+          *tui\value=valueMaster : ntui_Refresh{*tui}
+      End Select
+    End If
+  End If
+
+  If (*tui\bindFlags&bindFlags&#TUIBIND_STRING)
+    Select *tui\typeID
+      Case #TUIOBJ_TEXTBOX
+        *tuiTextBox.tuiTextBox = *tui
+        Select *tuiTextBox\subTypeID
+          Case #TUIOBJ_TEXTBOX
+          Default
+            ntui_SetTextBoxText{*tui,&stringMaster,FLen(stringMaster)} : ntui_Refresh{*tui}
+        End Select
+      Default
+        string.s = str_Read{&*tui\string }
+        If stringMaster><string Then str_Write{&*tui\string,stringMaster} : ntui_Refresh{*tui}
+    End Select
+  End If
+
+  If (*tui\bindFlags&bindFlags&#TUIBIND_ABLE)
+    If ableMaster
+      If (*tui\flags&#TUIF_DISABLED) Then ntui_ClearFlags{*tui,#TUIF_DISABLED} : ntui_Refresh{*tui}
+    Else
+      If (*tui\flags&#TUIF_DISABLED)=0 Then ntui_SetFlags{*tui,#TUIF_DISABLED} : ntui_Refresh{*tui}
+    End If
+  End If
+
+  If (*tui\bindFlags&bindFlags&#TUIBIND_HSCROLL)
+    Select *tui\typeID
+      Case #TUIOBJ_SCROLLER : *tuiScroller.tuiScroller = *tui : *tuiScroller\obj\value = topH : *tuiScroller\total      = totalH : *tuiScroller\visible      = visibleH   : ntui_Refresh{*tui}
+      Case #TUIOBJ_VIEW     : *tuiView.tuiView         = *tui : *tuiView\offsetH       = topH : *tuiView\totalH         = totalH : *tuiView\visibleH         = visibleH   : ; ntui_ScrollView{*tui,dx,dy}
+      Case #TUIOBJ_LISTVIEW : *tuiListView.tuiListView = *tui : *tuiListView\offset    = topH : : *tuiListView\visibleWidth = visibleH   : ntui_Refresh{*tui}; ntui_ScrollView{*tui,dx,dy}
+      Case #TUIOBJ_TEXTBOX  : *tuiTextBox.tuiTextBox   = *tui : _tb_Scroll{*tui,topH-*tuiTextBox\leftOffset,0,#NULL}
+    End Select
+  End If
+  If (*tui\bindFlags&bindFlags&#TUIBIND_VSCROLL)
+    Select *tui\typeID
+      Case #TUIOBJ_SCROLLER : *tuiScroller.tuiScroller = *tui : *tuiScroller\obj\value = topV : *tuiScroller\total     = totalV : *tuiScroller\visible     = visibleV   : ntui_Refresh{*tui}
+      Case #TUIOBJ_VIEW     : *tuiView.tuiView         = *tui : *tuiView\offsetV       = topV : *tuiView\totalV        = totalV : *tuiView\visibleV        = visibleV   : ; ntui_ScrollView{*tui,dx,dy}
+      Case #TUIOBJ_LISTVIEW : *tuiListView.tuiListView = *tui : *tuiListView\topRow    = topV :  : *tuiListView\visibleRows = visibleV   : ntui_Refresh{*tui}; ntui_ScrollView{*tui,dx,dy}
+      Case #TUIOBJ_TEXTBOX  : *tuiTextBox.tuiTextBox   = *tui : _tb_Scroll{*tui,0,topV-*tuiTextBox\topLine,#NULL}
+    End Select
+  End If
+  If (*tui\bindFlags&bindFlags&#TUIBIND_VDELTA)
+    Select *tui\typeID
+      Case #TUIOBJ_SCROLLER : *tuiScroller.tuiScroller = *tui : _ntui_UpdateScroller{*tuiScroller,*tuiScroller\obj\value + deltaV}
+      Case #TUIOBJ_VIEW     : *tuiView.tuiView         = *tui : ; ntui_ScrollView{*tui,dx,dy}
+      Case #TUIOBJ_LISTVIEW : *tuiListView.tuiListView = *tui : ; ntui_ScrollListView{*tui,dx,dy}
+      Case #TUIOBJ_TEXTBOX  : *tuiTextBox.tuiTextBox   = *tui : _tb_Scroll{*tui,0,deltaV,#NULL}
+    End Select
+  End If
+  If (*tui\bindFlags&bindFlags&#TUIBIND_HDELTA)
+    Select *tui\typeID
+      Case #TUIOBJ_SCROLLER : *tuiScroller.tuiScroller = *tui : _ntui_UpdateScroller{*tuiScroller,*tuiScroller\obj\value + deltaH}
+      Case #TUIOBJ_VIEW     : *tuiView.tuiView         = *tui : ; ntui_ScrollView{*tui,dx,dy}
+      Case #TUIOBJ_LISTVIEW : *tuiListView.tuiListView = *tui : ; ntui_ScrollListView{*tui,dx,dy}
+      Case #TUIOBJ_TEXTBOX  : *tuiTextBox.tuiTextBox   = *tui : _tb_Scroll{*tui,deltaH,0,#NULL}
+    End Select
+  End If
+  *tui=*tui\bind
+Wend
+CEND
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = ntui_SetAttr {*tui.tuiObject,ti_Tag.l,ti_Data.l}         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Set an attribute of a tuiObject.
+;/ Note: This is a very powerful function that can change almost any aspect of the tuiObject.
+;/
+;/ Supported attributes:
+;/ #TUIA_STRING      Get/Set
+;/                   Pointer to 0-terminated string value of tuiObject (if set, a cooy of the string will be made)
+;/ #TUIA_VALUE       Get/Set
+;/                   32bit integer value of tuiObject
+;/ #TUIA_HELP        Get/Set
+;/                   Pointer to 0-terminated string that holds the short help text (if set, a copy is made)
+;/ #TUIA_NOTIFY      Get/Set
+;/                   Notify value of the tuiObject
+;/ #TUIA_FLAGS       Get/Set
+;/                   All tuiFlags at once - use TUIA_SETFLAGS to manipulate single flags
+;/                   Note: not all flags have an effect if changed during life-time of the tuiObject
+;/ #TUIA_WIDTH       Get
+;/                   Current width in layout (might be 0 if the tuiObject is not visibke)
+;/ #TUIA_HEIGHT      Get
+;/                   Current height in layout (might be 0 if the tuiObject is not visible)
+;/ #TUIA_MINWIDTH    Get/Set
+;/                   Minimum width of the tuiObject (might be 0 if the tuiObject was never visible)
+;/ #TUIA_MINHEIGHT   Get/Set
+;/                   Minimum height of the tuiObject (might be 0 if the tuiObject was never visible)
+;/ #TUIA_MAXWIDTH    Get/Set
+;/                   Maximum width of the tuiObject (might be 0 if the tuiObject was never visible)
+;/ #TUIA_MAXHEIGHT   Get/Set
+;/                   Minimum height of the tuiObject (might be 0 if the tuiObject was never visible)
+;/ #TUIA_XPOS        Get
+;/                   X-position in layout of the tuiObject
+;/ #TUIA_YPOS        Get
+;/                   Y-position in layout of the tuiObject
+;/ #TUIA_BORDERTYPE  Get/Set
+;/                   Type of border, see #TUIBORDER_... for possible border types
+;/ #TUIA_GAPNORTH    Get
+;/                   Gap at north side of the tuiObject
+;/ #TUIA_GAPSOUTH    Get
+;/                   Gap at south side of the tuiObject
+;/ #TUIA_GAPEAST     Get
+;/                   Gap at east side of the tuiObject
+;/ #TUIA_GAPWEST     Get
+;/                   Gap at west side of the tuiObject
+;/ #TUIA_FOCUS       Get/Set
+;/                   True, if the tuiObject currently holds the focus, False otherwise
+;/ #TUIA_TYPEID      Get
+;/                   TypeID of the tuiObject (#TUIOBJ_...)
+;/ #TUIA_USERID      Get/Set
+;/                   UserID of the tuiObject
+;/ #TUIA_BGPEN       Get/Set
+;/                   Background tuiPen (NOT AmigaOS pen!)
+;/ #TUIA_SETFLAGS    Set
+;/                   Set the flags stated in ti_Data
+;/ #TUIA_CLEARFLAGS  Set
+;/                   Clear the flags stated in ti_Data
+;/ #TUIA_HIDDEN      Get/Set
+;/                   True if the Object is hidden, False otherwise
+;/ #TUIA_ENABLED     Get/Set
+;/                   True, if the tuiObject is enabled, False otherwise
+;/ #TUIA_DISABLED    Get/Set
+;/                   True, if the tuiObject is disabled, False otherwise
+;/ #TUIA_VISIBLE     Get/Set
+;/                   True, if the tuiObject is visible, False otherwise
+;/ #TUIA_ACTIVE      Get/Set
+;/                   True, if the tuiObject is active, False otherwise
+;/ #TUIA_MOVER       Get/Set
+;/                   True, if the tuiObject is the current Mouse-Over object, False otherwise
+;/
+; tuiWindow attributes
+;/ #TUIWA_WFLAGS     Get/Set
+;/                   AmigaOS Window flags of the tuiWindow (#WFLG_...)
+;/ #TUIWA_APPNOTIFY  Get/Set
+;/                   Notify value for an app event of this tuiWindow, default is #NOTIFY_WINDROP
+;
+;/* tuiListView attributes */
+;/ #TUILVA_MULTISELECT Get/Set
+;/                   Defines if the tuiListView can select multiple listviewitems at a time
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tui.tuiObject  : tuiObject                                                   /
+;/ - ti_Tag.l        : tuiAttribute (#TUIA_...)                                                         /
+;/ - ti_Data.l       : value                                                        /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l        : true if the attribute was successfuly changed, false otherwise                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w ntui_SetAttr{*tui.tuiObject,ti_Tag.l,ti_Data.l}
+  !_ASSERT{*tui}
+
+  If (*tui\SetAttr)  ; try the objects SetAttr first
+    !_CallFuncPointer{*tui\SetAttr,succ.w,*tui,ti_Tag,ti_Data}
+    If succ Then Function Return succ
+  End If
+
+  succ=True
+  Select ti_Tag
+    Case #TUIA_VALUE
+      *tui\value = ti_Data
+      ntui_Refresh{*tui}
+      _ntui_PropagateBind{*tui,#TUIEV_BIND_VALUE,*tui\value,#NULL}
+
+    Case #TUIA_STRING
+      str_WritePtr{&*tui\string,ti_Data}
+      ntui_Refresh{*tui}
+      _ntui_PropagateBind{*tui,#TUIEV_BIND_STRING,0,*tui\string}
+
+    Case #TUIA_ONCLICK        : str_WritePtr{&*tui\onClick       ,ti_Data} ; notifyID when the object is clicked
+    Case #TUIA_ONMOUSEOVER    : str_WritePtr{&*tui\onMouseOver   ,ti_Data} ; notifyID when mouse gets over the object
+    Case #TUIA_ONDOUBLECLICK  : str_WritePtr{&*tui\onDoubleClick ,ti_Data} ; notifyID when the object is double clicked
+    Case #TUIA_ONTOUCH        : str_WritePtr{&*tui\onTouch       ,ti_Data} ; notifyID when the object is touched (mouse down)
+    Case #TUIA_ONRELEASE      : str_WritePtr{&*tui\onRelease     ,ti_Data} ; notifyID when the object is released (mouse up, doesn't need to be a valid click)
+    Case #TUIA_ONKEY          : str_WritePtr{&*tui\onKey         ,ti_Data} ; notifyID when a key is pressed
+    Case #TUIA_ONBEGINREFRESH : str_WritePtr{&*tui\onBeginRefresh,ti_Data} ; notifyID before internal refresh
+    Case #TUIA_ONREFRESH      : str_WritePtr{&*tui\onRefresh     ,ti_Data} ; notifyID after internal refresh
+    Case #TUIA_ONFOCUS        : str_WritePtr{&*tui\onFocus       ,ti_Data} ; notifyID when object gains focus
+    Case #TUIA_ONLOSEFOCUS    : str_WritePtr{&*tui\onLoseFocus   ,ti_Data} ; notifyID when object loses focus
+    Case #TUIA_ONHELP         : str_WritePtr{&*tui\onHelp        ,ti_Data} ; notifyID when mouse rests over object or HELP key is pressed
+
+    Case #TUIA_HELP       : str_WritePtr{&*tui\help,ti_Data} ; TODO: Update Help-Bubble!
+    Case #TUIA_FLAGS      : *tui\flags       = ti_Data                        : ntui_Refresh{*tui} ;: _ntui_PropagateBind{*tui}
+    Case #TUIA_SETFLAGS   : *tui\flags       = *tui\flags|ti_Data             : ntui_Refresh{*tui} ;: _ntui_PropagateBind{*tui}
+    Case #TUIA_CLEARFLAGS : *tui\flags       = (*tui\flags|ti_Data) - ti_Data : ntui_Refresh{*tui} ;: _ntui_PropagateBind{*tui}
+    Case #TUIA_HEIGHT     : *tui\bbox\bottom = *tui\bbox\top +ti_Data-1 : ntui_Refresh{*tui}
+    Case #TUIA_WIDTH      : *tui\bbox\right  = *tui\bbox\left+ti_Data-1 : ntui_Refresh{*tui}
+    Case #TUIA_XPOS       : *tui\bbox\left   = ti_Data : ntui_Refresh{*tui}
+    Case #TUIA_YPOS       : *tui\bbox\top    = ti_Data : ntui_Refresh{*tui}
+    Case #TUIA_MINHEIGHT  : *tui\minsize\y   = ti_Data
+    Case #TUIA_MINWIDTH   : *tui\minsize\x   = ti_Data
+    Case #TUIA_MAXHEIGHT  : *tui\maxsize\y   = ti_Data
+    Case #TUIA_MAXWIDTH   : *tui\maxsize\x   = ti_Data
+    Case #TUIA_BORDERTYPE : *tui\borderType  = ti_Data : ntui_Refresh{*tui}
+    Case #TUIA_FOCUS      : If ti_Data
+                              ntui_SetFocus{*tui\tuiEngine,*tui}
+                            Else
+                              If *tui\tuiEngine\focus = *tui Then ntui_SetFocus{*tui\tuiEngine,#NULL}
+                            End If
+    Case #TUIA_MOVER      : If ti_Data
+                              _ntui_SetMover{*tui\tuiEngine,*tui}
+                            Else
+                              If *tui\tuiEngine\focus = *tui Then _ntui_SetMover{*tui\tuiEngine,#NULL}
+                            End If
+
+    Case #TUIA_TYPEID     : ;/* we cant set the typeID - read only! */
+    Case #TUIA_INVISIBLE  : *tui\flags|#TUIF_INVISIBLE : If ti_Data=False Then *tui\flags-#TUIF_INVISIBLE
+                            ntui_Refresh{*tui} ;: _ntui_PropagateBind{*tui}
+    Case #TUIA_ENABLED    : *tui\flags|#TUIF_DISABLED  : If ti_Data       Then *tui\flags-#TUIF_DISABLED
+                            ntui_Refresh{*tui} ;: _ntui_PropagateBind{*tui}
+    Case #TUIA_DISABLED   : *tui\flags|#TUIF_DISABLED  : If ti_Data=False Then *tui\flags-#TUIF_DISABLED
+                            ntui_Refresh{*tui} ;: _ntui_PropagateBind{*tui}
+    Case #TUIA_NAMEID     : str_WritePtr{&*tui\nameID,ti_Data}
+    Case #TUIA_BGPEN      : *tui\bgTuiPen  = ti_Data : ntui_Refresh{*tui}
+    Case #TUIA_FGPEN      : *tui\fgTuiPen  = ti_Data : ntui_Refresh{*tui}
+    Case #TUIA_BGRGB      : *tui\bgRGB  = ti_Data : ntui_Refresh{*tui}
+    Case #TUIA_FGRGB      : *tui\fgRGB  = ti_Data : ntui_Refresh{*tui}
+    Case #TUIA_BGIMAGE    : imagefile.s = Peek.s(ti_Data)
+                            *tui\bgImage = ntui_CreateTBImage{*tui\tuiEngine,imagefile,#TUISIZE_NATIVE,#TUISIZE_NATIVE}
+    Case #TUIA_FGIMAGE    :
+    Case #TUIA_LEFTPADDING   : *tui\padding\left   = ti_Data
+    Case #TUIA_TOPPADDING    : *tui\padding\top    = ti_Data
+    Case #TUIA_RIGHTPADDING  : *tui\padding\right  = ti_Data
+    Case #TUIA_BOTTOMPADDING : *tui\padding\bottom = ti_Data
+    Case #TUIA_LEFTMARGIN    : *tui\margin\left    = ti_Data
+    Case #TUIA_TOPMARGIN     : *tui\margin\top     = ti_Data
+    Case #TUIA_RIGHTMARGIN   : *tui\margin\right   = ti_Data
+    Case #TUIA_BOTTOMMARGIN  : *tui\margin\bottom  = ti_Data
+    Default
+      succ = False ; unknown attr
+  End Select
+  Function  Return succ
+End Function
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = ntui_GetAttr {*tui.tuiObject,ti_Tag.l,@tagData.l}        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get an attribute of a tuiObject.                                                /
+;/ See ntui_SetAttr for possible attributes.
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tui.tuiObject : tuiObject                                                  /
+;/ - ti_Tag.l       : tuiAttribute (#TUIA_...)                                                         /
+;/ - tagData.l      : optional data if required                                                        /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l       : requested attribute's value                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w ntui_GetAttr{*tui.tuiObject,ti_Tag.l,*ti_Data.longP}
+  !_ASSERT{*tui}
+
+  If (*tui\GetAttr)  ; try the objects GetAttr first
+    !_CallFuncPointer{*tui\GetAttr,succ.w,*tui,ti_Tag,*ti_Data}
+    If succ Then Function Return succ
+  End If
+
+  succ=True
+  Select ti_Tag
+    Case #TUIA_TYPEID        : *ti_Data\l = *tui\typeID
+    Case #TUIA_NAMEID        : If *tui\nameID   Then *ti_Data\l = &*tui\nameID\str     : Else *ti_Data\l = #NULL
+    Case #TUIA_STRING        : If *tui\string   Then *ti_Data\l = &*tui\string\str : Else *ti_Data\l = #NULL
+    Case #TUIA_ONCLICK       : *ti_Data\l = str_GetPtr{*tui\onClick       } ; notifyID when the object is clicked
+    Case #TUIA_ONMOUSEOVER   : *ti_Data\l = str_GetPtr{*tui\onMouseOver   } ; notifyID when mouse gets over the object
+    Case #TUIA_ONDOUBLECLICK : *ti_Data\l = str_GetPtr{*tui\onDoubleClick } ; notifyID when the object is double clicked
+    Case #TUIA_ONTOUCH       : *ti_Data\l = str_GetPtr{*tui\onTouch       } ; notifyID when the object is touched (mouse down)
+    Case #TUIA_ONRELEASE     : *ti_Data\l = str_GetPtr{*tui\onRelease     } ; notifyID when the object is released (mouse up, doesn't need to be a valid click)
+    Case #TUIA_ONKEY         : *ti_Data\l = str_GetPtr{*tui\onKey         } ; notifyID when a key is pressed
+    Case #TUIA_ONBEGINREFRESH: *ti_Data\l = str_GetPtr{*tui\onBeginRefresh} ; notifyID before internal refresh
+    Case #TUIA_ONREFRESH     : *ti_Data\l = str_GetPtr{*tui\onRefresh     } ; notifyID after internal refresh
+    Case #TUIA_ONFOCUS       : *ti_Data\l = str_GetPtr{*tui\onFocus       } ; notifyID when object gains focus
+    Case #TUIA_ONLOSEFOCUS   : *ti_Data\l = str_GetPtr{*tui\onLoseFocus   } ; notifyID when object loses focus
+    Case #TUIA_ONHELP        : *ti_Data\l = str_GetPtr{*tui\onHelp        } ; notifyID when mouse rests over object or HELP key is pressed
+    Case #TUIA_HELP          : If *tui\help     Then *ti_Data\l = &*tui\help\str     : Else *ti_Data\l = #NULL
+    Case #TUIA_VALUE         : *ti_Data\l = *tui\value
+    Case #TUIA_FLAGS         : *ti_Data\l = *tui\flags
+    Case #TUIA_WIDTH         : *ti_Data\l = *tui\bbox\right -*tui\bbox\left+1
+    Case #TUIA_HEIGHT        : *ti_Data\l = *tui\bbox\bottom-*tui\bbox\top +1
+    Case #TUIA_MINWIDTH      : *ti_Data\l = *tui\minsize\x
+    Case #TUIA_MINHEIGHT     : *ti_Data\l = *tui\minsize\y
+    Case #TUIA_MAXWIDTH      : *ti_Data\l = *tui\maxsize\x
+    Case #TUIA_MAXHEIGHT     : *ti_Data\l = *tui\maxsize\y
+    Case #TUIA_XPOS          : *ti_Data\l = *tui\bbox\left
+    Case #TUIA_YPOS          : *ti_Data\l = *tui\bbox\top
+    Case #TUIA_BORDERTYPE    : *ti_Data\l = *tui\borderType
+    Case #TUIA_FOCUS         : If (*tui\flags&#TUIF_FOCUS    ) Then *ti_Data\l=True:Else *ti_Data\l=False
+    Case #TUIA_MOVER         : If (*tui\flags&#TUIF_MOVER    ) Then *ti_Data\l=True:Else *ti_Data\l=False
+    Case #TUIA_ACTIVE        : If (*tui\flags&#TUIF_ACTIVE   ) Then *ti_Data\l=True:Else *ti_Data\l=False
+    Case #TUIA_INVISIBLE     : If (*tui\flags&#TUIF_INVISIBLE) Then *ti_Data\l=True:Else *ti_Data\l=False
+    Case #TUIA_ONSCREEN      : If (*tui\flags&#TUIF_ONSCREEN ) Then *ti_Data\l=True:Else *ti_Data\l=False
+    Case #TUIA_ENABLED       : If (*tui\flags&#TUIF_DISABLED ) Then *ti_Data\l=False:Else *ti_Data\l=True
+    Case #TUIA_DISABLED      : If (*tui\flags&#TUIF_DISABLED ) Then *ti_Data\l=True:Else *ti_Data\l=False
+    Case #TUIA_LEFTMARGIN    : *ti_Data\l = *tui\margin\left
+    Case #TUIA_TOPMARGIN     : *ti_Data\l = *tui\margin\top
+    Case #TUIA_RIGHTMARGIN   : *ti_Data\l = *tui\margin\right
+    Case #TUIA_BOTTOMMARGIN  : *ti_Data\l = *tui\margin\bottom
+    Case #TUIA_LEFTPADDING   : *ti_Data\l = *tui\padding\left
+    Case #TUIA_TOPPADDING    : *ti_Data\l = *tui\padding\top
+    Case #TUIA_RIGHTPADDING  : *ti_Data\l = *tui\padding\right
+    Case #TUIA_BOTTOMPADDING : *ti_Data\l = *tui\padding\bottom
+    Case #TUIA_BGPEN         : *ti_Data\l = *tui\bgTuiPen
+    Case #TUIA_FGPEN         : *ti_Data\l = *tui\fgTuiPen
+    Case #TUIA_BGRGB         : *ti_Data\l = *tui\bgRGB
+    Case #TUIA_FGRGB         : *ti_Data\l = *tui\fgRGB
+    Case #TUIA_BGIMAGE       : *ti_Data\l = *tui\bgImage
+    Case #TUIA_FGIMAGE       : *ti_Data\l = *tui\fgImage
+    Default
+      succ=False
+  End Select
+
+  Function Return succ
+End Function
+
+
+Statement _ntui_DispatchEvent{*tuiEvent.tuiEvent}
+  !_ASSERT{*tuiEvent}
+  *tui.tuiObject = *tuiEvent\tuiObject
+  !_ASSERT{*tui}
+
+  If *tui\DispatchEvent Then !_CallFuncPointer{*tui\DispatchEvent,done.w,*tui,*tuiEvent}
+  If done Then Statement Return
+
+  ;/* generic handling of unhandled events */
+  *tuiEngine.tuiEngine = *tui\tuiEngine
+
+  Select *tuiEvent\evID
+    Case #TUIEV_REFRESH
+      If (*tui\flags&(#TUIF_DIRTY|#TUIF_ONSCREEN) = (#TUIF_DIRTY|#TUIF_ONSCREEN))
+        *tuiWindow.tuiWindow = ntui_FindObjectWindow{*tui}
+        If *tuiWindow
+          *rp.RastPort = ntui_ObtainRastPort{*tuiWindow}
+          If *rp
+            _ntui_Redraw{*tui,*rp}
+            ntui_ReleaseRastPort{*tuiWindow}
+          End If
+        End If
+      End If
+
+    Case #TUIEV_PROPAGATE
+      ;_ntui_PropagateBind{*tui}
+
+    Case #TUIEV_LAYOUT
+      *tuiWindow.tuiWindow = ntui_FindObjectWindow{*tui}
+      If *tuiWindow
+        *rp.RastPort = ntui_ObtainRastPort{*tuiWindow}
+        If *rp
+          _ntui_Layout{*tui,*rp,#NULL}
+          ntui_ReleaseRastPort{*tuiWindow}
+        End If
+      End If
+
+    Case #TUIEV_ASLFONT
+      fontname.s = str_Read{&*tuiEvent\tuiObject\string}
+      fontsize.l = *tuiEvent\tuiObject\value
+      If ntui_ASLFontRequest{*tuiEngine,fontname,fontsize}
+        ntui_SetAttr{*tuiEvent\tuiObject,#TUIA_STRING,*tuiEngine\aslfo\fo_TAttr\tta_Name}
+        ntui_SetAttr{*tuiEvent\tuiObject,#TUIA_VALUE,*tuiEngine\aslfo\fo_TAttr\tta_YSize}
+      End If
+
+    Case #TUIEV_ASLFILE
+      filename.s = str_Read{&*tuiEvent\tuiObject\string}
+      path.s = dos_PathPart{filename}
+      fil.s  = dos_FilePart{filename}
+      patt.s = "#?"
+      If ntui_ASLFileRequest{*tuiEngine,path,fil,patt,False,False,False,True}
+        fil  = Peek.s(*tuiEngine\aslfr\fr_File)
+        path = Peek.s(*tuiEngine\aslfr\fr_Drawer)
+        patt = Peek.s(*tuiEngine\aslfr\fr_Pattern)
+        filename = dos_AddPart{path,fil}
+        ntui_SetAttr{*tuiEvent\tuiObject,#TUIA_STRING,&filename}
+      End If
+
+    Case #TUIEV_ASLSAVE
+      filename.s = str_Read{&*tuiEvent\tuiObject\string}
+      path.s = dos_PathPart{filename}
+      fil.s  = dos_FilePart{filename}
+      patt.s = "#?"
+      If ntui_ASLFileRequest{*tuiEngine,path,fil,patt,True,False,False,True}
+        fil  = Peek.s(*tuiEngine\aslfr\fr_File)
+        path = Peek.s(*tuiEngine\aslfr\fr_Drawer)
+        patt = Peek.s(*tuiEngine\aslfr\fr_Pattern)
+        filename = dos_AddPart{path,fil}
+        ntui_SetAttr{*tuiEvent\tuiObject,#TUIA_STRING,&filename}
+      End If
+
+    Case #TUIEV_ASLPATH
+      path.s = str_Read{&*tuiEvent\tuiObject\string}
+      If ntui_ASLFileRequest{*tuiEngine,path,"","",False,False,True,True}
+        path = Peek.s(*tuiEngine\aslfr\fr_Drawer)
+        ntui_SetAttr{*tuiEvent\tuiObject,#TUIA_STRING,&path}
+      End If
+
+    Case #TUIEV_ASLSCREEN
+      name.s = str_Read{&*tuiEvent\tuiObject\string}
+      modeID.l = *tuiEvent\tuiObject\value
+      width.l  = 0
+      height.l = 0
+      depth_.l = 0
+      If ntui_ASLScreenModeRequest{*tuiEngine,modeID,width,height,depth_}
+        modeID = *tuiEngine\aslsm\sm_DisplayID
+        depth_ = *tuiEngine\aslsm\sm_DisplayDepth
+        width  = *tuiEngine\aslsm\sm_DisplayWidth
+        height = *tuiEngine\aslsm\sm_DisplayHeight
+        *tuiEvent\tuiObject\value = modeID
+        mode_ptr.l = FindDisplayInfo_ (modeID)
+        If mode_ptr
+          count.l = GetDisplayInfoData_ (mode_ptr,&naminfo.NameInfo,SizeOf.NameInfo,#DTAG_NAME,modeID)
+          If count Then modename.s = Peek.s(&naminfo\Name) : Else modename = "???"
+        End If
+
+        modename.s + " ("+Str$(width)+"x"+Str$(height)+"x"+Str$(depth_)+")"
+        ntui_SetAttr{*tuiEvent\tuiObject,#TUIA_STRING,&modename}
+      End If
+
+  End Select
+
+  If (*tuiEvent\notifyID)
+    *tuiEvent\tuiObject = *tui\tuiEngine
+    _ntui_QueueEvent{*tui\tuiEngine\outQ,*tuiEvent}
+  Else
+    _ntui_DestroyEvent{*tuiEvent}
+  End If
+
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = ntui_CauseEvent {notify.l,*tuiWindow.tuiWindow,@*tuiOb:: /
+;/ ject.tuiObject,@x.l,@y.l,@width.l,@height.l}                                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Cause an event to happen manually. The event will be passed to the tuiEngines input queue.                                      /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - notify.l               : notify value                                                         /
+;/ - *tuiWindow.tuiWindow   : tuiWindow of the event                                             /
+;/ - *tuiObject.tuiObject   : tuiObject of the event (if any)                                             /
+;/ - x/y.l                  : x/y position of event                                                    /
+;/ - width.l                : ???                                                          /
+;/ - height.l               : ???                                                         /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l               : pointer to created tuiEvent struture                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_SendEvent{*tui.tuiObject,evID.l,@value.l,@string.s,@x.l,@y.l,@width.l,@height.l}
+  !_ASSERT{*tui}
+  *tuiEngine.tuiEngine = *tui\tuiEngine
+  !_ASSERT{*tuiEngine}
+  *tuiEvent.tuiEvent = _ntui_CreateEvent{*tui,evID}
+  If *tuiEvent
+    If string Then str_Write{&*tuiEvent\string,string}
+    *tuiEvent\value  = value
+    *tuiEvent\pos\x  = x,y
+    *tuiEvent\size\x = width,height
+    _ntui_DispatchEvent{*tuiEvent}
+  End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = _ntui_CreateObject {typeID.l,sizeof_obj.l,notify.l,hel:: /
+;/ p.s,flags.l,userID.l}                                                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ private: generic create function for every tui object. This is called by every tuiObject creation function.                 /
+;/ This function allocates the memory for the tuiObject and fills out the mandatory fields.
+;/ It also links the object according the buildHelper and updates the buildHelper.
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - typeID.l      : typeID of the tuiObject                                                         /
+;/ - sizeof_obj.l  : size of the tuiObject specific structure                                                     /
+;/ - notify.l      : notify value                                                         /
+;/ - help.s        : short help text for this tuiObject                                                          /
+;/ - flags.l       : initial tuiFlags (#TUIF_...)                                                         /
+;/ - userID.l      : userID to find the object later                                                         /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l      : pointer to the tuiObject or NULL if failed                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l _ntui_CreateObject{typeID.l,sizeof_obj.l,help.s,flags.l,nameID.s}
+*tui.tuiObject = #NULL
+
+If sizeof_obj<SizeOf.tuiObject
+  error{"\\__THIS_FUNCTION: The size of an tuiObject can not be smaller than the basic object structure size!"} : Function Return #NULL
+End If
+
+If typeID<1 OR typeID>=#TUIMAX_OBJTYPES
+  error{"\\__THIS_FUNCTION: Trying to create an tui object with invalid ID="+Str$(typeID)+", name=\\22"+nameID+"\\22!"} : Function Return #NULL
+End If
+
+If (flags = #TUI_NOFLAGS) Then flags=0
+
+*tui.tuiObject = AllocVec_(sizeof_obj,#MEMF_CLEAR)
+If *tui
+  If typeID = #TUIOBJ_ENGINE
+    *tuiEngine.tuiEngine = *tui
+  Else
+    *tuiEngine.tuiEngine =  tuiGlobal\buildHelper\tuiEngine
+    If *tuiEngine = #NULL
+      error{"\\__THIS_FUNCTION: Trying to create an tui object without tuiEngine!"} : Function Return #NULL
+    End If
+  End If
+
+  *tui\typeID         = typeID
+  *tui\tuiEngine      = *tuiEngine
+  *tui\flags          = (flags|#TUIF_ONSCREEN) - #TUIF_ONSCREEN
+  *tui\value          = 0
+  *tui\string         = #NULL
+  *tui\help           = #NULL
+  *tui\nameID         = #NULL
+  *tui\pointerID      = #TUIPOINTER_DEFAULT
+  *tui\bindFlags      = 0
+
+  *tui\bbox\left      = 0,0,0,0
+  *tui\cbox\left      = 0,0,0,0
+  *tui\minsize\x      = 0,0
+  *tui\maxsize\x      = 0,0
+  *tui\border\left    = 0,0,0,0
+  *tui\padding\left   = *tuiEngine\defPadding\left
+  *tui\padding\top    = *tuiEngine\defPadding\top
+  *tui\padding\right  = *tuiEngine\defPadding\right
+  *tui\padding\bottom = *tuiEngine\defPadding\bottom
+
+  *tui\borderType     = #TUIBORDER_NONE
+  *tui\bgTuiPen       = #TUIPEN_TRANSPARENT
+  *tui\fgTuiPen       = #TUIPEN_TEXT
+  *tui\bgImage        = #NULL
+  *tui\fgImage        = #NULL
+  *tui\bgRGB          = $00000000
+  *tui\fgRGB          = $00000000
+
+  *tui\Deinit           = #NULL
+  *tui\DispatchEvent    = #NULL
+  *tui\Draw             = #NULL
+  *tui\CalculateMinSize = #NULL
+  *tui\Layout           = #NULL
+  *tui\SetAttr          = #NULL
+  *tui\GetAttr          = #NULL
+
+  *tui\margin\left   = *tuiEngine\defMargin\left
+  *tui\margin\top    = *tuiEngine\defMargin\top
+  *tui\margin\right  = *tuiEngine\defMargin\right
+  *tui\margin\bottom = *tuiEngine\defMargin\bottom
+
+  *tui\parent      = tuiGlobal\buildHelper\tuiParent               ; parent/child
+  If (tuiGlobal\buildHelper\tuiParent)
+    If (tuiGlobal\buildHelper\tuiParent\child=#NULL) Then tuiGlobal\buildHelper\tuiParent\child = *tui
+  End If
+
+  If (tuiGlobal\buildHelper\tuiPrev) ; previous/next
+    *tui\prev       = tuiGlobal\buildHelper\tuiPrev
+    *tui\next_      = tuiGlobal\buildHelper\tuiPrev\next_
+    tuiGlobal\buildHelper\tuiPrev\next_ = *tui
+    If *tui\next_ Then *tui\next_\prev = *tui
+  Else
+    *tui\next_       = #NULL                    ; there is no next yet
+  End If
+  *tui\child       = #NULL                    ; there is no child yet
+  *tui\bind        = #NULL
+
+  If (help)   Then str_Write{&*tui\help   ,help}
+  If (nameID) Then str_Write{&*tui\nameID, nameID}
+
+  bpflags.l = 0
+  If (*tui\flags&#TUIF_FIXWIDTH  = 0) Then bpflags | #TUIF_FIXWIDTH
+  If (*tui\flags&#TUIF_FIXHEIGHT = 0) Then bpflags | #TUIF_FIXHEIGHT
+  If (bpflags) ; backpropagate the sizing
+    *parent.tuiObject = *tui\parent
+    While *parent
+      If (*parent\flags&bpflags)
+        *parent\flags = (*parent\flags|bpflags) - bpflags
+        If *parent\typeID><#TUIOBJ_WINDOW AND *parent\typeID><#TUIOBJ_ENGINE Then *parent = *parent\parent : Else *parent=#NULL
+      Else
+        *parent=#NULL
+      End If
+    Wend
+  End If
+
+  tuiGlobal\buildHelper\tuiCurrent = *tui
+  tuiGlobal\buildHelper\tuiPrev    = *tui
+EndIf
+Function Return *tui
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = ntui_HitObject {*tui.tuiObject,x.l,y.l}                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Test the x/y coordinates which tuiObject they would hit.                                              /
+;/ note: This function does also hit disalbed tuiObjects.
+;/* note: This function returns NULL, if no object is hit.
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tui.tuiObject  : parent tuiObject, usually a tuiWindow                                                   /
+;/ - x.l             : x coordinate                                                             /
+;/ - y.l             : y coordinate                                                             /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l        : pointer to tuiObject or NULL                                                       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l ntui_HitObject{*tui.tuiObject,x.l,y.l}
+*hit.tuiObject=#NULL
+If (*tui\flags&#TUIF_ONSCREEN)
+  If x>=*tui\bbox\left AND x<=*tui\bbox\right
+    If y>=*tui\bbox\top AND y<=*tui\bbox\bottom
+      *hit = *tui ; we hit the object!
+      *child.tuiObject = *tui\child ; but do we have any children?
+      While *child
+        *hitchild.tuiObject = ntui_HitObject{*child,x,y}
+        If *hitchild Then Function Return *hitchild
+        *child = *child\next_
+      Wend
+    End If
+  End If
+End If
+Function Return *hit
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: ntui_Bind {*tuiMaster.tuiObject,*tuiSlave.tuiObject}                /
+;/                                                                             /
+;/ Description:
+;/ Bind (connect) the two tuiObjects.                                                       /
+;/ Master and Slave are only important during the call of this function and determines from which tuiObject to take the initial paramters.
+;/* Lateron, the two tuiObject will stay synchron, means a change on one of the tuiObjects will case a change on the other tuiObject.
+;/* Note: Which parameters will be synchronized is hardcoded in the tuiObject. E.g. if you bind a horizonal scroller with a vertical scroller, nothing will happen since they change different parameters (vertical vs. horizontal scroll offset).
+;/* Note: If you bind A+B, and B+C ,A is automatically binded with C too.
+;/* Note: The typical usage is to bind a custom view with a horizontal and vertical scroller. Once they are binded, you only have to take care about the custom view, and the scrollers will follow all changes.
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tuiMaster.tuiObject : first tuiObject                                             /
+;/ - *tuiSlave.tuiObject  : second tuiObject                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_Bind{*tuiMaster.tuiObject,*tuiSlave.tuiObject}
+!_ASSERT{*tuiMaster}
+!_ASSERT{*tuiSlave}
+If *tuiMaster\bind = #NULL AND *tuiSlave\bind=#NULL
+ *tuiMaster\bind = *tuiSlave
+ *tuiSlave\bind = *tuiMaster
+ ntui_SendEvent{*tuiMaster,#TUIEV_PROPAGATE}
+ Statement Return
+End If
+
+If *tuiMaster\bind=#NULL AND *tuiSlave\bind><#NULL
+  *tuiMaster\bind = *tuiSlave\bind
+  *tuiSlave\bind  = *tuiMaster
+  ntui_SendEvent{*tuiMaster,#TUIEV_PROPAGATE}
+  Statement Return
+End If
+
+If *tuiMaster\bind><#NULL AND *tuiSlave\bind=#NULL
+  *tuiSlave\bind  = *tuiMaster\bind
+  *tuiMaster\bind = *tuiSlave
+  ntui_SendEvent{*tuiMaster,#TUIEV_PROPAGATE}
+  Statement Return
+End If
+
+If *tuiMaster\bind><#NULL AND *tuiSlave\bind><#NULL
+  ;error{"\\__THIS_FUNCTION: Both objects are already linked somewhere!"}
+  *tuiExchange.tuiObject = *tuiMaster\bind
+  *tuiMaster\bind = *tuiSlave\bind
+  *tuiSlave\bind  = *tuiExchange
+End If
+End Statement
+
+
+XINCLUDE "obj.engine.ab3"
+XINCLUDE "obj.group.ab3"
+XINCLUDE "obj.space.ab3"
+XINCLUDE "obj.button.ab3"
+XINCLUDE "obj.label.ab3"
+;XINCLUDE "obj.scroller.ab3"
+;XINCLUDE "obj.slider.ab3"
+;XINCLUDE "obj.cycle.ab3"
+;XINCLUDE "obj.customview.ab3"
+XINCLUDE "obj.progressbar.ab3"
+XINCLUDE "obj.page.ab3"
+;XINCLUDE "obj.textbox.ab3"
+XINCLUDE "obj.seperator.ab3"
+;XINCLUDE "obj.menu.ab3"
+;XINCLUDE "obj.listview.ab3"
+XINCLUDE "obj.image.ab3"
+XINCLUDE "obj.window.ab3"
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: succ.w = ntui_PopUp {*tuiEngine.tuiEngine,@pubname.s,@*scr.Scre:: /
+;/ en}                                                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Pop the tui engine up on a screen.                                      /
+;/ This reverses the effect of ntui_Iconify.
+;/ In iconified mode (or if tui tuiEngine was just created), it is not allowed to open any window. The engine must first "popped" to a screen.
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tuiEngine.tuiEngine : tuiEngine to pop up                                             /
+;/ - pubname.s            : name of the PubScreen (e.g. "Workbench")                                                       /
+;/ - *scr.Screen          : pointer to a custom screen                                                     /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.w               : True if popped up, False if failed                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w ntui_PopUp{*tuiEngine.tuiEngine,@pubname.s,@*scr.Screen}
+  !_ASSERT{*tuiEngine}
+
+  succ.w = False
+  If _ntui_OpenScreen{*tuiEngine,pubname.s,*scr}
+
+    *tuiWindow.tuiWindow=*tuiEngine\obj\child
+    While *tuiWindow
+      If *tuiWindow\state = #TUISTATE_ICONIFIED
+        ntui_ShowWindow{*tuiWindow}
+      End If
+      *tuiWindow = *tuiWindow\obj\next_
+    Wend
+
+    succ=True
+  End If
+  Function Return succ
+End Function
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: ntui_ShowBubble {*tuiEngine.tuiEngine,*text.str,x.l,y.l}            /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Show a help bubble over the given coordinates.                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tuiEngine.tuiEngine    : ???                                             /
+;/ - *text.str    : ???                                                        /
+;/ - x.l    : ???                                                              /
+;/ - y.l    : ???                                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_ShowBubble{*tuiEngine.tuiEngine,text.s,x.l,y.l}
+If *tuiEngine=#NULL Then Statement Return
+If *tuiEngine\scr=#NULL Then Statement Return
+If *tuiEngine\bubble ntui_FreeObject{*tuiEngine\bubble} : *tuiEngine\bubble=#NULL
+
+ntui_BeginBuild{*tuiEngine}
+*bubble.tuiWindow = ntui_BeginWindow{"","BUBBLEHELP"}
+If *bubble
+  *tuiGroup.tuiGroup = ntui_BeginVGroup{-1}: ntui_SetAttr{*tuiGroup,#TUIA_BORDERTYPE,#TUIBORDER_FLAT}
+    ntui_Label{text,#TUIF_CENTER,@"BUBT"}
+  ntui_EndGroup{}
+  ntui_EndWindow{}
+
+  *tuiGroup\obj\margin\left=0,0,0,0
+
+  *bubble\winFlags = #WFLG_BORDERLESS|#WFLG_NOCAREREFRESH|#WFLG_SIMPLE_REFRESH
+  *bubble\obj\flags|#TUIF_FIXSIZE
+  *bubble\obj\padding\left = 0,0,0,0
+  *bubble\obj\margin\left  = 0,0,0,0
+  ;Forbid_
+  ;*oldFont.TextFont =*tuiEngine\scr\RastPort\Font
+  _ntui_CalculateMinSize{*bubble,*tuiEngine\buildRP}
+  ;SetFont_ *tuiEngine\scr\RastPort,*oldFont
+  ;Permit_
+  *tuiGroup\obj\bgTuiPen = #TUIPEN_BUBBLEBG
+  x = x -*bubble\obj\minsize\x/2
+  y = y + 14
+  If y + *tuiEngine\font[#TUIFONT_NORMAL]\tf_YSize +10 >*tuiEngine\scr\Height
+    y = y - *tuiEngine\font[#TUIFONT_NORMAL]\tf_YSize -15-15
+  End If
+  *tuiEngine\bubble = *bubble
+  ntui_ShowWindow{*bubble,x,y}
+End If
+ntui_EndBuild{}
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.w = ntui_Iconify {*tuiEngine.tuiEngine}                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * re-open all windows, if any... */                                         /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tuiEngine.tuiEngine    : ???                                             /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.w     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w ntui_Iconify{*tuiEngine.tuiEngine}
+If *tuiEngine =#NULL Then Function Return False
+If *tuiEngine\obj\typeID><#TUIOBJ_ENGINE Then Function Return False
+If *tuiEngine\scr=#NULL Then Function Return True ; we are already iconified...
+
+*scr.Screen = *tuiEngine\scr
+;/* hide all windows */
+*tuiWindow.tuiWindow = *tuiEngine\obj\child             ; free all children
+While *tuiWindow
+  ntui_HideWindow{*tuiWindow}
+  *tuiWindow\state = #TUISTATE_ICONIFIED
+  *tuiWindow = *tuiWindow\obj\next_
+Wend
+
+_ntui_CloseScreen{*tuiEngine.tuiEngine}
+
+Function Return True
+End Function
+
+
+Statement _ntui_AmigaCollectIDCMPEvents{*tuiEngine.tuiEngine}
+  !_ASSERT{*tuiEngine}
+  If (*tuiEngine\winPort=#NULL) Then Statement Return
+
+  Repeat
+    *msg.IntuiMessage = GetMsg_(*tuiEngine\winPort)
+    If *msg
+      *win.Window  = *msg\IDCMPWindow
+      If *win Then *tuiObject.tuiObject = *win\UserData : Else *tuiObject=*tuiEngine
+
+      Select (*msg\Class)    ; start to make some interpretations
+        Case #IDCMP_MOUSEBUTTONS
+          mouseButtonID.l = *msg\Code & $3
+
+          If (*msg\Code&#IECODE_UP_PREFIX)
+            tuiMouseButtonMap(mouseButtonID)=False
+          Else
+            tuiMouseButtonMap(mouseButtonID)=True
+            If (DoubleClick_(*tuiEngine\lastSeconds,*tuiEngine\lastMicros,*msg\Seconds,*msg\Micros)><0)
+              *tuiEngine\clickCount+1
+            Else
+              *tuiEngine\clickCount=1
+            End If
+
+            *tuiEngine\lastSeconds = *msg\Seconds
+            *tuiEngine\lastMicros  = *msg\Micros
+            *tuiEngine\lastMouse\x = *msg\MouseX,*msg\MouseY
+          End If
+
+          *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiObject,#TUIEV_MOUSEDOWN}
+          If *tuiEvent
+            *tuiEvent\qualifier_ = *msg\Qualifier
+            If *tuiEngine\clickCount=2 Then *tuiEvent\qualifier_ | #TUIQUAL_DOUBLECLICK
+            If *tuiEngine\clickCount=3 Then *tuiEvent\qualifier_ | #TUIQUAL_TRIPLECLICK
+            *tuiEvent\value      = mouseButtonID
+            *tuiEvent\pos\x      = *msg\MouseX,*msg\MouseY
+            *tuiEvent\seconds    = *msg\Seconds
+            *tuiEvent\micros     = *msg\Micros
+            If (tuiMouseButtonMap(mouseButtonID)=False) Then *tuiEvent\evID = #TUIEV_MOUSEUP
+          End If
+
+        Case #IDCMP_MOUSEMOVE
+          *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiObject,#TUIEV_MOUSEMOVE}
+          If *tuiEvent
+            *tuiEvent\qualifier_ = *msg\Qualifier
+            *tuiEvent\pos\x      = *msg\MouseX,*msg\MouseY
+            *tuiEvent\seconds    = *msg\Seconds
+            *tuiEvent\micros     = *msg\Micros
+          End If
+
+        Case #IDCMP_INTUITICKS
+          *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiObject,#TUIEV_TICK}
+          If *tuiEvent
+            *tuiEvent\qualifier_ = *msg\Qualifier
+            *tuiEvent\pos\x      = *msg\MouseX,*msg\MouseY
+            *tuiEvent\seconds    = *msg\Seconds
+            *tuiEvent\micros     = *msg\Micros
+          End If
+
+        Case #IDCMP_MENUPICK
+          If *msg\Code=-1
+            menuTitle_.l   = -1
+            menuItem_.l    = -1
+            menuSubItem.l  = -1
+          Else
+            menuTitle_   = *msg\Code & $1F
+            menuItem_    = (*msg\Code LSR 5) & $3F
+            menuSubItem  = (*msg\Code LSR 11) & $1F : If menuSubItem = $1f Then menuSubItem=-1
+            If menuSubItem>=0
+              ;\code = GTMenuChecked(\menu_title,\menu_item,\menu_sub)
+            Else
+              ;\code = GTMenuChecked(\menu_title,\menu_item)
+            End If
+          End If
+          *tuiEvent.tuiEvent = #NULL
+          ; unsupported!
+
+        Case #IDCMP_RAWKEY
+          rawKeyCode.l     = *msg\Code&$FF
+          Select rawKeyCode
+            Case #RAWKEY_WHEELUP
+              *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiObject,#TUIEV_VSCROLL}
+              If *tuiEvent
+                *tuiEvent\value      = -1
+                *tuiEvent\qualifier_ = *msg\Qualifier
+                *tuiEvent\seconds    = *msg\Seconds
+                *tuiEvent\micros     = *msg\Micros
+              End If
+
+            Case #RAWKEY_WHEELDOWN
+              *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiObject,#TUIEV_VSCROLL}
+              If *tuiEvent
+                *tuiEvent\value      = 1
+                *tuiEvent\qualifier_ = *msg\Qualifier
+                *tuiEvent\seconds    = *msg\Seconds
+                *tuiEvent\micros     = *msg\Micros
+              End If
+
+            Default
+              If *msg\Code&#IECODE_UP_PREFIX
+                tuiRawKeyMap(rawKeyCode) = False
+              Else
+                tuiRawKeyMap(rawKeyCode) = True
+                inputEvent.InputEvent\ie_NextEvent = 0
+                inputEvent\ie_Class     = #IECLASS_RAWKEY
+                inputEvent\ie_SubClass  = 0
+                inputEvent\ie_Code      = *msg\Code
+                inputEvent\ie_Qualifier = *msg\Qualifier
+                tmp.l = _ntui_ObtainTempBuffer{128}
+                Poke.b tmp,0
+                MapRawKey_ inputEvent,tmp,128,False
+                vanillaString.s  = Peek.s(tmp)
+                _ntui_ReleaseTempBuffer{}
+              End If
+
+              *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiObject,#TUIEV_KEYDOWN}
+              If *tuiEvent
+                *tuiEvent\value = rawKeyCode
+                *tuiEvent\qualifier_ = *msg\Qualifier
+                *tuiEvent\seconds    = *msg\Seconds
+                *tuiEvent\micros     = *msg\Micros
+                str_Write{&*tuiEvent\string,vanillaString}
+                If (tuiRawKeyMap(rawKeyCode)=False) Then *tuiEvent\evID = #TUIEV_KEYUP
+              End If
+          End Select
+
+        Case #IDCMP_MENUVERIFY
+          *tuiEvent.tuiEvent = #NULL
+          ; unsupported
+
+        Case #IDCMP_CLOSEWINDOW
+          *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiObject,#TUIEV_CLOSE}
+
+        Case #IDCMP_ACTIVEWINDOW
+          *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiObject,#TUIEV_ACTIVE}
+
+        Case #IDCMP_INACTIVEWINDOW
+          *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiObject,#TUIEV_INACTIVE}
+
+        Case #IDCMP_NEWSIZE
+          *tuiEvent.tuiEvent = #NULL
+          If !tuiRectWidth{*tuiObject\bbox}><*win\Width OR !tuiRectHeight{*tuiObject\bbox}><*win\Height
+            *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiObject,#TUIEV_RESIZE}
+            If *tuiEvent
+              If *win
+                *tuiEvent\pos\x  = *win\LeftEdge,*win\TopEdge
+                *tuiEvent\size\x = *win\Width,*win\Height
+              End If
+            End If
+          End If
+
+        Default
+          *tuiEvent.tuiEvent = #NULL
+          ; unsupported
+
+      End Select
+
+      ReplyMsg_ *msg
+      If *tuiEvent Then _ntui_DispatchEvent{*tuiEvent}
+    End If
+  Until (*msg=#NULL)
+End Statement
+
+
+Statement _ntui_AmigaCollectAppEvents{*tuiEngine.tuiEngine}
+  If (*tuiEngine\appPort=#NULL) Then Statement Return
+  Repeat
+    *appMsg.AppMessage = GetMsg_(*tuiEngine\appPort)
+    If *appMsg
+      *tuiWindow.tuiWindow = *appMsg\am_UserData
+      If *tuiWindow
+        *win.Window          = *tuiWindow\win
+        *tuiObject.tuiObject = *tuiWindow
+      Else
+        *win       = #NULL
+        *tuiObject = *tuiEngine
+      End If
+
+      Select *appMsg\am_ID
+        Case #APP_WINDOWDROP
+          *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiObject,#TUIEV_WINDOWDROP}
+          If *tuiEvent
+            If *appMsg\am_ArgList
+              If *appMsg\am_ArgList\wa_Name><0 AND *appMsg\am_ArgList\wa_Lock><0
+                tmpP.l = _ntui_ObtainTempBuffer{#APP_BUFFERSIZE}
+                If NameFromLock_(*appMsg\am_ArgList\wa_Lock,tmpP,#APP_BUFFERSIZE)
+                  If AddPart_(tmpP,*appMsg\am_ArgList\wa_Name,#APP_BUFFERSIZE)
+                    str_Write{&*tuiEvent\string,Peek.s(tmpP)}
+                  End If
+                End If
+                _ntui_ReleaseTempBuffer{}
+              End If
+            End If
+            *tuiEvent\pos\x = *appMsg\am_MouseX,*appMsg\am_MouseY
+          End If
+
+        Case #APP_MENUHIT
+          *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiObject,#TUIEV_POPUP}
+
+        Case #APP_ICON  ; drop or click ?
+          *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiObject,#TUIEV_ICONDROP}
+          If (*tuiEvent)
+            If (*appMsg\am_ArgList)
+              If *appMsg\am_ArgList\wa_Name><0 AND *appMsg\am_ArgList\wa_Lock><0
+                tmpP.l = _ntui_ObtainTempBuffer{#APP_BUFFERSIZE}
+                If (NameFromLock_(*appMsg\am_ArgList\wa_Lock,tmpP,#APP_BUFFERSIZE))
+                  If (AddPart_(tmpP,*appMsg\am_ArgList\wa_Name,#APP_BUFFERSIZE))
+                    str_Write{&*tuiEvent\string,Peek.s(tmpP)}
+                  End If
+                End If
+                _ntui_ReleaseTempBuffer{}
+              End If
+            End If
+            If (*tuiEvent\string=#NULL) Then *tuiEvent\evID = #TUIEV_POPUP
+          End If
+
+        Default
+          *tuiEvent.tuiEvent = #NULL
+
+      End Select
+
+      ReplyMsg_ *appMsg
+      If *tuiEvent Then _ntui_DispatchEvent{*tuiEvent}
+    End If
+  Until (*appMsg=#NULL)
+
+End Statement
+
+
+Statement _ntui_AmigaCollectAREXXEvents{*tuiEngine.tuiEngine}
+  If *tuiEngine\rxPort=#NULL Then Statement Return
+
+  While _ntui_GetRexxMsg{*tuiEngine,True}
+    *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiEngine,#TUIEV_MESSAGE}
+    If (*tuiEvent)
+      string.s = str_Read{&*tuiEngine\rxString}
+      str_Write{&*tuiEvent\string,string}
+      _ntui_DispatchEvent{*tuiEvent}
+    End If
+  Wend
+
+End Statement
+
+Statement _ntui_AmigaCollectScreenNotifyEvents{*tuiEngine.tuiEngine}
+  If *tuiEngine\snPort=#NULL Then Statement Return
+
+  *msg.ScreenNotifyMessage = GetMsg_(*tuiEngine\snPort)
+  While *msg
+    Select *msg\snm_Type
+      Case #SCREENNOTIFY_TYPE_WORKBENCH
+        If *msg\snm_Value
+          *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiEngine,#TUIEV_POPUP}
+        Else
+          *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiEngine,#TUIEV_ICONIFY}
+          ntui_Iconify{*tuiEngine}
+        End If
+      Case #SCREENNOTIFY_TYPE_CLOSESCREEN
+        If *msg\snm_Value = *tuiEngine\scr
+          *tuiEvent.tuiEvent = _ntui_CreateEvent{*tuiEngine,#TUIEV_ICONIFY}
+          ntui_Iconify{*tuiEngine}
+        End If
+
+    End Select
+    If *tuiEvent Then _ntui_DispatchEvent{*tuiEvent}
+    ReplyMsg_ *msg
+    *msg.ScreenNotifyMessage = GetMsg_(*tuiEngine\snPort)
+  Wend
+
+End Statement
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: *tuiEvent.tuiEvent = ntui_MoreEvents {*tuiEngine.tuiEngine}                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the next tuiEvent waiting in the input queue.
+;/ Note: you should always call this in a loop until there is no more event waiting, because you dont get a signal for already waiting events that wake your task up while Wait_().                   /
+;/ Note: To query information from the tuiEvent, check if it is not NULL and use the following macros:
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l ntui_GetEvent{*tuiEngine.tuiEngine}
+  !_ASSERT{*tuiEngine}
+
+  _ntui_AmigaCollectAREXXEvents        {*tuiEngine}
+  _ntui_AmigaCollectAppEvents          {*tuiEngine}
+  _ntui_AmigaCollectScreenNotifyEvents {*tuiEngine}
+
+  If *tuiEngine\inputTask = #NULL       ; no inpout task, so get events it here...
+    _ntui_AmigaCollectIDCMPEvents{*tuiEngine}
+    Repeat
+      *tuiEvent.tuiEvent =_ntui_UnqueueEvent{*tuiEngine\inQ}
+      If *tuiEvent Then _ntui_DispatchEvent{*tuiEvent}
+    Until *tuiEvent = #NULL
+  End If
+
+  If *tuiEngine\tuiEvent Then _ntui_DestroyEvent{*tuiEngine\tuiEvent}
+
+  *tuiEngine\tuiEvent = _ntui_UnqueueEvent{*tuiEngine\outQ}
+
+  Function Return *tuiEngine\tuiEvent
+End Function
+
+
+XINCLUDE "utilities.ab3"
+
+CNIF #__include=0 ;/* ************* DEMO ************
+WBStartup
+
+!autoexit{_ntui_Free}
+
+;/* auto init */
+If _ntui_Init{} =False Then End ; and call it
+
+*tuiEngine.tuiEngine = ntui_CreateEngine{"NTUI-Demo","NTUI","NTUI-Demo-Menu","ram:disk.info",""}
+If *tuiEngine=#NULL Then error{"Unable to initialized Engine!"} : End ; Ooops!
+a.s = "Sys:Prefs/Presets/NTUI/def2"
+ntui_SetAttr{*tuiEngine,#TUIEA_SKINPATH,&a.s}
+;ntui_SetAttr{*tuiEngine,#TUIEA_USESKIN,True}
+
+If ntui_PopUp{*tuiEngine}=False Then error{"Unable to pop up!"}:End ; whats wrong with the screen!?
+
+ntui_BeginBuild{*tuiEngine}
+
+*tuiWin.tuiWindow= ntui_BeginWindow{"Demo Window","DEMO"}
+If *tuiWin
+  ntui_BeginPage{0,"",-1,"PAGE"}
+
+
+    *tui.tuiObject = ntui_BeginVGroup{1,"Label"}
+   ; ntui_SetAttr{*tui,#TUIA_LEFTPADDING,7}
+   ; ntui_SetAttr{*tui,#TUIA_RIGHTPADDING,7}
+   ; ntui_SetAttr{*tui,#TUIA_TOPPADDING,7}
+   ; ntui_SetAttr{*tui,#TUIA_BOTTOMPADDING,7}
+      ntui_BeginHGroup{1}
+        *tui = ntui_Label    {"Label"}   : a.s = "Test!" : ntui_SetAttr{*tui,#TUIA_HELP,&a.s}
+        ; ntui_SetAttr{*tui,#TUIA_BORDERTYPE,#TUIBORDER_BUTTON}
+        imagefile.s = "NTUI:button.9.png"
+        ntui_SetAttr{*tui,#TUIA_BGIMAGE,&imagefile}
+        ntui_Label    {"Bold Label",#TUIF_BOLD}
+        ntui_Label    {"Italic Label",#TUIF_ITALIC}
+        ntui_Label    {"Italic+Bold Label",#TUIF_ITALIC|#TUIF_BOLD}
+        ntui_Label    {"Underlined Label",#TUIF_UNDERLINED}
+        ntui_Label    {"Small Font Label",#TUIF_SMALL}
+        ntui_Label    {"Big Font Label",#TUIF_BIG}
+        ntui_Label    {"Fix Font Label",#TUIF_FIX}
+        ntui_Label    {"Disabled Label",#TUIF_DISABLED}
+        ntui_Label    {"Left Aligned Label",#TUIF_LEFT}
+        ntui_Label    {"Right Aligned Label",#TUIF_RIGHT}
+        ntui_Space{0,0}
+      ntui_EndGroup{}
+    ntui_EndGroup{}
+
+    CNIF @#TUI_HAS_BUTTON
+    *tui = ntui_BeginHGroup{0,"Button"}
+            imagefile.s = "NTUI:button.9.png"
+            ntui_SetAttr{*tui,#TUIA_BGIMAGE,&imagefile}
+
+      ntui_BeginHGroup{2}
+        ntui_Label    {"Push Button",#TUIF_RIGHT}
+        ntui_Button   {"Button","","TEST","this is a very basic push-button with text"}
+
+        ntui_Label    {"Toggle Button",#TUIF_RIGHT}
+        ntui_Button   {"Toggle","","","this is a toggle button (on/off)",#TUIF_TOGGLE}
+
+        ntui_Label    {"Bold Button",#TUIF_RIGHT}
+        ntui_Button   {"Bold","","","this is a button using bold font",#TUIF_BOLD}
+
+        ntui_Label    {"Italic Button",#TUIF_RIGHT}
+        ntui_Button   {"Italic","","","this is a button using italic font",#TUIF_ITALIC}
+
+        ntui_Label    {"Italic+Bold Button",#TUIF_RIGHT}
+        ntui_Button   {"Italic+Bold","","","this is an italic and bold button",#TUIF_BOLD|#TUIF_ITALIC}
+
+        ntui_Label    {"Underlined Button",#TUIF_RIGHT}
+        ntui_Button   {"Underlined","","","this is an underlined button",#TUIF_UNDERLINED}
+
+        ntui_Label    {"Small Button",#TUIF_RIGHT}
+        ntui_Button   {"Small","","","this is a button using small font",#TUIF_SMALL}
+
+        ntui_Label    {"Big Button",#TUIF_RIGHT}
+        ntui_Button   {"Big","","","this is a button using big font",#TUIF_BIG}
+
+        ntui_Label    {"Fix Button",#TUIF_RIGHT}
+        ntui_Button   {"Fix","","","this is a button using fix font",#TUIF_FIX}
+
+        ntui_Label    {"Disabled Button",#TUIF_RIGHT}
+        ntui_Button   {"Disabled","","","this is a disabled button",#TUIF_DISABLED}
+
+        ntui_Label    {"Left Button",#TUIF_RIGHT}
+        ntui_Button   {"Left","","","this is a button with left-aligned text",#TUIF_LEFT}
+
+        ntui_Label    {"Right Button",#TUIF_RIGHT}
+        ntui_Button   {"Right","","","this is a button with right-aligned text",#TUIF_RIGHT}
+
+       ntui_Space{0,0} : ntui_Space{0,0}
+      ntui_EndGroup{}
+      CNIF @#TUI_HAS_SEPERATOR
+      ntui_VSeperator{}
+      CEND
+
+      ntui_BeginHGroup{2}
+        ntui_Label    {"Arrow Buttons",#TUIF_RIGHT}
+        ntui_BeginHGroup{0}
+          ntui_FunctionButton{#TUIBUTTON_ARROWUP     ,"this is an arrow button"}
+          ntui_FunctionButton{#TUIBUTTON_ARROWDOWN   ,"this is an arrow button"}
+          ntui_FunctionButton{#TUIBUTTON_ARROWLEFT   ,"this is an arrow button"}
+          ntui_FunctionButton{#TUIBUTTON_ARROWRIGHT  ,"this is an arrow button"}
+          ntui_FunctionButton{#TUIBUTTON_ARROWUP     ,"this is an arrow button",#TUIF_DISABLED}
+          ntui_FunctionButton{#TUIBUTTON_ARROWDOWN   ,"this is an arrow button",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_ARROWLEFT   ,"this is an arrow button",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_ARROWRIGHT  ,"this is an arrow button",#TUIF_DISABLED }
+          ntui_Space{0,0,#TUIF_FIXHEIGHT}
+        ntui_EndGroup{}
+        ntui_Label    {"Outlined Arrow Buttons",#TUIF_RIGHT}
+        ntui_BeginHGroup{0}
+          ntui_FunctionButton{#TUIBUTTON_OLARROWUP   ,"this is an outlined arrow button"}
+          ntui_FunctionButton{#TUIBUTTON_OLARROWDOWN ,"this is an outlined arrow button"}
+          ntui_FunctionButton{#TUIBUTTON_OLARROWLEFT ,"this is an outlined arrow button"}
+          ntui_FunctionButton{#TUIBUTTON_OLARROWRIGHT,"this is an outlined arrow button"}
+          ntui_FunctionButton{#TUIBUTTON_OLARROWUP   ,"this is an outlined arrow button",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_OLARROWDOWN ,"this is an outlined arrow button",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_OLARROWLEFT ,"this is an outlined arrow button",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_OLARROWRIGHT,"this is an outlined arrow button",#TUIF_DISABLED }
+          ntui_Space{0,0,#TUIF_FIXHEIGHT}
+        ntui_EndGroup{}
+        ntui_Label    {"Menu Arrow Buttons",#TUIF_RIGHT}
+        ntui_BeginHGroup{0}
+          ntui_FunctionButton{#TUIBUTTON_POPUP       ,"this is a pop up button"}
+          ntui_FunctionButton{#TUIBUTTON_DROPDOWN    ,"this is a drop down button"}
+          ntui_FunctionButton{#TUIBUTTON_LEFT        ,"this is a left menu button"}
+          ntui_FunctionButton{#TUIBUTTON_RIGHT       ,"this is a right menu button"}
+          ntui_FunctionButton{#TUIBUTTON_POPUP       ,"this is a pop up button",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_DROPDOWN    ,"this is a drop down button",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_LEFT        ,"this is a left menu button",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_RIGHT       ,"this is a right menu button",#TUIF_DISABLED }
+          ntui_Space{0,0,#TUIF_FIXHEIGHT}
+        ntui_EndGroup{}
+        ntui_Label    {"ASL Buttons",#TUIF_RIGHT}
+        ntui_BeginHGroup{0}
+          ntui_FunctionButton{#TUIBUTTON_PATH        ,"this is a button to pop up an ASL path requester"}
+          ntui_FunctionButton{#TUIBUTTON_SAVE        ,"this is a button to pop up an ASL file requester in save mode"}
+          ntui_FunctionButton{#TUIBUTTON_FILE        ,"this is a button to pop up an ASL file requester in open mode"}
+          ntui_FunctionButton{#TUIBUTTON_FONT        ,"this is a button to pop up an ASL font requester"}
+          ntui_FunctionButton{#TUIBUTTON_SCREEN      ,"this is a button to pop up an ASL screenmode requester"}
+          ntui_FunctionButton{#TUIBUTTON_PATH        ,"this is a button to pop up an ASL path requester",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_SAVE        ,"this is a button to pop up an ASL file requester in save mode",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_FILE        ,"this is a button to pop up an ASL file requester in open mode",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_FONT        ,"this is a button to pop up an ASL font requester",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_SCREEN      ,"this is a button to pop up an ASL screenmode requester",#TUIF_DISABLED }
+          ntui_Space{0,0,#TUIF_FIXHEIGHT}
+        ntui_EndGroup{}
+
+        ntui_Label    {"Other Buttons",#TUIF_RIGHT}
+        ntui_BeginHGroup{0}
+          ntui_FunctionButton{#TUIBUTTON_PLUS        ,"this is a button to increase a value"}
+          ntui_FunctionButton{#TUIBUTTON_MINUS       ,"this is a button to decrease a value"}
+          ntui_FunctionButton{#TUIBUTTON_PLUSMINUS   ,"this is a button to in/decrease a value"}
+          ntui_FunctionButton{#TUIBUTTON_PLUS        ,"this is a button to increase a value",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_MINUS       ,"this is a button to decrease a value",#TUIF_DISABLED }
+          ntui_FunctionButton{#TUIBUTTON_PLUSMINUS   ,"this is a button to in/decrease a value",#TUIF_DISABLED }
+          ntui_Space{0,0,#TUIF_FIXHEIGHT}
+        ntui_EndGroup{}
+
+        ntui_Label    {"CheckBox",#TUIF_RIGHT}
+        ntui_BeginHGroup{0}
+        ntui_CheckBox{1,"","this is an on/off checkbox"}
+        ntui_CheckBox{0,"","this is an on/off checkbox"}
+        ntui_CheckBox{1,"","this is an on/off checkbox",#TUIF_DISABLED}
+        ntui_CheckBox{0,"","this is an on/off checkbox",#TUIF_DISABLED}
+        ntui_Space{0,0,#TUIF_FIXHEIGHT}
+        ntui_EndGroup{}
+
+        CNIF @#TUI_HAS_CYCLE
+        ntui_Label    {"Cycle",#TUIF_RIGHT}
+        ntui_BeginHGroup{0}
+        ntui_Cycle{"Wanderer|Honitos|Blackbird|CJ Stroker|BruZard|Modfr|Wawa|HelmutH|Bernd_|Theoderich",0,#NOTIFY_Cycle,"this is a cycle button",-1,"CYCL"}
+        ntui_Cycle{"A|B|C",0,"","this is a cycle button",#TUIF_DISABLED}
+        ntui_EndGroup{}
+        CEND
+
+        ntui_Label    {"Button +Image",#TUIF_RIGHT}
+        ntui_BeginHGroup{0}
+        ntui_Button   {"Image","SAVE","","this is a button with in in-line image (image at text size)"}
+        ntui_Button   {"Image","SAVE","","this is a button with in in-line image (image at text size)",#TUIF_DISABLED}
+        ntui_Button   {"Image","TBImages:save","","this is a button with in in-line image (image at text size)"}
+        ntui_Button   {"Image","TBImages:save","","this is a button with in in-line image (image at text size)",#TUIF_DISABLED}
+        ntui_EndGroup{}
+
+        ntui_Label    {"Image Button",#TUIF_RIGHT}
+        ntui_BeginHGroup{0}
+        ntui_ImageButton   {"","SAVE","","this is an image button (image at native size)"}
+        ntui_ImageButton   {"","SAVE","","this is an image button (image at native size)",#TUIF_DISABLED}
+        ntui_ImageButton   {"","TBImages:save","","this is an image button (image at native size)"}
+        ntui_ImageButton   {"","TBImages:save","","this is an image button (image at native size)",#TUIF_DISABLED}
+        ntui_Space{0,0,#TUIF_FIXHEIGHT}
+        ntui_EndGroup{}
+
+        ntui_Label    {"Image Button +Text",#TUIF_RIGHT}
+        ntui_BeginHGroup{0}
+        ntui_ImageButton   {"Image","SAVE","","this is an image button with text"}
+        ntui_ImageButton   {"Image","SAVE","","this is an image button with text",#TUIF_DISABLED}
+        ntui_ImageButton   {"Image","TBImages:save","","this is an image button with text"}
+        ntui_ImageButton   {"Image","TBImages:save","","this is an image button with text",#TUIF_DISABLED}
+        ntui_Space{0,0,#TUIF_FIXHEIGHT}
+        ntui_EndGroup{}
+
+        ntui_Label    {"Tool Button",#TUIF_RIGHT}
+        ntui_BeginHGroup{0}
+        ntui_ToolButton  {"","SAVE",-1,"","this is a toolbar style button"}
+        ntui_ToolButton  {"","SAVE",-1 ,"","this is a toolbar style button",#TUIF_DISABLED}
+        ntui_ToolButton  {"","TBImages:save",-1 ,"","this is a toolbar style button"}
+        ntui_ToolButton  {"","TBImages:save",-1 ,"","this is a toolbar style button",#TUIF_DISABLED}
+        ntui_Space{0,0,#TUIF_FIXHEIGHT}
+        ntui_EndGroup{}
+
+        ntui_Label    {"Tool Button + Text",#TUIF_RIGHT}
+        ntui_BeginHGroup{0}
+        ntui_ToolButton  {"Image","SAVE",-1 ,"","this is a toolbar button with text"}
+        ntui_ToolButton  {"Image","SAVE",-1 ,"","this is a toolbar button with text",#TUIF_DISABLED}
+        ntui_ToolButton  {"Image","TBImages:save",-1 ,"","this is a toolbar button with text"}
+        ntui_ToolButton  {"Image","TBImages:save",-1 ,"","this is a toolbar button with text",#TUIF_DISABLED}
+        ntui_Space{0,0,#TUIF_FIXHEIGHT}
+        ntui_EndGroup{}
+;
+        ntui_Space{0,0} : ntui_Space{0,0}
+      ntui_EndGroup{}
+
+    ntui_EndGroup{} ; Button
+    CEND
+
+    CNIF @#TUI_HAS_SCROLLER
+    ntui_BeginVGroup{0,"Scoller"}
+      ntui_BeginHGroup{10}
+        ntui_BeginHGroup{2}
+          ntui_Label    {"Horizontal Scroller",#TUIF_RIGHT}
+          ntui_HScroller{0,100,20}
+          ntui_Label    {"HScroller + Arrows",#TUIF_RIGHT}
+          ntui_HScroller{0,100,20} : ntui_AddArrows{}
+          ntui_Label    {"Disabled HScroller",#TUIF_RIGHT}
+          ntui_HScroller{0,100,20,"","",#TUIF_DISABLED } : ntui_AddArrows{}
+          ntui_Space{0,0,#TUIF_FIXWIDTH} : ntui_Space{0,0}
+        ntui_EndGroup{}
+
+        ntui_BeginHGroup{2}
+          ntui_Label    {"Horizontal Slider",#TUIF_RIGHT}
+          ntui_HSlider{0,0,100,""}
+          ntui_Label    {"HSlider + Label",#TUIF_RIGHT}
+          ntui_HSlider{0,0,100,"%d units"}
+          ntui_Label    {"Disabled HSlider",#TUIF_RIGHT}
+          ntui_HSlider{0,0,100,"%d units","","",#TUIF_DISABLED }
+
+          ntui_Label    {"HSlider + Label",#TUIF_RIGHT}
+          ntui_HSlider{0,0,100,"%d units","","",#TUIF_UNDERLINED}
+          ntui_Label    {"HSlider + Label",#TUIF_RIGHT}
+          ntui_HSlider{0,0,100,"%d units","","",#TUIF_UNDERLINED} : ntui_SetBorder{#TUIBORDER_RECESSED}
+          ntui_Label    {"Disabled HSlider + Label",#TUIF_RIGHT}
+          ntui_HSlider{0,0,100,"%d units","","",#TUIF_DISABLED|#TUIF_UNDERLINED }
+
+          ntui_Label    {"HSlider + Border",#TUIF_RIGHT}
+          ntui_HSlider{0,0,100,"%d units"}  : ntui_SetBorder{#TUIBORDER_RECESSED}
+          ntui_Label    {"Disabled HSlider + Border",#TUIF_RIGHT}
+          ntui_HSlider{0,0,100,"%d units","","",#TUIF_DISABLED}  : ntui_SetBorder{#TUIBORDER_RECESSED}
+          ntui_Space{0,0,#TUIF_FIXWIDTH } : ntui_Space{0,0}
+        ntui_EndGroup{}
+      ntui_EndGroup{}
+
+      ntui_BeginHGroup{0}
+        ntui_Label    {"Vertical Versions",#TUIF_RIGHT}
+        ntui_VScroller{0,100,20}
+        ntui_VScroller{0,100,20}                                   : ntui_AddArrows{}
+        ntui_VScroller{0,100,20,"","",#TUIF_DISABLED} : ntui_AddArrows{}
+        ntui_VSlider{0,0,100,""}
+        ntui_VSlider{0,0,100,"%d"}
+        ntui_VSlider{0,0,100,"%d","","",#TUIF_DISABLED }
+
+        ntui_VSlider{0,0,100,"%d","","",#TUIF_UNDERLINED}
+        ntui_VSlider{0,0,100,"%d","","",#TUIF_DISABLED|#TUIF_UNDERLINED }
+        ntui_VSlider{0,0,100,"%d","","",#TUIF_UNDERLINED}                : ntui_SetBorder{#TUIBORDER_RECESSED}
+        ntui_VSlider{0,0,100,"%d"}  : ntui_SetBorder{#TUIBORDER_RECESSED}
+        ntui_VSlider{0,0,100,"%d","","",#TUIF_DISABLED}  : ntui_SetBorder{#TUIBORDER_RECESSED}
+        ntui_Space{0,0}
+      ntui_EndGroup{}
+    ntui_EndGroup{} ; scroller
+    CEND
+
+    CNIF @#TUI_HAS_PAGE
+    ntui_BeginHGroup{2*2,"Page"}
+      ntui_Label    {"Top Page",#TUIF_RIGHT}
+      ntui_BeginPage{0,"",#TUIF_TOP|#TUIF_SMALL}
+        *tui.tuiObject = ntui_BeginVGroup{0,"First Page","TBImages:save"}   ; : ntui_SetAttr{*tui,#TUIA_BGPEN,#TUIPEN_BUBBLEBG}
+          ntui_Label    {"Content of page #1",#TUIF_CENTER}
+        ntui_EndGroup{}
+        ntui_BeginVGroup{0,"Second Page","TBImages:favourites"}
+          ntui_Label    {"Content of page #2",#TUIF_CENTER}
+        ntui_EndGroup{}
+        ntui_BeginVGroup{0,"Third Page","ARROWLEFT",#TUIF_DISABLED}
+          ntui_Label    {"Content of page #3",#TUIF_CENTER}
+        ntui_EndGroup{}
+      ntui_EndPage{}
+
+      ntui_Label    {"Bottom Page",#TUIF_RIGHT}
+      ntui_BeginPage{0,"",#TUIF_BOTTOM}
+        *tui.tuiObject =  ntui_BeginVGroup{0,"First Page","TBImages:save"}                ;: ntui_SetAttr{*tui,#TUIA_BGPEN,#TUIPEN_BUBBLEBG}
+          ntui_Label    {"Content of page #1",#TUIF_CENTER}
+        ntui_EndGroup{}
+        ntui_BeginVGroup{0,"Second Page","TBImages:favourites"}
+          ntui_Label    {"Content of page #2",#TUIF_CENTER}
+        ntui_EndGroup{}
+        ntui_BeginVGroup{0,"Third Page","FONT",#TUIF_DISABLED}
+          ntui_Label    {"Content of page #3",#TUIF_CENTER}
+        ntui_EndGroup{}
+      ntui_EndPage{}
+
+      ntui_Label    {"Left Page",#TUIF_RIGHT}
+      ntui_BeginPage{0,"",#TUIF_LEFT}
+        *tui.tuiObject =  ntui_BeginVGroup{0,"First Page","TBImages:save"}                ;: ntui_SetAttr{*tui,#TUIA_BGPEN,#TUIPEN_BUBBLEBG}
+          ntui_Label    {"Content of page #1",#TUIF_CENTER}
+        ntui_EndGroup{}
+        ntui_BeginVGroup{0,"Second Page","TBImages:favourites"}
+          ntui_Label    {"Content of page #2",#TUIF_CENTER}
+        ntui_EndGroup{}
+        ntui_BeginVGroup{0,"Third Page","FILE"}
+          ntui_Label    {"Content of page #3",#TUIF_CENTER}
+        ntui_EndGroup{}
+      ntui_EndPage{}
+
+      ntui_Label    {"Right Page",#TUIF_RIGHT}
+      ntui_BeginPage{0,"",#TUIF_RIGHT}
+        *tui.tuiObject =  ntui_BeginVGroup{0,"First Page","TBImages:save"}                ;: ntui_SetAttr{*tui,#TUIA_BGPEN,#TUIPEN_BUBBLEBG}
+          ntui_Label    {"Content of page #1",#TUIF_CENTER}
+        ntui_EndGroup{}
+        ntui_BeginVGroup{0,"Second Page","TBImages:favourites"}
+          ntui_Label    {"Content of page #2",#TUIF_CENTER}
+        ntui_EndGroup{}
+        ntui_BeginVGroup{0,"Third Page","SAVE"}
+          ntui_Label    {"Content of page #3",#TUIF_CENTER}
+        ntui_EndGroup{}
+      ntui_EndPage{}
+
+
+      ntui_Label    {"Empty Page",#TUIF_RIGHT}
+      ntui_BeginPage{0,"",#TUIF_TOP}
+      ntui_EndPage{}
+
+      ntui_BeginVGroup{0}
+      ntui_Label    {"External controlled Page",#TUIF_RIGHT}
+      CNIF @#TUI_HAS_CYCLE
+      ntui_Cycle    {"first|second|third",0,"","",#TUIF_FIXSIZE,"excr"}
+      CEND
+      ntui_EndGroup{}
+      ntui_BeginPage{0,"",#TUIF_CENTER,"expa"}
+        *tui.tuiObject =  ntui_BeginVGroup{0,"First Page"}                ;: ntui_SetAttr{*tui,#TUIA_BGPEN,#TUIPEN_BUBBLEBG}
+          ntui_Label    {"Content of page #1",#TUIF_CENTER}
+        ntui_EndGroup{}
+        ntui_BeginVGroup{0,"Second Page"}
+          ntui_Label    {"Content of page #2",#TUIF_CENTER}
+        ntui_EndGroup{}
+        ntui_BeginVGroup{0,"Third Page"}
+          ntui_Label    {"Content of page #3",#TUIF_CENTER}
+        ntui_EndGroup{}
+      ntui_EndPage{}
+      ntui_BindByID{*tuiEngine,"excr","expa"}
+      ntui_Space{0,0,#TUIF_FIXSIZE}
+      ntui_Space{0,0,#TUIF_FIXSIZE}
+    ntui_EndGroup{} ; Page
+    CEND
+
+
+    ntui_BeginHGroup{2,"Misc."}
+      CNIF @#TUI_HAS_SEPERATOR
+      ntui_Label    {"Horizontal Seperator",#TUIF_RIGHT}
+      ntui_HSeperator{}
+
+      ntui_Label {"Label Seperator",#TUIF_RIGHT}
+      ntui_Seperator{"Seperator"}
+
+      ntui_Label    {"Vertical Seperator",#TUIF_RIGHT}
+      ntui_VSeperator{}
+      CEND
+
+      CNIF @#TUI_HAS_PROGRESSBAR
+      ntui_Label    {"ProgressBar",#TUIF_RIGHT}
+      ntui_BeginHGroup{0}
+      ntui_ProgressBar{"%d of %t done (%p %)...",20,100}  : ntui_SetNameID{"SBAR"}
+      ntui_ProgressBar{"%d of %t done (%p %)...",20,100,"",#TUIF_DISABLED}
+      ntui_EndGroup{}
+      CEND
+
+      CNIF @#TUI_HAS_SPACE
+      ntui_Label    {"Space(30x30px)",#TUIF_RIGHT}
+      ntui_Space    {30,30,#TUIF_FIXSIZE}
+      CEND
+
+      CNIF @#TUI_HAS_CUSTOMVIEW
+      ntui_Label    {"Custom View",#TUIF_RIGHT}
+      ntui_CustomView {50,50,#IDCMP_MOUSEMOVE|#IDCMP_MOUSEBUTTONS,"VIEW"}
+      CEND
+    ntui_EndGroup{} ; misc
+
+
+
+    CNIF @#TUI_HAS_IMAGE
+    ntui_BeginHGroup{2,"Image"}
+      ntui_BeginHGroup{0}
+      ntui_BeginHGroup{2}
+
+      ntui_Label    {"Name",#TUIF_LEFT|#TUIF_BOLD}
+      ntui_Label    {"Nrm/Sel/Dis",#TUIF_LEFT|#TUIF_BOLD }
+
+      name.s="" : ntui_Label{"Unknown",#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="SAVE" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="FILE" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="PATH" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="SCREEN" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="FONT" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="CHECKMARK" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="UNCHECKMARK" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="CYCLE" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="PLUS" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="MINUS" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+
+      ntui_Space{0,0,#TUIF_FIXWIDTH } : ntui_Space{0,0,#TUIF_FIXWIDTH }
+
+      ntui_EndGroup{}
+      ntui_VSeperator{}
+      ntui_BeginHGroup{2}
+      ntui_Label    {"Name",#TUIF_LEFT|#TUIF_BOLD}
+      ntui_Label    {"Nrm/Sel/Dis",#TUIF_LEFT|#TUIF_BOLD }
+
+      name.s="ARROWLEFT" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="ARROWRIGHT" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="ARROWUP" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="ARROWDOWN" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="OLARROWLEFT" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="OLARROWRIGHT" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="OLARROWUP" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="OLARROWDOWN" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="LEFT" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="RIGHT" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="POPUP" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="DROPDOWN" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      ntui_Space{0,0,#TUIF_FIXWIDTH} : ntui_Space{0,0,#TUIF_FIXWIDTH }
+    ntui_EndGroup{}
+      ntui_VSeperator{}
+      ntui_BeginHGroup{2}
+      ntui_Label    {"Name",#TUIF_LEFT|#TUIF_BOLD}
+      ntui_Label    {"Nrm/Sel/Dis",#TUIF_LEFT|#TUIF_BOLD }
+
+      name.s="AMIGA" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="SHIFT" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="CTRL" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="ALT" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="TBImages:save" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name} : ntui_Image{name,-1,-1,"",#TUIF_ACTIVE} : ntui_Image{name,-1,-1,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="Sys:disk.info" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name,#TUISIZE_BUTTON ,#TUISIZE_BUTTON }
+      ntui_Image{name,#TUISIZE_BUTTON,#TUISIZE_BUTTON  ,"",#TUIF_ACTIVE}
+      ntui_Image{name,#TUISIZE_BUTTON,#TUISIZE_BUTTON  ,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+      name.s="/Data/house.iff" : ntui_Label{name,#TUIF_LEFT}
+      ntui_BeginHGroup{0} : ntui_Image{name,#TUISIZE_BUTTON,#TUISIZE_BUTTON }
+      ntui_Image{name,#TUISIZE_BUTTON ,#TUISIZE_BUTTON ,"",#TUIF_ACTIVE}
+      ntui_Image{name,#TUISIZE_BUTTON ,#TUISIZE_BUTTON ,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+
+      ntui_Space{0,0,#TUIF_FIXWIDTH} : ntui_Space{0,0,#TUIF_FIXWIDTH }
+
+    ntui_EndGroup{}
+    ntui_EndGroup{}
+          ntui_Space{0,0}
+    ntui_EndGroup{} ; image
+    CEND
+
+    ntui_BeginHGroup{2,"Group"}
+      ntui_BeginHGroup{2}
+        ntui_BeginHGroup{-1,"Title Text","TBImages:favourites"} : ntui_Label{"Titled Group"} : ntui_EndGroup{}
+        ntui_BeginHGroup{-1,"Title Text","TBImages:favourites",#TUIF_DISABLED} : ntui_Label{"Disabled Group"} : ntui_EndGroup{}
+        ntui_BeginHGroup{-1} : ntui_SetBorder{#TUIBORDER_GROUP}    : ntui_Label{"Group with Group Border"} : ntui_EndGroup{}
+        ntui_BeginHGroup{-1} : ntui_SetBorder{#TUIBORDER_RAISED}   : ntui_Label{"Group with Raised Border"} : ntui_EndGroup{}
+        ntui_BeginHGroup{-1} : ntui_SetBorder{#TUIBORDER_RECESSED} : ntui_Label{"Group with Recessed Border"} : ntui_EndGroup{}
+        ntui_BeginHGroup{-1} : ntui_SetBorder{#TUIBORDER_FLAT}     : ntui_Label{"Group with Flat Border"} : ntui_EndGroup{}
+      ntui_EndGroup{}
+    ntui_EndGroup{} ; Group
+
+
+   CNIF @#TUI_HAS_TEXTBOX
+   ntui_BeginHGroup{2,"Text"}
+     ntui_Label    {"String",#TUIF_RIGHT}
+     ntui_BeginHGroup{-1} : ntui_String   {"String",20} :  ntui_String   {"Disabled",20,"","",#TUIF_DISABLED} : ntui_EndGroup{}
+
+     ntui_Label    {"EditLabel",#TUIF_RIGHT}
+     ntui_BeginHGroup{-1} :ntui_EditLabel  {"Edit me!",20,#TUIPEN_BACKGROUND}:ntui_EditLabel  {"Edit me!",20,#TUIPEN_BACKGROUND,"","",#TUIF_DISABLED}: ntui_EndGroup{}
+
+     ntui_Label    {"NumString",#TUIF_RIGHT}
+     ntui_BeginHGroup{-1} : ntui_NumString   {1234,0,10000}:  ntui_NumString   {1234,0,10000,"","",#TUIF_DISABLED} : ntui_EndGroup{}
+
+     ntui_Label    {"NumEditLabel",#TUIF_RIGHT,#TUIPEN_SHINE}
+     ntui_BeginHGroup{-1} : ntui_NumEditLabel   {1234,0,10000,#TUIPEN_SHINE} : ntui_NumEditLabel   {1234,0,10000,#TUIPEN_SHINE,0,"",#TUIF_DISABLED} : ntui_EndGroup{}
+
+     ntui_Label    {"TextBox",#TUIF_RIGHT}
+     *tui.tuiObject = ntui_TextBox   {"The quick bown fox jumps\\nover the lazy dog.\\nThis is a test of the\\ntuiTextBox widget.\\nLet's see how many lines we can have.\\n########\\nThis is the last line.\\n",100,0,"",#TUIF_BOLD}
+   ntui_EndGroup{} ; Text
+   CEND
+
+   CNIF @#TUI_HAS_LISTVIEW
+    ntui_BeginHGroup{2,"ListView"}
+      ntui_Label    {"Simple/Titled ListView",#TUIF_RIGHT}
+      ntui_BeginHGroup{0}
+
+        *tuiListView.tuiListView=ntui_ListView {"",False,"","This is a listview",#TUIF_LEFT}
+        ntui_AddListViewItem{*tuiListView,-1,"Wanderer",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Honitos",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"TomSmart1",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Wawa",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"BruZard",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Blackbird",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Murmel",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"HelmutH",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Bernd_",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Modfr",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"DieterG",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"DaxB",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Deadalus",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"CJ-Stroker",0,1234,0,""}
+
+        *tuiListView.tuiListView=ntui_ListView {"\pTBImages:favourites\tAmiforce",False,"","This is a listview",#TUIF_LEFT}
+        ntui_AddListViewItem{*tuiListView,-1,"Wanderer",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Honitos",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"TomSmart1",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Wawa",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"BruZard",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Blackbird",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Murmel",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"HelmutH",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Bernd_",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Modfr",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"DieterG",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"DaxB",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"Deadalus",0,1234,0,""}
+        ntui_AddListViewItem{*tuiListView,-1,"CJ-Stroker",0,1234,0,""}
+      ntui_EndGroup{}
+
+      ntui_Label    {"Multi-Column ListView",#TUIF_RIGHT}
+      *tuiListView.tuiListView=ntui_ListView {"\pTBImages:question\~|\lAddress\pTBImages:link|\lSubject\pTBImages:help|\lDate\pTBImages:date",True}
+      ntui_AddListViewItem{*tuiListView,-1,"\pTBImages:mail|koehlerthilo@gmx.de|Test Email|11/12/2008",0,1234,#TUIF_BOLD,""}
+      ntui_AddListViewItem{*tuiListView,-1,"\pTBImages:mail|koehlerthilo@gmx.de|Another Test|13/12/2008",0,1234,#TUIF_BOLD ,""}
+      ntui_AddListViewItem{*tuiListView,-1,"\pTBImages:mail|support@hd-rec.de|RE: Another Test|14/12/2008",0,1234,#TUIF_BOLD ,""}
+      ntui_AddListViewItem{*tuiListView,-1,"\pTBImages:mail|rumpel-stielzchen@web.de|Test Email|11/12/2008",0,1234,0,""}
+      ntui_AddListViewItem{*tuiListView,-1,"\pTBImages:mailspam|spamname@gmx.de|Another Test|13/12/2008",0,1234,0,""}
+      ntui_AddListViewItem{*tuiListView,-1,"\pTBImages:mailspam|koehlerthilo@gmx.de|RE: Another Test|14/12/2008",0,1234,0,""}
+      ntui_AddListViewItem{*tuiListView,-1,"\pTBImages:mail|koehlerthilo@gmx.de|\dTest Email|11/12/2008",0,1234,0,""}
+      ntui_AddListViewItem{*tuiListView,-1,"\pTBImages:mail|koehlerthilo@gmx.de|Another Test|13/12/2008",0,1234,#TUIF_DISABLED,""}
+      ntui_AddListViewItem{*tuiListView,-1,"\pTBImages:mail|koehlerthilo@gmx.de|RE: Another Test|14/12/2008",0,1234,0,""}
+    ntui_EndGroup{} ; listview
+
+  CEND
+  ntui_EndPage{}
+
+  *tui.tuiObject = ntui_EndWindow{}
+  ;ntui_SetAttr{*tui,#TUIA_CLEARFLAGS,#TUIF_FIXSIZE}
+  ;ntui_SetAttr{*tui,#TUIWA_APPNOTIFY,#NOTIFY_DROP}
+
+End If
+ntui_EndBuild{}
+; ntui_SetAttrByID{*tuiEngine,"PAGE",#TUIA_BGPEN,#TUIPEN_HALFSHINE}
+;ntui_SetAttr{*tuiWin,#TUIA_BGPEN,#TUIPEN_HALFSHADOW}
+ntui_ShowWindowByID{*tuiEngine,"DEMO"}
+ntui_ShowAppIcon{*tuiEngine,"NTUI Template"}
+
+quitme.l = False
+While quitme=False
+  Wait_ $FFFFFFFF
+  Repeat
+    *tuiEvent.tuiEvent = ntui_GetEvent{*tuiEngine}
+    Select ntui_GetEventNotify{*tuiEvent}
+      Case "TEST"       : message{"User hit the button!"}
+      Case "QUIT"       : quitme=True
+      Case "CLOSE"      : quitme=True
+      Case "POPUP"      : ntui_PopUp{*tuiEngine} ; message{"App Pop up!"}
+      Case "ICONIFY"    : ntui_Iconify{*tuiEngine} ;message{"App iconify!"}
+      Case "WINDOWDROP" : message{"Icon drop on Window: " }
+      Case "ICONDROP"   : message{"Icon drop on app icon: " }
+      Case "MESSAGE"    : message{"got AREXX message: "}
+      Case "Cycle"
+        ;a.s = Str$(ntui_GetValueByID{*tuiEngine,"CYCL"})
+        ;b.s = Str$(0)
+        ;message{"Cycle Event "+b.s+" and extra by ID "+a.s}
+      Case "VIEW"
+        ;message{"Click view!"}
+      Case "REFRESH"
+        *tui.tuiObject = ntui_GetEventObject{*tuiEvent}
+        If *tui
+          Select str_Read{*tui\nameID}
+            Case "VIEW"
+              r.l = r+1
+              *rp.RastPort = ntui_ObtainRastPort{*tui}
+              If *rp
+                ntui_GetAttr{*tui,#TUIA_XPOS,&x.l}
+                ntui_GetAttr{*tui,#TUIA_YPOS,&y.l}
+
+                ntui_GetAttr{*tui,#TUIA_WIDTH,&w.l}
+                ntui_GetAttr{*tui,#TUIA_HEIGHT,&h.l}
+                For y1.l=0 To h-1 Step 10
+                  For x1.l=0 To w-1 Step 10
+                    n.l = (y1+x1)/10 +r
+                    If (n&1)=1
+                      SetAPen_ *rp,*tuiEngine\pen[#TUIPEN_HALFSHADOW]
+                    Else
+                      SetAPen_ *rp,*tuiEngine\pen[#TUIPEN_HALFSHINE]
+                    End If
+                    x2.l = x1+9 : If x2>=w Then x2=w-1
+                    y2.l = y1+9 : If y2>=h Then y2=h-1
+                    RectFill_ *rp,x1+x,y1+y,x2+x,y2+y
+                  Next
+                Next
+                ntui_ReleaseRastPort{*tui}
+              End If
+          End Select
+        End If
+    End Select
+  Until *tuiEvent=#NULL
+Wend
+
+ntui_FreeEngine{*tuiEngine}
+
+End
+CEND
+
+
