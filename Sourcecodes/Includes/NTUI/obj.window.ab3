@@ -29,8 +29,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 530
-; CursorColumn    = 49
+; CursorLine      = 418
+; CursorColumn    = 20
 ; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -261,8 +261,8 @@ Function.l _ntui_CalculateWindowMinSize{*tuiWindow.tuiWindow,*rp.RastPort}
   While *child
     _ntui_CalculateMinSize{*child,*rp}
 
-    minX.l = *child\minsize\x + *child\margin\left + *child\margin\right
-    minY.l = *child\minsize\y + *child\margin\top  + *child\margin\bottom
+    minX.l = *child\minsize\x + !tuiBorderWidth{*child\margin}
+    minY.l = *child\minsize\y + !tuiBorderHeight{*child\margin}
     If False
       *tui\minsize\x  + minX
       If *tui\minsize\y<minY Then *tui\minsize\y=minY
@@ -273,12 +273,12 @@ Function.l _ntui_CalculateWindowMinSize{*tuiWindow.tuiWindow,*rp.RastPort}
     *child=*child\next_
   Wend
 
-  *tui\minsize\x + *tui\padding\left + *tui\padding\right
-  *tui\minsize\y + *tui\padding\top  + *tui\padding\bottom
+  *tui\minsize\x + !tuiBorderWidth{*tui\padding}
+  *tui\minsize\y + !tuiBorderHeight{*tui\padding}
 
   ; actually, we shall add the borderize too, but we dont know it yet (window is closed at this stage)
-  *tui\minsize\x + *tui\border\left  + *tui\border\right
-  *tui\minsize\y + *tui\border\top   + *tui\border\bottom
+;  *tui\minsize\x + *tui\border\left  + *tui\border\right
+;  *tui\minsize\y + *tui\border\top   + *tui\border\bottom
 
   Function Return *tui\minsize
 End Function
@@ -318,27 +318,6 @@ Function.w _ntui_GetWindowAttr{*tuiWindow.tuiWindow,ti_Tag.l,*ti_Data.longP}
 End Function
 
 
-;///////////////////////////////////////////////////////////////////////////////
-;/                                                                             /
-;/ Syntax: _ntui_FreeWindow {*tuiWindow.tuiWindow}                             /
-;/                                                                             /
-;/ Description:                                                                /
-;/ private: free a tuiWindow
-;/                                                                             /
-;/ Inputs:                                                                     /
-;/ - *tuiWindow.tuiWindow    : ???                                             /
-;/                                                                             /
-;///////////////////////////////////////////////////////////////////////////////
-_ntui_DeinitWindow:
-Statement _ntui_DeinitWindow{*tuiWindow.tuiWindow}
-ntui_HideWindow{*tuiWindow}
-; free additional stuff, if any
-str_Free{&*tuiWindow\onClose}
-str_Free{&*tuiWindow\onWinDrop}
-str_Free{&*tuiWindow\onActive}
-str_Free{&*tuiWindow\onInactive}
-str_Free{&*tuiWindow\onTick}
-End Statement
 
 
 _ntui_DispatchWindowEvent
@@ -349,12 +328,12 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
   *tuiEngine.tuiEngine = *tuiObject\tuiEngine
   !_ASSERT{*tuiEngine}
 
-  closeBubble.l = False
+  closeToolTip.l = False
 
   If ((*tuiEngine\focus><#NULL) AND (*tuiEngine\focus><*tuiWindow))
     If (*tuiEngine\focus\flags&#TUIF_DISABLED)=0
       If *tuiEngine\focus\DispatchEvent Then !_CallFuncPointer{*tuiEngine\focus\DispatchEvent,done.w,*tuiEngine\focus,*tuiEvent} : Else done = False
-      If done Then closeBubble=True
+      If done Then closeToolTip=True
     End If
   End If
 
@@ -367,7 +346,7 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
           str_Dup{&*tuiEvent\notifyID,*tuiWindow\onClose}
           _ntui_QueueEvent{*tuiEngine\outQ,*tuiEvent} : done = True
         EndIf
-        closeBubble=True
+        closeToolTip=True
 
       Case #TUIEV_ACTIVE
         If (*tuiWindow\onActive)
@@ -376,7 +355,7 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
         EndIf
         ntui_SetFocus{*tuiEngine,*tuiWindow\lastFocus}
         _ntui_SetMover{*tuiEngine,*mover}
-        closeBubble=True
+        closeToolTip=True
 
       Case #TUIEV_INACTIVE
         If (*tuiWindow\onInactive)
@@ -384,7 +363,7 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
           _ntui_QueueEvent{*tuiEngine\outQ,*tuiEvent} : done = True
         EndIf
         ntui_FlushRawKeys{}
-        closeBubble=True
+        closeToolTip=True
 
       Case #TUIEV_MOUSEDOWN
         If *mover
@@ -393,13 +372,13 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
             *tuiEngine\restingTime = -1000
           End If
         End If
-        closeBubble=True
+        closeToolTip=True
 
       Case #TUIEV_MOUSEMOVE
         If *mover >< *tuiEngine\mover
           _ntui_SetMover{*tuiEngine,*mover}
           *tuiEngine\restingTime = 0
-          closeBubble=True
+          closeToolTip=True
         End If
         If *mover
           If (*mover\flags&#TUIF_DISABLED)=0
@@ -508,10 +487,12 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
         If *tuiEngine\mover
           If (*tuiEngine\mover\flags&#TUIF_ACTIVE = 0)
             If *tuiEngine\mover\help
-              If *tuiEngine\bubble = #NULL
+              If *tuiEngine\toolTip = #NULL
                 *tuiEngine\restingTime+1
                 If *tuiEngine\restingTime=12
-                  ;ntui_ShowBubble{*tuiEngine,str_Read{&*tuiEngine\mover\help},*tuiEngine\scr\MouseX,*tuiEngine\scr\MouseY}
+                  ntui_PostEvent{*tuiEngine\mover,#TUIEV_TOOLTIP,*tuiEngine\restingTime}
+                  ;ntui_ShowTooltip{*tuiEngine,str_Read{&*tuiEngine\mover\help},*tuiEngine\scr\MouseX,*tuiEngine\scr\MouseY}
+                  ;error{"Open bubble!"}
                 End If
               End If
             End If
@@ -542,16 +523,42 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
             _ntui_QueueEvent{*tuiEngine\outQ,*tuiEvent} : done = True
           EndIf
         End If
-        closeBubble=True
+        closeToolTip=True
 
     End Select
 
-    If closeBubble Then If *tuiEngine\bubble Then ntui_FreeObject{*tuiEngine\bubble} : *tuiEngine\bubble=#NULL
+    If closeToolTip Then If *tuiEngine\toolTip Then ntui_FreeObject{*tuiEngine\toolTip} : *tuiEngine\toolTip=#NULL
 
   End If
 
   Function Return done
 End Function
+
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _ntui_FreeWindow {*tuiWindow.tuiWindow}                             /
+;/                                                                             /
+;/ Description:                                                                /
+;/ private: free a tuiWindow
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *tuiWindow.tuiWindow    : ???                                             /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+_ntui_DeinitWindow:
+Statement _ntui_DeinitWindow{*tuiWindow.tuiWindow}
+ntui_HideWindow{*tuiWindow}
+; free additional stuff, if any
+str_Free{&*tuiWindow\onClose}
+str_Free{&*tuiWindow\onWinDrop}
+str_Free{&*tuiWindow\onActive}
+str_Free{&*tuiWindow\onInactive}
+str_Free{&*tuiWindow\onTick}
+End Statement
+
 
 
 _ntui_LayoutWindow:
@@ -604,7 +611,7 @@ Statement _ntui_LayoutWindow{*tuiWindow.tuiWindow,*rp.RastPort,*bbox.tuiRect}
     If *child\typeID=#TUIOBJ_GROUP
       *tuiGroup.tuiGroup=*child
       If *tuiGroup\subTypeID=#TUIGROUP_MENUBAR
-        cbox\bottom = *child\minsize\y + *child\margin\top + *child\margin\bottom
+        cbox\bottom = *child\minsize\y + !tuiBorderHeight{*child\margin}
         _ntui_Layout{*child,*rp,cbox}
         cbox\top=cbox\bottom+1
         cbox\bottom = *tui\cbox\bottom
