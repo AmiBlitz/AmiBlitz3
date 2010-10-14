@@ -29,8 +29,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 418
-; CursorColumn    = 20
+; CursorLine      = 658
+; CursorColumn    = 93
 ; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -89,6 +89,7 @@ CEND
 #TUIWA_ONACTIVE      =  4 | #TUIWA_BASE  ; rw
 #TUIWA_ONINACTIVE    =  5 | #TUIWA_BASE  ; rw
 #TUIWA_ONTICK        =  6 | #TUIWA_BASE  ; rw
+#TUIWA_TITLE         =  #TUIA_STRING
 
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
@@ -109,7 +110,7 @@ CEND
 ;///////////////////////////////////////////////////////////////////////////////
 Function.l ntui_GetWindowByID{*tui.tuiObject,nameID.s,@instanceID.l}
 If *tui=#NULL Then Function Return #NULL
-If (*tui\typeID=#TUIOBJ_WINDOW)
+If (*tui\classID=#TUICLASS_WINDOW)
   If ((str_Comp{*tui\nameID,&nameID-4}=0) OR (nameID=""))
     *tuiWindow.tuiWindow = *tui
     If ((*tuiWindow\instanceID=instanceID) OR (instanceID=-1))
@@ -144,36 +145,60 @@ End Function
 ;/ - result.w     : true if the window was hidden, false otherwise                                                       /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.w ntui_HideWindow{*tuiWindow.tuiWindow}
-If *tuiWindow=#NULL Then Function Return False
-
-If *tuiWindow\appWin
-  RemoveAppWindow_ *tuiWindow\appWin
-  *tuiWindow\appWin=#NULL
-End If
-
-*win.Window = *tuiWindow\win
-
-Forbid_
-  ntui_FlushEvents{*tuiWindow}
+Statement _ntui_AmigaStripIntuiMessages{*win.Window}
+  ; flush the IDCMP Events...
   If *win
-    *win\UserPort = #NULL
-    ModifyIDCMP_ *win, 0
+    If *win\UserPort
+      *mp.MsgPort = *win\UserPort
+      If *mp\mp_MsgList
+        *msg.IntuiMessage = *mp\mp_MsgList\lh_Head
+        If *msg><#NULL
+          While (*msg\ExecMessage\mn_Node\ln_Succ)
+            *succ.Node = *msg\ExecMessage\mn_Node\ln_Succ
+            If( *msg\IDCMPWindow=*win)
+              Remove_ *msg
+              ReplyMsg_ *msg
+            End If
+            *msg = *succ
+            If *msg=-1 Then error{"Messgae succ is -1!!!!"}
+          Wend
+        End If
+      End If
+    End If
   End If
-Permit_
+End Statement
 
-If *win
-  *tuiWindow\obj\bbox\left = *win\LeftEdge,*win\TopEdge,*win\Width,*win\Height
-;  *tuiWindow\outerSize\x = *win\Width,*win\Height
-;  *tuiWindow\innerSize\x = *win\Width  - *win\BorderLeft - *win\BorderRight
-;  *tuiWindow\innerSize\y = *win\Height - *win\BorderTop  - *win\BorderBottom
-;  *tuiWindow\screenPos\x = *win\LeftEdge,*win\TopEdge
-  CloseWindow_  *win
-  *tuiWindow\win = #NULL
-  *tuiWindow\state = #TUISTATE_CLOSED
-End If
-ntui_ClearFlags{#TUIF_ONSCREEN,False,*tuiWindow}
-Function Return True
+
+Function.w ntui_HideWindow{*tuiWindow.tuiWindow}
+  !_ASSERT{*tuiWindow}
+  !_ASSERT{*tuiWindow\obj\classID=#TUICLASS_WINDOW}
+
+  If *tuiWindow\appWin
+    RemoveAppWindow_ *tuiWindow\appWin
+    *tuiWindow\appWin=#NULL
+  End If
+
+  *win.Window = *tuiWindow\win
+
+  If *win
+
+    Forbid_
+      _ntui_AmigaStripIntuiMessages{*win}
+      *win\UserPort = #NULL
+      ModifyIDCMP_ *win, 0
+    Permit_
+
+    *tuiWindow\obj\bbox\left = *win\LeftEdge,*win\TopEdge,*win\LeftEdge+*win\Width-1,*win\TopEdge+*win\Height-1
+    *tuiWindow\obj\border\left = *win\BorderLeft, *win\BorderTop, *win\BorderRight , *win\BorderBottom
+    CloseWindow_  *win
+    *tuiWindow\win = #NULL
+    *tuiWindow\state = #TUISTATE_CLOSED
+  End If
+
+  ntui_FlushEvents{*tuiWindow}
+
+  ntui_ClearFlags{#TUIF_ONSCREEN,False,*tuiWindow}
+  Function Return True
 End Function
 
 
@@ -193,6 +218,8 @@ End Function
 _ntui_DrawWindow:
 Statement _ntui_DrawWindow{*tuiWindow.tuiWindow,*rp.RastPort}
 !_ASSERT{*tuiWindow}
+!_ASSERT{*tuiWindow\obj\classID=#TUICLASS_WINDOW}
+
 *tuiEngine.tuiEngine = *tuiWindow\obj\tuiEngine
 !_ASSERT{*tuiEngine}
 *tui.tuiObject = *tuiWindow
@@ -286,7 +313,10 @@ End Function
 
 _ntui_SetWindowAttr:
 Function.w _ntui_SetWindowAttr{*tuiWindow.tuiWindow,ti_Tag.l,ti_Data.l}
-  succ.w = True
+  !_ASSERT{*tuiWindow}
+  !_ASSERT{*tuiWindow\obj\classID=#TUICLASS_WINDOW}
+
+  done.w = True
   Select ti_Tag
     Case #TUIWA_WINFLAGS   : *tuiWindow\winFlags    = ti_Data
     Case #TUIWA_ONCLOSE    : str_WritePtr{*tuiWindow\onClose    ,ti_Data}
@@ -294,16 +324,54 @@ Function.w _ntui_SetWindowAttr{*tuiWindow.tuiWindow,ti_Tag.l,ti_Data.l}
     Case #TUIWA_ONACTIVE   : str_WritePtr{*tuiWindow\onActive   ,ti_Data}
     Case #TUIWA_ONINACTIVE : str_WritePtr{*tuiWindow\onInactive ,ti_Data}
     Case #TUIWA_ONTICK     : str_WritePtr{*tuiWindow\onTick     ,ti_Data}
+    Case #TUIA_XMLATTR
+      *xmlA.tuiXmlAttr = ti_Data
+      Select str_Read{&*xmlA\name}
+        Case "title"             : done=ntui_SetAttr{*tuiWindow,#TUIWA_TITLE         ,&*xmlA\string\str}
+
+        Case "onclose"           : done=ntui_SetAttr{*tuiWindow,#TUIWA_ONCLOSE       ,&*xmlA\string\str}
+        Case "onwindrop"         : done=ntui_SetAttr{*tuiWindow,#TUIWA_ONWINDROP     ,&*xmlA\string\str}
+        Case "ontick"            : done=ntui_SetAttr{*tuiWindow,#TUIWA_ONTICK        ,&*xmlA\string\str}
+        Case "onactive"          : done=ntui_SetAttr{*tuiWindow,#TUIWA_ONACTIVE      ,&*xmlA\string\str}
+        Case "oninactive"        : done=ntui_SetAttr{*tuiWindow,#TUIWA_ONINACTIVE    ,&*xmlA\string\str}
+        Case "winflags"          : done=ntui_SetAttr{*tuiWindow,#TUIWA_WINFLAGS      ,*xmlA\value}
+        Case "borderless"        : wflgs.l = *tuiWindow\winFlags|#WFLG_BORDERLESS  : If *xmlA\value=0 Then wflgs-#WFLG_BORDERLESS
+                                   done=ntui_SetAttr{*tuiWindow,#TUIWA_WINFLAGS      ,wflgs}
+        Case "backdrop"          : wflgs.l = *tuiWindow\winFlags|#WFLG_BACKDROP    : If *xmlA\value=0 Then wflgs-#WFLG_BACKDROP
+                                   done=ntui_SetAttr{*tuiWindow,#TUIWA_WINFLAGS      ,wflgs}
+        Case "activate"          : wflgs.l = *tuiWindow\winFlags|#WFLG_ACTIVATE    : If *xmlA\value=0 Then wflgs-#WFLG_ACTIVATE
+                                   done=ntui_SetAttr{*tuiWindow,#TUIWA_WINFLAGS      ,wflgs}
+        Case "closegadget"       : wflgs.l = *tuiWindow\winFlags|#WFLG_CLOSEGADGET : If *xmlA\value=0 Then wflgs-#WFLG_CLOSEGADGET
+                                   done=ntui_SetAttr{*tuiWindow,#TUIWA_WINFLAGS      ,wflgs}
+        Case "dragbar"           : wflgs.l = *tuiWindow\winFlags|#WFLG_DRAGBAR     : If *xmlA\value=0 Then wflgs-#WFLG_DRAGBAR
+                                   done=ntui_SetAttr{*tuiWindow,#TUIWA_WINFLAGS      ,wflgs}
+        Case "depthgadget"       : wflgs.l = *tuiWindow\winFlags|#WFLG_DEPTHGADGET : If *xmlA\value=0 Then wflgs-#WFLG_DEPTHGADGET
+                                   done=ntui_SetAttr{*tuiWindow,#TUIWA_WINFLAGS      ,wflgs}
+        Case "haszoom"           : wflgs.l = *tuiWindow\winFlags|#WFLG_HASZOOM     : If *xmlA\value=0 Then wflgs-#WFLG_HASZOOM
+                                   done=ntui_SetAttr{*tuiWindow,#TUIWA_WINFLAGS      ,wflgs}
+        Case "sizebbottom"       : wflgs.l = *tuiWindow\winFlags|#WFLG_SIZEBBOTTOM : If *xmlA\value=0 Then wflgs-#WFLG_SIZEBBOTTOM
+                                   done=ntui_SetAttr{*tuiWindow,#TUIWA_WINFLAGS      ,wflgs}
+        Case "sizebright"        : wflgs.l = *tuiWindow\winFlags|#WFLG_SIZEBRIGHT  : If *xmlA\value=0 Then wflgs-#WFLG_SIZEBRIGHT
+                                   done=ntui_SetAttr{*tuiWindow,#TUIWA_WINFLAGS      ,wflgs}
+        Case "sizegadget"        : wflgs.l = *tuiWindow\winFlags|#WFLG_SIZEGADGET  : If *xmlA\value=0 Then wflgs-#WFLG_SIZEGADGET
+                                   done=ntui_SetAttr{*tuiWindow,#TUIWA_WINFLAGS      ,wflgs}
+        Default
+          done = False
+       End Select
+
     Default
-      succ = False
+      done = False
   End Select
-  Function Return succ
+  Function Return done
 End Function
 
 
 _ntui_GetWindowAttr:
 Function.w _ntui_GetWindowAttr{*tuiWindow.tuiWindow,ti_Tag.l,*ti_Data.longP}
-  succ.w = True
+  !_ASSERT{*tuiWindow}
+  !_ASSERT{*tuiWindow\obj\classID=#TUICLASS_WINDOW}
+
+  done.w = True
   Select ti_Tag
     Case #TUIWA_WINFLAGS   : *ti_Data\l = *tuiWindow\winFlags
     Case #TUIWA_ONCLOSE    : *ti_Data\l = &*tuiWindow\onClose\str
@@ -312,16 +380,17 @@ Function.w _ntui_GetWindowAttr{*tuiWindow.tuiWindow,ti_Tag.l,*ti_Data.longP}
     Case #TUIWA_ONINACTIVE : *ti_Data\l = &*tuiWindow\onInactive\str
     Case #TUIWA_ONTICK     : *ti_Data\l = &*tuiWindow\onTick\str
     Default
-      succ = False
+      done = False
   End Select
-  Function Return succ
+  Function Return done
 End Function
-
-
 
 
 _ntui_DispatchWindowEvent
 Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
+  !_ASSERT{*tuiWindow}
+  !_ASSERT{*tuiWindow\obj\classID=#TUICLASS_WINDOW}
+
   !_ASSERT{*tuiEvent}
   *tuiObject.tuiObject = *tuiEvent\tuiObject
   !_ASSERT{*tuiObject}
@@ -338,7 +407,11 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
   End If
 
   If done = False ; the focus object did not want the event, try mouse over child
-    *mover.tuiObject = ntui_HitObject{*tuiWindow\obj\child,*tuiEvent\pos\x,*tuiEvent\pos\y}
+    If *tuiWindow\obj\child
+      *mover.tuiObject = ntui_HitObject{*tuiWindow\obj\child,*tuiEvent\pos\x,*tuiEvent\pos\y}
+    Else
+      *mover=#NULL
+    End If
 
     Select *tuiEvent\evID
       Case #TUIEV_CLOSE
@@ -550,13 +623,15 @@ End Function
 ;///////////////////////////////////////////////////////////////////////////////
 _ntui_DeinitWindow:
 Statement _ntui_DeinitWindow{*tuiWindow.tuiWindow}
-ntui_HideWindow{*tuiWindow}
-; free additional stuff, if any
-str_Free{&*tuiWindow\onClose}
-str_Free{&*tuiWindow\onWinDrop}
-str_Free{&*tuiWindow\onActive}
-str_Free{&*tuiWindow\onInactive}
-str_Free{&*tuiWindow\onTick}
+  !_ASSERT{*tuiWindow}
+  !_ASSERT{*tuiWindow\obj\classID=#TUICLASS_WINDOW}
+  ntui_HideWindow{*tuiWindow}
+  ; free additional stuff, if any
+  str_Free{&*tuiWindow\onClose}
+  str_Free{&*tuiWindow\onWinDrop}
+  str_Free{&*tuiWindow\onActive}
+  str_Free{&*tuiWindow\onInactive}
+  str_Free{&*tuiWindow\onTick}
 End Statement
 
 
@@ -564,6 +639,8 @@ End Statement
 _ntui_LayoutWindow:
 Statement _ntui_LayoutWindow{*tuiWindow.tuiWindow,*rp.RastPort,*bbox.tuiRect}
   !_ASSERT{*tuiWindow}
+  !_ASSERT{*tuiWindow\obj\classID=#TUICLASS_WINDOW}
+
   *tui.tuiObject = *tuiWindow\obj
   !_ASSERT{*rp}
   *tuiEngine.tuiEngine = *tui\tuiEngine
@@ -608,9 +685,9 @@ Statement _ntui_LayoutWindow{*tuiWindow.tuiWindow,*rp.RastPort,*bbox.tuiRect}
   menuBarHeight.l = 0
   *child.tuiObject = *tui\child
   If *child
-    If *child\typeID=#TUIOBJ_GROUP
+    If *child\classID=#TUICLASS_GROUP
       *tuiGroup.tuiGroup=*child
-      If *tuiGroup\subTypeID=#TUIGROUP_MENUBAR
+      If *tuiGroup\subClassID=#TUIGROUP_MENUBAR
         cbox\bottom = *child\minsize\y + !tuiBorderHeight{*child\margin}
         _ntui_Layout{*child,*rp,cbox}
         cbox\top=cbox\bottom+1
@@ -649,11 +726,12 @@ End Statement
 ;///////////////////////////////////////////////////////////////////////////////
 Function.w ntui_ShowWindow{*tuiWindow.tuiWindow,@xpos.l,@ypos.l,@*masterWindow.tuiWindow}
 !_ASSERT{*tuiWindow}
-*tui.tuiObject = *tuiWindow
-If (*tui\typeID><#TUIOBJ_WINDOW) Then Function Return False
-*tuiEngine.tuiEngine = *tui\tuiEngine
-!_ASSERT{*tuiWindow}
-If (*tuiEngine\scr  = #NULL) Then Function Return False ; no screen
+!_ASSERT{*tuiWindow\obj\classID=#TUICLASS_WINDOW}
+
+  *tui.tuiObject = *tuiWindow
+  *tuiEngine.tuiEngine = *tui\tuiEngine
+If (*tuiEngine\scr = #NULL) Then _ntui_OpenScreen{*tuiEngine,str_Read{&*tuiEngine\pubScreenName},#NULL}
+If (*tuiEngine\scr = #NULL) Then Function Return False ; no screen
 
 succ.w = False
 If *tuiWindow\win
@@ -789,13 +867,13 @@ End Function
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
 Function.l ntui_BeginWindow{title.s,nameID.s,@instanceID.l,@WFlags.l,@flags.l}
-*tuiWindow.tuiWindow = #NULL
-If ntui_GetWindowByID{tuiGlobal\buildHelper\tuiEngine,nameID,instanceID}=#NULL ; does not exist yet!
+;*tuiWindow.tuiWindow = #NULL
+;If ntui_GetWindowByID{tuiGlobal\buildHelper\tuiEngine,nameID,instanceID}=#NULL ; does not exist yet!
   If (flags=#TUI_NOFLAGS)
     flags.l = #TUIF_FIXSIZE
   End If
 
-  *tuiWindow = _ntui_CreateObject{#TUIOBJ_WINDOW,SizeOf.tuiWindow,"",flags,nameID}
+  *tuiWindow.tuiWindow = _ntui_CreateObject{#TUICLASS_WINDOW,SizeOf.tuiWindow,"",flags,nameID}
   If *tuiWindow
     If title Then str_Write{&*tuiWindow\obj\string,title}
     *tuiWindow\win            = #NULL
@@ -830,7 +908,7 @@ If ntui_GetWindowByID{tuiGlobal\buildHelper\tuiEngine,nameID,instanceID}=#NULL ;
     End If
     tuiGlobal\buildHelper\windowDepth+1
   End If
-End If
+;End If
 Function Return *tuiWindow
 End Function
 
@@ -848,21 +926,32 @@ End Function
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
 Function.l ntui_EndWindow{}
-;If tuiGlobal\buildHelper\tuiParent><tuiGlobal\buildHelper\tuiWindow Then error{"\\__THIS_FUNCTION: EndWindow does not match BeginWindow!"}
-*tuiWindow.tuiWindow = tuiGlobal\buildHelper\tuiParent;tuiGlobal\buildHelper\tuiWindow
-;tuiGlobal\buildHelper\tuiGlobal\buildHelper\tuiParent;tuiEngine  = #NULL
-;tuiGlobal\buildHelper\tuiWindow  = #NULL
 tuiGlobal\buildHelper\tuiRootWin = #NULL
-tuiGlobal\buildHelper\tuiPrev    = tuiGlobal\buildHelper\tuiParent
-tuiGlobal\buildHelper\tuiCurrent = tuiGlobal\buildHelper\tuiParent
 tuiGlobal\buildHelper\windowDepth -1
 
-If tuiGlobal\buildHelper\tuiParent Then tuiGlobal\buildHelper\tuiParent = tuiGlobal\buildHelper\tuiParent\parent : Else tuiGlobal\buildHelper\tuiParent = #NULL
-addflags.l = *tuiWindow\obj\child\flags&#TUIF_FIXSIZE
-*tuiWindow\obj\flags | addflags
-
+tuiGlobal\buildHelper\tuiPrev    = tuiGlobal\buildHelper\tuiParent
+tuiGlobal\buildHelper\tuiCurrent = tuiGlobal\buildHelper\tuiParent
+If tuiGlobal\buildHelper\tuiParent
+  tuiGlobal\buildHelper\tuiParent = tuiGlobal\buildHelper\tuiParent\parent
+Else
+  tuiGlobal\buildHelper\tuiParent = #NULL
+End If
+If tuiGlobal\buildHelper\tuiCurrent
+  If tuiGlobal\buildHelper\tuiCurrent\classID><#TUICLASS_WINDOW
+    error{"\\__THIS_FUNCTION: EndWindow does not match a BeginWindow!"}
+  Else
+    *tuiWindow.tuiWindow = tuiGlobal\buildHelper\tuiCurrent
+    If *tuiWindow\obj\child
+      addflags.l = *tuiWindow\obj\child\flags&#TUIF_FIXSIZE
+      *tuiWindow\obj\flags | addflags
+    End If
+  End If
+Else
+  error{"\\__THIS_FUNCTION: EndWindow without BeginWindow!"}
+End If
 Function Return *tuiWindow
 End Function
+
 
 
 
