@@ -13,7 +13,7 @@
 ; StringBuffer    = 100000
 ; MakeSmallest    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 14
+; NumberOfBuilds  = 16
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -29,8 +29,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 307
-; CursorColumn    = 58
+; CursorLine      = 380
+; CursorColumn    = 24
 ; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -216,59 +216,35 @@ End Function
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
 _ntui_DrawWindow:
-Statement _ntui_DrawWindow{*tuiWindow.tuiWindow,*rp.RastPort}
-!_ASSERT{*tuiWindow}
-!_ASSERT{*tuiWindow\obj\classID=#TUICLASS_WINDOW}
+Statement _ntui_DrawWindow{*tuiWindow.tuiWindow,*rp.RastPort,*rpclip.tuiRect}
 
-*tuiEngine.tuiEngine = *tuiWindow\obj\tuiEngine
-!_ASSERT{*tuiEngine}
-*tui.tuiObject = *tuiWindow
-;If *tuiWindow\win Then RefreshWindowFrame_ *tuiWindow\win ; intuition is doing this for us
+  !_ASSERT{*tuiWindow}
+  !_ASSERT{*tuiWindow\obj\classID=#TUICLASS_WINDOW}
+  *tuiEngine.tuiEngine = *tuiWindow\obj\tuiEngine
+  !_ASSERT{*tuiEngine}
+  *tui.tuiObject = *tuiWindow
+  If ((*tui\flags&#TUIF_ONSCREEN)=0) Then Statement Return
 
-If *tuiEngine\redrawMethod=#TUIRM_CLEAR
+  !tuiAndRect{clip.tuiRect,*tui\ibox,*rpclip}
+  If !tuiValidRect{clip}=False Then Statement Return
+
+  ;If *tuiWindow\win Then RefreshWindowFrame_ *tuiWindow\win ; intuition is doing this for us
+
   If *tuiWindow\obj\bgTuiPen>=0
     SetAPen_ *rp,*tuiEngine\pen[*tuiWindow\obj\bgTuiPen]
-    RectFill_ *rp,*tui\ibox\left,*tui\ibox\top,*tui\ibox\right,*tui\ibox\bottom
+    RectFill_ *rp,clip\left,clip\top,clip\right,clip\bottom
   EndIf
+
   If *tuiWindow\obj\bgImage
     ; draw the background image
   End If
-Else
-
-  x1.l = *tuiWindow\obj\bbox\left   + *tuiWindow\obj\border\left
-  y1.l = *tuiWindow\obj\bbox\top    + *tuiWindow\obj\border\top
-  x2.l = *tuiWindow\obj\bbox\right  - *tuiWindow\obj\border\right
-  y2.l = *tuiWindow\obj\bbox\bottom - *tuiWindow\obj\border\bottom
-
-  ix1.l = *tuiWindow\obj\cbox\left
-  ix2.l = *tuiWindow\obj\cbox\right
-  iy1.l = *tuiWindow\obj\cbox\top
-  iy2.l = *tuiWindow\obj\cbox\bottom
-
-  If iy1>y1 Then RectFill_ *rp, x1, y1, x2,iy1-1     ; top
-  If iy2<y2 Then RectFill_ *rp, x1,iy2+1, x2, y2     ; bottom
-  If ix1>x1 Then RectFill_ *rp, x1,iy1,ix1-1,iy2     ; left
-  If ix2<x2 Then RectFill_ *rp,ix2+1,iy1, x2,iy2     ; right
-
-  CNIF #TUI_DEBUG
-  SetAPen_ *rp,*tuiEngine\pen[#TUIPEN_BLACK]
-  CELSE
-  SetAPen_ *rp,*tuiEngine\pen[*tuiWindow\obj\bgTuiPen]
-  CEND
 
   *child.tuiObject = *tuiWindow\obj\child
   While *child
-    x1.l = *child\bbox\left
-    x2.l = *child\bbox\right
-    y1.l = *child\bbox\top
-    y2.l = *child\bbox\bottom
-    If *child\margin\top   >0 Then RectFill_ *rp,x1-*child\margin\left,y1-*child\margin\top,x2+*child\margin\right,y1-1
-    If *child\margin\bottom>0 Then RectFill_ *rp,x1-*child\margin\left,y2+1             ,x2+*child\margin\right,y2+*child\margin\bottom
-    If *child\margin\left  >0 Then RectFill_ *rp,x1-*child\margin\left,y1               ,x1-1             ,y2
-    If *child\margin\right >0 Then RectFill_ *rp,x2+1             ,y1               ,x2+*child\margin\right,y2
+    _ntui_Draw{*child,*rp,clip}
     *child = *child\next_
   Wend
-End If
+
 End Statement
 
 
@@ -399,70 +375,136 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
   !_ASSERT{*tuiEngine}
 
   closeToolTip.l = False
+  done.w = False
 
-  If ((*tuiEngine\focus><#NULL) AND (*tuiEngine\focus><*tuiWindow))
-    If (*tuiEngine\focus\flags&#TUIF_DISABLED)=0
-      If *tuiEngine\focus\DispatchEvent Then !_CallFuncPointer{*tuiEngine\focus\DispatchEvent,done.w,*tuiEngine\focus,*tuiEvent} : Else done = False
-      If done Then closeToolTip=True
-    End If
-  End If
+  Select *tuiEvent\evID
+    Case #TUIEV_CLOSE
+      If (*tuiWindow\onClose)
+        str_Dup{&*tuiEvent\notifyID,*tuiWindow\onClose}
+        _ntui_QueueEvent{*tuiEngine\outQ,*tuiEvent} : done = True
+      EndIf
+      closeToolTip=True
 
-  If done = False ; the focus object did not want the event, try mouse over child
-    If *tuiWindow\obj\child
-      *mover.tuiObject = ntui_HitObject{*tuiWindow\obj\child,*tuiEvent\pos\x,*tuiEvent\pos\y}
-    Else
-      *mover=#NULL
-    End If
+    Case #TUIEV_FOCUS
+      ntui_SetFocus{*tuiWindow\lastFocus}
 
-    Select *tuiEvent\evID
-      Case #TUIEV_CLOSE
-        If (*tuiWindow\onClose)
-          str_Dup{&*tuiEvent\notifyID,*tuiWindow\onClose}
-          _ntui_QueueEvent{*tuiEngine\outQ,*tuiEvent} : done = True
-        EndIf
-        closeToolTip=True
+      If *tuiWindow\obj\child
+        *mover.tuiObject = ntui_HitObject{*tuiWindow\obj\child,*tuiEvent\pos\x,*tuiEvent\pos\y}
+        If *mover Then _ntui_SetMover{*mover}
+      End If
 
-      Case #TUIEV_ACTIVE
-        If (*tuiWindow\onActive)
-          str_Dup{&*tuiEvent\notifyID,*tuiWindow\onActive}
-          _ntui_QueueEvent{*tuiEngine\outQ,*tuiEvent} : done = True
-        EndIf
-        ntui_SetFocus{*tuiEngine,*tuiWindow\lastFocus}
-        _ntui_SetMover{*tuiEngine,*mover}
-        closeToolTip=True
+      If (*tuiWindow\onActive)
+        str_Dup{&*tuiEvent\notifyID,*tuiWindow\onActive}
+        _ntui_QueueEvent{*tuiEngine\outQ,*tuiEvent}
+      Else
+        _ntui_DestroyEvent{*tuiEvent}
+      EndIf
 
-      Case #TUIEV_INACTIVE
-        If (*tuiWindow\onInactive)
-          str_Dup{&*tuiEvent\notifyID,*tuiWindow\onInactive}
-          _ntui_QueueEvent{*tuiEngine\outQ,*tuiEvent} : done = True
-        EndIf
-        ntui_FlushRawKeys{}
-        closeToolTip=True
+      closeToolTip=True
+      done=True
 
-      Case #TUIEV_MOUSEDOWN
+    Case #TUIEV_LOSEFOCUS
+      ntui_FlushRawKeys{}
+      ntui_SetFocus{*tuiWindow\obj\tuiEngine}
+
+      If (*tuiWindow\onInactive)
+        str_Dup{&*tuiEvent\notifyID,*tuiWindow\onInactive}
+        _ntui_QueueEvent{*tuiEngine\outQ,*tuiEvent}
+      Else
+        _ntui_DestroyEvent{*tuiEvent}
+      EndIf
+
+      closeToolTip=True
+      done=True
+
+    Case #TUIEV_MOUSEDOWN
+      If ((*tuiEngine\focus><#NULL) AND (*tuiEngine\focus><*tuiWindow))
+        If (*tuiEngine\focus\flags&#TUIF_DISABLED)=0
+          If *tuiEngine\focus\DispatchEvent Then !_CallFuncPointer{*tuiEngine\focus\DispatchEvent,done.w,*tuiEngine\focus,*tuiEvent}
+        End If
+      End If
+
+      If done=False
+        If *tuiWindow\obj\child
+          *mover.tuiObject = ntui_HitObject{*tuiWindow\obj\child,*tuiEvent\pos\x,*tuiEvent\pos\y}
+        Else
+          *mover=#NULL
+        End If
+
         If *mover
           If (*mover\flags&#TUIF_DISABLED)=0
-            If *mover\DispatchEvent Then !_CallFuncPointer{*mover\DispatchEvent,done.w,*mover,*tuiEvent} : Else done.w = False
+            If *mover\DispatchEvent Then !_CallFuncPointer{*mover\DispatchEvent,done.w,*mover,*tuiEvent}
             *tuiEngine\restingTime = -1000
           End If
         End If
-        closeToolTip=True
+      End If
+      closeToolTip=True
 
-      Case #TUIEV_MOUSEMOVE
+    Case #TUIEV_MOUSEUP
+      If ((*tuiEngine\focus><#NULL) AND (*tuiEngine\focus><*tuiWindow))
+        If (*tuiEngine\focus\flags&#TUIF_DISABLED)=0
+          If *tuiEngine\focus\DispatchEvent Then !_CallFuncPointer{*tuiEngine\focus\DispatchEvent,done.w,*tuiEngine\focus,*tuiEvent}
+        End If
+      End If
+
+      If done=False
+        If *tuiWindow\obj\child
+          *mover.tuiObject = ntui_HitObject{*tuiWindow\obj\child,*tuiEvent\pos\x,*tuiEvent\pos\y}
+        Else
+          *mover=#NULL
+        End If
+
+        If *mover
+          If (*mover\flags&#TUIF_DISABLED)=0
+            If *mover\DispatchEvent Then !_CallFuncPointer{*mover\DispatchEvent,done.w,*mover,*tuiEvent}
+          End If
+        End If
+      End If
+
+    Case #TUIEV_MOUSEMOVE
+      If ((*tuiEngine\focus><#NULL) AND (*tuiEngine\focus><*tuiWindow))
+        If (*tuiEngine\focus\flags&#TUIF_DISABLED)=0
+          If *tuiEngine\focus\DispatchEvent Then !_CallFuncPointer{*tuiEngine\focus\DispatchEvent,done.w,*tuiEngine\focus,*tuiEvent}
+        End If
+      End If
+
+      If done=False
+        If *tuiWindow\obj\child
+          *mover.tuiObject = ntui_HitObject{*tuiWindow\obj\child,*tuiEvent\pos\x,*tuiEvent\pos\y}
+        Else
+          *mover=#NULL
+        End If
+
         If *mover >< *tuiEngine\mover
-          _ntui_SetMover{*tuiEngine,*mover}
+          _ntui_SetMover{*mover}
           *tuiEngine\restingTime = 0
           closeToolTip=True
         End If
+
         If *mover
           If (*mover\flags&#TUIF_DISABLED)=0
-            If *mover\DispatchEvent Then !_CallFuncPointer{*mover\DispatchEvent,done.w,*mover,*tuiEvent} : Else done.w = False
+            If *mover\DispatchEvent Then !_CallFuncPointer{*mover\DispatchEvent,done.w,*mover,*tuiEvent}
           End If
         End If
+      End If
 
-      Case #TUIEV_KEYDOWN
+    Case #TUIEV_KEYUP
+      If ((*tuiEngine\focus><#NULL) AND (*tuiEngine\focus><*tuiWindow))
+        If (*tuiEngine\focus\flags&#TUIF_DISABLED)=0
+          If *tuiEngine\focus\DispatchEvent Then !_CallFuncPointer{*tuiEngine\focus\DispatchEvent,done.w,*tuiEngine\focus,*tuiEvent}
+        End If
+      End If
+
+    Case #TUIEV_KEYDOWN
+      If ((*tuiEngine\focus><#NULL) AND (*tuiEngine\focus><*tuiWindow))
+        If (*tuiEngine\focus\flags&#TUIF_DISABLED)=0
+          If *tuiEngine\focus\DispatchEvent Then !_CallFuncPointer{*tuiEngine\focus\DispatchEvent,done.w,*tuiEngine\focus,*tuiEvent}
+        End If
+      End If
+
+      If done=False
         If (*tuiEvent\value=#RAWKEY_TAB AND (*tuiEvent\qualifier_&#TUIQUAL_SHIFT)=0) OR *tuiEvent\value=#RAWKEY_RIGHT OR *tuiEvent\value=#RAWKEY_DOWN
-          If *tuiEngine\focus=#NULL Then ntui_SetFocus{*tuiEngine,*tuiWindow}
+          If *tuiEngine\focus=#NULL Then ntui_SetFocus{*tuiWindow}
           If *tuiEngine\focus
             *current.tuiObject = *tuiEngine\focus
             found.l = False
@@ -470,13 +512,13 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
               If *current\child            ; descend
                 *current = *current\child
                 If ((*current\flags&#TUIF_WANTTAB)><0) AND ((*current\flags&#TUIF_DISABLED)=0)
-                  ntui_SetFocus{*tuiEngine,*current} : found=True
+                  ntui_SetFocus{*current} : found=True
                 End If
               Else
                 If *current\next_
                   *current = *current\next_  ; go side
                   If ((*current\flags&#TUIF_WANTTAB)><0) AND ((*current\flags&#TUIF_DISABLED)=0)
-                    ntui_SetFocus{*tuiEngine,*current} : found=True
+                    ntui_SetFocus{*current} : found=True
                   End If
                 Else
                   found2.l = False
@@ -485,14 +527,14 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
                     If *current\next_
                       *current = *current\next_  ; go side
                       If ((*current\flags&#TUIF_WANTTAB)><0) AND ((*current\flags&#TUIF_DISABLED)=0)
-                        ntui_SetFocus{*tuiEngine,*current} : found=True
+                        ntui_SetFocus{*current} : found=True
                       End If
                       found2=True
                     End If
                   Wend
                   If found2=False
                     found=True
-                    ntui_SetFocus{*tuiEngine,*tuiWindow}
+                    ntui_SetFocus{*tuiWindow}
                   End If
                 End If
               End If
@@ -501,7 +543,7 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
         End If
 
         If (*tuiEvent\value=#RAWKEY_TAB AND (*tuiEvent\qualifier_&#TUIQUAL_SHIFT)><0) OR *tuiEvent\value=#RAWKEY_LEFT OR *tuiEvent\value=#RAWKEY_UP
-          If *tuiEngine\focus=#NULL Then ntui_SetFocus{*tuiEngine,*tuiWindow}
+          If *tuiEngine\focus=#NULL Then ntui_SetFocus{*tuiWindow}
           If *tuiEngine\focus
             *current.tuiObject = *tuiEngine\focus
             found.l = False
@@ -510,13 +552,13 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
                 *current = *current\child
                 While *current\next_ : *current=*current\next_ : Wend ; go to the last child
                 If ((*current\flags&#TUIF_WANTTAB)><0) AND ((*current\flags&#TUIF_DISABLED)=0)
-                  ntui_SetFocus{*tuiEngine,*current} : found=True
+                  ntui_SetFocus{*current} : found=True
                 End If
               Else
                 If *current\prev
                   *current = *current\prev  ; go side
                   If ((*current\flags&#TUIF_WANTTAB)><0) AND ((*current\flags&#TUIF_DISABLED)=0)
-                    ntui_SetFocus{*tuiEngine,*current} : found=True
+                    ntui_SetFocus{*current} : found=True
                   End If
                 Else
                   found2.l = False
@@ -525,39 +567,41 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
                     If *current\prev
                       *current = *current\prev  ; go side
                       If ((*current\flags&#TUIF_WANTTAB)><0) AND ((*current\flags&#TUIF_DISABLED)=0)
-                        ntui_SetFocus{*tuiEngine,*current} : found=True
+                        ntui_SetFocus{*current} : found=True
                       End If
                       found2=True
                     End If
                   Wend
                   If found2=False
                     found=True
-                    ntui_SetFocus{*tuiEngine,*tuiWindow}
+                    ntui_SetFocus{*tuiWindow}
                   End If
                 End If
               End If
             Wend
           End If
         End If
+      End If
+      closeToolTip=True
 
+    Case #TUIEV_RESIZE
+      closeToolTip=True
+      _ntui_Layout{*tuiWindow,*tuiWindow\win\RPort,#NULL}
+      ntui_PostEvent{*tuiWindow,#TUIEV_REFRESH}
 
-      Case #TUIEV_RESIZE
-        ;size.tuiRect\left = 0,0;*tuiWindow\win\LeftEdge
-        ;size\top          = *tuiWindow\win\TopEdge
-        ;size\right        = *tuiWindow\win\LeftEdge + *tuiWindow\win\Width   -1
-        ;size\bottom       = *tuiWindow\win\TopEdge  + *tuiWindow\win\Height  -1
-        ;size.tuiRect\left = 0,0
-        ;size\right        = *tuiWindow\win\LeftEdge + *tuiWindow\win\Width   -1
-        ;size\bottom       = *tuiWindow\win\TopEdge  + *tuiWindow\win\Height  -1
-        _ntui_Layout{*tuiWindow,*tuiWindow\win\RPort,#NULL}
-        ntui_PostEvent{*tuiWindow,#TUIEV_REFRESH}
+   ; Case #TUIEV_REFRESH
+   ;   If *tuiWindow\win
+   ;     ntui_Redraw{*tuiWindow,*tuiWindow\win\RPort}
+   ;   End If
 
-     ; Case #TUIEV_REFRESH
-     ;   If *tuiWindow\win
-     ;     ntui_Redraw{*tuiWindow,*tuiWindow\win\RPort}
-     ;   End If
+    Case #TUIEV_TICK
+      If ((*tuiEngine\focus><#NULL) AND (*tuiEngine\focus><*tuiWindow))
+        If (*tuiEngine\focus\flags&#TUIF_DISABLED)=0
+          If *tuiEngine\focus\DispatchEvent Then !_CallFuncPointer{*tuiEngine\focus\DispatchEvent,done.w,*tuiEngine\focus,*tuiEvent}
+        End If
+      End If
 
-      Case #TUIEV_TICK
+      If done=False
         If *tuiEngine\mover
           If (*tuiEngine\mover\flags&#TUIF_ACTIVE = 0)
             If *tuiEngine\mover\help
@@ -565,45 +609,89 @@ Function.w _ntui_DispatchWindowEvent{*tuiWindow.tuiWindow,*tuiEvent.tuiEvent}
                 *tuiEngine\restingTime+1
                 If *tuiEngine\restingTime=12
                   ntui_PostEvent{*tuiEngine\mover,#TUIEV_TOOLTIP,*tuiEngine\restingTime}
-                  ;ntui_ShowTooltip{*tuiEngine,str_Read{&*tuiEngine\mover\help},*tuiEngine\scr\MouseX,*tuiEngine\scr\MouseY}
-                  ;error{"Open bubble!"}
                 End If
               End If
             End If
           End If
         End If
+
         If (*tuiWindow\onTick)
           str_Dup{&*tuiEvent\notifyID,*tuiWindow\onTick}
           _ntui_QueueEvent{*tuiEngine\outQ,*tuiEvent} : done = True
         EndIf
+      End If
 
-      Case #TUIEV_WINDOWDROP
+    Case #TUIEV_WINDOWDROP
+      If ((*tuiEngine\focus><#NULL) AND (*tuiEngine\focus><*tuiWindow))
+        If (*tuiEngine\focus\flags&#TUIF_DISABLED)=0
+          If *tuiEngine\focus\DispatchEvent Then !_CallFuncPointer{*tuiEngine\focus\DispatchEvent,done.w,*tuiEngine\focus,*tuiEvent}
+        End If
+      End If
+
+      If done=False
+        If *tuiWindow\obj\child
+          *mover.tuiObject = ntui_HitObject{*tuiWindow\obj\child,*tuiEvent\pos\x,*tuiEvent\pos\y}
+        Else
+          *mover=#NULL
+        End If
+
         If *mover
           If (*mover\flags&#TUIF_DISABLED)=0
-            ;done.l = _ntui_DispatchEvent{*mover,*tuiEvent}
-            If *mover\DispatchEvent Then !_CallFuncPointer{*mover\DispatchEvent,done.w,*mover,*tuiEvent} : Else done.w = False
+            If *mover\DispatchEvent Then !_CallFuncPointer{*mover\DispatchEvent,done.w,*mover,*tuiEvent}
             *tuiEngine\restingTime = -1000
           End If
         End If
+      End If
 
-        If done=False
-          If *mover
-            *tuiEvent\tuiObject = *mover
-          Else
-            *tuiEvent\tuiObject = *tuiWindow
-          End If
-          If (*tuiWindow\onWinDrop)
-            str_Dup{&*tuiEvent\notifyID,*tuiWindow\onWinDrop}
-            _ntui_QueueEvent{*tuiEngine\outQ,*tuiEvent} : done = True
-          EndIf
+      If done=False
+        If *mover
+          *tuiEvent\tuiObject = *mover
+        Else
+          *tuiEvent\tuiObject = *tuiWindow
         End If
-        closeToolTip=True
+        If (*tuiWindow\onWinDrop)
+          str_Dup{&*tuiEvent\notifyID,*tuiWindow\onWinDrop}
+          _ntui_QueueEvent{*tuiEngine\outQ,*tuiEvent} : done = True
+        EndIf
+      End If
+      closeToolTip=True
 
-    End Select
+    Case #TUIEV_HSCROLL
+      If *tuiWindow\obj\child
+        *mover.tuiObject = ntui_HitObject{*tuiWindow\obj\child,*tuiEvent\pos\x,*tuiEvent\pos\y}
+      Else
+        *mover=#NULL
+      End If
 
-    If closeToolTip Then If *tuiEngine\toolTip Then ntui_FreeObject{*tuiEngine\toolTip} : *tuiEngine\toolTip=#NULL
+      If *mover
+        If (*mover\flags&#TUIF_DISABLED)=0
+          If *mover\DispatchEvent Then !_CallFuncPointer{*mover\DispatchEvent,done.w,*mover,*tuiEvent}
+        End If
+      End If
 
-  End If
+    Case #TUIEV_VSCROLL
+      If *tuiWindow\obj\child
+        *mover.tuiObject = ntui_HitObject{*tuiWindow\obj\child,*tuiEvent\pos\x,*tuiEvent\pos\y}
+      Else
+        *mover=#NULL
+      End If
+
+      If *mover
+        If (*mover\flags&#TUIF_DISABLED)=0
+          If *mover\DispatchEvent Then !_CallFuncPointer{*mover\DispatchEvent,done.w,*mover,*tuiEvent}
+        End If
+      End If
+
+    Default ; no events left to send to focus/mover object...
+      ;If ((*tuiEngine\focus><#NULL) AND (*tuiEngine\focus><*tuiWindow))
+      ;  If (*tuiEngine\focus\flags&#TUIF_DISABLED)=0
+      ;    If *tuiEngine\focus\DispatchEvent Then !_CallFuncPointer{*tuiEngine\focus\DispatchEvent,done.w,*tuiEngine\focus,*tuiEvent}
+      ;  End If
+      ;End If
+
+  End Select
+
+  If closeToolTip Then If *tuiEngine\toolTip Then ntui_FreeObject{*tuiEngine\toolTip} : *tuiEngine\toolTip=#NULL
 
   Function Return done
 End Function
@@ -835,7 +923,7 @@ Else
 
     If *rp
       _ntui_Layout{*tuiWindow\obj,*rp,#NULL}
-      _ntui_Redraw{*tuiWindow\obj,*rp}
+      _ntui_Redraw{*tuiWindow\obj,#NULL}
       ntui_ReleaseRastPort{*tuiWindow}
     End If
 
@@ -893,7 +981,7 @@ Function.l ntui_BeginWindow{title.s,nameID.s,@instanceID.l,@WFlags.l,@flags.l}
 
     InitSemaphore_ *tuiWindow\lock
 
-    !_GetFuncPointer{*tuiWindow\obj\Draw            ,_ntui_DrawWindow,{0,0}}
+    !_GetFuncPointer{*tuiWindow\obj\Draw            ,_ntui_DrawWindow,{0,0,0}}
     !_GetFuncPointer{*tuiWindow\obj\Layout          ,_ntui_LayoutWindow,{0,0,0}}
     !_GetFuncPointer{*tuiWindow\obj\DispatchEvent   ,_ntui_DispatchWindowEvent,{0,0}}
     !_GetFuncPointer{*tuiWindow\obj\CalculateMinSize,_ntui_CalculateWindowMinSize,{0,0}}
