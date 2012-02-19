@@ -1457,7 +1457,8 @@ BEQ 'skipdebugfile
 !basic
   If dbg_fid>=0
     pass.l          = Peek.w(?pass)
-    If pass><0
+    makesmallest.b  = Peek.b(?make_smallestcode)               ; get the status of make_smallestcode  tomsmart1
+    If pass><0 OR makesmallest=0                               ; check expand for makesmallestcode so if it not set that then the dbgfile will fill because we don't reach Pass>0  tomsmart1
       oldhunkoffset.l = hunkoffset.l
       oldfile.s       = codefile.s
       If Peek.w (?ininclude)>0
@@ -21259,24 +21260,25 @@ RTS
 
 
 .do_IncBin:
-  BSR.w JL_0_C05C
-  MOVE.l #ptr_parameterstore,D1
-  MOVEQ.l #-$02,D2
+  BSR.w JL_0_C05C                                              ; test and get the parameter (includestring)
+
+  JSR check_IncBinDir                                          ; to fix the path problem in CLIMode  tomsmart1
+
   MOVEA.l _dosbase,A6
-  JSR _Lock(A6)
-  MOVE.l D0,D7
-  BEQ.w error_cant_open_include
-  MOVE.l D7,D1
+  MOVE.l D0,D7                                                 ; store Lockpointer
+   BEQ.w error_cant_open_include                               ; no pointer => errormessage
+  MOVE.l D7,D1                                                 ; begin get the size of the file to include
   MOVE.l ptr_macrobuffer_begin,D2
-  JSR _Examine(A6)
+   JSR _Examine(A6)
   MOVEA.l ptr_macrobuffer_begin,A0
   MOVE.l $4(A0),D0
-   BPL.w error_cant_open_include
-  MOVE.l $7C(A0),D3
-  MOVE.l D7,D1
+   BPL.w error_cant_open_include                               ; something went wrong => errormessage
+  MOVE.l $7C(A0),D3                                            ; store the size of the file to include
+  MOVE.l D7,D1                                                 ; begin unlock the file
    JSR _UnLock(A6)
-  MOVE.l #ptr_parameterstore,D1
-  MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
+
+  MOVE.l #ptr_parameterstore,D1                                ; begin Open and Load the file
+  MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2                       
    JSR _Open(A6)
   MOVE.l D0,D7
    BEQ.w error_cant_open_include
@@ -26789,8 +26791,12 @@ End Function
 .check_incdir:
   !basic
   incString.s = Peek$(?ptr_parameterstore)
-  incFile.s   = incString
-  incLock.l   = ab3_GetIncludeLock{incFile}
+                                                            ; to fix includepathes in CLIMode   tomsmart1
+  !ComData_LEA{comStr_CurrentDir,D0}                        ; get pointer to current Sourcefiledir
+  incDirP.l   = PutD0                                       ;    "
+  incDir_.s   = Peek.s(incDirP)                             ; get current Sourcefiledir
+  incFile.s   = dos_AddPart{incDir_,incString}              ; adding Sourcefiledir and Includestring
+  incLock.l   = ab3_GetIncludeLock{incFile}                 ; check if file exist
 
   If incLock = False ; not found => check default Include Directory
     incDirP.l = Peek.l(?incd)
@@ -26840,6 +26846,31 @@ End Function
   MOVE.l tempstore,d2
 
  'l1
+RTS
+
+
+.check_IncBinDir:                                           ; to fix includepathes in CLIMode   tomsmart1
+  !basic
+  incString.s = Peek$(?ptr_parameterstore)                  ; get the string
+  !ComData_LEA{comStr_CurrentDir,D0}                        ; get pointer to current Sourcefiledir
+  incDirP.l   = PutD0                                       ;    "
+  incDir_.s   = Peek.s(incDirP)                             ; get current Sourcefiledir
+  incFile.s   = dos_AddPart{incDir_,incString}              ; adding Sourcefiledir and Includestring
+  incLock.l   = Lock_(&incFile,#ACCESS_READ)                ; check if file exist
+
+  If incLock = False                                        ; not found => try orignal string only to find
+    incLock.l = Lock_(&incString,#ACCESS_READ)
+  End If
+
+  If incLock                                                ; found => store full path
+    MaxLen incFile = 1024
+    NameFromLock_ incLock,&incFile,1024
+    incFile = Peek.s(&incFile)
+    Poke$ ?ptr_parameterstore,incFile
+  End If
+
+  GetReg d0,incLock                                         ; store Lockpointer in D0 for a futher use in the orginal routine (errormsg, Examine, UnLock)
+  !asm
 RTS
 
 
@@ -27636,9 +27667,8 @@ RTS
       mess = $12 : exit = 1
 
      Case "ce"                                             ; compile und create exe in compile prefs
-      Poke$ (?exefilename),""
       mess = $13 : exit = 1
-;      Poke$ (?exefilename),""
+;      Poke$ (?exefilename),""                             ; remove clear of the executablename  tomsmart1
 ;      !asm
 ;      JSR menu_newcreate
 ;      !basic
