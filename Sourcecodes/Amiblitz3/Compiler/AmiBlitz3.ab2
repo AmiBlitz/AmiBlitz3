@@ -1545,6 +1545,7 @@ CNIF #function_support_returntype
   MOVEQ #3,d1
   BRA JL_0_49DEb
 'isvar
+
 CELSE
   CMPI.l #$100,$4(A2)                        ;check for normal var or type
   BLS.w illtypeerrb
@@ -4846,7 +4847,7 @@ writelong2 JMP  writelong
   CMPI.w #$3,$C(A2)
    BCS.w popnext3__skip2
   MOVE.l nextfixl,D1
-BRA.w writelong
+  JMP writelong
 
  popnext3__skip2:
   MOVE.w nextfixw,D1
@@ -8253,16 +8254,24 @@ CNIF #function_typecheck
    MOVE.l a0,-(a7)
    MOVE.l currentfunccall,a0
    MOVE.w parnum,d1
-   MOVE.l funcstruct_parametertype-4(a0,d1*4),a0
+   TST.b isconstantvalue
+   BEQ 'noconstant
+   CMP.l #0,lastconstantvalue
+   BEQ 'isnull
+'noconstant   MOVE.l funcstruct_parametertype-4(a0,d1*4),a0
    CMP.l #$100,4(a0)
    BLE 'notype
+   MOVE.l lastinstruction,d1
+   CMP.w #$b581,d1                   ; ok, when token for null
+   BEQ 'isnull
    CMP.l a0,a2
    BNE error_convert_types
 'notype
+'isnull
    MOVE.l (a7)+,a0
 'isblitzlibcall
 CEND
-
+   CLR.l lastfunction
    TST.b fpu
    BEQ fetchpees__skip0_noprint
   MOVE.l (a7),a2
@@ -8365,6 +8374,8 @@ BRA.w fetchpees__loop
   ADDQ.w #2,A7
   MOVE.w (A7)+,partostack
   MOVE.w (A7)+,D1
+  CLR.b isconstantvalue
+  MOVE.l currentfunccall,lastfunction
   CLR.b funccall
   CLR.l currentfunccall
 RTS
@@ -10088,7 +10099,7 @@ JMP error_create_exe
   MOVE.l A7,errstack
   MOVEM.l d2-d7/a2-a6,-(a7)
   MOVE.l #AL_0_7790,errcont
-   BSR.w call_setpointerbusy
+   JSR call_setpointerbusy
   MOVE.w #$FFFF,anyerrs
   CMP.l #-1,chipstart
   BEQ 'l01
@@ -13550,7 +13561,9 @@ bakeval:
   MOVEQ.l #$00,D3
 
  maineval:
-
+    ;CLR.b isconstantvalue
+    ;CLR.l lastconstantvalue
+                                                                                                                                                                                                                                                        
     ;Big Evaluation routine.....
     ;
     ;d2 = type to collect - 0 if unknown
@@ -13795,6 +13808,7 @@ RTS
 
 
 calcloop:                                                  ;eval5 org source
+
   BSR.w JL_0_9C24
 
  JL_0_9AFE:
@@ -13875,6 +13889,8 @@ BRA cont1
   MOVEM.l (A7)+,D2/A5
 
  cont1:
+  MOVE.b d2,isconstantvalue
+  MOVE.l d0,lastconstantvalue
   MOVE.w regnum,D1
   LSL.w #8,D1
   LSL.w #1,D1
@@ -15334,6 +15350,8 @@ RTS
 
 
 JL_0_A386:
+   CLR.b isconstantvalue
+   CLR.l lastconstantvalue
    CMPI.w #$7,regnum
    BCS.w JL_0_A6B4
   MOVE.l #$f2277700,d1                                     ;fmove.d fp6,-(a7)
@@ -16096,8 +16114,7 @@ BRA.w syntaxerr
  JL_0_AAFE:                                               ;varassign lib commands. $b581 Null from lotanlib
    CMP.w #$b581,d0
    BNE nonull
-   CMP.b #7,d2
-   BEQ nonull
+   MOVE.l d0,lastinstruction
    MOVE.w #$7000,d1                                            ;asm instr moveq #0,dx
    MOVE.w regnum,d0
    ASL.l #7,d0
@@ -16905,7 +16922,7 @@ BRA JL_0_AF66
  JL_0_AF7C:
   MOVE.w (A7)+,D3
    BEQ.w JL_0_AF9E
-   MOVE.l lastinstruction,a0
+   MOVE.l lastinstructionaddr,a0
   CMP.w #$3,D3
    BNE.w JL_0_AF92
   CMP.w #$4,D2
@@ -17121,7 +17138,7 @@ JL_0_B03E:
   MOVE.w regnum,regnumfunc
 
  ._func
-  MOVE.l D1,-(A7)                                          ;write function call with pars
+  MOVE.l D1,-(A7)                                          ;write functioncall with pars
   MOVE.b #1,funccall
   MOVEQ.l #$00,D0
   MOVE.b $4(A2),D0
@@ -17131,11 +17148,15 @@ JL_0_B03E:
   LEA $16(A2),A2
   CLR.w regnum
   CLR.w regmask
+  MOVE.b isconstantvalue,-(a7)
   MOVE.b funcparloop,-(a7)
   MOVE.b #1,funcparloop
   ;BSR.w fetchpees2
+
   JSR fetchpees2
   MOVE.b (a7)+,funcparloop
+  MOVE.b (a7)+,isconstantvalue
+
   JSR chkstak
   MOVE.l (A7)+,D1
 ;  CMP.l #6,parnumtemp
@@ -17874,21 +17895,24 @@ JL_0_B3DC:
    BEQ.w JL_0_B3EC
   CLR.w dfetch
 RTS
-
- JL_0_B3EC:
+                                                         ;1 number value write
+JL_0_B3EC:
+  MOVE.b d2,isconstantvalue
+  MOVE.l d0,lastconstantvalue
   MOVE.w d2,imm_size
   MOVE.w regnum,imm_reg
-  MOVE.l destpointer,imm_addr
-   CMP.w #$1,D2
-   BEQ.w JL_0_B418
-  CMP.w #$2,D2
-   BEQ.w JL_0_B418
+  MOVE.l destpointer,imm_addr                           ; long
   CMP.w #$3,D2
-   BEQ.w JL_0_B434
+  BEQ.w JL_0_B434
+  CMP.w #$5,D2                                          ;float
+  BEQ.w JL_0_B434
+  CMP.w #$1,D2
+  BEQ.w JL_0_B418
+  CMP.w #$2,D2
+  BEQ.w JL_0_B418
   CMP.w #$4,D2
-   BEQ.w JL_0_B434
-  CMP.w #$5,D2
-   BEQ.w JL_0_B434
+  BEQ.w JL_0_B434
+
 BRA.w mismatcherr
 
  JL_0_B418:
@@ -18647,7 +18671,7 @@ userjsr:
 
   MOVEA.l A1,A2
   MOVE.w (A2)+,D1
-  MOVE.l a2,lastinstruction
+  MOVE.l a2,lastinstructionaddr
   ANDI.w #$FF,D1
   ADDA.w D1,A2
   EXG.l D0,A2
@@ -19777,6 +19801,8 @@ JL_0_BF6A:
   MOVEA.l lastsourcepos,A5
 
  AJL_0_BF6E:
+  ;MOVE.b isconstantvalue,-(a7)                 ;new
+  ;MOVE.l lastconstantvalue,-(a7)
   MOVE.w regnum,-(A7)
   CLR.w regnum
   MOVE.l destpointer,-(A7)
@@ -19832,6 +19858,8 @@ BRA bc1
   MOVE.l (A7)+,destbufferend
   MOVE.l (A7)+,destpointer
   MOVE.w (A7)+,regnum
+  ;MOVE.l (a7)+,lastconstantvalue
+  ;MOVE.b (a7)+,isconstantvalue
 JMP reget
 
 
@@ -22732,7 +22760,6 @@ RTS
    MOVE.b #31,$20(a2)                                      ;increase if more pars
    MOVE.b #0,isfunc(a2)
    MOVE.l functionreturntype,funcstruct_returntype(a2)
-   CLR.l functionreturntype
   MOVE.l destpointer,$E(A2)
   MOVE.l A2,currentfunction
   LEA nops8,A0
@@ -22882,6 +22909,7 @@ BRA 'ne1
   MOVEA.l (A7)+,A4
 
 JL_0_D442:
+  CLR.l functionreturntype
   ADDQ.w #1,D6
   CMP.w #11,D6                                             ;max function parameters
    BCC.w JUMP_toovarerr
@@ -27262,6 +27290,7 @@ newhunk         Dc.b 0
 bssnum          Dc.l 0
 chipnum         Dc.l 0
 lastinstruction Dc.l 0
+lastinstructionaddr Dc.l 0
 hunkbegin       Dc.l $03F3,$00,$02,$00,$01
 tstsize1b:      Ds.l 1
 bsssize2        Dc.l 1
@@ -29318,6 +29347,9 @@ saved0               Ds.b 1
 lastpath             Ds.b 128
 lastpath2            Ds.b 128
 fpustackbase         Ds.w 100
+lastconstantvalue    Ds.l 1  ; the value of the constant expression used in Function Parameter.check isconstantvalue <> 0 if its valid
+isconstantvalue      Ds.w 1  ; contain a type (1-7) if a constant expression is used as a Parameter or on right side of =
+lastfunction         Ds.l 1  ; the address of the function in the Parameter or rght side of =
 bssstore
 
 trap15temp           Ds.l 1
@@ -29338,7 +29370,8 @@ button_dec_flags:    Ds.w 1
 ped_startup_addr:    Ds.l 1
 start_without_libs:  Ds.b 1
 skip_bytes:          Ds.b 1
-functionreturntype   Ds.l 1
+functionreturntype   Ds.l 1  ; a temp store of it.do not read this value
+
 iserror              Ds.b 1
 Even
 
