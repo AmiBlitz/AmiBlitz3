@@ -312,6 +312,7 @@ Poke.l ?CLIMode,CLIMode
 ; --
 ; -- Konstanten- und Variableninitialisierung
 .DEFINITIONS
+  #assign_fulltypecheck       = 0                                    ; if 1 report long to word or other size reduction as error.
   #function_typecheck         = 1
   #function_support_returntype= 1
   #continue_on_error          = 1
@@ -3947,6 +3948,9 @@ RTS
   CLR.w instringon  ; new
   CLR.b funccall
   CLR.l currentfunccall
+  CLR.l leftsidetype
+  CLR.l rightsidetype
+  CLR.b peekaddrsize
   TST.b debugmode
    BEQ 'fpu
   CNIF #fpudebug=0
@@ -4015,12 +4019,8 @@ RTS
   CEND
 
  funcscanskip:
-  CMP.b #$2b,(a5)
-  BNE 'lb2
-  BSR.w get1bytemain                                       ;gettokenmain
-  MOVE.b #1,notypecheck
+  ;BSR.w get1bytemain                                       ;gettokenmain
 
- 'lb2
   TST.b debugmode
    BEQ.s 'l10
   TST.b exdebug
@@ -4036,7 +4036,13 @@ RTS
  moredata                                                  ;??Looks like double labels??
  'l1
   BSR.w get1bytemain                                       ;gettokenmain
-  BEQ.w undodebug                                          ;JL_0_462C
+   BEQ.w undodebug
+  CMP.w #$002b,d0                                            ;check for + cast sign
+    BNE 'lb2
+    BSR.w get1bytemain
+    MOVE.b #1,notypecheck
+'lb2
+                                         ;JL_0_462C
    ;  CMP.l #2698,globallinecount
    ;BNE 'lb1
    ; trap #0
@@ -8073,7 +8079,7 @@ BRA.w JL_0_670A
 BRA.w resloc
 
 
-fetchlibps:
+fetchlibps:                                 ;some blitzlibs get parameter here
    CLR.w numreps
   MOVE.w D1,D0
   ANDI.w #$FF00,D0
@@ -8085,7 +8091,13 @@ fetchlibps:
    MOVE.w regnum,regnumfunc
    MOVE.b funcparloop,-(a7)
    MOVE.b #0,funcparloop
+   MOVE.l leftsidetype,-(a7)
+   MOVE.l rightsidetype,-(a7)
+   CLR.l leftsidetype
+   CLR.l rightsidetype
    BSR.w fetchpees2
+   MOVE.l (a7)+,rightsidetype
+   MOVE.l (a7)+,leftsidetype
    MOVE.b (a7)+,funcparloop
   CMP.w #$2C,D0
    BNE.w syntaxerr
@@ -8103,7 +8115,13 @@ fetchlibps:
   MOVE.w D2,D0
   MOVE.b funcparloop,-(a7)
   MOVE.b #0,funcparloop
+  MOVE.l leftsidetype,-(a7)
+  MOVE.l rightsidetype,-(a7)
+  CLR.l leftsidetype
+  CLR.l rightsidetype
   BSR.w fetchpees4
+  MOVE.l (a7)+,rightsidetype
+  MOVE.l (a7)+,leftsidetype
   MOVE.b (a7)+,funcparloop
   MOVEM.l (A7)+,D2/A2
   ADDQ.w #1,numreps
@@ -8120,15 +8138,21 @@ BRA.w fetchlibps__rloop
 
  fetchlibps__noreps:
    MOVE.w D1,D0
-   BNE.w fetchpees2b
+   BNE.w fetchpees2b                    ;blitzlib functions (peek.x) call this to get Parameter
 
  fetchlibps__done:
 RTS
 
  fetchpees2b
   MOVE.b funcparloop,-(a7)
+  MOVE.l leftsidetype,-(a7)
+  MOVE.l rightsidetype,-(a7)
+  CLR.l leftsidetype
+  CLR.l rightsidetype
   MOVE.b #0,funcparloop
   BSR.w fetchpees2
+  MOVE.l (a7)+,rightsidetype
+  MOVE.l (a7)+,leftsidetype
   MOVE.b (a7)+,funcparloop
 RTS
 
@@ -8251,6 +8275,8 @@ BRA.w fetchpees3
 CNIF #function_typecheck
    TST.b typecheck
    BEQ 'notypecheck
+   TST.b notypecheck
+   BNE 'notypecheck
    CMP.l #0,currentfunccall
    BEQ 'isblitzlibcall
    MOVEM.l a0/a1,-(a7)
@@ -8276,7 +8302,7 @@ CNIF #function_typecheck
    MOVE.l 4(a2),a1                   ; load the address of type.
    CMP.l $a(a1),a0                   ; check if the bigger type contain in first place same type as the function need
    BEQ 'ok
-'error: JMP   error_convert_types
+'error: JMP   error_convert_types    ; for syntax 4
 'ok
 'notype
 'isnull
@@ -12046,11 +12072,14 @@ BRA vardeclareerr
    BSR.w get1bytemain
 BRA.w JL_0_8ECA
 
+notypeerr3
+JMP JUMP_notypeerr
+
  JL_0_8EB8b:
    BSR.w getparameter2
   LEA newtypebase,A2
    BSR.w findtype
-   BNE.w JUMP_notypeerr
+   BNE.w notypeerr3
 
  JL_0_8ECAb:
   CMPA.l #newtype_byte,A2
@@ -12566,7 +12595,7 @@ BRA.w calcvar__simpvar2
   MOVE.l A3,lastoffset_org
   CMP.w #$5B,D0
    BNE.w calcvar__realdone
-  BTST #$1,$7(A3)
+  BTST #$1,$7(A3)                                           ;a array [] in newtype is found
    BEQ.w rongtypeerr
    BSR.w JL_0_9004
   MOVEM.l A2-A3,-(A7)
@@ -12576,7 +12605,13 @@ BRA.w calcvar__simpvar2
    BSR.w writeword
   MOVEQ.l #$03,D2                                          ;was 2 >32kb types
   MOVE.l destpointer,deststore
+   MOVE.l rightsidetype,-(a7)
+   MOVE.l leftsidetype,-(a7)
+   CLR.l rightsidetype
+   CLR.l leftsidetype
    BSR.w eval
+   MOVE.l (a7)+,rightsidetype
+   MOVE.l (a7)+,leftsidetype
   CMP.w #$5D,D0
    BNE.w syntaxerr
   TST.b fast                                               ;a2,-(a7) array
@@ -12967,7 +13002,9 @@ convert_word_to_byte:
    TST.b notypecheck
    BNE 'l1
    TST.l lasttoken
-   BEQ typeerror
+CNIF #assign_fulltypecheck
+  BEQ typeerror
+CEND
 
  'l1                                                       ;??looks like double label??
  JL_0_963A:
@@ -13029,7 +13066,9 @@ convert_long_to_byte:
   TST.b notypecheck
   BNE 'l1
   TST.l lasttoken
+CNIF #assign_fulltypecheck
   BEQ typeerror
+CEND
 
  'l1
 BRA.w JL_0_963A
@@ -13037,16 +13076,18 @@ BRA.w JL_0_963A
 
 convert_long_to_word:
   MOVE.w #$C318,D1
-;  TST.b typecheck
-;  BEQ 'l1
-;  TST.b peekaddrsize
-;  BNE 'l1
-;  TST.b notypecheck
-;  BNE 'l1
-;  TST.l lasttoken
-;  BEQ typeerror
-;
-; 'l1
+  TST.b typecheck
+  BEQ 'l1
+  TST.b peekaddrsize
+  BNE 'l1
+  TST.b notypecheck
+  BNE 'l1
+  TST.l lasttoken
+CNIF #assign_fulltypecheck
+  BEQ typeerror
+CEND
+
+ 'l1
 BRA.w JL_0_963A
 
 
@@ -13057,9 +13098,11 @@ convert_long_to_quick:
   TST.b notypecheck
   BNE 'l1
   TST.l lasttoken
+CNIF #assign_fulltypecheck
   BEQ typeerror
+CEND
 
- 'l1
+'l1
   BSR.w JL_0_963A
 BRA.w convert_word_to_quick
 
@@ -13079,7 +13122,10 @@ convert_quick_to_byte:
   TST.b notypecheck
   BNE 'l1
   TST.l lasttoken
+CNIF #assign_fulltypecheck
   BEQ typeerror
+CEND
+
 
  'l1
   BSR.w JL_0_963A
@@ -13150,8 +13196,9 @@ convert_float_to_byte:
   TST.b notypecheck
   BNE 'l1
   TST.l lasttoken
+  CNIF #assign_fulltypecheck
   BEQ typeerror
-
+  CEND
 'l1
   TST.b iee
   BNE ftol
@@ -13170,8 +13217,9 @@ convert_float_to_word:
   TST.b notypecheck
   BNE 'l1
   TST.l lasttoken
-  BEQ typeerror
-
+CNIF #assign_fulltypecheck
+ BEQ typeerror
+CEND
  'l1
   TST.b iee
   BNE ftol
@@ -13543,11 +13591,19 @@ bakpeval:
   MOVE.w oldqflag,instringon
   MOVEA.l lastsourcepos,A5
 
- peval:
+ peval:                                                 ; write blitzlib function calls
+  ;MOVE.b #1,inpeval
   MOVEQ.l #-$01,D1
   MOVEQ.l #$00,D3
-BRA.w maineval
-
+  MOVE.l leftsidetype,-(a7)
+  MOVE.l rightsidetype,-(a7)
+  CLR.l leftsidetype
+  CLR.l rightsidetype
+  JSR maineval
+  MOVE.l (a7)+,rightsidetype
+  MOVE.l (a7)+,leftsidetype
+  ;CLR.b inpeval
+  RTS
 
 bakevalu:
   ;bsr.w bakup
@@ -15577,9 +15633,9 @@ JL_0_A784:
    BEQ.w JL_0_ADC0
   BTST #$F,D0
    BNE.w JL_0_AAF2
-  CMP.w #$26,D0
-   BEQ.w JL_0_A90E
-  CMP.w #$3F,D0
+  CMP.w #"&",D0
+   BEQ.w getvaraddr                                          ;jump to & address of var code
+  CMP.w #"?",D0
    BEQ.w JL_0_AED4
 
  .atmode_iff
@@ -15896,8 +15952,9 @@ BRA JL_0_B46E
 BRA.w JL_0_B46E
 
 
-JL_0_A90E:
+getvaraddr:
   CLR.w vartype
+  MOVE.b #3,peekaddrsize
   BSR.w JL_0_A916
   MOVEQ.l #$03,D2
 RTS
@@ -16163,6 +16220,7 @@ nonull  CMP.w #-$7F4A,D0
    JSR AJL_0_498A
 
  JL_0_AB4C:
+   CLR.l rightsidetype
    MOVE.w D1,-(A7)                                         ;is library instruction
   CMP.w #$7,D1
    BNE.w JL_0_AB5E
@@ -16253,10 +16311,11 @@ BRA 'isfpu
   MOVE.w 2(a7),tempregnum
   JSR JL_0_4878
   TST.w (A7)+
-   BEQ.w JL_0_ABC6
-  CMP.w #$29,D0
-   BNE.w syntaxerr
-   BSR.w get1bytemain
+  BEQ.w JL_0_ABC6
+  CMP.w #")",D0                                             ; is ) here for correct end of blitzlib function call
+  BNE.w syntaxerr
+  CLR.l lasttoken
+  BSR.w get1bytemain
 
  JL_0_ABC6:
    MOVE.w (A7)+,D1
@@ -16832,6 +16891,7 @@ JL_0_AED4:
   MOVE.l $8(A2),D1
    BSR.w writelong
   MOVEQ.l #$03,D2
+  CLR.b peekaddrsize
 BRA.w reget
 
  JL_0_AF00:
@@ -16892,12 +16952,13 @@ BRA.w JL_0_B46E
 JL_0_AF4C:
   MOVE.w D2,-(A7)
    BSR.w getparameter
-  CMP.w #$7B,D0
-   BEQ.w JL_0_AFDE
+  CMP.w #$7B,D0                                          ;test if var = function{}
+   BEQ.w isfunction
    BSR.w JL_0_8E3C
-
+                                                         ;called when do var = var
    BSR.w calcvar                                         ;getvaroffset+type
    BSR.w JL_0_B150
+   MOVE.l a2,rightsidetype
    ;BTST #$d,vartype
    ;BNE 'ls1
    ;CMP.b #7,vartype+1                                      ;long pointer string error
@@ -16907,22 +16968,19 @@ JL_0_AF4C:
    ;CMP.b #7,d2
    ;BNE 'ls1
 ;BRA error_convert_types
-
  'ls1
    TST.b typecheck
    BEQ JL_0_AF66
-
-
    CMP.l #$da01,lasttoken                                  ;poke
    BEQ 'l1
    CMP.l #$da02,lasttoken                                  ;peek
    BNE 'l2
 
 'l1
-   CMP.w #1,parnum
+   CMP.w #1,parnum                                         ; is not call when & is used in parameter
    BNE JL_0_AF66
    MOVE.b d2,peekaddrsize
-BRA JL_0_AF66
+   BRA JL_0_AF66
 
  'l2
   CLR.b peekaddrsize
@@ -16949,8 +17007,24 @@ BRA JL_0_AF66
 
  JL_0_AF98:
   EXG.l D2,D3
-
-  BSR.w writeconvertcode
+  MOVE.l a0,-(a7)
+  TST.b typecheck
+  BEQ 'ok
+  TST.b notypecheck
+  BNE 'ok
+  MOVE.l leftsidetype,a0
+  CMP.l #0,leftsidetype
+  BEQ 'ok
+  CMP.l #$100,4(a0)
+  BLE 'ok
+  CMP.b #3,d3
+  BEQ 'ok
+  CMP.b #7,d3
+  BEQ 'ok
+  JMP   error_convert_types      ;for all syntax only long and string allowed to assign to a type
+'ok
+  MOVE.l (a7)+,a0
+  BSR.w writeconvertcode         ;called from var assign
 
  JL_0_AF9E:
 BRA.w reget
@@ -17030,7 +17104,7 @@ JL_0_AFCA:
 BRA.w writelong
 
 
-JL_0_AFDE:
+isfunction:                                                 ;called when do var = function {}
    BSR.w findproc                                          ;write function call
    BEQ 'l1
    TST.l unusedfunc
@@ -17039,6 +17113,7 @@ JL_0_AFDE:
    JSR gotoendsource
 
  'l1
+  MOVE.l funcstruct_returntype(a2),rightsidetype
   MOVEQ.l #$00,D1
   MOVE.b $5(A2),D1
   MOVE.b d1,retmode
@@ -17166,9 +17241,11 @@ JL_0_B03E:
   MOVE.b isconstantvalue,-(a7)
   MOVE.b funcparloop,-(a7)
   MOVE.b #1,funcparloop
-  ;BSR.w fetchpees2
-
+  MOVE.l rightsidetype,-(a7)
+  MOVE.l leftsidetype,-(a7)                               ;store values To stack so it can work recursive
   JSR fetchpees2
+  MOVE.l (a7)+,leftsidetype
+  MOVE.l (a7)+,rightsidetype
   MOVE.b (a7)+,funcparloop
   MOVE.b (a7)+,isconstantvalue
 
@@ -19336,11 +19413,11 @@ BRA 'ln3
  'l11                                                      ;peek/poke
   TST.b typecheck
   BEQ 'p1
-  ;MOVE.l lasttoken,d1
-  ;CMP.l #$da01,d1                                          ;poke
-  ;BEQ 'lp1
-  ;CMP.l #$da02,d1                                          ;peek
-  ;BNE 'p1
+  MOVE.l lasttoken,d1
+  CMP.l #$da01,d1                                          ;poke
+  BEQ 'lp1
+  CMP.l #$da02,d1                                          ;peek
+  BNE 'p1
 
  'lp1
   TST.b peekaddrsize
@@ -23845,11 +23922,11 @@ BRA 'l1
     CLR.b onestep
     SUBQ.l #4,destpointer
     MOVE.w #$5292,d1
-    BSR writeword
+    JSR writeword
 
  'l1
   MOVE.l JL_0_DCF4(PC),D1
-   BSR.w writelong
+   JSR writelong
   MOVEA.l firstfor,A2
   MOVE.l (A2),firstfor
   MOVEA.l $8(A2),A0
@@ -24127,6 +24204,7 @@ BRA 'negi2
  .varassign
   MOVE.l destpointer,pushpc
   MOVE.l hunkoffsetbase,pushoff
+  CLR.l rightsidetype
   MOVE.w #$0001,regnum
   JSR JL_0_8E3C
   JSR calcvar
@@ -24343,32 +24421,42 @@ JL_0_DF9C:
   ;MOVE.l currtype,-(a7)
   MOVEM.w D2-D3,-(A7)
   MOVE.w varmode,-(A7)
-  ANDI.w #$FF,D2
-  MOVE.l lastoffset_org,-(A7)
   MOVE.l a2,leftsidetype
+  BTST #$f,d2
+  BEQ 'nomultiassign
+  CLR.l leftsidetype                        ;its multiassign to type entries so no typecheck need
+'nomultiassign  ANDI.w #$FF,D2
+  MOVE.l lastoffset_org,-(A7)
   BSR.w eval                                ; calc right side of var assign
-  TST.b typecheck
-  BEQ 'notypecheck
+
   MOVEM.l a0/a1,-(a7)
+  TST.b inpeval
+  BNE 'nocheck
   MOVE.l leftsidetype,a0
+  CMP.l #0,a0
+  BEQ 'nocheck
   CMP.l #$100,4(a0)
   BLE 'nocheck
-  MOVE.l a2,a1
-  CMP.l #$0003fffc,4(a2)
-  BNE 'nocheck
-  TST.l 8(a2)
-  BNE 'nocheck
-  MOVE.l funcstruct_returntype(a2),a1        ; a2 point to a function structure
-'nofuncreturnassign  CMP.l #$100,4(a1)
-  BLE 'nocheck
-
+  TST.l rightsidetype
+  BEQ 'nocheck
+  MOVE.l rightsidetype,a1
+  CMP.l #$100,4(a1)
+  BGE 'typecheck
+  CMP.l #$3,4(a1)
+  BEQ 'ok                              ;long assign is allow with this codelines
+  BRA 'error
+'typecheck
+  TST.b typecheck
+  BEQ 'nocheck
+  TST.b notypecheck
+  BNE 'ok
   CMP.l a0,a1
   BEQ 'ok
-'error  JMP   error_convert_types
+'error
+ JMP   error_convert_types     ;for syntax 4  = typecheck
 'ok
 'nocheck
    MOVEM.l (a7)+, a0/a1
-'notypecheck
   MOVE.l (A7)+,lastoffset_org
   MOVE.w commode,D1
    BNE.w JL_0_DFCC
@@ -24438,7 +24526,7 @@ JL_0_DF9C:
    BNE.w JL_0_E078
   CMP.l #$100,D2
    BCC.l JUMP_nocomerr
-BRA.w JL_0_E088
+BRA.w JL_0_E088                                     ; do do type\x= 10,20,30....
 
  dimmore
         CLR.b optiarray
@@ -29380,7 +29468,7 @@ replacedat           Ds.w 65538
 variablehash         Ds.l 8192
 newinitaddr          Ds.l 1
 realbssend           Ds.l 1
-saved0               Ds.b 1
+saved0               Ds.w 1
 lastpath             Ds.b 128
 lastpath2            Ds.b 128
 fpustackbase         Ds.w 100
@@ -29388,6 +29476,7 @@ lastconstantvalue    Ds.l 1  ; the value of the constant expression used in Func
 isconstantvalue      Ds.w 1  ; contain a type (1-7) if a constant expression is used as a Parameter or on right side of =
 lastfunction         Ds.l 1  ; the address of the function in the Parameter or rght side of =
 leftsidetype         Ds.l 1  ;this contain the address of the type from the left side of the variable assign
+rightsidetype        Ds.l 1  ; same as above but right side
 bssstore
 
 trap15temp           Ds.l 1
@@ -29411,6 +29500,7 @@ skip_bytes:          Ds.b 1
 functionreturntype   Ds.l 1  ; a temp store of it.do not read this value
 
 iserror              Ds.b 1
+inpeval              Ds.b 1  ; set to 1 when a blitzlib functioncall is compile
 Even
 
 CLIMode:             Dc.l 0
