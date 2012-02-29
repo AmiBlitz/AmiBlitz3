@@ -3632,7 +3632,7 @@ createlab:                                                 ;loclabch fetched, ma
    BNE.w createlab_loop
   MOVE.b #$27,-$1(A1)
   MOVE.w D2,-(A7)
-   BSR.w makename4
+   JSR makename4
   CMP.w (A7)+,D2
    BEQ.w syntaxerr
    TST.w d0
@@ -3951,6 +3951,8 @@ RTS
   CLR.l leftsidetype
   CLR.l rightsidetype
   CLR.b peekaddrsize
+  CLR.b blitzparloop
+  CLR.b funcparloop
   TST.b debugmode
    BEQ 'fpu
   CNIF #fpudebug=0
@@ -4033,7 +4035,6 @@ RTS
   BSR.w debugstuffa                                         ;insert runtimecode debugcode
 
  'l10
- moredata                                                  ;??Looks like double labels??
  'l1
   BSR.w get1bytemain                                       ;gettokenmain
    BEQ.w undodebug
@@ -4363,7 +4364,10 @@ BRA JL_0_4786
   LEA $16(A2),A2
   MOVE.b funcparloop,-(a7)
   MOVE.b #1,funcparloop
+  MOVE.b blitzparloop,-(a7)
+  CLR.b blitzparloop
   BSR.w fetchpees2
+  MOVE.b (a7)+,blitzparloop
   MOVE.b (a7)+,funcparloop
 BRA.w JL_0_478A
 
@@ -4416,7 +4420,8 @@ JL_0_493Ab:
 BRA.w get1bytemain
 
 
-get_tokencode:
+get_tokencode:                                             ; blitz instruction find without return value
+  MOVE.l d0,lasttoken
   CMP.w #$c09f,d0                                          ;hack to use getregd0 instead of getd0
   BNE 'l2
    MOVE.w #$dd05,d0
@@ -4580,7 +4585,11 @@ BRA inbrackets_
   TST.w D1
    BEQ.w JL_0_4900
   LEA $2(A1),A2
-   BSR.w fetchlibps
+
+  MOVE.l lasttoken,-(a7)
+  CLR.l lasttoken
+  BSR.w fetchlibps
+  MOVE.l (a7)+,lasttoken
 BRA.w JL_0_4904
 
  JL_0_4900:
@@ -5021,7 +5030,7 @@ RTS                                                        ;d4=toke, d5=form
   TST.w D0
    BSR.w gettokeps
   MOVE.w #$4EB9,D1
-  BSR.w writeword
+  JSR writeword
   BSR.w addoff
   MOVE.w D5,D1
   ORI.w #$8000,D1                                          ;Toke of Amiga type.
@@ -5034,7 +5043,7 @@ BRA.w writelong
   TST.w D0
    BSR.w gettokeps
   MOVE.w #$4EB9,D1
-  BSR.w writeword
+  JSR writeword
   BSR.w addoff
   MOVE.w D5,D1
   ORI.w #$C000,D1                                          ;Toke of Blitz type.
@@ -5434,13 +5443,25 @@ stamigalib:                                                ;an amigalib called t
     ;
   MOVEQ.l #$00,D3
 
- stamigalib__loop:
+stamigalib__loop:                                        ;amigalib parameter compile (can use recursive)
   MOVE.b (A3)+,D1
    BMI.w stamigalib__done
   MOVEQ.l #$03,D2
   ADDQ.w #1,D3
   MOVEM.l D3/A3,-(A7)
-   JSR peval
+  MOVE.b funcparloop,-(a7)
+  MOVE.b #0,funcparloop
+  MOVE.l leftsidetype,-(a7)
+  MOVE.l rightsidetype,-(a7)
+  CLR.l leftsidetype
+  CLR.l rightsidetype
+  MOVE.b blitzparloop,-(a7)
+  MOVE.b #1,blitzparloop
+  JSR peval
+  MOVE.b (a7)+,blitzparloop
+  MOVE.l (a7)+,rightsidetype
+  MOVE.l (a7)+,leftsidetype
+  MOVE.b (a7)+,funcparloop
   MOVEM.l (A7)+,D3/A3
   CMP.w #$2C,D0
    BEQ.w stamigalib__loop
@@ -8079,7 +8100,7 @@ BRA.w JL_0_670A
 BRA.w resloc
 
 
-fetchlibps:                                 ;some blitzlibs get parameter here
+fetchlibps:                                 ;blitzlib parameter compile get parameter here (can recursive call )
    CLR.w numreps
   MOVE.w D1,D0
   ANDI.w #$FF00,D0
@@ -8095,7 +8116,10 @@ fetchlibps:                                 ;some blitzlibs get parameter here
    MOVE.l rightsidetype,-(a7)
    CLR.l leftsidetype
    CLR.l rightsidetype
+   MOVE.b blitzparloop,-(a7)
+   MOVE.b #1,blitzparloop
    BSR.w fetchpees2
+   MOVE.b (a7)+,blitzparloop
    MOVE.l (a7)+,rightsidetype
    MOVE.l (a7)+,leftsidetype
    MOVE.b (a7)+,funcparloop
@@ -8107,7 +8131,7 @@ fetchlibps:                                 ;some blitzlibs get parameter here
   LSR.w #8,D2
   ANDI.w #$7,D2
 
- fetchlibps__rloop:
+ fetchlibps__rloop:                                               ;blitzlib parameter compile loop (can call recursive)
    CMP.b D2,D1
    BCS.w fetchlibps__repsdone
   SUB.b D2,D1
@@ -8119,7 +8143,10 @@ fetchlibps:                                 ;some blitzlibs get parameter here
   MOVE.l rightsidetype,-(a7)
   CLR.l leftsidetype
   CLR.l rightsidetype
+  MOVE.b blitzparloop,-(a7)
+  MOVE.b #1,blitzparloop
   BSR.w fetchpees4
+  MOVE.b (a7)+,blitzparloop
   MOVE.l (a7)+,rightsidetype
   MOVE.l (a7)+,leftsidetype
   MOVE.b (a7)+,funcparloop
@@ -8138,19 +8165,22 @@ BRA.w fetchlibps__rloop
 
  fetchlibps__noreps:
    MOVE.w D1,D0
-   BNE.w fetchpees2b                    ;blitzlib functions (peek.x) call this to get Parameter
+   BNE.w fetchpees2b
 
  fetchlibps__done:
 RTS
 
- fetchpees2b
+ fetchpees2b                           ;blitzlib parameter compile  ( var = blitzfunc) call this to get Parameter (can call recursive)
   MOVE.b funcparloop,-(a7)
   MOVE.l leftsidetype,-(a7)
   MOVE.l rightsidetype,-(a7)
   CLR.l leftsidetype
   CLR.l rightsidetype
   MOVE.b #0,funcparloop
+  MOVE.b blitzparloop,-(a7)
+  MOVE.b #1,blitzparloop
   BSR.w fetchpees2
+  MOVE.b (a7)+,blitzparloop
   MOVE.l (a7)+,rightsidetype
   MOVE.l (a7)+,leftsidetype
   MOVE.b (a7)+,funcparloop
@@ -10889,7 +10919,7 @@ getchar:
   Dc.w $3031,$0a00                                         ;MOVE.w 0(a1,d0.l*2),d0
 
  getchar__l10:
-  MOVE.l d0,lasttoken
+  ;MOVE.l d0,lasttoken
   MOVE.l (a7)+,a1
 BRA getchar__weiter
 
@@ -13292,10 +13322,13 @@ BRA.w JL_0_96FC
 
 
 
-string_to_long:                                                ;stringtolong
-   TST.l lasttoken
+string_to_long:
+                                             ; allowed as calling parameter for blitzlibs and functions
+   TST.b blitzparloop
    BNE 'l1
-BRA error_convert_types
+   TST.b funcparloop
+   BNE 'l1
+   BRA error_convert_types
 
  'l1
   CMP.b #2,optistring
@@ -13592,7 +13625,6 @@ bakpeval:
   MOVEA.l lastsourcepos,A5
 
  peval:                                                 ; write blitzlib function calls
-  ;MOVE.b #1,inpeval
   MOVEQ.l #-$01,D1
   MOVEQ.l #$00,D3
   MOVE.l leftsidetype,-(a7)
@@ -13602,7 +13634,6 @@ bakpeval:
   JSR maineval
   MOVE.l (a7)+,rightsidetype
   MOVE.l (a7)+,leftsidetype
-  ;CLR.b inpeval
   RTS
 
 bakevalu:
@@ -15559,7 +15590,7 @@ JL_0_A6B4:
    TST.b d0
    BPL 'l10
    LSL.w #8,d0
-   MOVE.b (a5)+,d0
+   MOVE.b (a5)+,d0                      ; get blitz instruction with returnvalue
    MOVE.l d0,lasttoken
    MOVE.w d0,lastchar
 
@@ -16312,7 +16343,7 @@ BRA 'isfpu
   JSR JL_0_4878
   TST.w (A7)+
   BEQ.w JL_0_ABC6
-  CMP.w #")",D0                                             ; is ) here for correct end of blitzlib function call
+  CMP.w #")",D0                                             ; check if is ) here for correct end of blitzlib function call
   BNE.w syntaxerr
   CLR.l lasttoken
   BSR.w get1bytemain
@@ -16458,13 +16489,25 @@ JL_0_AC1A:
   MOVE.w D0,-(A7)
   MOVEQ.l #$00,D3
 
- JL_0_AC40:
+ JL_0_AC40:                        ;blitzlib parameter compile loop after a if statement  (can recursive call )
   MOVE.b (A3)+,D1
    BMI.w JL_0_AC6A
   MOVEQ.l #$03,D2
   ADDQ.w #1,D3
   MOVEM.l D3/A3,-(A7)
-   BSR.w peval
+  MOVE.b funcparloop,-(a7)
+  CLR.b funcparloop
+  MOVE.b blitzparloop,-(a7)
+  MOVE.b #1,blitzparloop
+  MOVE.l lasttoken,-(a7)
+  MOVE.l leftsidetype,-(a7)
+  MOVE.l rightsidetype,-(a7)
+  BSR.w peval
+  MOVE.l (a7)+,rightsidetype
+  MOVE.l (a7)+,leftsidetype
+  MOVE.l (a7)+,lasttoken
+  MOVE.b (a7)+,blitzparloop
+  MOVE.b (a7)+,funcparloop
   SUBQ.w #4,a2offset
   MOVEM.l (A7)+,D3/A3
   CMP.w #$2C,D0
@@ -17243,12 +17286,14 @@ JL_0_B03E:
   MOVE.b #1,funcparloop
   MOVE.l rightsidetype,-(a7)
   MOVE.l leftsidetype,-(a7)                               ;store values To stack so it can work recursive
+  MOVE.b blitzparloop,-(a7)
+  CLR.b blitzparloop
   JSR fetchpees2
+  MOVE.b (a7)+,blitzparloop
   MOVE.l (a7)+,leftsidetype
   MOVE.l (a7)+,rightsidetype
   MOVE.b (a7)+,funcparloop
   MOVE.b (a7)+,isconstantvalue
-
   JSR chkstak
   MOVE.l (A7)+,D1
 ;  CMP.l #6,parnumtemp
@@ -21773,9 +21818,9 @@ macputw:
   MOVEQ.l #-$01,D2
   MOVE.b D0,(A0)+
   CMPA.l ptr_macrobuffer_end,A0
-   BCC.w macbigerr
+   BCC.w macbigerr2
 RTS
-
+macbigerr2 JMP macbigerr
 
 skiprest:
   MOVE.l d0,-(a7)
@@ -22848,7 +22893,7 @@ RTS
    BSR.w writelong
    BSR.w findproc                                          ;findproc function
    BEQ.w JUMP_dupprocerr
-   BSR.w addlabel
+   JSR addlabel
    MOVE.b #31,$20(a2)                                      ;increase if more pars
    MOVE.b #0,isfunc(a2)
    MOVE.l functionreturntype,funcstruct_returntype(a2)
@@ -24430,8 +24475,6 @@ JL_0_DF9C:
   BSR.w eval                                ; calc right side of var assign
 
   MOVEM.l a0/a1,-(a7)
-  TST.b inpeval
-  BNE 'nocheck
   MOVE.l leftsidetype,a0
   CMP.l #0,a0
   BEQ 'nocheck
@@ -24451,6 +24494,10 @@ JL_0_DF9C:
   TST.b notypecheck
   BNE 'ok
   CMP.l a0,a1
+  BEQ 'ok
+                                    ; check if type is parent
+  MOVE.l 4(a1),a1                   ; load the address of 1. type.
+  CMP.l $a(a1),a0                   ; check if the bigger type contain in first place same type as the function need
   BEQ 'ok
 'error
  JMP   error_convert_types     ;for syntax 4  = typecheck
@@ -29363,7 +29410,8 @@ instringf            Ds.l 1
 funcscanon           Ds.l 1
 storedebugmode       Ds.b 20
 firsttimepref        Ds.l 1
-funcparloop          Ds.w 1
+funcparloop          Ds.b 1                   ; is 1 when function calling parameter are compile
+blitzparloop         Ds.b 1                   ; is 1 when blitzlib calling parameters are compile
 nostringopt          Ds.w 1
 path2:               Ds.l 32
 typebase             Dc.l 0
@@ -29500,7 +29548,6 @@ skip_bytes:          Ds.b 1
 functionreturntype   Ds.l 1  ; a temp store of it.do not read this value
 
 iserror              Ds.b 1
-inpeval              Ds.b 1  ; set to 1 when a blitzlib functioncall is compile
 Even
 
 CLIMode:             Dc.l 0
