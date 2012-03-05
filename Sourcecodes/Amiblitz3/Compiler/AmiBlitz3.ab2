@@ -1535,7 +1535,8 @@ JL_0_49B4b:
   JSR findtype
   BNE.w notypeerrb
 
- JL_0_49CAb:
+JL_0_49CAb:
+
   ;bsr.w bakup
   MOVE.w oldqflag,instringon
   MOVEA.l lastsourcepos,A5
@@ -1543,6 +1544,9 @@ CNIF #function_support_returntype
   MOVE.l a2,functionreturntype
   CMPI.l #$100,$4(A2)
   BLE.w 'isvar
+  ;CMP.w #"*",d0
+  ;BNE syntaxerrb
+  ;!fget
   MOVEQ #3,d1
   BRA JL_0_49DEb
 'isvar
@@ -5036,7 +5040,7 @@ RTS                                                        ;d4=toke, d5=form
   ORI.w #$8000,D1                                          ;Toke of Amiga type.
   SWAP D1
   MOVE.w D4,D1
-BRA.w writelong
+JMP writelong
 
 
 .do_BLibJsr:
@@ -5063,7 +5067,7 @@ JMP Atokejsr
 .do_TokeJsr:
   BSR.w gettokeps
   MOVE.w #$4EB9,D1
-  BSR.w writeword
+  JSR writeword
   MOVE.l destpointer,D3
   BTST #$7,blitzmode
    BEQ.w do_TokeJsr__inamiga
@@ -8232,7 +8236,6 @@ BRA.w fetchpees3
   MOVE.b (A2)+,D2                                          ;parameterloop   d2=vartype
    BNE.w fetchpees__skip0
   MOVE.w userp,D2                                          ;user selected type
-
  fetchpees__skip0:
    MOVE.l A2,-(A7)
    ADDQ.w #1,parnum
@@ -8260,7 +8263,6 @@ BRA.w fetchpees3
    MOVE.l d0,-(a7)
    MOVE.w regnumfunc,d0
    CLR.w regmask
-
  fetchpees__skip0_loop:
    BSET d0,regmask
    SUBQ #1,d0
@@ -8298,15 +8300,18 @@ BRA.w fetchpees3
  fetchpees__skip0_old:
      MOVE.l currentfunccall,-(a7)
      MOVE.w parnum,-(a7)
+     TST.l rightsidetype
      BSR.w JL_0_6836
      MOVE.w (a7)+,parnum
 ;  CLR.b funcparloop
    MOVE.l (a7)+,currentfunccall
 CNIF #function_typecheck
-   TST.b typecheck
+   TST.b typecheck                            ;typecheck for function call
    BEQ 'notypecheck
    TST.b notypecheck
    BNE 'notypecheck
+   TST.b blitzparloop
+   BNE 'isblitzlibcall                                    ;no typecheck for blitzlibs currently
    CMP.l #0,currentfunccall
    BEQ 'isblitzlibcall
    MOVEM.l a0/a1,-(a7)
@@ -8316,20 +8321,26 @@ CNIF #function_typecheck
    BEQ 'noconstant
    CMP.l #0,lastconstantvalue
    BEQ 'isnull
-'noconstant   MOVE.l funcstruct_parametertype-4(a0,d1*4),a0
+'noconstant
+   MOVE.l funcstruct_parametertype-4(a0,d1*4),a0
    CMP.l #0,a0
    BEQ 'notype
    CMP.l #$100,4(a0)
    BLE 'notype
-   MOVE.l lastinstruction,d1
+   MOVE.l lasttoken,d1
    CMP.w #$b581,d1                   ; ok, when token for null
    BEQ 'isnull
-   CMP.l a0,a2
+   MOVE.l rightsidetype,a1
+   CMP.l #0,a1
+   BEQ 'notype
+   CMP.l #$100,4(a1)
+   ;BLE 'ok                      ;deactivate if long for Parameter is not allowed
+   CMP.l a0,a1
    BEQ 'ok
                     ; check if type is parent
-   CMP.l #$100,4(a2)                 ; is a type here
+   CMP.l #$100,4(a1)                 ; is a type here
    BLE 'error
-   MOVE.l 4(a2),a1                   ; load the address of type.
+   MOVE.l 4(a1),a1                   ; load the address of type.
    CMP.l $a(a1),a0                   ; check if the bigger type contain in first place same type as the function need
    BEQ 'ok
 'error: JMP   error_convert_types    ; for syntax 4
@@ -13607,8 +13618,11 @@ arreval:
   MOVEQ.l #$03,D2
   MOVEQ.l #$00,D1
   MOVEQ.l #$00,D3
-BRA.w maineval2
-
+  MOVE.b notypecheck,-(a7)
+  MOVE.b #1,notypecheck                                    ;typecheck need switch off for array offset calculation code
+  JSR maineval2
+  MOVE.b (a7)+,notypecheck                                 ;now its switch to old state
+  RTS
 
 bakpevalu:                                                 ;??looks like labe not used??
   ;bsr.w bakup
@@ -15352,9 +15366,10 @@ JL_0_A298:
   MOVEQ.l #$02,D2
 
  'l1
-   MOVE.b #1,notypecheck
+   ;MOVE.b notypecheck,-(a7)
+   ;MOVE.b #1,notypecheck
    BSR.w writeconvertcode
-   CLR.b notypecheck
+   ;MOVE.b (a7)+,notypecheck
   MOVE.w (A7)+,D2
   SUBQ.w #1,regnum
   CMP.w #$4,D2
@@ -15593,7 +15608,7 @@ JL_0_A6B4:
    MOVE.b (a5)+,d0                      ; get blitz instruction with returnvalue
    MOVE.l d0,lasttoken
    MOVE.w d0,lastchar
-
+   CLR.l rightsidetype                  ; blitzlibs do currently no type check
  'l10
   CMP.w #$28,D0
    BEQ.w JL_0_A410
@@ -15987,6 +16002,7 @@ getvaraddr:
   CLR.w vartype
   MOVE.b #3,peekaddrsize
   BSR.w JL_0_A916
+  MOVE.l a2,rightsidetype
   MOVEQ.l #$03,D2
 RTS
 
@@ -16266,7 +16282,7 @@ nonull  CMP.w #-$7F4A,D0
   MOVEQ.l #$00,D1
   CMP.w #$28,D0
    BNE.w JL_0_AB80
-   BSR.w JL_0_66F6
+   JSR JL_0_66F6
   TST.w D1
    BEQ.w syntaxerr
 BRA.w JL_0_AB84
@@ -16995,7 +17011,7 @@ BRA.w JL_0_B46E
 JL_0_AF4C:
   MOVE.w D2,-(A7)
    BSR.w getparameter
-  CMP.w #$7B,D0                                          ;test if var = function{}
+  CMP.w #"{",D0                                          ;test if var = function{}
    BEQ.w isfunction
    BSR.w JL_0_8E3C
                                                          ;called when do var = var
@@ -21335,7 +21351,7 @@ BRA 'domore
    BEQ.w JL_0_CA3C
    JSR get1bytemain
   CMP.w #$29,D0
-   BNE.w syntaxerr
+   BNE.w syntaxerrc
    JSR get1bytemain
 
  JL_0_CA3C:
@@ -21348,6 +21364,7 @@ BRA.w JL_0_C9DE
   MOVE.w (A7)+,proceduremode
 RTS
 
+syntaxerrc JMP syntaxerr
 
 .do_xinclude:
    BSR.w JL_0_C05C
@@ -29520,11 +29537,11 @@ saved0               Ds.w 1
 lastpath             Ds.b 128
 lastpath2            Ds.b 128
 fpustackbase         Ds.w 100
-lastconstantvalue    Ds.l 1  ; the value of the constant expression used in Function Parameter.check isconstantvalue <> 0 if its valid
-isconstantvalue      Ds.w 1  ; contain a type (1-7) if a constant expression is used as a Parameter or on right side of =
-lastfunction         Ds.l 1  ; the address of the function in the Parameter or rght side of =
-leftsidetype         Ds.l 1  ;this contain the address of the type from the left side of the variable assign
-rightsidetype        Ds.l 1  ; same as above but right side
+lastconstantvalue    Dc.l 0  ; the value of the constant expression used in Function Parameter.check isconstantvalue <> 0 if its valid
+isconstantvalue      Dc.w 0  ; contain a type (1-7) if a constant expression is used as a Parameter or on right side of =
+lastfunction         Dc.l 0  ; the address of the function in the Parameter or rght side of =
+leftsidetype         Dc.l 0  ;this contain the address of the type from the left side of the variable assign
+rightsidetype        Dc.l 0  ; same as above but right side
 bssstore
 
 trap15temp           Ds.l 1
