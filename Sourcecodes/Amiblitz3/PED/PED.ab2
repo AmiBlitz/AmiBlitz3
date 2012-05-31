@@ -9,7 +9,7 @@
 ;/ Authors: 1990...1996 Mark Silby                                             /
 ;/          1991...2003 Red When Excited                                       /
 ;/          2003...2009 Bernd Roesch, Sven Droege                              /
-;/          2009...2010 Thilo Koehler, Thomas Klein                            /
+;/          2009...     The Opensource Team                                    /
 ;/                                                                             /
 ;/ Requirements: AmigaOS3.1+                                                   /
 ;/                                                                             /
@@ -39,6 +39,7 @@ DEBUG
 #maxhistory                  = 4*8
 #MAX_SOURCEFILES             = 16
 
+#WZ_singletable              = 1      ; new moved from compiler tomsmart1
 
 ;@@1
 !initasm
@@ -66,7 +67,7 @@ XINCLUDE "cpu.include.bb2"
 XINCLUDE "file.include.bb2"
 XINCLUDE "clipboard2.include.bb2"
 CNIF #use_NTUI
-  XINCLUDE "ped.ntui.bb2"
+  XINCLUDE "ped.ntui.ab3"
 CEND
 XINCLUDE "translation.include.bb2"
 ;XINCLUDE "convert.include.bb2"
@@ -1347,6 +1348,14 @@ MOVE.l #event_shortcut                      ,68(A0)
 MOVE.l #event_leftmousebutton               ,74(A0)
 MOVE.l #AJL_0_7FCC                          ,80(A0)
 
+; add for compile status window by tomsmart1 2012 02 25
+; set the address for the gui routines in comData that the compiler can access it with "!comData_JSR{...}
+!ComData_SetL{comFunc_OpenCompileStatusWin  ,#Open_CompileStatus_Window}      ; open the window   ; i hope this is only temporaly and we can remove it after all wz windows are handel by PED
+!ComData_SetL{comFunc_UpdateCompileStatusWin,#Update_CompileStatus_Window}    ; update the window ; the only nessecary
+!ComData_SetL{comFunc_CloseCompileStatusWin ,#Close_CompileStatus_Window}     ; close the window  ; i hope this is only temporaly and we can remove it after all wz windows are handel by PED
+;
+
+
 ;---  Check  if  all  needed  Librarys  are  available  with  the  needed  min  Version
 errorout.s = ""      ; for the error text
 ende.b     = False   ; abort indicater
@@ -1792,7 +1801,9 @@ begin1:
   BEQ.w start_up_without_compiler
     LEA compiler_jumps_here,A0
     MOVEA.l comdata,A1               ; its now indirect, was moveA.l #comdata before
-    MOVE.w #$FFFF,comWord_PEDIsAvailable
+    ;MOVE.w #$FFFF,comWord_PEDIsAvailable  ; org tomsmart1
+    MOVE.w #$EEEE,comWord_PEDIsAvailable   ; new to indecate update PED V3.5  tomsmart1
+
     RTS                              ; <-- return to compiler
   start_up_without_compiler:
 
@@ -6172,9 +6183,21 @@ JMP update_horizscroller
 ;RTS
 
   CMP.w #$5A,D6    ; empty menu
-  BNE.w JL_0_2CE0
+  ;BNE.w JL_0_2CE0                                ; disabeld to check for Calculator first  tomsmart1 2012 03
+  BNE.w ped_calculator
  ;JMP change_directory
 RTS
+
+ ped_calculator:                     ; check for calculator  tomsmart1 2012 03
+  CMP.w #$57,D6
+  BNE.w JL_0_2CE0                    ; no check next
+  JSR save_tempprefs                 ; save data to prevent crashes if the calculation routine is called an it coms back to Ped
+  !basic
+  Gosub open_calculator
+  !asm
+  JSR read_tempprefs                 ; restore data to prevent crashes if the calculation routine is called an it comes back to Ped
+RTS
+
 
  JL_0_2CE0:
   CMP.w ##MENU_COMPILERUN,D6
@@ -6263,8 +6286,15 @@ RTS
 ;  MOVEM.l D0-D7/A0-A6,-(A7)
 ;  MOVEM.l (A7)+,D0-D7/A0-A6
 ;  no_createresident:
+  CMP.w #$3,D6                       ; check if compiler settings   ;add tomsmart1
+  BNE.w 'nocomsettings               ; no go next
+  !basic
+  Gosub menu_compilersettings
+  !asm
+RTS
 
 
+ 'nocomsettings
   MOVE.l d0,-(a7)
   MOVE.l #comStr_CurrentDir,D0       ;set default dir
   JSR set_currentdir
@@ -22780,6 +22810,74 @@ Return
 
 
 .open_calculator
+  calc_expression.s = ""
+  !ComData_GetL{comPtr_CalculatorExpressionString,D0} : CalculatorExpressionStringPointer.l = PutD0
+  Poke.s CalculatorExpressionStringPointer,calc_expression
+  If Peek.l(Addr Window(WZID("WIN_CALCULATOR")))=0
+    WZWindow WZID("WIN_CALCULATOR"),?wzgui,128,-2,-2,-2,-2,WZID("WIN_CALCULATOR")
+    !ComData_SetW{comWord_CalculatorButtonBinFlag,#$00}
+    !ComData_SetW{comWord_CalculatorButtonDecFlag,#$80}
+
+
+
+    ;event_Calculator
+    calc_exit.l = False
+    calc_test.l = False
+    Repeat
+     ActivateWZGadget{"CALC_EXPRESSION"}
+     ev_calculator.l = WaitEvent
+      Select ev_calculator
+
+        Case #IDCMP_CLOSEWINDOW
+          calc_exit = True
+
+        Case #IDCMP_IDCMPUPDATE
+          Select WZGadName
+
+            Case "CALC_CLOSE"
+              calc_exit = True
+
+            Case "CALC_EXPRESSION"
+              calc_expression = WZGetString("CALC_EXPRESSION")
+
+            Case "BIN"
+              !ComData_SetW{comWord_CalculatorButtonBinFlag,#$80}
+              !ComData_SetW{comWord_CalculatorButtonDecFlag,#$00}
+              calc_test = True
+
+            Case "HEX"
+              !ComData_SetW{comWord_CalculatorButtonBinFlag,#$00}
+              !ComData_SetW{comWord_CalculatorButtonDecFlag,#$00}
+              calc_test = True
+
+            Case "DEC"
+              !ComData_SetW{comWord_CalculatorButtonBinFlag,#$00}
+              !ComData_SetW{comWord_CalculatorButtonDecFlag,#$80}
+              calc_test = True
+
+          End Select
+
+          If FLen(calc_expression)<128                      ; test if the string is not longer than 128 byte because this is the limit that is set in the compiler source  tomsmart1 2012 05 30
+            If (calc_expression<>"") AND (calc_exit = False)
+              If (calc_expression<>Peek.s(CalculatorExpressionStringPointer) ) OR (calc_test = True)
+                Poke.s CalculatorExpressionStringPointer,calc_expression
+                !asm
+                !ComData_JSR{comFunc_CalculatExpression} ;examine_expression
+                !basic
+                calc_expression = Peek.s(CalculatorExpressionStringPointer)
+                WZPrint "CALC_EXPRESSION",&calc_expression
+              EndIf
+              calc_test = False
+            EndIf
+         Else
+           error{!TRANS{"The expression is to long please reduce it to max 127 characters!"} }
+         EndIf
+
+      End Select
+
+    Until calc_exit
+    WZCloseWindow WZID("WIN_CALCULATOR")
+  EndIf
 Return
 
 
@@ -24845,8 +24943,397 @@ Return
   !coutclose
 Return
 
+;####################################################################
+; BEGIN  routines compiler settings window  tomsmart 2012 03 21     #
+;####################################################################
+.BackupCompilerSettings:
+  !asm
+  !ComData_JSR{comFunc_BackupXtraData}
+  !basic
+
+; get pointer to the settings from the compiler
+  !ComData_GetL{comPtr_Residents_Table       ,D0} : Ptr_Residents_Table.l   = PutD0
+  !ComData_GetL{comPtr_Number_of_Objects_Word,D0} : Ptr_Number_of_Objects_Word.l = PutD0
+  !ComData_GetL{comPtr_Stringbuffer_Long     ,D0} : Ptr_Stringbuffer_Long.l      = PutD0
+  !ComData_GetL{comPtr_Stacksize_Long        ,D0} : Ptr_Stacksize_Long.l         = PutD0
+  !ComData_GetL{comPtr_Create_Iconfile_Byte  ,D0} : Ptr_Create_Iconfile_Byte.l   = PutD0
+  !ComData_GetL{comPtr_Make_Smallestcode_Byte,D0} : Ptr_Make_Smallestcode_Byte.l = PutD0
+  !ComData_GetL{comPtr_Link_Debuginfo_Byte   ,D0} : Ptr_Link_Debuginfo_Byte.l    = PutD0
+  !ComData_GetL{comPtr_Use_Debugger_Byte     ,D0} : Ptr_Use_Debugger_Byte.l      = PutD0
+  !ComData_GetL{comPtr_Autorun_Byte          ,D0} : Ptr_Autorun_Byte.l           = PutD0
+  !ComData_GetL{comPtr_Interruptcheck_Byte   ,D0} : Ptr_Interruptcheck_Byte.l    = PutD0
+  !ComData_GetL{comPtr_Assemblercheck_Byte   ,D0} : Ptr_Assemblercheck_Byte.l    = PutD0
+  !ComData_GetL{comPtr_Overflowcheck_Byte    ,D0} : Ptr_Overflowcheck_Byte.l     = PutD0
+  !ComData_GetL{comPtr_MaxObjects_Value_Word ,D0} : Ptr_MaxObjects_Value_Word.l  = PutD0
+  !ComData_GetL{comPtr_MaxObject_Pos_Word    ,D0} : Ptr_MaxObject_Pos_Word.l     = PutD0
+
+  !ComData_GetW{comWord_CreateDebugFile,D0}  : comWord_CreateDebugFile_Back.w = PutD0 ; get status of Create.dbg file  tomsmart1
+  StringbufferValue_Backup.l = Peek.l(Ptr_Stringbuffer_Long)              ;get sringbuffersize  tomsmart1
+  StackSizeValue_Backup.l    = Peek.l(Ptr_Stacksize_Long)                 ;get stacksize  tomsmart1
+Return
+
+.RestoreCompilerSettings:
+  GetD0 comWord_CreateDebugFile_Back : !ComData_SetW{comWord_CreateDebugFile,D0}   ;restore settings that not stored in the xtradata
+  Poke.l Ptr_Stringbuffer_Long,StringbufferValue_Backup
+  Poke.l Ptr_Stacksize_Long   ,StackSizeValue_Backup
+  !asm
+  !ComData_JSR{comFunc_RestoreXtraData}
+  !basic
+Return
 
 
+.menu_compilersettings   ; was .newoptionsfunc
+
+  Gosub BackupCompilerSettings    ; make a Backup of the active settings
+
+  MaxLen a$ = 5000
+
+  WZWindow WZID("WIN_CPREFS"),?wzgui,256,-2,ScreenHeight/6,-2,ScreenHeight/1.5,WZID("WIN_CPREFS")
+  WZ_SetFont{"WIN_CPREFS"}
+  WZ_InitTable{"WIN_CPREFS","OBJECTS",2,0}
+  WZ_SetTableColors{"OBJECTS",1,0,2,3,3}
+
+  ; Setzen der Spaltentitel fuer die erste Zeile
+  WZ_SetTableTitle{"OBJECTS","Objects","Max"}
+
+  ; Legt die Prioritaet der 6 Spalten fest
+  WZ_SetPriority{"OBJECTS",3,1}
+
+  ; Setzt die zweite Spalte der Tabelle "OBJECTS" auf nicht editierbar
+  WZ_SetEditable{"OBJECTS",False,True}
+
+  ; Sortieren verboten
+  WZ_SetSortable{"OBJECTS",Off}
+
+  ; Fuegt Zeilen an die Tabelle "OBJECTS" an
+  For i.l = 0 To Peek.w(Ptr_Number_of_Objects_Word)-1
+    a$ = ""
+    GetD0 &a$,i
+    !ComData_JSR{comFunc_GetObjectEntry}    ;stringaddress in d0 , indexnumber d1
+    a.l = PutD0
+    WZ_AddRow{"OBJECTS",Peek$(&a$),Str$(a)}
+  Next
+  WZ_DrawTable{"OBJECTS"}
+  ; Fuellt die Tabelle mit den Werten, die mit WZAddRow{} erstellt wurden
+  WZ_UpdateTable{"OBJECTS"}
+
+  ;get Residents and convert it to a string
+  var.l = Ptr_Residents_Table
+  a$ = Peek$(var)              ; get first entry
+  For i = 0 To 6               ; get up to 7 entry
+    a$ = a$ + "\\0a"           ; added a newline
+    var + #ResidentEntryStep   ; update pointer to the next entry
+    a$ = a$ + Peek$(var)       ; added next entry
+  Next
+  WZPrint "RESIDENTS",&a$      ; print string in gadget
+
+  WZPrint "STRINGBUFFER",StringbufferValue_Backup
+
+  WZPrint "STACKSIZE",StackSizeValue_Backup                       ;print it  tomsmart1
+
+; get and set status of the checkmarks
+  If Peek.b(Ptr_Create_Iconfile_Byte)=-128
+    WZPrint "ICON",1
+  Else
+    WZPrint "ICON",0
+  EndIf
+
+  If Peek.b(Ptr_Make_Smallestcode_Byte)=-128
+    WZPrint "SMALLEST",1
+  Else
+    WZPrint "SMALLEST",0
+  EndIf
+
+  If Peek.b(Ptr_Link_Debuginfo_Byte)=-128
+    WZPrint "DEBUGINFO",1
+  Else
+    WZPrint "DEBUGINFO",0
+  EndIf
+
+  WZPrint "DBGFILE",comWord_CreateDebugFile_Back       ; show status in the GUI tomsmart1
+
+
+  ;runtime Debugging
+  If Peek.b(Ptr_Use_Debugger_Byte)=-128
+    WZPrint "DEBUG",1
+    WZEnable "AUTORUN"                                   ; enable all Debugger settings  tomsmart1
+    WZEnable "CHECK_INTERRUPT"                           ;               "
+    WZEnable "CHECK_ASSEMBLER"                           ;               "
+    WZEnable "CHECK_OVERFLOW"                            ;               "
+  Else
+    WZPrint "DEBUG",0
+    WZDisable "AUTORUN"                                  ; disable all Debugger settings  tomsmart1
+    WZDisable "CHECK_INTERRUPT"                          ;                "
+    WZDisable "CHECK_ASSEMBLER"                          ;                "
+    WZDisable "CHECK_OVERFLOW"                           ;                "
+  EndIf
+
+  If Peek.b(Ptr_Autorun_Byte)=-128
+    WZPrint "AUTORUN",1
+  Else
+    WZPrint "AUTORUN",0
+  EndIf
+
+  If Peek.b(Ptr_Interruptcheck_Byte)=-128
+    WZPrint "CHECK_INTERRUPT",1
+  Else
+    WZPrint "CHECK_INTERRUPT",0
+  EndIf
+
+  If Peek.b(Ptr_Assemblercheck_Byte)=-128
+    WZPrint "CHECK_ASSEMBLER",1
+  Else
+    WZPrint "CHECK_ASSEMBLER",0
+  EndIf
+
+  If Peek.b(Ptr_Overflowcheck_Byte)=-128
+    WZPrint "CHECK_OVERFLOW",1
+  Else
+    WZPrint "CHECK_OVERFLOW",0
+  EndIf
+
+
+  ;Event handling of the compiler settings window
+  CompilerSettingsWin_Exit.l  = False
+
+  Repeat  ;new
+
+    CompilerSettingsWin_Event.l = WaitEvent
+
+    WZ_CheckTableEvent{CompilerSettingsWin_Event} ; handel events of the objecttabel
+
+    Select CompilerSettingsWin_Event  ; handel events of the rest of the window
+
+       Case #IDCMP_CLOSEWINDOW
+         CompilerSettingsWin_Exit = True
+         Gosub RestoreCompilerSettings
+
+       Case #IDCMP_IDCMPUPDATE
+         Select LCase$(WZGadName)
+
+           Case "autorun"
+             If WZInput
+               Poke.b Ptr_Autorun_Byte,-128
+             Else
+               Poke.b Ptr_Autorun_Byte,0
+             End If
+
+           Case "check_interrupt"
+             If WZInput
+               Poke.b Ptr_Interruptcheck_Byte,-128
+             Else
+               Poke.b Ptr_Interruptcheck_Byte,0
+             End If
+
+           Case "check_assembler"
+             If WZInput
+               Poke.b Ptr_Assemblercheck_Byte,-128
+             Else
+               Poke.b Ptr_Assemblercheck_Byte,0
+             End If
+
+           Case "check_overflow"
+             If WZInput
+               Poke.b Ptr_Overflowcheck_Byte,-128
+             Else
+               Poke.b Ptr_Overflowcheck_Byte,0
+             End If
+
+           Case "residents"
+
+           Case "stacksize"                                   ; stacksize changed  tomsmart1
+             tempsize.l=WZInput                               ; save the valu to a temporay variable  tomsmart1
+             If tempsize >= #MIN_STACKSIZE                    ; check size  tomsmart1
+               Poke.l Ptr_Stacksize_Long,tempsize                     ; save it.  tomsmart1
+             Else                                             ; its not big enough  tomsmart1
+               tempsize = #MIN_STACKSIZE                      ; set it to the min size  tomsmart1
+               Poke.l Ptr_Stacksize_Long,tempsize                     ; save it  tomsmart1
+               WZPrint "STACKSIZE",tempsize                   ; print it  tomsmart1
+             EndIf
+
+           Case "stringbuffer"
+             Poke.l Ptr_Stringbuffer_Long,WZInput
+
+           Case "debug"
+             If WZInput
+               Poke.b Ptr_Use_Debugger_Byte,-128                           ; yes runtime Debugging
+               WZEnable "AUTORUN"                             ; enable all Debugger settings  tomsmart1
+               WZEnable "CHECK_INTERRUPT"                     ;               "
+               WZEnable "CHECK_ASSEMBLER"                     ;               "
+               WZEnable "CHECK_OVERFLOW"                      ;               "
+             Else
+               Poke.b Ptr_Use_Debugger_Byte,0                           ; no runtime Debugging
+               WZDisable "AUTORUN"                            ; disable all Debugger settings  tomsmart1
+               WZDisable "CHECK_INTERRUPT"                    ;                "
+               WZDisable "CHECK_ASSEMBLER"                    ;                "
+               WZDisable "CHECK_OVERFLOW"                     ;                "
+             End If
+
+           Case "icon"
+             If WZInput
+               Poke.b Ptr_Create_Iconfile_Byte,-128
+             Else
+               Poke.b Ptr_Create_Iconfile_Byte,0
+             End If
+
+           Case "smallest"
+             If WZInput
+               Poke.b Ptr_Make_Smallestcode_Byte,-128
+             Else
+               Poke.b Ptr_Make_Smallestcode_Byte,0
+             End If
+
+           Case "debuginfo"                                      ; check "Create Debug info" (Symbols)
+             If WZInput
+               Poke.b Ptr_Link_Debuginfo_Byte,-128
+             Else
+               Poke.b Ptr_Link_Debuginfo_Byte,0
+             End If
+
+           Case "dbgfile"                                        ; check "Create .dbg File"   tomsmart1
+             If WZInput
+               !ComData_SetW{comWord_CreateDebugFile,#1}         ; yes we create it  tomsmart1
+             Else
+               !ComData_SetW{comWord_CreateDebugFile,#0}         ; no we don't  tomsmart1
+             EndIf
+
+          ;check main window buttons
+           Case "cancel"
+            CompilerSettingsWin_Exit = True
+            Gosub RestoreCompilerSettings
+
+
+           Case "ok"
+            CompilerSettingsWin_Exit = True
+            Gosub UseMaxObjectsAndResidentsSettings
+
+         End Select
+
+    End Select
+
+  Until CompilerSettingsWin_Exit
+
+  WZ_KillTable{"OBJECTS"}
+  WZCloseWindow WZID("WIN_CPREFS")
+
+Return
+
+
+.UseMaxObjectsAndResidentsSettings:
+  ; update save max objects settings  tomsmart1 2012 03 21
+  For i.l = 1 To Peek.w(Ptr_Number_of_Objects_Word)
+    a$ = WZ_GetCell{"OBJECTS",i,2}
+    i2.l = Val(a$) : If i2 = 0 Then i2 = 1
+    Poke.w Ptr_MaxObjects_Value_Word,i2
+    Poke.w Ptr_MaxObject_Pos_Word   ,i-1
+    !ComData_JSR{comFunc_StoreMaxObjects}
+  Next
+
+  ; convert strings to Residents entrys  tomsmart1 2012 03 21
+  i.l = WZInput("RESIDENTS")
+  a$ = Peek$(i)
+  InitArgParse a$
+  var.l = Ptr_Residents_Table
+  For i = 0 To 7
+    p$ = NextArgChar$ ($a)
+    Poke$ var,p$
+    var + #ResidentEntryStep
+  Next
+
+  ; the compiler have to reload the residents   tomsmart1 2012 03 21
+  !asm
+  !ComData_JSR{comFunc_ReloadResidentsForPED}
+  !basic
+Return
+;####################################################################
+; END routines compiler settings window  tomsmart 2012 03 21       #
+;####################################################################
+
+
+;######################################################################
+;# BEGIN        routines for the compile status Window                #
+;#                                                                    #
+;#   moved form the compiler to Ped and modified by tomsmart 20120224 #
+;######################################################################
+.Open_CompileStatus_Window:                                             ; open the compile status window
+  !basic
+  WZWindow WZID("WIN_COMPILESTATUS"),?wzgui,64,-2,-2,-2,-2,WZID("WIN_COMPILESTATUS") ; try to open the wizard window
+  CompileStatusWindow_Pointer.l = Peek.l(Addr Window(WZID("WIN_COMPILESTATUS"))) ; get and store the pointer to window
+  ;set init data for the update of the status gadgets
+  !ComData_GetL{comPtr_CompileStatusString,D0} : CompileStatus_String_Pointer.l            = PutD0  ; get the pointer of status string set by the compiler
+  !ComData_GetL{comPtr_CompileCalcProLong ,D0} : CompileStatus_CalculatedProcent_Pointer.l = PutD0  ; get the pointer of calculated procent value set by the compiler
+  CompileStatus_String_Old.s            = ""                            ; set to default
+  CompileStatus_CalculatedProcent.l     = 0                             ; set to default
+  CompileStatus_CalculatedProcent_Old.l = 0                             ; set to default
+  CompileStatus_GaugeString.s           = "0%%"                         ; set to default
+
+  ;set init data for the abort handling
+  GetD0 0 : !ComData_SetB{comByte_CompileStatusAbortByte,d0}            ; set default
+  CompileStatusWindow_Abort.b = False                                   ; abort status default for the event loop
+
+  ;print initstring
+  If CompileStatusWindow_Pointer <> 0                                   ; check if window is open
+    If CompileStatus_String_Pointer <> 0                                ; check if pointer is set
+       CompileStatus_String_Old = Peek.s(CompileStatus_String_Pointer)
+       WZPrint "COMPILE_INFO",CompileStatus_String_Pointer
+     End If
+  EndIf
+  !asm
+RTS
+
+
+.Update_CompileStatus_Window:                                           ; update the compile status window
+  !basic
+  If CompileStatusWindow_Pointer <> 0                                   ; check if window is open
+    ;update gadgets if needed
+    If CompileStatus_String_Pointer <> 0                                ; check if pointer is set
+      If (CompileStatus_String_Old <> Peek.s(CompileStatus_String_Pointer)) ; check is status sting changed => Print it
+        CompileStatus_String_Old = Peek.s(CompileStatus_String_Pointer)
+        WZPrint "COMPILE_INFO",CompileStatus_String_Pointer
+      End If
+    EndIf
+    If CompileStatus_CalculatedProcent_Pointer <> 0                     ; check if pointer is set
+       CompileStatus_CalculatedProcent = Peek.l(CompileStatus_CalculatedProcent_Pointer)  ; get the value
+      If (CompileStatus_CalculatedProcent >< CompileStatus_CalculatedProcent_Old) ; check if procent value changed => update gauge
+         CompileStatus_CalculatedProcent_Old = CompileStatus_CalculatedProcent
+         If (((CompileStatus_CalculatedProcent & $7)=0) OR (CompileStatus_CalculatedProcent=100))
+            CompileStatus_GaugeString.s = Str$(CompileStatus_CalculatedProcent)+"%%"
+            WZPrint "COMPILE_GAUGE",CompileStatus_CalculatedProcent,100,&CompileStatus_GaugeString
+         End If
+      End If
+    EndIf
+
+   ;test abort button (instead of a separte routine)
+    Use Window WZID("WIN_COMPILESTATUS")
+
+    CompileStatusWindow_Event.l = Event                                 ; get the event of the window
+    While (CompileStatusWindow_Event <> 0 AND CompileStatusWindow_Abort = False) ; go if a event happend and the button are not allready pressed
+
+      If CompileStatusWindow_Event = #IDCMP_IDCMPUPDATE                 ; check if gadget event
+        If WZGadName = "COMPILE_ABORT"                                  ; check if "Abort" gadget is pressed
+           GetD0 1 : !ComData_SetB{comByte_CompileStatusAbortByte,d0}   ; set abort condition
+           CompileStatusWindow_Abort = True                             ; set abort condition so the event checking can skiped if a next window update is happend befor the abort is handeled by the compiler
+        EndIf
+      EndIf
+      CompileStatusWindow_Event = Event                                 ; get next event
+    Wend
+
+  EndIf
+  !asm
+RTS
+
+
+.Close_CompileStatus_Window:                                            ; close the compile status window
+  !basic
+  If CompileStatusWindow_Pointer<>0
+    WZCloseWindow WZID("WIN_COMPILESTATUS")                             ;turn off the requester
+    CompileStatusWindow_Pointer = 0                                     ;set pointer to 0 because we close the window
+  EndIf
+  !asm
+RTS
+;######################################################################
+;# END          routines for the compile status Window                #
+;######################################################################
 
 
 ; ---------------------------------------------------------------------
