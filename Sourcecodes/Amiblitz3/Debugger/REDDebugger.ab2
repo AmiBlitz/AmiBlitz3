@@ -44,13 +44,15 @@
 ;***********************************************************
 
 optimize 5     ;don't use fpu because all calc must in FFP!!!!
-Syntax 2
+Syntax 6
 
 XINCLUDE "dos.include.bb2"
 XINCLUDE "/Shared/common.ab3"
 XINCLUDE "/Shared/ted.include.ab3"
 XINCLUDE "rastport.include.bb2"
 XINCLUDE "useful.include.bb2"
+XINCLUDE "error.include.bb2"
+
 SystemBitMap 1
 ; Constants
 ;ATTENTION dont use variable i (it is the sourceline address)
@@ -346,7 +348,7 @@ DEFTYPE.l disasm_ad,typepointer,maxobject,ad,si,areg,old_ad,ad1,ad2
 DEFTYPE.l ev,evq,evw,mem,dreg,token_addr
 DEFTYPE.l array1,array2,ModeID,stepnumber,breakpoint_adr
 DEFTYPE.l mouseables,rp,task,signalset
-DEFTYPE.l arexxport,comdata
+DEFTYPE.l arexxport,*ComData_Pointer
 DEFTYPE.l
 DEFTYPE.q mq
 DEFTYPE.f mf,ffp
@@ -386,7 +388,6 @@ Dim memwin.w(1),mempointer.l(1),memlock$(1),memlockpf$(1)
 Dim winstatus.w(Maximum Window)
 Dim customcomm$(#MAXCUSTOMCOMMANDS)
 
-XINCLUDE "error.include.bb2"
 
 mempointer(0)  = 0
 mempointer(1)  = 0
@@ -434,7 +435,7 @@ End If
 
 If dos_CheckLib{"ted.library",1} = False                   ; needed for PED and REDDebugger
   errorout.s = errorout.s + {"Missing ted.library:\\nThis library is required in version 1 by the IDE.\\n\\n"}
-  ende = True
+  ;ende = True
 End If
 
 If dos_CheckLib{"disassembler.library",40} = False         ; only needed for REDDebugger
@@ -455,25 +456,30 @@ End If
 If ende Then End
 ;-----
 
+
+;--- Test if VBR is located at $0              ; moved to prevent endless error message  tomsmart1 2012 07 12
+vbr_test.l = cr_vbr
+If vbr_test=0
+   error{"The VBR is currently located at memory address 0!\\nIt is recommended to move the VBR to Fast-Ram!\\nUse a tool like  MPC, VBRControl etc..\\nThe Debugger might cause enforcer hits now."}
+End If
+;---
+
+
 ;--- OS Check for set ASM window to prevend a Crash on OS4
 SHARED OSVersion.l
 OSVersion = #AmigaOS3
-;OSVersion = #MorphOS
 If ( dos_CheckLib{"exec.library",50} ) Then OSVersion = #AmigaOS4 ;: message{"REDDebugger: I think I run on OS4, because I was able to open exec.library v50+!"}
 If ( FindResident_("MorphOS") ) Then OSVersion = #MorphOS ;: message{"REDDebugger: I think I run on MOS, because I found the 'MorphOS' Resident!"}
-;If OSVersion = #AmigaOS3 Then message{"REDDebugger: I think I run on OS3, because both, the test for OS4 and MOS failed!"}
-;os4_present.b = False                                      ; for OS3 and MOS
-;os4succ.l     = dos_CheckLib{"exec.library",50}
-;mossucc.l     = FindResident_("MorphOS")
-
-;If os4succ AND (NOT mossucc)                               ; check for OS4 and no MOS
-;  os4_present = True                                       ; OS 4 is used
-;EndIf
 ;-----
-Gosub StartOfDayInit
+
+
+Gosub StartOfDayInit                   ;
+
 
 CNIF #BACKGROUND_DBUG
   .BACKGROUND:
+  ;variables and statements  for BACKGROUND_DBUG     tomsmart1 2012 07 12
+
   ; Right, we need some global variables...
   ; -  msgport.l      is the address of Debugger's message port
   ; -  msgportname$   is the name of Debugger's message port
@@ -509,65 +515,73 @@ CNIF #BACKGROUND_DBUG
     DeleteMsgPort_ rexxport
   End Statement
 
-    If FindPort_(&rexxportname$)
-      a=RTEZRequest(scrtitle$,"    Already running!    ","  _Ok  ")
-      End
-    EndIf
-    CreateDebuggerPort{}
-    AddWaitEvent PortSigBit(rexxport),$10000000            ; add port to WaitEvent
-    background_redo.w=1
-    Repeat
-      If background_redo
-        *scr._Screen=GetPubScreen(0,"Workbench")
-        textlen.w=TextLength_(*scr\_RastPort,scrtitle$,Len(scrtitle$))
-        If background_redo=1 Then rexxwiny=*scr\BarHeight+1
-        Window 0,rexxwinx,rexxwiny,textlen+64,*scr\BarHeight+1,$21000e,scrtitle$,-1,-1 ;rexxportname$,-1,-1
-        background_redo=0
-      EndIf
-      ev = WaitEvent                                       ;close mini win
-      If ev = $10000000
-        rexxwinx = WindowX
-        rexxwiny = WindowY
-        ;DetachGTList 0 ; <= I am not sure if we want this, there is no GTList at all in the entire REDDebugger! (Thilo)
-        Free Screen 0
-        ReleasePubScreen 0,"Workbench"
-        msg = 1
-        While msg<>0
-          msg = GetMsg_(rexxport)
-          If msg
-            ad.l = Peek.l(msg+20)
-            If Peek.l(msg + 24) = #IDENTIFIER
-              GetReg a0,ad
-              MOVE.l a0,d_table
-              MOVE.l a5,d_a5
-              MaxLen d_d$=256 : MaxLen d_ev$=256 : MaxLen d_ex$=256
-              Poke.l ?d_dadd,&d_d$
-              statego.w=0 : dstatus.w=0 : prtcode.w=0 : Poke.l ?statego_,&statego
-              buffmem.l=AllocMem_(#bufflen,$10001) : Poke.l ?buffmem_,buffmem : CLR bufferput
-              FillArray winstatus(),0
-              ReplyDebuggerMsg{}
-              Gosub mainstart
-              ;FillArray winstatus(),0
-              FillArray memwin(),0
-              FillArray mempointer(),0
-              ClearList varinfo()
-              ClearList d_e()
-              ClearList objwins()
-              ali.l=0 : lt$="" : task=0 : autoeval=0 : autoeval$=""
-              pfregs=0
-              !ComData_SetB{comByte_RunningFlag,#0} ; Poke.b comdata+$1ea,0
-              ted_CloseLib{}                                              ; close ted.library
-            EndIf
-            ;ReplyDebuggerMsg{}
 
+; start code for #BACKGROUND_DBUG   tomsmart1 2012 07 12
+
+  If FindPort_(&rexxportname$)
+    a=RTEZRequest(scrtitle$,"    Already running!    ","  _Ok  ")
+    End
+  EndIf
+  CreateDebuggerPort{}
+  AddWaitEvent PortSigBit(rexxport),$10000000            ; add port to WaitEvent
+  background_redo.w=1
+
+  Repeat
+    If background_redo
+      *scr._Screen=GetPubScreen(0,"Workbench")
+      textlen.w=TextLength_(*scr\_RastPort,scrtitle$,Len(scrtitle$))
+      If background_redo=1 Then rexxwiny=*scr\BarHeight+1
+      Window 0,rexxwinx,rexxwiny,textlen+64,*scr\BarHeight+1,$21000e,scrtitle$,-1,-1 ;rexxportname$,-1,-1
+      background_redo=0
+    EndIf
+
+    ev = WaitEvent                                       ;close mini win
+    If ev = $10000000
+      rexxwinx = WindowX
+      rexxwiny = WindowY
+      ;DetachGTList 0 ; <= I am not sure if we want this, there is no GTList at all in the entire REDDebugger! (Thilo)
+      Free Screen 0
+      ReleasePubScreen 0,"Workbench"
+      msg = 1
+
+      While msg<>0
+        msg = GetMsg_(rexxport)
+        If msg
+          ad.l = Peek.l(msg+20)
+          If Peek.l(msg + 24) = #IDENTIFIER
+            GetReg a0,ad
+            MOVE.l a0,d_table
+            MOVE.l a5,d_a5
+            MaxLen d_d$=256 : MaxLen d_ev$=256 : MaxLen d_ex$=256
+            Poke.l ?d_dadd,&d_d$
+            statego.w=0 : dstatus.w=0 : prtcode.w=0 : Poke.l ?statego_,&statego
+            buffmem.l=AllocMem_(#bufflen,$10001) : Poke.l ?buffmem_,buffmem : CLR bufferput
+            FillArray winstatus(),0
+            ReplyDebuggerMsg{}
+            Gosub mainstart
+            ;FillArray winstatus(),0
+            FillArray memwin(),0
+            FillArray mempointer(),0
+            ClearList varinfo()
+            ClearList d_e()
+            ClearList objwins()
+            ali.l=0 : lt$="" : task=0 : autoeval=0 : autoeval$=""
+            pfregs=0
+            !ComData_SetB{comByte_RunningFlag,#0}
+            ted_CloseLib{}
           EndIf
-        Wend
-        background_redo = 2
-      Else
-        If ev = $200 Then DeleteDebuggerPort{} : End
-      EndIf
-    Until False; Forever
-CELSE
+          ;ReplyDebuggerMsg{}
+
+        EndIf
+      Wend
+
+      background_redo = 2
+    EndIf
+  Until ev = $200                 ;replace endless loop for normal end condition  tomsmart1 2012 07 12
+
+  DeleteDebuggerPort{}
+
+CELSE   ;#BACKGROUND_DBUG
   error{"very suspicious init stuff!"}
   MOVE.l 4,a0 : MOVE.l 276(a0),a0 : MOVE.l 88(a0),d_table
   MOVE.l a5,d_a5
@@ -577,8 +591,10 @@ CELSE
   buffmem=AllocMem_(#bufflen,$10001) : Poke.l ?buffmem_,buffmem : CLR bufferput
   Gosub mainstart
   ted_CloseLib{}                                                          ; close ted.library
-  End
-CEND
+CEND   ;#BACKGROUND_DBUG
+
+End
+
 
 
 Macro d_call
@@ -589,7 +605,7 @@ End Macro
 
 
 Statement d_sethandler{adr.l}
-  SHARED token_addr,task,signal,signalset,vbr_temp.l
+  SHARED token_addr,task,signal,signalset,vbr_temp.l,*TokenBase_Pointer.l
 
   LEA htable(pc),a0 : !d_call{2}
   MOVE.l a0,mybuffer
@@ -600,17 +616,13 @@ Statement d_sethandler{adr.l}
   signalset=(0 BitSet signal)
   TST.b newdebug
   BEQ nd1
-;  MOVE.l comdata@(a5),a0
-;  MOVE.l $7b8(a0),token_addr@(a5)
-  !ComData_GetL{comPtr_TokenBase,token_addr@(a5) }
-;  MOVE.l $7e6(a0),a0
-  !ComData_GetL{comPtr_DirectBuffer,A0}
-  MOVE.l #direktbuffer,(a0)
-;  !ComData_SetL{comPtr_DirectBuffer,#direktbuffer}
+
+  ; moved comdata access to mainstart tedlib access  tomsmart1 2012 07 14
+  If *TokenBase_Pointer <> 0                   ; test if we had a vailed comdata_tokenbase pointer
+    token_addr = *TokenBase_Pointer            ; yes then we use it insteed of the debuglib one
+  EndIf
 
   vbr_temp.l=cr_vbr
-  If vbr_temp=0 Then error{"The VBR is currently located at memory address 0!\\nIt is recommended to move the VBR to Fast-Ram!\\nUse a tool like  MPC, VBRControl etc..\\nThe Debugger might cause enforcer hits now."}
-
   ;MOVE.l d0,a0
   MOVE.l vbr_temp@(A5),a0
   MOVE.l trap15addr,$bc(a0)
@@ -774,6 +786,7 @@ progversion:
   Dc.b !versions," (\\__DATE_GER__) Build \\__VER_PATCH.\\__VER_BUILD",0
   Even
 
+
 varhandler:     Dc.l 0                                     ; Message waiting for debugger
 mybuffer:       Dc.l 0                                     ; Pointer to registers!
 progmode:       Dc.l 0                                     ; Pointer to word that hold program mode
@@ -785,10 +798,12 @@ statego_:       Dc.l 0
 buffmem_:       Dc.l 0
 bufferput:      Dc.w 0
 
+
 htable:                                                    ;handler table
  Dc.l d_statehandler   ,d_superhandler,d_userhandler
  Dc.l d_waithandler    ,d_evalhandler ,d_cleanup
  Dc.l d_vartracehandler,d_prochandler
+
 
 ._D_Handlers:
 d_statehandler:
@@ -844,7 +859,9 @@ d_statehandler:
   TST       (a1)
 RTS
 
+
 donebreakpoint: Dc.w 0
+
 
 breakpoint:     Dc.l 0,0              ;0
                 Dc.l 0,0              ;1
@@ -853,6 +870,7 @@ breakpoint:     Dc.l 0,0              ;0
                 Dc.l 0,0              ;4
                 Dc.l 0,0              ;[reserved]
                 Dc.l 0,0
+
 
 breakstore:     Dc.w 0
                 Dc.w 0
@@ -986,6 +1004,7 @@ GETInstruction:
   MOVE.l d_dadd(pc),a0 : MOVE.l a1,-(a0)
 Return
 
+
 ;*****************************************************************
 .Statements:
 
@@ -1013,8 +1032,8 @@ Statement DoHelp{a$}
   If FindPort_("DEBUGGERHELP.1")
     RXSendCommand "DEBUGGERHELP.1","'link "+a$+"'"
   Else
-    command$ = "run Blitz3:Tools/AB3HelpViewer -t " + a$
-    command$ + " -d Blitz3:Docs/ -l REDDebugger -s " + p$
+    command$ = "run " + dos_AddPart{default_assign$,"Tools/AB3HelpViewer"} + " -t " + a$
+    command$ + " -d " + dos_AddPart{default_assign$,"Docs"} + " -l REDDebugger -s " + p$
     Execute_ command$,0,0
   EndIf
 End Statement
@@ -1465,8 +1484,6 @@ Statement UpdateDisAsm{}
 End Statement
 
 
-
-
 Statement UpdateVarWindow{}
   SHARED varinfo(),ix,iy,winstatus(),ffp,i
   If (Peek.l(Addr Window(#_winVariables))=0) Then Statement Return
@@ -1792,6 +1809,8 @@ Statement GetCustomMenus{}
   EndIf
 End Statement
 
+
+
 ;*****************************************************************
 
 .StartOfDayInit:
@@ -1803,7 +1822,7 @@ End Statement
       End
     EndIf
   CEND
-  my_path$ = dos_GetProgDir{"Blitz3:Debug"}
+  my_path$ = dos_GetProgDir{dos_AddPart{default_assign$,"Debug"} }
   FindScreen (0)
   *scr._Screen = Peek.l(Addr Screen(0))
   *myfont.TextAttr = *scr\Font
@@ -1819,60 +1838,62 @@ End Statement
   Else
     arexxport = 0
   EndIf
-;  newted = Exists("libs:ted.library")
-;  *tedbase.Library = OpenLibrary_ ("ted.library",0)               ; deactivated because we use now the tui.include
-;  If *tedbase Then newted=True : CloseLibrary_ *tedbase : *tedbase=0 : Else newted=False  ; deactivated because we use now the tui.include
 Return
+
 
 .mainstart:
   ClearProcessPtrs
-  If ted_OpenLib{0}                                              ;was newted
-    comdata = TEDGetJumpTable{}                                  ;was TEDGetJumpTable_()
-    MOVE.l comdata@(A5),comdata
+  If ted_OpenLib{0}
+    *ComData_Pointer = TEDGetJumpTable{}
+    If *ComData_Pointer<>0                           ; added a check if we get the pointer  tomsmart1 2012 07 12
+      GetD0 *ComData_Pointer
+      MOVE.l d0,comdata                              ; store the pointer form the basic variable to the comdata table  tomsmart1
 
-    !ComData_GetL{comData_Magic,D0}
-    magic.l = PutD0
-    If magic><@"~::~" Then error{"Invalid comdata structure!"}
+      !ComData_GetL{comData_Magic,D0}                ; get the idenifier
+      magic.l = PutD0
+      If magic = #MagicIdentifier_Long               ; Replaced "~::~" with a constant and changed flow  tomsmart1 2012 07 12
 
-    MOVE.l comdata,a0
-    CLR.b newdebug
-    !ComData_LEA{comLong_NewDebug,A0}
-;    CMP.l #"newd",$7de(a0)
-    CMP.l #"newd",(A0)
-    BNE 'l1
-;    MOVE.l $7e2(a0),trap15addr
-    !ComData_GetL{comPtr_Trap15,trap15addr}
-;    MOVE.l A0,trap15addr
-    MOVE.b #1,newdebug
+        CLR.b newdebug
+        !ComData_LEA{comLong_NewDebug,A0}
+        CMP.l #"newd",(A0)
+        BNE 'l1
+        !ComData_GetL{comPtr_Trap15,trap15addr}
+        MOVE.b #1,newdebug
 
-   'l1:
-;    MOVE.l $1F0(a0),a0                                    ; -- get "programstart" out of comdata-struct
-    !ComData_GetL{comPtr_DestBufferStart,A0}
-    MOVE.l a0,programstart                                 ; --
-    If OSVersion = #AmigaOS4                               ; -- get some unknown data
-      MOVE.l #10,programsize                               ; for OS4
-    Else
-     MOVE.l -4(a0),programsize                             ; for OS3 and MOS
-    Else
+        ; move out of d_sethandler{} because is only need to set once tomsmart1 2012 07 14
+        !ComData_GetL{comPtr_DirectBuffer,A0}
+        MOVE.l #direktbuffer,(a0)
 
+
+       'l1:
+        ; move out of d_sethandler{} to prevent NULL pointer access  tomsmart1 2012 07 14
+        !ComData_GetL{comPtr_TokenBase,D0}     : *TokenBase_Pointer.l = PutD0 ; set token base pointer
+
+        !ComData_GetL{comPtr_DestBufferStart,A0}
+        MOVE.l a0,programstart                                 ; --
+        If OSVersion = #AmigaOS4                               ; -- get some unknown data
+          MOVE.l #10,programsize                               ; for OS4
+        Else
+          MOVE.l -4(a0),programsize                             ; for OS3 and MOS
+        EndIf
+
+        !ComData_GetL{comPtr_LabelList,d0}     : mouseables           = PutD0
+        !ComData_GetW{comWord_LabelCounter,d0} : num_mouseables       = PutD0
+
+        !ComData_GetL{comPtr_SourceName,d0}    : debug_filename_Ptr.l = PutD0 : debug_filename$ = Peek$(debug_filename_Ptr)
+        !ComData_GetL{comPtr_CurrentDir,d0}    : debug_pathname_Ptr.l = PutD0 : debug_pathname$ = Peek$(debug_pathname_Ptr)
+        debug_pathspec$ = dos_AddPart{debug_pathname$,debug_filename$}
+        AddProcessPtr "f",&debug_filename$
+        AddProcessPtr "d",&debug_pathname$
+        AddProcessPtr "F",&debug_pathspec$
+      Else ;Magicidenifer
+        error{"Invalid comdata structure!"}
+      EndIf
+    Else ; *ComData_Pointer
+      error{"No comdata structure available!"}
     EndIf
-    !ComData_GetL{comPtr_LabelList,d0}     : mouseables           = PutD0  ;replaced TEDGetLabelList{}  ;was TEDGetLabelList_()
-    !ComData_GetW{comWord_LabelCounter,d0} : num_mouseables       = PutD0  ;replaced TEDGetLabelCount{} ;was TEDGetLabelCount_()
-    !ComData_GetL{comPtr_SourceName,d0}    : debug_filename_Ptr.l = PutD0 : debug_filename$ = Peek$(debug_filename_Ptr)  ; replaced TEDGetFilename{}  ;was TEDGetFilename_
-
-    ;error{"mouseable: "+Hex$(mouseables)+" file: ",debug_filename$}
-
-    !ComData_GetL{comPtr_CurrentDir,d0}    : debug_pathname_Ptr.l = PutD0 : debug_pathname$ = Peek$(debug_pathname_Ptr)  ; was "" ;Peek$(?????)
-    ;debug_pathspec$ = debug_pathname$
-    ;If Right$(debug_pathspec$,1)<>":" Then debug_pathspec$+"/"
-    ;debug_pathspec$ + debug_filename$
-
-    debug_pathspec$ = dos_AddPart{debug_pathname$,debug_filename$}
-    AddProcessPtr "f",&debug_filename$
-    AddProcessPtr "d",&debug_pathname$
-    AddProcessPtr "F",&debug_pathspec$
-  Else
-    error{"Old Debugger!?"}
+  Else ; ted_OpenLib
+    error{"No ted.library,Old Debugger!?"}
   EndIf
 
   Gosub openwindow
@@ -1887,6 +1908,7 @@ Return
   Gosub RedrawRegs
   exitflag=0
   end_init=-1
+
 . @mainloop
   Repeat
     d_sethandler{&procstatus}
@@ -2019,11 +2041,13 @@ Return
   Gosub FreeStuff
 Return
 
+
 .backoff:
   If pb.l
     pb=0 : i=Peek.l(buffmem+cb.l) : mc.l=-1 : Gosub prtcode
   EndIf
 Return
+
 
 sourceallow
   temp2.l=Peek.l(?mybuffer)
@@ -2034,6 +2058,7 @@ sourceallow
     temp2=1
   End If
 Return
+
 
 backward:
   If pb=0 Then bb.l=cb
@@ -2048,6 +2073,7 @@ backward:
   pb=-1 : mc=-1
 Goto prtcode
 
+
 forward:
   bb+4 AND #buffand
   If (bb+4 AND #buffand)=Peek.w(?bufferput) Then pb=0
@@ -2055,6 +2081,7 @@ forward:
   If syntax_ Then Gosub getsyntax
   mc=-1
 Goto prtcode
+
 
 .prtcode:
 ;
@@ -2072,7 +2099,9 @@ Goto prtcode
   ;
   Gosub prtcode2
   ;
-  ali=i : Return
+  ali=i
+Return
+
 
 prtcode2
   bitm=3
