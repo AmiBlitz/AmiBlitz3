@@ -13,7 +13,7 @@
 ; StringBuffer    = 8192
 ; MakeSmallest    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 19
+; NumberOfBuilds  = 23
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -29,9 +29,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 2887
-; CursorColumn    = 8
-; LabelSearch     = ""
+; CursorLine      = 2146
+; CursorColumn    = 1
+; LabelSearch     = "sett"
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelPosition   = 0
@@ -132,6 +132,7 @@
 #TUITBF_WANTTAB               = $00400000 ; tab is inserted in text, otherwise may jump to next gui item
 #TUITBF_BLOCKSELECT           = $00800000
 #TUITBF_SHOWCR                = $01000000 ; show carriage return code
+;#TUITBF_MULTILINE             = $02000000
 
 #TUITBF_NotePad    = #TUITBF_LEFTWRAP|#TUITBF_RIGHTWRAP|#TUITBF_LOOSESELECTION|#TUITBF_DELWRAP|#TUITBF_REMWRAP|#TUITBF_DRAGCURSOR|#TUITBF_HIDECURSORONSELECT|#TUITBF_SHIFTSELECT|#TUITBF_RETURNBREAK|#TUITBF_REALTAB|#TUITBF_WANTRETURN|#TUITBF_WANTTAB
 #TUITBF_String     = #TUITBF_LEFTWRAP|#TUITBF_RIGHTWRAP|#TUITBF_LOOSESELECTION|#TUITBF_DRAGCURSOR|#TUITBF_SHIFTSELECT|#TUITBF_REALTAB|#TUITBF_LOOSESELECTIONONFOCUS|#TUITBF_SELECTONFOCUS
@@ -198,6 +199,12 @@
 #TUITBA_LINELENGTH         = 23 | #TUITBA_BASE ; r
 #TUITBA_SELECTION          = 24 | #TUITBA_BASE ; rw
 #TUITBA_HIGHLIGHTNING      = 25 | #TUITBA_BASE ; rw
+#TUITBA_ONCHANGE           = 26 | #TUITBA_BASE ; rw
+
+#TUITBUNDO_INSERTNEWLINE = 1
+#TUITBUNDO_INSERTINLINE  = 2
+#TUITBUNDO_DELETELINE    = 3
+#TUITBUNDO_DELETEINLINE  = 4
 
 NEWTYPE.tline ; line contains ASCII text and special tokenized version
 flags.l      ; like #tflag_comment
@@ -240,6 +247,8 @@ selection_begin_lpos.l
 selection_begin_cpos.l
 selection_end_lpos.l
 selection_end_cpos.l
+current_lpos.l
+current_cpos.l
 damage_begin_lpos.l
 damage_end_lpos.l
 anker_lpos.l
@@ -285,6 +294,10 @@ pen.l         [#TUITBPEN_MAX]
 penSelect.l   [#TUITBPEN_MAX]
 tuiPen.l      [#TUITBPEN_MAX]
 tuiPenSelect.l[#TUITBPEN_MAX]
+
+*undo.tuiUndoStack
+
+onChange.tuiEventHandler
 End NEWTYPE
 
 USEPATH *textBox
@@ -594,19 +607,54 @@ End Function
 ;/ - result.l     : ???                                                        /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.l _tb_x2pos{*textBox.tuiTextBox,lpos.l,x.l,*rp.RastPort}
+Function.l _tb_x2pos_{*textBox.tuiTextBox,lpos.l,x.l,*rp.RastPort}
 
-  If *rp=-1 OR *rp=Null Then Function Return 0
+  !_ASSERT{*rp}
+
   cpos.l = 0
+
   !line_use{*tline,lpos}
   If *tline
     If *tline\text
-      ;If *tline\ttext AND *tline\tclength>0
-        ;string.s = _tb_DeTokenize{*tline\ttext,*tline\tclength}
-      ;Else
-        string.s = Peeks$(*tline\text,*tline\clength)
-      ;End If
 
+      pixlen.l = _tb_GetTextLength{*textBox,*rp,*tline\text,*tline\clength}
+
+      If x>pixlen ; position is over the end of the line
+        spaces.l = (x-pixlen)/\space_width
+
+      Else
+
+      End If
+      llength.l = TextFit_ (*rp,*tline\text,*tline\clength,Null,tcx.TextExtent,1,x,\rowheight)
+      clength.l = 0
+      If (*tline\flags&#TUITBLF_RETURN_LF) Then clength-1
+    Else
+      cpos = x / \space_width  : clength = 0
+    End If
+  Else
+    cpos = x / \space_width  : clength = 0
+  End If
+  If (\edflags&#TUITBF_RIGHTWRAP)><0 AND cpos>=clength
+    cpos=clength
+
+  End If
+  Function Return cpos
+
+End Function
+
+
+
+Function.l _tb_x2pos{*textBox.tuiTextBox,lpos.l,x.l,*rp.RastPort}
+
+  !_ASSERT{*rp}
+
+  cpos.l = 0
+
+  !line_use{*tline,lpos}
+  If *tline
+    If *tline\text
+
+      string.s = Peeks$(*tline\text,*tline\clength)
       slen.l = FLen(string.s)
 
       While x>0
@@ -618,13 +666,17 @@ Function.l _tb_x2pos{*textBox.tuiTextBox,lpos.l,x.l,*rp.RastPort}
         If x>=0 Then cpos+1
       Wend
       clength.l = slen ; *tline\clength
+      If (*tline\flags&#TUITBLF_RETURN_LF) Then clength-1
     Else
       cpos = x / \space_width  : clength = 0
     End If
   Else
     cpos = x / \space_width  : clength = 0
   End If
-  If (\edflags&#TUITBF_RIGHTWRAP)><0 AND cpos>=clength Then cpos=clength-1
+  If (\edflags&#TUITBF_RIGHTWRAP)><0 AND cpos>=clength
+    cpos=clength
+
+  End If
   Function Return cpos
 
 End Function
@@ -1040,12 +1092,12 @@ lpos_a.l = (y1-tby)/\rowheight
 If lpos_a<0 Then lpos_a=0
 
 y.l      = lpos_a * \rowheight + tby
-If y>y1
+If y>y1 ; top padding
   SetAPen_ *rp,\pen[#TUITBPEN_BG]
   RectFill_ *rp,x1,y1,x2,y-1
 End If
 
-If tbx>x1
+If tbx>x1 ; left padding
   SetAPen_ *rp,\pen[#TUITBPEN_BG]
   RectFill_ *rp,x1,y1,tbx-1,y2
 End If
@@ -1057,7 +1109,6 @@ lpos_b.l = lpos_a + ((!tuiRectHeight{*textBox\obj\cbox}-1) / \rowheight)
 If lpos_b>\totalLines-1 Then lpos_b = \totalLines-1
 
 x.l      = tbx - \leftOffset
-
 
 SetAPen_ *rp,\pen[#TUITBPEN_Text]
 SetBPen_ *rp,\pen[#TUITBPEN_BG]
@@ -1080,9 +1131,8 @@ If *textBox\obj\flags&(#TUIF_ACTIVE|#TUIF_FOCUS)
   _tb_ShowBrackets{*textBox,*rp}
 End If
 
-ntui_RemClip{*rp,*oldRegion}
+y = (\totalLines-\topLine)*\rowheight +tby
 If y<=y2 AND *textBox\subTypeID=#TUITB_TEXTBOX
-
   SetAPen_ *rp,*tuiEngine\pen[#TUIPEN_HALFSHINE]
   Move_* rp,x1,y : Draw_ *rp,x2,y :y+1
 End If
@@ -1091,7 +1141,14 @@ If y<=y2
   SetAPen_ *rp,\pen[#TUITBPEN_BG]
   RectFill_ *rp,x1,y,x2,y2
 End If
+
+ntui_RemClip{*rp,*oldRegion}
 End Statement
+
+Statement _tb_UpdateCursorPixelPos{*textBox.tuiTextBox,*rp.RastPort}
+\cursor_pixpos = _tb_pos2x{*textBox,\cursor_lpos,\cursor_cpos,*rp}
+End Statement
+
 
 
 ;///////////////////////////////////////////////////////////////////////////////
@@ -1499,45 +1556,50 @@ End Statement
 Statement _tb_MouseClick{*textBox.tuiTextBox,*rp.RastPort,mx.l,my.l,mb.l,dbl.l}
 
   _tb_SetCursorXY{*textBox ,mx+\leftOffset,my,*rp}
+  _tb_UpdateCursorPixelPos{*textBox,*rp}
+
   Select dbl
     Case 1
-    !line_use{*tline, \cursor_lpos}
-    If *tline
-      If *tline\text
-      cpos.l = _tb_x2pos {*textBox,\anker_lpos,mx+\leftOffset,*rp}
-      breakme.l=False
-      While cpos>=0 AND breakme=False
-        c.b = Peek.b(*tline\text+cpos)
-        If (c>=@"A" AND c<=@"Z") OR (c>=@"a" AND c<=@"z") OR (c>=@"0" AND c<=@"9") OR c=@"_" OR c<0
-          cpos-1
-        Else
-          breakme.l = True
-          cpos+1
+      !line_use{*tline, \cursor_lpos}
+      If *tline
+        If *tline\text
+        cpos.l = _tb_x2pos {*textBox,\anker_lpos,mx+\leftOffset,*rp}
+        breakme.l=False
+        While cpos>=0 AND breakme=False
+          c.b = Peek.b(*tline\text+cpos)
+          If (c>=@"A" AND c<=@"Z") OR (c>=@"a" AND c<=@"z") OR (c>=@"0" AND c<=@"9") OR c=@"_" OR c<0
+            cpos-1
+          Else
+            breakme.l = True
+            cpos+1
+          End If
+        Wend
+        If cpos<0 Then cpos=0
+        apos.l = cpos
+        cpos.l = _tb_x2pos {*textBox,\anker_lpos,mx+\leftOffset,*rp}
+        breakme.l=False
+        While cpos<*tline\clength AND breakme=False
+          c.b = Peek.b(*tline\text+cpos)
+          If (c>=@"A" AND c<=@"Z") OR (c>=@"a" AND c<=@"z") OR (c>=@"0" AND c<=@"9") OR c=@"_" OR c<0
+            cpos+1
+          Else
+            breakme.l = True
+          End If
+        Wend
+        If cpos>*tline\clength Then cpos=*tline\clength
+        _tb_SetSelection{*textBox,\cursor_lpos,apos,\cursor_lpos,cpos}
         End If
-      Wend
-      If cpos<0 Then cpos=0
-      apos.l = cpos
-      cpos.l = _tb_x2pos {*textBox,\anker_lpos,mx+\leftOffset,*rp}
-      breakme.l=False
-      While cpos<*tline\clength AND breakme=False
-        c.b = Peek.b(*tline\text+cpos)
-        If (c>=@"A" AND c<=@"Z") OR (c>=@"a" AND c<=@"z") OR (c>=@"0" AND c<=@"9") OR c=@"_" OR c<0
-          cpos+1
-        Else
-          breakme.l = True
-        End If
-      Wend
-      If cpos>*tline\clength Then cpos=*tline\clength
-      _tb_SetSelection{*textBox,\cursor_lpos,apos,\cursor_lpos,cpos}
       End If
-    End If
-    Case 2
+
+    Case 0
+      _tb_SetSelection{*textBox,-1,-1,-1,-1}
+
+    Default
       !line_use{*tline, \cursor_lpos}
       If *tline
         _tb_SetSelection{*textBox,\cursor_lpos,0,\cursor_lpos,*tline\clength}
       End If
-    Default
-    _tb_SetSelection{*textBox,-1,-1,-1,-1}
+
   End Select
   \anker_lpos = _tb_y2line{*textBox,my}
   \anker_cpos = _tb_x2pos {*textBox,\anker_lpos,mx+\leftOffset,*rp}
@@ -1562,9 +1624,6 @@ End Statement
 ;/ - *rp.RastPort    : ???                                                     /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Statement _tb_UpdateCursorPixelPos{*textBox.tuiTextBox,*rp.RastPort}
-\cursor_pixpos = _tb_pos2x{*textBox,\cursor_lpos,\cursor_cpos,*rp}
-End Statement
 
 Statement _tb_MoveCursor{*textBox.tuiTextBox,dx.l,dy.l,shift.l,*rp.RastPort}
 If shift AND (\edflags&#TUITBF_SHIFTSELECT><0)
@@ -1575,14 +1634,13 @@ If shift AND (\edflags&#TUITBF_SHIFTSELECT><0)
 End If
 
 If dx><0
-  If shift AND (\edflags&#TUITBF_SHIFTSELECT=0)
+  If shift AND ((\edflags&#TUITBF_SHIFTSELECT)=0)
     If dx>0
-      clength.l = 1
       !line_use{*tline, \cursor_lpos}
       If *tline
-        clength = *tline\clength
+        \cursor_cpos = *tline\clength
+        If (*tline\flags&#TUITBLF_RETURN_LF) Then \cursor_cpos-1
       End If
-      \cursor_cpos = clength-1
     Else
       \cursor_cpos = 0
     End If
@@ -1609,7 +1667,8 @@ If dx><0
   If (\edflags&#TUITBF_RIGHTWRAP><0)
     !line_use{*tline, \cursor_lpos}
     If *tline
-      clength.l=*tline\clength-1
+      clength.l=*tline\clength
+      If (*tline\flags&#TUITBLF_RETURN_LF) Then clength-1
     Else
       clength=0
     End If
@@ -1620,15 +1679,16 @@ If dx><0
         \cursor_lpos+1
         !line_use{*tline, \cursor_lpos}
         If *tline
-          clength=*tline\clength-1
+          clength=*tline\clength
+          If (*tline\flags&#TUITBLF_RETURN_LF) Then clength-1
         Else
           clength=0
         End If
       Else
-        If *tline Then \cursor_cpos = *tline\clength:Else \cursor_cpos=0
-        clength = *tline\clength
+        If *tline Then \cursor_cpos = clength:Else \cursor_cpos=0
       End If
     Wend
+
   End If
   _tb_UpdateCursorPixelPos{*textBox,*rp}
 End If
@@ -1701,7 +1761,7 @@ Statement _tb_InsertNewLine{*textBox.tuiTextBox,lpos.l,textP.l,tlength.l}
 
   If \totalLines>=\allocLines Then If _tb_Expand{*textBox.tuiTextBox,\allocLines+32}=False Then Statement Return
 
-  ;undo_Store{\undo,#TEDUNDO_insert_line,0,0,lpos}
+  If \undo Then ntui_StoreUndoContainer{\undo,#TUITBUNDO_INSERTNEWLINE,0,0,lpos}
   !line_use{*tline, lpos}
   If *tline
     flags.l = *tline\flags
@@ -1723,12 +1783,9 @@ Statement _tb_InsertNewLine{*textBox.tuiTextBox,lpos.l,textP.l,tlength.l}
         If tlength>0 Then _tb_CopyMem{textP,*tline\text,tlength}
 
         If (Peek.b(*tline\text+tlength-1)=$0A)
-          ;tlength-1
-        Else
-          Poke.b *tline\text+tlength,$0A ; LF terminated
-          tlength+1
+          *tline\flags|#TUITBLF_RETURN_LF
         End If
-        *tline\flags|#TUITBLF_RETURN_LF
+
         If (tlength>0)
           If (Peek.b(*tline\text+tlength-1)=$0D)
             tlength-1
@@ -1789,7 +1846,7 @@ Statement _tb_InsertInLine{*textBox.tuiTextBox,lpos.l,cpos.l,textP.l,tlength.l}
     clength.l      = *tline\clength + spacelength + tlength
     copylength.l   = *tline\clength - cpos : If copylength<0 Then copylength=0
 
-    ;undo_Store{\undo,#TEDUNDO_insert,*tline\text,*tline\clength,lpos}
+    If \undo Then ntui_StoreUndoContainer{\undo,#TUITBUNDO_INSERTINLINE,*tline\text,*tline\clength,lpos}
     If clength>=*tline\blength OR *tline\text=Null ; Zeile erneuern
       blength.l = (clength+1+7)/8*8
       newline.l = AllocMem_ (blength,#MEMF_CLEAR)
@@ -1858,7 +1915,7 @@ Statement _tb_DeleteLine{*textBox.tuiTextBox,lpos.l}
 
   !line_use{*tline, lpos}
   If *tline
-    ;undo_Store{\undo,#TEDUNDO_delete_line,*tline\text,*tline\clength,lpos}
+    If \undo Then ntui_StoreUndoContainer{\undo,#TUITBUNDO_DELETELINE,*tline\text,*tline\clength,lpos}
     If *tline\text Then FreeMem_ *tline\text ,*tline\blength : *tline\text=Null : *tline\blength=0 : *tline\clength=0
     ;_tb_Tokenize{*textBox ,lpos}
   End If
@@ -1883,7 +1940,7 @@ Statement _tb_DeleteInLine{*textBox.tuiTextBox,lpos.l,cpos.l,dlength.l}
   !line_use{*tline, lpos}
   If *tline
     If *tline\text
-      ;undo_Store{\undo,#TEDUNDO_delete,*tline\text,*tline\clength,lpos}
+      If \undo Then ntui_StoreUndoContainer{\undo,#TUITBUNDO_DELETEINLINE,*tline\text,*tline\clength,lpos}
       If dlength<0 Then dlength = *tline\clength-cpos
       dlength.l = Min(dlength,*tline\clength-cpos)
       clength.l = *tline\clength-dlength  ; new length of string
@@ -1900,19 +1957,19 @@ Statement _tb_DeleteInLine{*textBox.tuiTextBox,lpos.l,cpos.l,dlength.l}
 
       If lpos=\cursor_lpos
         If cpos<\cursor_cpos Then \cursor_cpos-dlength
-        If \cursor_cpos>=clength Then \cursor_cpos=clength-1
+        ;If \cursor_cpos>=clength Then \cursor_cpos=clength-1
         If \cursor_cpos<0 Then \cursor_cpos=0
       End If
 
       If lpos=\selection_begin_lpos
         If cpos<\selection_begin_cpos Then \selection_begin_cpos-dlength
-        If \selection_begin_cpos>=clength Then \selection_begin_cpos=clength-1
+        ;If \selection_begin_cpos>=clength Then \selection_begin_cpos=clength-1
         If \selection_begin_cpos<0 Then \selection_begin_cpos=0
       End If
 
       If lpos=\selection_end_lpos
         If cpos<\selection_end_cpos Then \selection_end_cpos-dlength
-        If \selection_end_cpos>=clength Then \selection_end_cpos=clength-1
+        ;If \selection_end_cpos>=clength Then \selection_end_cpos=clength-1
         If \selection_end_cpos<0 Then \selection_end_cpos=0
       End If
 
@@ -1937,7 +1994,7 @@ Statement _tb_Delete{*textBox.tuiTextBox,lpos.l,cpos.l,lpos_end.l,cpos_end.l}
       cpos2.l =  *tline\clength
       If lpos=lpos_end Then cpos2=cpos_end    ; it is the last line in selection
       dlength.l = cpos2-cpos
-      If cpos2>=*tline\clength ; we delete the return code
+      If (cpos2>=*tline\clength) AND ((*tline\flags&#TUITBLF_RETURN_LF)><0); we delete the return code
         If cpos>0 AND *tline\text Then _tb_InsertInLine{*textBox,lpos+1,0,*tline\text,cpos}
         _tb_DeleteLine{*textBox,lpos} : lpos-1 : lpos_end-1
       Else
@@ -1951,112 +2008,6 @@ Statement _tb_Delete{*textBox.tuiTextBox,lpos.l,cpos.l,lpos_end.l,cpos_end.l}
 
 End Statement
 
-
-;///////////////////////////////////////////////////////////////////////////////
-;/                                                                             /
-;/ Syntax: _tb_Delete {*textBox.tuiTextBox,lpos.l,cpos.l,elength.l}         /
-;/                                                                             /
-;/ Description:                                                                /
-;/ "delete" at cpos -1 removes elength-1 characters and appends the rest to :: /
-;/ upper line                                                                  /
-;/ "delete" at cpos 0 removes elength characters including position 0          /
-;/                                                                             /
-;/ Inputs:                                                                     /
-;/ - *textBox.tuiTextBox    : ???                                           /
-;/ - lpos.l    : ???                                                           /
-;/ - cpos.l    : ???                                                           /
-;/ - elength.l    : ???                                                        /
-;/                                                                             /
-;///////////////////////////////////////////////////////////////////////////////
-Statement ____tb_Delete_dep{*textBox.tuiTextBox,lpos.l,cpos.l,lpos_end.l,cpos_end.l}
-
-If lpos<0 OR lpos>=\totalLines Then lpos =\totalLines-1
-If lpos>=0
-  !line_use{*tline, lpos}
-  If *tline
-  elength.l=0
-    If elength<2 Then force.l=False:Else force=True
-    If elength>0
-      If cpos<0
-        If lpos>0 AND (\edflags&#TUITBF_DELWRAP><0)
-          elength-1 ; join lines
-          !line_use{*tline, lpos}
-          !line_use{*tline2, lpos-1}
-          If *tline2 ; \doc\base[lpos-1]
-            clength.l= *tline2\clength ; \doc\base[lpos-1]\clength
-            If clength>0 AND *tline\text><False
-              _tb_InsertInLine{*textBox,lpos-1,clength,*tline\text,*tline\clength}
-              _tb_DeleteLine{*textBox,lpos}
-            Else
-              If *tline\text=False
-                _tb_DeleteLine{*textBox,lpos}
-              Else
-                _tb_DeleteLine{*textBox,lpos-1}
-              End If
-              clength=1
-            End If
-            lpos-1
-            cpos+clength
-          Else
-            _tb_DeleteLine{*textBox,lpos-1}
-            lpos-1
-            cpos=0
-          End If
-        Else
-          elength-1 : cpos=0
-        End If
-      End If
-    End If
-
-    If elength>0
-      !line_use{*tline, lpos}
-      If *tline
-        If cpos>=*tline\clength AND (\edflags&#TUITBF_REMWRAP><0) ; join lines from down
-          If lpos<\totalLines-1
-            !line_use{*tline, lpos}
-            !line_use{*tline2, lpos+1}
-            If *tline2 ; \doc\base[lpos+1]
-              clength.l= *tline2\clength ; \doc\base[lpos+1]\clength
-              If *tline2\text><0 AND clength>0
-                ;cpos+*tline\clength
-                _tb_InsertInLine{*textBox,lpos,*tline\clength,*tline2\text,clength}
-
-              End If
-              _tb_DeleteLine{*textBox,lpos+1}
-            End If
-          End If
-          elength-1 ; ... ; drag from next line
-        End If
-      End If
-    End If
-
-    If elength>0
-      !line_use{*tline, lpos}
-      If *tline
-        If *tline\text
-          ;undo_Store{\undo,#TEDUNDO_delete,*tline\text,*tline\clength,lpos}
-          If elength<0 Then elength = *tline\clength-cpos
-          elength.l = Min(elength,*tline\clength-cpos)
-          clength.l = *tline\clength-elength  ; new length of string
-          If clength<0 Then clength=0
-          copylength.l = *tline\clength-cpos-elength+1 ; length of string on right side
-          If clength>0
-            If copylength>0 ; move left ...
-              _tb_CopyMem{ *tline\text+cpos+elength,*tline\text+cpos,copylength}
-            End If
-          Else
-            If *tline\text Then FreeMem_ *tline\text,*tline\blength : *tline\text=Null
-          End If
-          *tline\clength = clength
-        End If
-      End If
-    End If
-    ;_tb_Tokenize{*textBox,lpos,force}
-  End If
-End If
-If \cursor_lpos>\totalLines-1 Then \cursor_lpos=\totalLines-1
-If \topLine>\totalLines-1 Then \topLine=\totalLines-1
-End Statement
 
 
 ;///////////////////////////////////////////////////////////////////////////////
@@ -2076,7 +2027,7 @@ End Statement
 ;/ - result.l     : ???                                                        /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.l _tb_ReturnBreak{*textBox.tuiTextBox,lpos.l,cpos.l,@indent.l}
+Function.l __tb_ReturnBreak__dep{*textBox.tuiTextBox,lpos.l,cpos.l,@indent.l}
 n.l=0
 !line_use{*tline, lpos}
 If *tline
@@ -2121,56 +2072,65 @@ End Function
 ;/ - upd.l    : ???                                                            /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.l _tb_Insert{*textBox.tuiTextBox,lpos.l,cpos.l,text.l,ilength.l}
+Statement _tb_Insert{*textBox.tuiTextBox,lpos.l,cpos.l,textP.l,ilength.l}
 
-  If ilength<0 Then ilength=0 : While Peek.b(text+ilength) : ilength+1:Wend
+  If textP=Null Then Statement Return
+  If ilength<0
+    ilength=0
+    While Peek.b(textP+ilength) : ilength+1 : Wend
+  End If
 
-  first.l = True
   epos.l = cpos
   apos.l = 0
   bpos.l = 0
-  xpos.l = 0
-  While xpos<ilength
-    Select Peek.b(text+xpos)
-      Case 10
-        If first=True AND lpos<\totalLines
-          ;If bpos>apos Then
-          _tb_InsertInLine{*textBox,lpos,cpos,text+apos,bpos-apos+1}
-          splitpos.l = cpos+bpos-apos+1
-          !line_use{*tline, lpos}
-          If *tline
-            If *tline\text
-              _tb_InsertNewLine{*textBox,lpos,*tline\text,splitpos}
+
+  If \maxLines><1
+    xpos.l = 0
+    first.l = True
+    While xpos<ilength
+      Select Peek.b(textP+xpos)
+        Case 10
+          If first=True AND lpos<\totalLines
+            ;If bpos>apos Then
+            _tb_InsertInLine{*textBox,lpos,cpos,textP+apos,bpos-apos+1}
+            splitpos.l = cpos+bpos-apos+1
+            !line_use{*tline, lpos}
+            If *tline
+              If *tline\text
+                _tb_InsertNewLine{*textBox,lpos,*tline\text,splitpos}
+              End If
             End If
+            _tb_DeleteInLine{*textBox,lpos+1,0,splitpos}
+            cpos=0
+            epos.l = cpos+bpos-apos
+          Else
+            _tb_InsertNewLine{*textBox,lpos,textP+apos,bpos-apos+1}
+            cpos=0
+            epos.l = bpos-apos
           End If
-          _tb_DeleteInLine{*textBox,lpos+1,0,splitpos}
-          cpos=0
-          epos.l = cpos+bpos-apos
-        Else
-          _tb_InsertNewLine{*textBox,lpos,text+apos,bpos-apos+1}
-          cpos=0
-          epos.l = bpos-apos
-        End If
-        first=False
-        apos=xpos+1
-        bpos=xpos+1
-        lpos+1
-      Case 13
-        ; .... do not insert the 13!
-        If Peek.b(text+xpos+1)><10 Then bpos+1
-      Default
-        bpos+1
+          first=False
+          apos=xpos+1
+          bpos=xpos+1
+          lpos+1
+        Case 13
+          ; .... do not insert the 13!
+          If Peek.b(textP+xpos+1)><10 Then bpos+1
 
-    End Select
-    xpos+1
-  Wend
-  ;If bpos>apos
-    _tb_InsertInLine{*textBox,lpos,cpos,text+apos,bpos-apos}
-    epos.l = cpos+bpos-apos
- ; End If
+        Default
+          bpos+1
 
-  Function Return epos
-End Function
+      End Select
+      xpos+1
+    Wend
+  Else
+    bpos = ilength
+  End If
+
+  _tb_InsertInLine{*textBox,lpos,cpos,textP+apos,bpos-apos}
+  \current_cpos = cpos+bpos-apos
+  \current_lpos = lpos
+
+End Statement
 
 
 Statement _tb_Paste{*textBox.tuiTextBox,lpos.l,cpos.l}
@@ -2182,7 +2142,7 @@ Statement _tb_Paste{*textBox.tuiTextBox,lpos.l,cpos.l}
       hasData.l = clipboard_ReadLine{*cH,&*text}
       If hasData
         _tb_Insert{*textBox,lpos,cpos,str_GetPtr{*text},str_Len{*text}}
-        lpos+1 : cpos=0
+        lpos=\current_lpos : cpos=\current_cpos
       End If
     Until hasData = 0
     str_Free{&*text}
@@ -2191,8 +2151,46 @@ Statement _tb_Paste{*textBox.tuiTextBox,lpos.l,cpos.l}
 
 End Statement
 
-
-
+;Function.w _tb_Undo{*textBox.tuiTextBox}
+;  ntui_StopUndoStep{\undo}
+;  done.w = False
+;
+;  While ntui_GetUndoContainer{\undo}
+;    Select ntui_GetUndoStackAttr{\undo,#TUIUSA_CURRENTCONTAINERID,0}
+;      Case #TUITBUNDO_DELETEINLINE
+;        lpos.l    = ntui_GetUndoStackAttr{\undo,#TUIUSA_CURRENTCONTAINERUSERDATA1,0}
+;        blength.l = ntui_GetUndoStackAttr{\undo,#TUIUSA_CURRENTCONTAINERSIZE,0}
+;;        ptr.l     = undo_GetContainerDataPtr{\undo}
+;        ted_delete_line {*ted,lpos}
+;        ted_insert_line {*ted,lpos,ptr,blength}
+;
+;      Case #TUITBUNDO_INSERTINLINE
+;        lpos.l    = ntui_GetUndoStackAttr{\undo,#TUIUSA_CURRENTCONTAINERUSERDATA1}
+;        blength.l = ntui_GetUndoStackAttr{\undo,#TUIUSA_CURRENTCONTAINERSIZE,0}
+;       ; ptr.l     = undo_GetContainerDataPtr{\undo}
+;        ted_delete_line {*ted,lpos}
+;        ted_insert_line {*ted,lpos,ptr,blength}
+;
+;      Case #TUITBUNDO_DELETELINE
+;        lpos.l    = ntui_GetUndoStackAttr{\undo,#TUIUSA_CURRENTCONTAINERUSERDATA1}
+;        blength.l = ntui_GetUndoStackAttr{\undo,#TUIUSA_CURRENTCONTAINERSIZE,0}
+;       ; ptr.l     = undo_GetContainerDataPtr{\undo}
+;        ted_insert_line {*ted,lpos,ptr,blength}
+;
+;      Case #TUIRBUNDO_INSERTNEWLINE
+;        lpos.l    = ntui_GetUndoStackAttr{\undo,#TUIUSA_CURRENTCONTAINERUSERDATA1,0}
+;        _tb_DeleteLine {*textBox,lpos}
+;
+;      Default
+;        ; WTF?
+;
+;    End Select
+;    done.w = True
+;  Wend
+;
+;Function Return done.w
+;End Function
+;
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
 ;/ Syntax: _tb_FreeText {*textBox.tuiTextBox}                               /
@@ -2219,17 +2217,24 @@ If \doc
 End If
 \totalLines = 0
 \totalWidth = 1
-;undo_Flush{\undo}
-;undo_SetSaved{\undo}
+\leftOffset    = 0
+\topLine       = 0
+
+If \undo
+  ntui_FlushUndoStack{\undo}
+  ntui_SetUndoStackAttr{\undo,#TUIUSA_NUMBEROFCHANGES,0}
+End If
 End Statement
 
 
 
 
-Statement ntui_SetTextBoxText{*textBox.tuiTextBox,text.l,@blength.l,@*rp.RastPort}
+Statement ntui_SetTextBoxText{*textBox.tuiTextBox,textP.l,@blength.l,@*rp.RastPort}
 If *textBox
   _tb_FreeText{*textBox}
-  _tb_Insert{*textBox,0,0,text,blength}
+  \leftOffset    = 0
+  \topLine       = 0
+  If textP Then _tb_Insert{*textBox,0,0,textP,blength}
   \cursor_lpos   = 0
   \cursor_cpos   = 0
   \topLine       = 0
@@ -2278,8 +2283,8 @@ End Statement
 ;/ - result.s     : ???                                                        /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.s ntui_GetTextBoxSelection{*textBox.tuiTextBox,@onlySelection.l}
-If onlySelection
+Function.s ntui_GetTextBoxText{*textBox.tuiTextBox,@all.l}
+If all=False
   lpos_a.l = \selection_begin_lpos
   lpos_b.l = \selection_end_lpos
   cpos_a.l = \selection_begin_cpos
@@ -2304,8 +2309,8 @@ If lpos_a>=0
         string.s + Peeks$(*tline\text,*tline\clength)
       End If
     End If
-    string.s+Chr$(10)
-    If FLen(string.s)>(1024/2-8) Then Pop For:Pop If:error{"\\__THIS_FUNCTION: Not enough string buffer for clipboard!"}:string.s = "":Goto xskipcopy
+    ;string.s+Chr$(10)
+    ;If FLen(string.s)>(1024/2-8) Then Pop For:Pop If:error{"\\__THIS_FUNCTION: Not enough string buffer for clipboard!"}:string.s = "":Goto xskipcopy
   Next
 
   If lpos_a=lpos_b
@@ -2331,7 +2336,7 @@ If lpos_a>=0
         End If
       End If
     End If
-    string.s = string_add.s + Chr$(10) + string.s
+    string.s = string_add.s + string.s
 
     !line_use{*tline, lpos_b}
     If *tline
@@ -2519,68 +2524,60 @@ End Function
 ;/                                                                             /
 ;/ Inputs:                                                                     /
 ;/ - *textBox.tuiTextBox    : ???                                           /
-;/ - *tuiEvent.tuiEvent    : ???                                               /
+;/ - *ev.tuiEvent    : ???                                               /
 ;/                                                                             /
 ;/ Result:                                                                     /
 ;/ - result.w     : ???                                                        /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.w _ntui_TextBoxVanillaKey{*textBox.tuiTextBox,*tuiEvent.tuiEvent,*rp.RastPort}
+Function.w _ntui_TextBoxVanillaKey{*textBox.tuiTextBox,*ev.tuiEvent,*rp.RastPort}
   done.w = False
-  vanillakeyP.l = ntui_GetEventAttr{*tuiEvent,#TUIEVA_STRING,0}
+  vanillakeyP.l = ntui_GetEventAttr{*ev,#TUIEVA_STRING,0}
   If vanillakeyP=Null Then Function Return False
-  quali.l       = ntui_GetEventAttr{*tuiEvent,#TUIEVA_QUALIFIER,0}
+  quali.l       = ntui_GetEventAttr{*ev,#TUIEVA_QUALIFIER,0}
   Select Peek.b(vanillakeyP)
     Case 13 ; return
-      If *textBox\edflags&#TUITBF_WANTRETURN
-        ;undo_Start{*textBox\undo}
+      If (*textBox\edflags&#TUITBF_WANTRETURN)
+        If \undo Then ntui_StartUndoStep{*textBox\undo}
         If \selection_begin_lpos>=0 Then _tb_Delete{*textBox,\selection_begin_lpos,\selection_begin_cpos,\selection_end_lpos,\selection_end_cpos}
+
         If (quali&#TUIQUAL_SHIFT) OR (\edflags&#TUITBF_RETURNBREAK)
           If (quali&#TUIQUAL_SHIFT) Then indent.l=False:Else indent=True
-          _tb_Insert{*textBox,\cursor_lpos,\cursor_cpos,"\\n",1}
+          a.s = "\\n"
+          _tb_Insert{*textBox,\cursor_lpos,\cursor_cpos,&a,1}
         Else
-          a.s = ""
-          If \edflags&#TUITBF_AUTOINDENT
-            !line_use{*tline, \cursor_lpos}
-            If *tline
-              If *tline\text
-                n.l = 0
-                While Peek.b(*tline\text+n)=32 AND n<*tline\clength
-                  n+1
-                Wend
-                a.s = LSet$(" ",n)
-              End If
-            End If
-          End If
-          _tb_InsertNewLine{*textBox,\cursor_lpos+1,&a.s,FLen(a.s)}
-          _tb_SetCursor{*textBox,\cursor_lpos+1,FLen(a.s)}
+          a.s = "\\n"
+          _tb_InsertNewLine{*textBox,\cursor_lpos+1,&a,1}
+          _tb_SetCursor{*textBox,\cursor_lpos+1,1}
         End If
         done.w = True
-        str_Dup{&*tuiEvent\notifyID,*textBox\obj\onKeyDown}
+        ;str_Dup{&*ev\notifyID,*textBox\obj\onKeyDown}
         _tb_UpdateCursorPixelPos{*textBox,*rp}
       Else ; single line textbox
         \accept=False
-        str_Dup{&*tuiEvent\notifyID,*textBox\obj\onKeyDown}
+        ;str_Dup{&*ev\notifyID,*textBox\obj\onKeyDown}
         _ntui_UpdateTextBoxString{*textBox}
       End If
 
     Case 127 ; backspace
       If \selection_begin_lpos>=0 AND \selection_end_lpos>=0
+        If \undo Then ntui_StartUndoStep{*textBox\undo}
         _tb_Delete{*textBox,\selection_begin_lpos,\selection_begin_cpos,\selection_end_lpos,\selection_end_cpos}
       Else
-        ;undo_Start{*textBox\undo}
+        If \undo Then ntui_StartUndoStep{*textBox\undo}
         oldlines.l = \totalLines
         _tb_Delete{*textBox,\cursor_lpos,\cursor_cpos,\cursor_lpos,\cursor_cpos+1}
       End If
       done.w = True
-      str_Dup{&*tuiEvent\notifyID,*textBox\obj\onKeyDown}
+      ;str_Dup{&*ev\notifyID,*textBox\obj\onKeyDown}
       _tb_UpdateCursorPixelPos{*textBox,*rp}
 
     Case 8 ; delete
       If \selection_begin_lpos>=0 AND \selection_end_lpos>=0
+        If \undo Then ntui_StartUndoStep{*textBox\undo}
         _tb_Delete{*textBox,\selection_begin_lpos,\selection_begin_cpos,\selection_end_lpos,\selection_end_cpos}
       Else
-        ;undo_Start{*textBox\undo}
+        If \undo Then ntui_StartUndoStep{*textBox\undo}
         delpos.l   = \cursor_cpos-1
         delline.l  = \cursor_lpos
         If delpos<0
@@ -2593,7 +2590,7 @@ Function.w _ntui_TextBoxVanillaKey{*textBox.tuiTextBox,*tuiEvent.tuiEvent,*rp.Ra
         _tb_Delete{*textBox,delline,delpos,delline,delpos+1}
       End If
       done = True
-      str_Dup{&*tuiEvent\notifyID,*textBox\obj\onKeyDown}
+      ;str_Dup{&*ev\notifyID,*textBox\obj\onKeyDown}
       _tb_UpdateCursorPixelPos{*textBox,*rp}
 
     Default
@@ -2604,7 +2601,9 @@ Function.w _ntui_TextBoxVanillaKey{*textBox.tuiTextBox,*tuiEvent.tuiEvent,*rp.Ra
             _tb_Delete{*textBox,\selection_begin_lpos,\selection_begin_cpos,\selection_end_lpos,\selection_end_cpos}
             _tb_Paste{*textBox,\cursor_lpos,\cursor_cpos}
             done = True
-          ;Case @"z" : _tb_DoUndo{*textBox} : done.w = True
+          Case @"z":
+            ;_tb_Undo{*textBox}
+            done = True
           Case @"x":
             _tb_Cut{*textBox,\selection_begin_lpos,\selection_begin_cpos,\selection_end_lpos,\selection_end_cpos}
             done = True
@@ -2652,17 +2651,19 @@ Function.w _ntui_TextBoxVanillaKey{*textBox.tuiTextBox,*tuiEvent.tuiEvent,*rp.Ra
 
       If key>31 OR key<0 OR key=9
         If *textBox\validChar[key&$FF]
-          ;undo_Start{*textBox\undo}
+        ;  If \undo Then ntui_StartUndoStack{*textBox\undo}
           _tb_Delete{*textBox,\selection_begin_lpos,\selection_begin_cpos,\selection_end_lpos,\selection_end_cpos}
           a.s = Chr$(key);Peek.s(vanillakeyP)
           _tb_Insert{*textBox,\cursor_lpos,\cursor_cpos,&a.s,FLen(a.s)}
           done = True
-          str_Dup{&*tuiEvent\notifyID,*textBox\obj\onKeyDown}
+          ;str_Dup{&*ev\notifyID,*textBox\obj\onKeyDown}
         End If
       End If
       _tb_UpdateCursorPixelPos{*textBox,*rp}
 
   End Select
+
+  If *textBox\onChange\callback Then !_CallFuncPointer{*textBox\onChange\callback,done,*textBox,*ev} : Else str_Dup{&*ev\notifyID,*textBox\onChange\notifyID}
 
   Function Return done
 
@@ -2683,18 +2684,18 @@ End Function
 ;/ - rkey.l    : ???                                                           /
 ;/ - vkey.l    : ???                                                           /
 ;/ - string.s    : ???                                                         /
-;/ - *tuiEvent.tuiEvent    : ???                                               /
+;/ - *ev.tuiEvent    : ???                                               /
 ;/                                                                             /
 ;/ Result:                                                                     /
 ;/ - result.w     : ???                                                        /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.w _ntui_KeyStrokeTextBox{*textBox.tuiTextBox,*tuiEvent.tuiEvent,*rp.RastPort}
+Function.w _ntui_KeyStrokeTextBox{*textBox.tuiTextBox,*ev.tuiEvent,*rp.RastPort}
 
-  rkey.l   = ntui_GetEventAttr{*tuiEvent,#TUIEVA_VALUE,0}
-  vkeyP.l  = ntui_GetEventAttr{*tuiEvent,#TUIEVA_STRING,0}
+  rkey.l   = ntui_GetEventAttr{*ev,#TUIEVA_VALUE,0}
+  vkeyP.l  = ntui_GetEventAttr{*ev,#TUIEVA_STRING,0}
   If vkeyP Then vkey.l   = Peek.b(vkeyP) & $FF  : Else vkey=0
-  quali.l  = ntui_GetEventAttr{*tuiEvent,#TUIEVA_QUALIFIER,0}
+  quali.l  = ntui_GetEventAttr{*ev,#TUIEVA_QUALIFIER,0}
 
   done.w = False
   _tb_DoBlink{*textBox,*rp,Off}
@@ -2729,14 +2730,14 @@ Function.w _ntui_KeyStrokeTextBox{*textBox.tuiTextBox,*tuiEvent.tuiEvent,*rp.Ras
       If ((*textBox\edflags&#TUITBF_READONLY)=0)
         If ((*textBox\edflags&#TUITBF_WANTTAB))
           If shift=False
-            done=_ntui_TextBoxVanillaKey{*textBox,*tuiEvent,*rp}
+            done=_ntui_TextBoxVanillaKey{*textBox,*ev,*rp}
           End If
         End If
       End If
 
     Default
       If ((*textBox\edflags&#TUITBF_READONLY)=0)
-        done = _ntui_TextBoxVanillaKey{*textBox,*tuiEvent,*rp}
+        done = _ntui_TextBoxVanillaKey{*textBox,*ev,*rp}
       Else
         If (quali&(#TUIQUAL_COM|#TUIQUAL_CTRL)) ; ok, copy is supported in ReadOnly!
         ;Select vkey
@@ -2786,12 +2787,13 @@ Function.w _ntui_SetTextBoxAttr{*textBox.tuiTextBox,ti_Tag.l,ti_Data.l}
     Case #TUITBA_SELECTION          : ; todo
     Case #TUITBA_HIGHLIGHTNING      : *textBox\tokenizing = ti_Data  : ntui_Refresh{*textBox,Null}
     Case #TUIA_STRING               : ntui_SetTextBoxText{*textBox,ti_Data}
+    Case #TUITBA_ONCHANGE           : str_WritePtr{&*textBox\onChange\notifyID ,ti_Data}
 
     Case #TUIA_XMLATTR
       *xmlA.tuiXmlAttr = ti_Data
       Select Peek.s(*xmlA\nameP)
-        Case "text"
-          ntui_SetTextBoxText{*textBox,*xmlA\stringP}
+        Case "text"     : ntui_SetTextBoxText{*textBox,*xmlA\stringP}
+        Case "onchange" : done=ntui_SetAttr{*textBox,#TUITBA_ONCHANGE       ,*xmlA\stringP}
         Default
           done = False
        End Select
@@ -2807,6 +2809,7 @@ Function.w _ntui_SetTextBoxAttr{*textBox.tuiTextBox,ti_Tag.l,ti_Data.l}
 
   Function Return done
 End Function
+
 
 _ntui_GetTextBoxAttr:
 Function.w _ntui_GetTextBoxAttr{*textBox.tuiTextBox,ti_Tag.l,*ti_Data.longP}
@@ -2856,7 +2859,7 @@ Function.w _ntui_GetTextBoxAttr{*textBox.tuiTextBox,ti_Tag.l,*ti_Data.longP}
                                           *ti_Data\l = *tline\text
                                         End If
                                       End If
-
+    Case #TUITBA_ONCHANGE           : *ti_Data\l = str_GetPtr{*textBox\onChange\notifyID}
     Default
       done = False
   End Select
@@ -2868,7 +2871,7 @@ End Function
 
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
-;/ Syntax: result.w = _ntui_DispatchTextBox {*textBox.tuiTextBox,*tuiEvent.:: /
+;/ Syntax: result.w = _ntui_DispatchTextBox {*textBox.tuiTextBox,*ev.:: /
 ;/ tuiEvent}                                                                   /
 ;/                                                                             /
 ;/ Description:                                                                /
@@ -2876,35 +2879,35 @@ End Function
 ;/                                                                             /
 ;/ Inputs:                                                                     /
 ;/ - *textBox.tuiTextBox    : ???                                           /
-;/ - *tuiEvent.tuiEvent    : ???                                               /
+;/ - *ev.tuiEvent    : ???                                               /
 ;/                                                                             /
 ;/ Result:                                                                     /
 ;/ - result.w     : ???                                                        /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
 _ntui_DispatchTextBoxEvent:
-Function.w _ntui_DispatchTextBoxEvent{*textBox.tuiTextBox,*tuiEvent.tuiEvent}
+Function.w _ntui_DispatchTextBoxEvent{*textBox.tuiTextBox,*ev.tuiEvent}
   !_ASSERT{*textBox}
   !_ASSERT{*textBox\obj\classID=#TUICLASS_TEXTBOX}
-  !_ASSERT{*tuiEvent}
+  !_ASSERT{*ev}
   *tui.tuiObject = *textBox\obj
   done.w = False
 
-  Select *tuiEvent\evID
+  Select *ev\evID
     Case #TUIEV_MOUSEDOWN:
-      If *tuiEvent\value=0
-        If ntui_HitObject{*textBox,*tuiEvent\pos\x,*tuiEvent\pos\y}
+      If *ev\value=0
+        If ntui_HitObject{*textBox,*ev\pos\x,*ev\pos\y}
           ntui_SetFocus{*textBox}
           *textBox\obj\flags | #TUIF_ACTIVE
-          str_Dup{&*tuiEvent\notifyID,*textBox\obj\onTouch}
+          ;str_Dup{&*ev\notifyID,*textBox\obj\onTouch}
           ntui_Refresh{*textBox,Null}
           \accept=1
 
           dbl.l = 0
-          If *tuiEvent\qualifier_&#TUIQUAL_DOUBLECLICK Then dbl = 1
-          If *tuiEvent\qualifier_&#TUIQUAL_TRIPLECLICK Then dbl = 2
-          ox.l = *tuiEvent\pos\x - *textBox\obj\cbox\left
-          oy.l = *tuiEvent\pos\y - *textBox\obj\cbox\top
+          If *ev\qualifier_&#TUIQUAL_DOUBLECLICK Then dbl = 1
+          If *ev\qualifier_&#TUIQUAL_TRIPLECLICK Then dbl = 2
+          ox.l = *ev\pos\x - *textBox\obj\cbox\left
+          oy.l = *ev\pos\y - *textBox\obj\cbox\top
 
           *rp.RastPort = ntui_ObtainRastPort{*textBox}
 
@@ -2933,27 +2936,27 @@ Function.w _ntui_DispatchTextBoxEvent{*textBox.tuiTextBox,*tuiEvent.tuiEvent}
 
     Case #TUIEV_MOUSEUP
       If (*textBox\obj\flags | #TUIF_ACTIVE)
-        str_Dup{&*tuiEvent\notifyID,*textBox\obj\onRelease}
+        ;str_Dup{&*ev\notifyID,*textBox\obj\onRelease}
         done.w = True
       End If
 
     Case #TUIEV_MOUSEMOVE
       If (*textBox\obj\flags | #TUIF_ACTIVE)
         If tuiMouseButtonMap(0)
-          ox.l = *tuiEvent\pos\x - *textBox\obj\cbox\left
-          oy.l = *tuiEvent\pos\y - *textBox\obj\cbox\top
+          ox.l = *ev\pos\x - *textBox\obj\cbox\left
+          oy.l = *ev\pos\y - *textBox\obj\cbox\top
           *rp.RastPort = ntui_ObtainRastPort{*textBox}
           _tb_MouseDrag{*textBox,*rp,ox,oy}
           _tb_Repair{*textBox,*rp}
           If *rp Then ntui_ReleaseRastPort{*textBox}
           done=True
-;          str_Dup{&*tuiEvent\notifyID,*textBox\obj\onMove}
+;          str_Dup{&*ev\notifyID,*textBox\obj\onMove}
         End If
       End If
 
     Case #TUIEV_KEYDOWN
       *rp.RastPort = ntui_ObtainRastPort{*textBox}
-      done = _ntui_KeyStrokeTextBox{*textBox.tuiTextBox,*tuiEvent.tuiEvent,*rp}
+      done = _ntui_KeyStrokeTextBox{*textBox.tuiTextBox,*ev.tuiEvent,*rp}
       If *rp Then ntui_ReleaseRastPort{*textBox}
 
     Case #TUIEV_TICK
@@ -2966,51 +2969,51 @@ Function.w _ntui_DispatchTextBoxEvent{*textBox.tuiTextBox,*tuiEvent.tuiEvent}
       End If
 
     Case #TUIEV_HSCROLL
-      If *textBox\maxLines>1
-        _ntui_SetTextBoxAttr{*textBox,#TUITBA_LEFTOFFSET,*textBox\leftOffset + *textBox\step_\x * *tuiEvent\value }
+      ;If *textBox\maxLines>1
+        _ntui_SetTextBoxAttr{*textBox,#TUITBA_LEFTOFFSET,*textBox\leftOffset + *textBox\step_\x * *ev\value }
         done = True
-      End If
+      ;End If
 
     Case #TUIEV_VSCROLL
-      If *textBox\maxLines>1
-        _ntui_SetTextBoxAttr{*textBox,#TUITBA_TOPLINE,*textBox\topLine + *textBox\step_\y * *tuiEvent\value }
+      If *textBox\maxLines><1
+        _ntui_SetTextBoxAttr{*textBox,#TUITBA_TOPLINE,*textBox\topLine + *textBox\step_\y * *ev\value }
         done = True
       End If
 
     Case #TUIEV_BIND_HDELTA
-      If *textBox\maxLines>1
+      ;If *textBox\maxLines>1
         *rp.RastPort = ntui_ObtainRastPort{*textBox}
-        _tb_Scroll{*textBox,*textBox\step_\x * *tuiEvent\value, 0, *rp}
+        _tb_Scroll{*textBox,*textBox\step_\x * *ev\value, 0, *rp}
         If *rp Then ntui_ReleaseRastPort{*textBox}
         done = True
-      End If
+      ;End If
 
     Case #TUIEV_BIND_VDELTA
-      If *textBox\maxLines>1
+      If *textBox\maxLines><1
         *rp.RastPort = ntui_ObtainRastPort{*textBox}
-        _tb_Scroll{*textBox,0,*textBox\step_\y * *tuiEvent\value,*rp}
+        _tb_Scroll{*textBox,0,*textBox\step_\y * *ev\value,*rp}
         If *rp Then ntui_ReleaseRastPort{*textBox}
         done = True
       End If
 
     Case #TUIEV_BIND_HVALUE
-      If *textBox\maxLines>1
+      ;If *textBox\maxLines>1
         *rp.RastPort = ntui_ObtainRastPort{*textBox}
-        _tb_Scroll{*textBox,*tuiEvent\value-*textBox\leftOffset,0,*rp}
+        _tb_Scroll{*textBox,*ev\value-*textBox\leftOffset,0,*rp}
         If *rp Then ntui_ReleaseRastPort{*textBox}
         done = True
-      End If
+      ;End If
 
     Case #TUIEV_BIND_VVALUE
-      If *textBox\maxLines>1
+      If *textBox\maxLines><1
         *rp.RastPort = ntui_ObtainRastPort{*textBox}
-        _tb_Scroll{*textBox,0,*tuiEvent\value-*textBox\topLine,*rp}
+        _tb_Scroll{*textBox,0,*ev\value-*textBox\topLine,*rp}
         If *rp Then ntui_ReleaseRastPort{*textBox}
         done = True
       End If
 
     Case #TUIEV_PROPAGATE
-      If *textBox\maxLines>1
+      If *textBox\maxLines><1
         _ntui_PropagateBind{*textBox,#TUIEV_BIND_VTOTAL  ,*textBox\totalLines   ,Null}
         _ntui_PropagateBind{*textBox,#TUIEV_BIND_VVALUE  ,*textBox\topLine      ,Null}
         _ntui_PropagateBind{*textBox,#TUIEV_BIND_VVISIBLE,*textBox\visibleLines ,Null}
@@ -3027,11 +3030,11 @@ Function.w _ntui_DispatchTextBoxEvent{*textBox.tuiTextBox,*tuiEvent.tuiEvent}
 End Select
 
   If done
-    If (*tuiEvent\notifyID)
-      *tuiEvent\tuiObject = *textBox
-      _ntui_QueueEvent{*textBox\obj\tuiEngine\outQ,*tuiEvent}
+    If (*ev\notifyID)
+      *ev\tuiObject = *textBox
+      _ntui_QueueEvent{*textBox\obj\tuiEngine\outQ,*ev}
     Else
-      _ntui_DestroyEvent{*tuiEvent}
+      _ntui_DestroyEvent{*ev}
     End If
   End If
 
@@ -3282,7 +3285,7 @@ Statement _ntui_DeinitTextBox{*textBox.tuiTextBox}
     \allocLines=0
     \doc = Null
   End If
-  ;If \undo Then undo_Free{\undo} : \undo = Null
+  If \undo Then ntui_FreeUndoStack{\undo} : \undo = Null
   If \fontstolen = False AND \font><Null Then CloseFont_ \font
   \font = Null
 
@@ -3332,8 +3335,10 @@ If *textBox
   *textBox\leftOffset                   = 0
   *textBox\topLine                      = 0
   *textBox\obj\pointerID                = #TUIPOINTER_TEXT
-  *textBox\selection_begin_lpos = -1
-  *textBox\selection_end_lpos =-1
+  *textBox\selection_begin_lpos         = -1
+  *textBox\selection_end_lpos           = -1
+  *textBox\undo                         = Null
+;  *textBox\undo                         = ntui_CreateUndoStack{*textBox\engine\undoEngine}
 
   !_GetFuncPointer{*textBox\obj\Draw            ,_ntui_DrawTextBox,{0,0,0}}
   !_GetFuncPointer{*textBox\obj\Layout          ,_ntui_LayoutTextBox,{0,0,0}}
@@ -3532,7 +3537,7 @@ If *textBox
   *textBox\tuiPen[#TUITBPEN_EnabledFG]  = #TUIPEN_TEXT
   *textBox\tuiPen[#TUITBPEN_DisabledFG] = #TUIPEN_SHADOW
   *textBox\obj\pointerID                = #TUIPOINTER_TEXT
-  *textBox\edflags                      = #TUITBF_String|#TUITBF_LINECURSOR
+  *textBox\edflags                      = #TUITBF_String|#TUITBF_LINECURSOR|#TUITBF_SHOWCR
   *textBox\blink_speed                  = 5
   *textBox\obj\borderType               = #TUIBORDER_STRING
 

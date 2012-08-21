@@ -29,12 +29,12 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 397
-; CursorColumn    = 28
+; CursorLine      = 887
+; CursorColumn    = 4
 ; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
-; LabelPosition   = 4
+; LabelPosition   = 0
 ; 
 ; Blitz Objects
 ; -------------------------------------------------------
@@ -114,6 +114,8 @@
 #TUILVA_ITEMHEIGHT        =  10 + #TUILVA_BASE
 #TUILVA_TITLEHEIGHT       =  11 + #TUILVA_BASE
 
+#TUILVA_ONSELECT          =  12 + #TUILVA_BASE
+
 #TUILVSCROLLER_AUTO   = 0
 #TUILVSCROLLER_ALWAYS = 1
 #TUILVSCROLLER_NEVER  = 2
@@ -180,6 +182,9 @@ secondSortDir.l
 *secondSortImgUp.tuiTBImage
 *secondSortImgDown.tuiTBImage
 sortingDirty.l
+
+; onEvents...
+onSelect.tuiEventHandler
 End NEWTYPE
 
 
@@ -388,7 +393,15 @@ For itemX.l = startItem To endItem
       bgpen.l = #TUIPEN_HALFHALFSHINE
     End If
 
+
+
     If itemX=*listView\obj\value Then If (flags&#TUIF_ACTIVE) Then bgpen.l = #TUIPEN_MARKER : Else bgpen=#TUIPEN_HALFSHADOW
+
+    CNIF #NTUI_DEBUG
+      bgpen.l =  RNDPen{}
+    CEND
+
+
     If *cell\pixWidth<=0
       If *cell\textLen>0
         _ntui_GetTextRect{*engine,(.str)&*cell\textLen,tx.tuiRect,flags,*rp}
@@ -473,7 +486,7 @@ ntui_RemClip{*rp,*oldRegion}
 If rd Then Goto redrawTuiListView   ; redraw, in case layout changed
 
 
-If maxWidth><*listView\totalWidth
+If maxWidth>*listView\totalWidth
   *listView\totalWidth = maxWidth
   _ntui_PropagateBind{*listView,#TUIEV_BIND_HTOTAL      ,*listView\totalWidth      ,Null}
 
@@ -753,10 +766,13 @@ Function.l _ntui_SetListViewAttr{*listView.tuiListView,ti_Tag.l,ti_Data.l}
       ntui_Refresh{*listView,Null}
       done=True
 
+    Case #TUILVA_ONSELECT : str_WritePtr{&*listView\onSelect\notifyID ,ti_Data}
+
     Case #TUIA_XMLATTR
       *xmlA.tuiXmlAttr = ti_Data
       Select Peek.s(*xmlA\nameP)
-        Case "title"  : done = _ntui_SetListViewAttr{*listView,#TUILVA_TITLE,*xmlA\stringP}
+        Case "title"     : done = _ntui_SetListViewAttr{*listView,#TUILVA_TITLE    ,*xmlA\stringP}
+        Case "onselect"  : done = _ntui_SetListViewAttr{*listView,#TUILVA_ONSELECT ,*xmlA\stringP}
         Default
           done = False
       End Select
@@ -785,6 +801,7 @@ Function.l _ntui_GetListViewAttr{*listView.tuiListView,ti_Tag.l,@ti_Data.l}
     Case #TUILVA_LEFTOFFSET    : ret.l = *listView\leftOffset
     Case #TUILVA_ITEMHEIGHT    : ret.l = *listView\itemHeight
     Case #TUILVA_TITLEHEIGHT   : ret.l = *listView\titleHeight
+    Case #TUILVA_ONSELECT      : ret.l = str_GetPtr{*listView\onSelect\notifyID}
 
     Default
   End Select
@@ -929,6 +946,23 @@ End If
 Function Return succ
 End Function
 
+Function.w ntui_ChangeListItem{*listView.tuiListView,itemX.l,label.s,@itemID.l,@userData.l,@flags.l}
+  !_ASSERT{*listView}
+  !_ASSERT{*listView\obj\classID=#TUICLASS_LISTVIEW}
+
+  If itemX<0 OR itemX>=*listView\totalItems Then Function Return False
+  *listItem.tuiListItem = !ntui_GetListItemP{itemX}
+  If itemID><-1           Then *listItem\itemID   = itemID
+  If flags ><#TUI_NOFLAGS Then *listItem\addFlags = flags
+  If *listItem\cellA Then FreeVec_ *listItem\cellA    : *listItem\cellA=Null
+  If userData><-1         Then *listItem\userData = userData
+  If label Then *labelS.str = Null : str_WritePtr{&*labelS,&label} : _ntui_ParseListItem{*listView,*listItem,*labelS}
+  succ.w = True
+  ntui_Refresh{*listView,Null}
+  ;_ntui_DrawListViewItem{*listView,*rp,itemX,itemX}
+  Function Return succ
+
+End Function
 
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
@@ -1367,6 +1401,7 @@ Function.w _ntui_DispatchListViewEvent{*listView.tuiListView,*ev.tuiEvent}
                 If (itemX<toX OR itemX>fromX) Then _ntui_DrawListViewItem{*listView,*rp,itemX,itemX}
                 ntui_ReleaseRastPort{*listView}
               End If
+              If *listView\onSelect\callback Then !_CallFuncPointer{*listView\onSelect\callback,done,*listView,*ev,*listView\onSelect\notifyID}
             End If
           End If
         End If
@@ -1555,6 +1590,14 @@ Function.w _ntui_DispatchListViewEvent{*listView.tuiListView,*ev.tuiEvent}
       done=True
 
    End Select
+
+  If done
+    If (*ev\notifyID)
+      _ntui_QueueEvent{*listView\obj\tuiEngine\outQ,*ev}
+    Else
+      _ntui_DestroyEvent{*ev}
+    End If
+  End If
 
 Function Return done
 End Function
@@ -1798,7 +1841,7 @@ End Statement
 ;/ - result.l       : pointer to ListView or NULL if failed                                                        /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.tuiListView ntui_ListView{title.s,@multiSelect.w,@onClick.s,@help.s,@flags.l,@nameID.s}
+Function.tuiListView ntui_ListView{title.s,@multiSelect.w,@onSelect.s,@help.s,@flags.l,@nameID.s}
 If (flags=#TUI_NOFLAGS) Then flags=0
 flags|#TUIF_WANTTAB|#TUIF_WANTMOVER
 *listView.tuiListView = (.tuiListView)_ntui_CreateObject{#TUICLASS_LISTVIEW,SizeOf.tuiListView,help,flags,nameID}
@@ -1868,6 +1911,10 @@ If *listView
 
   If (*listView\vScroller) Then ntui_Bind{*listView,*listView\vScroller}
   If (*listView\hScroller) Then ntui_Bind{*listView,*listView\hScroller}
+
+  str_Write{&*listView\onSelect\notifyID,onSelect}
+  *listView\onSelect\callback   = *listView\obj\tuiEngine\defaultNotifyCallback
+
 
 End If
 Function Return *listView

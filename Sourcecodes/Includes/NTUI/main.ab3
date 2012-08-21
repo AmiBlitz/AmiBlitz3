@@ -13,13 +13,13 @@
 ; StringBuffer    = 10240
 ; MakeSmallest    = 1
 ; Version         = 0.1.0
-; NumberOfBuilds  = 2585
+; NumberOfBuilds  = 2727
 ; 
 ; Debugger
 ; -------------------------------------------------------
 ; CliArgs         = ""
-; StackSize       = 80000
-; RuntimeDebug    = 1
+; StackSize       = 100000
+; RuntimeDebug    = 0
 ; DebugInfo       = 0
 ; CreateDbgFile   = 0
 ; OverflowCheck   = 0
@@ -29,9 +29,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1824
-; CursorColumn    = 19
-; LabelSearch     = "lay"
+; CursorLine      = 330
+; CursorColumn    = 1
+; LabelSearch     = "get"
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelPosition   = 0
@@ -100,8 +100,18 @@
 optimize 7
 Syntax 6
 #NTUI_DEBUG = 0
+#NTUI_SAFERESIZE = 0
 
 XINCLUDE "NTUI/definitions.ab3"
+Syntax 6
+
+Function.l RNDPen{}
+seed.l = Peek.l(?seed) * 1234567 + 12345
+Poke.l ?seed,seed
+Function Return ((seed ASR 8)&$0F)
+.seed
+Dc.l 0
+End Function
 
 ;/* get the window of a tuiObject, if it has any */
 Function.tuiWindow FAST ntui_GetObjectWindow{*obj.tuiObject}
@@ -148,15 +158,21 @@ Function.RastPort FAST ntui_ObtainRastPort{*obj.tuiObject}
   *win.tuiWindow = ntui_GetObjectWindow{*obj}
   If *win
     If *win\oswin
-      ObtainSemaphore_ *win\lock
-      CNIF #__debug=0
-      ;LockLayer_ 0,*win\oswin\WLayer
-      LockLayerInfo_ *win\oswin\WScreen\LayerInfo
+      CNIF #NTUI_SAFERESIZE
+        ObtainSemaphore_ *win\lock
+        CNIF #__debug=0
+        ;LockLayer_ 0,*win\oswin\WLayer
+        LockLayerInfo_ *win\oswin\WScreen\LayerInfo
+        CEND
+        *rp = *win\rp;win\RPort
+      CELSE
+        *rp = *win\oswin\RPort
       CEND
-      *rp = *win\rp;win\RPort
     End If
   Else
+    CNIF #NTUI_SAFERESIZE
     ObtainSemaphore_ *obj\tuiEngine\lock
+    CEND
     *rp = *obj\tuiEngine\buildRP
   End If
 
@@ -171,14 +187,18 @@ Statement FAST ntui_ReleaseRastPort{*obj.tuiObject}
   *win.tuiWindow = ntui_GetObjectWindow{*obj}
   If *win
     If *win\oswin
-      ReleaseSemaphore_ *win\lock
-      CNIF #__debug=0
-      ;UnlockLayer_ *win\oswin\WLayer
-      UnlockLayerInfo_ *win\oswin\WScreen\LayerInfo
+      CNIF #NTUI_SAFERESIZE
+        ReleaseSemaphore_ *win\lock
+        CNIF #__debug=0
+        ;UnlockLayer_ *win\oswin\WLayer
+        UnlockLayerInfo_ *win\oswin\WScreen\LayerInfo
+        CEND
       CEND
     End If
   Else
+    CNIF #NTUI_SAFERESIZE
     ReleaseSemaphore_ *obj\tuiEngine\lock
+    CEND
   End If
 
 End Statement
@@ -198,7 +218,8 @@ XINCLUDE "drawing.ab3"
 XINCLUDE "tree.ab3"
 XINCLUDE "event.ab3"
 XINCLUDE "clipboard.ab3"
-
+XINCLUDE "undo.ab3"
+Syntax 6
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
 ;/ Syntax: _ntui_FreeObject {*obj.tuiObject}                                   /
@@ -236,19 +257,20 @@ Statement FAST ntui_FreeObject{*obj.tuiObject}
   str_Free{&*obj\string}
   str_Free{&*obj\help}
   str_Free{&*obj\nameID}
-  str_Free{&*obj\onClick}
-  str_Free{&*obj\onMouseOver}
-  str_Free{&*obj\onDoubleClick}
-  str_Free{&*obj\onTouch}
-  str_Free{&*obj\onRelease}
-  str_Free{&*obj\onKeyDown}
-  str_Free{&*obj\onKeyRepeat}
-  str_Free{&*obj\onKeyUp}
-  str_Free{&*obj\onBeginRefresh}
-  str_Free{&*obj\onRefresh}
-  str_Free{&*obj\onFocus}
-  str_Free{&*obj\onLoseFocus}
-  str_Free{&*obj\onHelp}
+  ;str_Free{&*obj\onClick}
+  ;str_Free{&*obj\onMouseOver}
+  ;str_Free{&*obj\onDoubleClick}
+  ;str_Free{&*obj\onTouch}
+  ;str_Free{&*obj\onRelease}
+  ;str_Free{&*obj\onKeyDown}
+  ;str_Free{&*obj\onKeyRepeat}
+  ;str_Free{&*obj\onKeyUp}
+  ;str_Free{&*obj\onBeginRefresh}
+  str_Free{&*obj\onEvent\notifyID}
+  ;str_Free{&*obj\onRefresh\notifyID}
+  ;str_Free{&*obj\onFocus\notifyID}
+  ;str_Free{&*obj\onLoseFocus\notifyID}
+  ;str_Free{&*obj\onHelp}
 
   If *obj\fgImage Then ntui_FreeTBImage{*obj\fgImage}  : *obj\fgImage = Null
   If *obj\bgImage Then ntui_FreeTBImage{*obj\bgImage}  : *obj\bgImage = Null
@@ -307,7 +329,7 @@ Statement _ntui_Redraw{*obj.tuiObject,*clip.tuiRect}
     !tuiCopyRect{rpclip.tuiRect,*obj\bbox}
   End If
 
-  ; TODO: while #TUIF_WANTBG
+  ; TODO: while #TUIF_WANTBG, and set clip
   While *obj\classID><#TUICLASS_WINDOW AND *obj\parent
     *obj = *obj\parent
     !tuiAndRect{rpclip,rpclip,*obj\bbox}
@@ -568,20 +590,20 @@ End Statement
 ;/ - *obj.tuiObject : tuiObject, if not during build-time                                                   /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Statement FAST ntui_SetFlags{flags.l,@nochildren.l,@*obj.tuiObject}
+Statement FAST ntui_SetFlags{*obj.tuiObject,flags.l,@nochildren.l}
+  !_ASSERT{*obj}
 
-  If *obj=Null OR *obj=-1 Then *obj=tuiGlobal\buildHelper\tuiCurrent
-  If *obj=Null Then Statement Return
   *obj\flags|flags
   If nochildren=False
     *obj = *obj\child
-    While *obj><Null
-      ntui_SetFlags{flags,nochildren,*obj}
+    While *obj
+      ntui_SetFlags{*obj,flags,nochildren}
       *obj = *obj\next_
     Wend
   End If
 
 End Statement
+
 
 
 ;///////////////////////////////////////////////////////////////////////////////
@@ -597,20 +619,20 @@ End Statement
 ;/ - *obj.tuiObject : tuiObject, if not during build-time                                                   /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Statement FAST ntui_ClearFlags{flags.l,@nochildren.l,@*obj.tuiObject}
+Statement FAST ntui_ClearFlags{*obj.tuiObject,flags.l,@nochildren.l}
+  !_ASSERT{*obj}
 
-  If *obj=Null OR *obj=-1 Then *obj=tuiGlobal\buildHelper\tuiCurrent
-  If *obj=Null Then Statement Return
   *obj\flags = (*obj\flags|flags) - flags
   If nochildren=False
     *obj = *obj\child
-    While *obj><Null
-      ntui_ClearFlags{flags,nochildren,*obj}
+    While *obj
+      ntui_ClearFlags{*obj,flags,nochildren}
       *obj = *obj\next_
     Wend
   End If
 
 End Statement
+
 
 
 ;///////////////////////////////////////////////////////////////////////////////
@@ -630,7 +652,7 @@ Statement ntui_Refresh{*obj.tuiObject,*clip.tuiRect}
 
   If (*obj\flags&#TUIF_ONSCREEN)
   ;If ((*obj\flags&(#TUIF_ONSCREEN|#TUIF_DIRTY))=#TUIF_ONSCREEN )
-    If (*obj\flags&(#TUIF_DIRTY)=0) Then ntui_SetFlags{#TUIF_DIRTY,False,*obj}
+    If (*obj\flags&(#TUIF_DIRTY)=0) Then ntui_SetFlags{*obj,#TUIF_DIRTY,False}
   ;  *obj\flags|#TUIF_DIRTY
     If *clip
       ntui_PostEvent{*obj,#TUIEV_REFRESH,0,"",*clip\left,*clip\top,!tuiRectWidth{*clip},!tuiRectHeight{*clip}}
@@ -872,17 +894,18 @@ Function.w ntui_SetAttr{*obj.tuiObject,ti_Tag.l,ti_Data.l}
       ntui_Refresh{*obj,Null}
       _ntui_PropagateBind{*obj,#TUIEV_BIND_STRING,0,*obj\string}
 
-    Case #TUIA_ONCLICK        : str_WritePtr{&*obj\onClick       ,ti_Data} ; notifyID when the object is clicked
-    Case #TUIA_ONMOUSEOVER    : str_WritePtr{&*obj\onMouseOver   ,ti_Data} ; notifyID when mouse gets over the object
-    Case #TUIA_ONDOUBLECLICK  : str_WritePtr{&*obj\onDoubleClick ,ti_Data} ; notifyID when the object is double clicked
-    Case #TUIA_ONTOUCH        : str_WritePtr{&*obj\onTouch       ,ti_Data} ; notifyID when the object is touched (mouse down)
-    Case #TUIA_ONRELEASE      : str_WritePtr{&*obj\onRelease     ,ti_Data} ; notifyID when the object is released (mouse up, doesn't need to be a valid click)
-    Case #TUIA_ONKEY          : str_WritePtr{&*obj\onKeyDown     ,ti_Data} ; notifyID when a key is pressed
-    Case #TUIA_ONBEGINREFRESH : str_WritePtr{&*obj\onBeginRefresh,ti_Data} ; notifyID before internal refresh
-    Case #TUIA_ONREFRESH      : str_WritePtr{&*obj\onRefresh     ,ti_Data} ; notifyID after internal refresh
-    Case #TUIA_ONFOCUS        : str_WritePtr{&*obj\onFocus       ,ti_Data} ; notifyID when object gains focus
-    Case #TUIA_ONLOSEFOCUS    : str_WritePtr{&*obj\onLoseFocus   ,ti_Data} ; notifyID when object loses focus
-    Case #TUIA_ONHELP         : str_WritePtr{&*obj\onHelp        ,ti_Data} ; notifyID when mouse rests over object or HELP key is pressed
+    ;Case #TUIA_ONCLICK        : str_WritePtr{&*obj\onClick       ,ti_Data} ; notifyID when the object is clicked
+    ;Case #TUIA_ONMOUSEOVER    : str_WritePtr{&*obj\onMouseOver   ,ti_Data} ; notifyID when mouse gets over the object
+    ;Case #TUIA_ONDOUBLECLICK  : str_WritePtr{&*obj\onDoubleClick ,ti_Data} ; notifyID when the object is double clicked
+    ;Case #TUIA_ONTOUCH        : str_WritePtr{&*obj\onTouch       ,ti_Data} ; notifyID when the object is touched (mouse down)
+    ;Case #TUIA_ONRELEASE      : str_WritePtr{&*obj\onRelease     ,ti_Data} ; notifyID when the object is released (mouse up, doesn't need to be a valid click)
+    ;Case #TUIA_ONKEY          : str_WritePtr{&*obj\onKeyDown     ,ti_Data} ; notifyID when a key is pressed
+    ;Case #TUIA_ONBEGINREFRESH : str_WritePtr{&*obj\onBeginRefresh,ti_Data} ; notifyID before internal refresh
+    ;Case #TUIA_ONREFRESH      : str_WritePtr{&*obj\onRefresh\notifyID     ,ti_Data} ; notifyID after internal refresh
+    ;Case #TUIA_ONFOCUS        : str_WritePtr{&*obj\onFocus\notifyID       ,ti_Data} ; notifyID when object gains focus
+    ;Case #TUIA_ONLOSEFOCUS    : str_WritePtr{&*obj\onLoseFocus\notifyID   ,ti_Data} ; notifyID when object loses focus
+    ;Case #TUIA_ONHELP         : str_WritePtr{&*obj\onHelp\notifyID        ,ti_Data} ; notifyID when mouse rests over object or HELP key is pressed
+    Case #TUIA_ONEVENT        : str_WritePtr{&*obj\onEvent\notifyID       ,ti_Data}
 
     Case #TUIA_HELP       : str_WritePtr{&*obj\help,ti_Data} ; TODO: Update Tooltip!
     Case #TUIA_FLAGS      : *obj\flags       = ti_Data                        : ntui_Refresh{*obj,Null} ;: _ntui_PropagateBind{*obj}
@@ -953,17 +976,18 @@ Function.w ntui_SetAttr{*obj.tuiObject,ti_Tag.l,ti_Data.l}
       Select Peek.s(*xmlA\nameP)
         Case "string"          : done=ntui_SetAttr{*obj,#TUIA_STRING         ,*xmlA\stringP}
         Case "value"           : done=ntui_SetAttr{*obj,#TUIA_VALUE          ,*xmlA\value}
-        Case "onclick"         : done=ntui_SetAttr{*obj,#TUIA_ONCLICK        ,*xmlA\stringP}
-        Case "onmouseover"     : done=ntui_SetAttr{*obj,#TUIA_ONMOUSEOVER    ,*xmlA\stringP}
-        Case "ondoubleclick"   : done=ntui_SetAttr{*obj,#TUIA_ONDOUBLECLICK  ,*xmlA\stringP}
-        Case "ontouch"         : done=ntui_SetAttr{*obj,#TUIA_ONTOUCH        ,*xmlA\stringP}
-        Case "onrelease"       : done=ntui_SetAttr{*obj,#TUIA_ONRELEASE      ,*xmlA\stringP}
-        Case "onkey"           : done=ntui_SetAttr{*obj,#TUIA_ONKEY          ,*xmlA\stringP}
-        Case "onbeginrefresh"  : done=ntui_SetAttr{*obj,#TUIA_ONBEGINREFRESH ,*xmlA\stringP}
+        ;Case "onclick"         : done=ntui_SetAttr{*obj,#TUIA_ONCLICK        ,*xmlA\stringP}
+        ;Case "onmouseover"     : done=ntui_SetAttr{*obj,#TUIA_ONMOUSEOVER    ,*xmlA\stringP}
+        ;Case "ondoubleclick"   : done=ntui_SetAttr{*obj,#TUIA_ONDOUBLECLICK  ,*xmlA\stringP}
+        ;Case "ontouch"         : done=ntui_SetAttr{*obj,#TUIA_ONTOUCH        ,*xmlA\stringP}
+        ;Case "onrelease"       : done=ntui_SetAttr{*obj,#TUIA_ONRELEASE      ,*xmlA\stringP}
+        ;Case "onkey"           : done=ntui_SetAttr{*obj,#TUIA_ONKEY          ,*xmlA\stringP}
+        ;Case "onbeginrefresh"  : done=ntui_SetAttr{*obj,#TUIA_ONBEGINREFRESH ,*xmlA\stringP}
         Case "onrefresh"       : done=ntui_SetAttr{*obj,#TUIA_ONREFRESH      ,*xmlA\stringP}
-        Case "onfocus"         : done=ntui_SetAttr{*obj,#TUIA_ONFOCUS        ,*xmlA\stringP}
-        Case "onlosefocus"     : done=ntui_SetAttr{*obj,#TUIA_ONLOSEFOCUS    ,*xmlA\stringP}
-        Case "onhelp"          : done=ntui_SetAttr{*obj,#TUIA_ONHELP         ,*xmlA\stringP}
+        Case "onevent"         : done=ntui_SetAttr{*obj,#TUIA_ONEVENT        ,*xmlA\stringP}
+        ;Case "onfocus"         : done=ntui_SetAttr{*obj,#TUIA_ONFOCUS        ,*xmlA\stringP}
+        ;Case "onlosefocus"     : done=ntui_SetAttr{*obj,#TUIA_ONLOSEFOCUS    ,*xmlA\stringP}
+        ;Case "onhelp"          : done=ntui_SetAttr{*obj,#TUIA_ONHELP         ,*xmlA\stringP}
         Case "help"            : done=ntui_SetAttr{*obj,#TUIA_HELP           ,*xmlA\stringP}
         Case "flags"           : done=ntui_SetAttr{*obj,#TUIA_FLAGS          ,*xmlA\value} ; TODO: as text
         Case "minheight"       : done=ntui_SetAttr{*obj,#TUIA_MINHEIGHT      ,*xmlA\value}
@@ -1074,87 +1098,102 @@ End Function
 ;/ - result.w       : success if attribute has been get                                                        /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.l ntui_GetAttr{*obj.tuiObject,ti_Tag.l,ti_Data.l}
+Function.l ntui_GetAttr{*obj.tuiObject,ti_Tag.l,*ti_Data_.l}
   !_ASSERT{*obj}
+  !_ASSERT{*ti_Data_}
 
   If (*obj\GetAttr)  ; try the objects GetAttr first
-    !_CallFuncPointer{*obj\GetAttr,done.w,*obj,ti_Tag,&ti_Data}
-    If done Then Function Return ti_Data
+    !_CallFuncPointer{*obj\GetAttr,done.w,*obj,ti_Tag,*ti_Data_}
+    If done Then Function Return done
   End If
 
+  *ti_Data.longP = *ti_Data_
+
+  done = True
   Select ti_Tag
-    Case #TUIA_CLASSID       : ti_Data = *obj\classID
-    Case #TUIA_ID            : ti_Data = str_GetPtr{*obj\nameID        }
-    Case #TUIA_STRING        : ti_Data = str_GetPtr{*obj\string        }
-    Case #TUIA_ONCLICK       : ti_Data = str_GetPtr{*obj\onClick       } ; notifyID when the object is clicked
-    Case #TUIA_ONMOUSEOVER   : ti_Data = str_GetPtr{*obj\onMouseOver   } ; notifyID when mouse gets over the object
-    Case #TUIA_ONDOUBLECLICK : ti_Data = str_GetPtr{*obj\onDoubleClick } ; notifyID when the object is double clicked
-    Case #TUIA_ONTOUCH       : ti_Data = str_GetPtr{*obj\onTouch       } ; notifyID when the object is touched (mouse down)
-    Case #TUIA_ONRELEASE     : ti_Data = str_GetPtr{*obj\onRelease     } ; notifyID when the object is released (mouse up, doesn't need to be a valid click)
-    Case #TUIA_ONKEY         : ti_Data = str_GetPtr{*obj\onKeyDown     } ; notifyID when a key is pressed
-    Case #TUIA_ONBEGINREFRESH: ti_Data = str_GetPtr{*obj\onBeginRefresh} ; notifyID before internal refresh
-    Case #TUIA_ONREFRESH     : ti_Data = str_GetPtr{*obj\onRefresh     } ; notifyID after internal refresh
-    Case #TUIA_ONFOCUS       : ti_Data = str_GetPtr{*obj\onFocus       } ; notifyID when object gains focus
-    Case #TUIA_ONLOSEFOCUS   : ti_Data = str_GetPtr{*obj\onLoseFocus   } ; notifyID when object loses focus
-    Case #TUIA_ONHELP        : ti_Data = str_GetPtr{*obj\onHelp        } ; notifyID when mouse rests over object or HELP key is pressed
-    Case #TUIA_HELP          : ti_Data = str_GetPtr{*obj\help          }
-    Case #TUIA_VALUE         : ti_Data = *obj\value
-    Case #TUIA_FLAGS         : ti_Data = *obj\flags
-    Case #TUIA_WIDTH         : ti_Data = !tuiRectWidth{*obj\cbox}
-    Case #TUIA_HEIGHT        : ti_Data = !tuiRectHeight{*obj\cbox}
-    Case #TUIA_MINWIDTH      : ti_Data = *obj\minsize\x
-    Case #TUIA_MINHEIGHT     : ti_Data = *obj\minsize\y
-    Case #TUIA_MAXWIDTH      : ti_Data = *obj\maxsize\x
-    Case #TUIA_MAXHEIGHT     : ti_Data = *obj\maxsize\y
-    Case #TUIA_XPOS          : ti_Data = *obj\cbox\left
-    Case #TUIA_YPOS          : ti_Data = *obj\cbox\top
-    Case #TUIA_BORDERTYPE    : ti_Data = *obj\borderType
-    Case #TUIA_FOCUS         : If (*obj\flags&#TUIF_FOCUS    ) Then ti_Data=True:Else ti_Data=False
-    Case #TUIA_MOVER         : If (*obj\flags&#TUIF_MOVER    ) Then ti_Data=True:Else ti_Data=False
-    Case #TUIA_ACTIVE        : If (*obj\flags&#TUIF_ACTIVE   ) Then ti_Data=True:Else ti_Data=False
-    Case #TUIA_INVISIBLE     : If (*obj\flags&#TUIF_INVISIBLE) Then ti_Data=True:Else ti_Data=False
-    Case #TUIA_ONSCREEN      : If (*obj\flags&#TUIF_ONSCREEN ) Then ti_Data=True:Else ti_Data=False
-    Case #TUIA_ENABLED       : If (*obj\flags&#TUIF_DISABLED ) Then ti_Data=False:Else ti_Data=True
-    Case #TUIA_DISABLED      : If (*obj\flags&#TUIF_DISABLED ) Then ti_Data=True:Else ti_Data=False
-    Case #TUIA_LEFTMARGIN    : ti_Data = *obj\margin\left
-    Case #TUIA_TOPMARGIN     : ti_Data = *obj\margin\top
-    Case #TUIA_RIGHTMARGIN   : ti_Data = *obj\margin\right
-    Case #TUIA_BOTTOMMARGIN  : ti_Data = *obj\margin\bottom
-    Case #TUIA_LEFTPADDING   : ti_Data = *obj\padding\left
-    Case #TUIA_TOPPADDING    : ti_Data = *obj\padding\top
-    Case #TUIA_RIGHTPADDING  : ti_Data = *obj\padding\right
-    Case #TUIA_BOTTOMPADDING : ti_Data = *obj\padding\bottom
-    Case #TUIA_BGPEN         : ti_Data = *obj\bgTuiPen
-    Case #TUIA_FGPEN         : ti_Data = *obj\fgTuiPen
-    Case #TUIA_BGRGB         : ti_Data = *obj\bgRGB
-    Case #TUIA_FGRGB         : ti_Data = *obj\fgRGB
-    Case #TUIA_BGIMAGE       : ti_Data = *obj\bgImage
-    Case #TUIA_FGIMAGE       : ti_Data = *obj\fgImage
-    Case #TUIA_CBOX          : ti_Data = &*obj\cbox ; r  (*tuiRect) content box
-    Case #TUIA_IBOX          : ti_Data = &*obj\ibox ; r  (*tuiRect) innerbox box
-    Case #TUIA_BBOX          : ti_Data = &*obj\bbox ; r  (*tuiRect) bounding box
-    Case #TUIA_MD_CALCULATEMINSIZE : ti_Data = *obj\CalculateMinSize ; rw (*func) function pointer to ntui_CalculateMinSize method
-    Case #TUIA_MD_DISPATCHEVENT    : ti_Data = *obj\DispatchEvent    ; rw (*func) function pointer to ntui_DispatchEvent method
-    Case #TUIA_MD_DRAW             : ti_Data = *obj\Draw             ; rw (*func) function pointer to ntui_Draw method
-    Case #TUIA_MD_DEINIT           : ti_Data = *obj\Deinit           ; rw (*func) function pointer to ntui_Deinit method
-    ;Case #TUIA_MD_INIT             : ti_Data = *obj\Init             ; rw (*func) function pointer to ntui_Init method
-    Case #TUIA_MD_GETATTR          : ti_Data = *obj\GetAttr          ; rw (*func) function pointer to ntui_GetAttr method
-    Case #TUIA_MD_SETATTR          : ti_Data = *obj\SetAttr          ; rw (*func) function pointer to ntui_SetAttr method
-    Case #TUIA_MD_LAYOUT           : ti_Data = *obj\Layout           ; rw (*func) function pointer to ntui_Layout method
-    Case #TUIA_NEXTOBJECT    : ti_Data = *obj\next_ ; r  (*obj) pointer to next object in hirarchie
-    Case #TUIA_PREVOBJECT    : ti_Data = *obj\prev  ; r  (*obj) pointer to previous object in hirarchie
-    Case #TUIA_PARENTOBJECT  : ti_Data = *obj\parent; r  (*obj) pointer to parent object in hirarchie
-    Case #TUIA_CHILDOBJECT   : ti_Data = *obj\child ; r  (*obj) pointer to child object in hirarchie
-    Case #TUIA_NEXTTABOBJECT : ti_Data = ntui_GetNextTabObject{*obj}; r  (*obj) pointer to next object in tab chain
-    Case #TUIA_PREVTABOBJECT : ti_Data = ntui_GetPrevTabObject{*obj}; r  (*obj) pointer to prevouis object in tab chain
-    Case #TUIA_MOUSEPOINTER  : ti_Data = *obj\pointerID
-    Case #TUIA_USERDATA      : ti_Data = *obj\userData
+    Case #TUIA_CLASSID       : *ti_Data\l = *obj\classID
+    Case #TUIA_ID            : *ti_Data\l = str_GetPtr{*obj\nameID        }
+    Case #TUIA_STRING        : *ti_Data\l = str_GetPtr{*obj\string        }
+    ;Case #TUIA_ONCLICK       : *ti_Data\l = str_GetPtr{*obj\onClick       } ; notifyID when the object is clicked
+    ;Case #TUIA_ONMOUSEOVER   : *ti_Data\l = str_GetPtr{*obj\onMouseOver   } ; notifyID when mouse gets over the object
+    ;Case #TUIA_ONDOUBLECLICK : *ti_Data\l = str_GetPtr{*obj\onDoubleClick } ; notifyID when the object is double clicked
+    ;Case #TUIA_ONTOUCH       : *ti_Data\l = str_GetPtr{*obj\onTouch       } ; notifyID when the object is touched (mouse down)
+    ;Case #TUIA_ONRELEASE     : *ti_Data\l = str_GetPtr{*obj\onRelease     } ; notifyID when the object is released (mouse up, doesn't need to be a valid click)
+    ;Case #TUIA_ONKEY         : *ti_Data\l = str_GetPtr{*obj\onKeyDown     } ; notifyID when a key is pressed
+    ;Case #TUIA_ONBEGINREFRESH: *ti_Data\l = str_GetPtr{*obj\onBeginRefresh} ; notifyID before internal refresh
+    ;Case #TUIA_ONREFRESH     : *ti_Data\l = str_GetPtr{*obj\onRefresh\notifyID     } ; notifyID after internal refresh
+    Case #TUIA_ONEVENT       : *ti_Data\l = str_GetPtr{*obj\onEvent\notifyID       } ;
+    ;Case #TUIA_ONFOCUS       : *ti_Data\l = str_GetPtr{*obj\onFocus       } ; notifyID when object gains focus
+    ;Case #TUIA_ONLOSEFOCUS   : *ti_Data\l = str_GetPtr{*obj\onLoseFocus   } ; notifyID when object loses focus
+    ;Case #TUIA_ONHELP        : *ti_Data\l = str_GetPtr{*obj\onHelp        } ; notifyID when mouse rests over object or HELP key is pressed
+    Case #TUIA_HELP          : *ti_Data\l = str_GetPtr{*obj\help          }
+    Case #TUIA_VALUE         : *ti_Data\l = *obj\value
+    Case #TUIA_FLAGS         : *ti_Data\l = *obj\flags
+    Case #TUIA_WIDTH         : *ti_Data\l = !tuiRectWidth{*obj\cbox}
+    Case #TUIA_HEIGHT        : *ti_Data\l = !tuiRectHeight{*obj\cbox}
+    Case #TUIA_MINWIDTH      : *ti_Data\l = *obj\minsize\x
+    Case #TUIA_MINHEIGHT     : *ti_Data\l = *obj\minsize\y
+    Case #TUIA_MAXWIDTH      : *ti_Data\l = *obj\maxsize\x
+    Case #TUIA_MAXHEIGHT     : *ti_Data\l = *obj\maxsize\y
+    Case #TUIA_XPOS          : *ti_Data\l = *obj\cbox\left
+    Case #TUIA_YPOS          : *ti_Data\l = *obj\cbox\top
+    Case #TUIA_BORDERTYPE    : *ti_Data\l = *obj\borderType
+    Case #TUIA_FOCUS         : If (*obj\flags&#TUIF_FOCUS    ) Then *ti_Data\l=True:Else *ti_Data\l=False
+    Case #TUIA_MOVER         : If (*obj\flags&#TUIF_MOVER    ) Then *ti_Data\l=True:Else *ti_Data\l=False
+    Case #TUIA_ACTIVE        : If (*obj\flags&#TUIF_ACTIVE   ) Then *ti_Data\l=True:Else *ti_Data\l=False
+    Case #TUIA_INVISIBLE     : If (*obj\flags&#TUIF_INVISIBLE) Then *ti_Data\l=True:Else *ti_Data\l=False
+    Case #TUIA_ONSCREEN      : If (*obj\flags&#TUIF_ONSCREEN ) Then *ti_Data\l=True:Else *ti_Data\l=False
+    Case #TUIA_ENABLED       : If (*obj\flags&#TUIF_DISABLED ) Then *ti_Data\l=False:Else *ti_Data\l=True
+    Case #TUIA_DISABLED      : If (*obj\flags&#TUIF_DISABLED ) Then *ti_Data\l=True:Else *ti_Data\l=False
+    Case #TUIA_LEFTMARGIN    : *ti_Data\l = *obj\margin\left
+    Case #TUIA_TOPMARGIN     : *ti_Data\l = *obj\margin\top
+    Case #TUIA_RIGHTMARGIN   : *ti_Data\l = *obj\margin\right
+    Case #TUIA_BOTTOMMARGIN  : *ti_Data\l = *obj\margin\bottom
+    Case #TUIA_LEFTPADDING   : *ti_Data\l = *obj\padding\left
+    Case #TUIA_TOPPADDING    : *ti_Data\l = *obj\padding\top
+    Case #TUIA_RIGHTPADDING  : *ti_Data\l = *obj\padding\right
+    Case #TUIA_BOTTOMPADDING : *ti_Data\l = *obj\padding\bottom
+    Case #TUIA_BGPEN         : *ti_Data\l = *obj\bgTuiPen
+    Case #TUIA_FGPEN         : *ti_Data\l = *obj\fgTuiPen
+    Case #TUIA_BGRGB         : *ti_Data\l = *obj\bgRGB
+    Case #TUIA_FGRGB         : *ti_Data\l = *obj\fgRGB
+    Case #TUIA_BGIMAGE       : *ti_Data\l = *obj\bgImage
+    Case #TUIA_FGIMAGE       : *ti_Data\l = *obj\fgImage
+    Case #TUIA_CBOX          : *ti_Data\l = &*obj\cbox ; r  (*tuiRect) content box
+    Case #TUIA_IBOX          : *ti_Data\l = &*obj\ibox ; r  (*tuiRect) innerbox box
+    Case #TUIA_BBOX          : *ti_Data\l = &*obj\bbox ; r  (*tuiRect) bounding box
+    Case #TUIA_MD_CALCULATEMINSIZE : *ti_Data\l = *obj\CalculateMinSize ; rw (*func) function pointer to ntui_CalculateMinSize method
+    Case #TUIA_MD_DISPATCHEVENT    : *ti_Data\l = *obj\DispatchEvent    ; rw (*func) function pointer to ntui_DispatchEvent method
+    Case #TUIA_MD_DRAW             : *ti_Data\l = *obj\Draw             ; rw (*func) function pointer to ntui_Draw method
+    Case #TUIA_MD_DEINIT           : *ti_Data\l = *obj\Deinit           ; rw (*func) function pointer to ntui_Deinit method
+    ;Case #TUIA_MD_INIT             : *ti_Data\l = *obj\Init             ; rw (*func) function pointer to ntui_Init method
+    Case #TUIA_MD_GETATTR          : *ti_Data\l = *obj\GetAttr          ; rw (*func) function pointer to ntui_GetAttr method
+    Case #TUIA_MD_SETATTR          : *ti_Data\l = *obj\SetAttr          ; rw (*func) function pointer to ntui_SetAttr method
+    Case #TUIA_MD_LAYOUT           : *ti_Data\l = *obj\Layout           ; rw (*func) function pointer to ntui_Layout method
+    Case #TUIA_NEXTOBJECT    : *ti_Data\l = *obj\next_ ; r  (*obj) pointer to next object in hirarchie
+    Case #TUIA_PREVOBJECT    : *ti_Data\l = *obj\prev  ; r  (*obj) pointer to previous object in hirarchie
+    Case #TUIA_PARENTOBJECT  : *ti_Data\l = *obj\parent; r  (*obj) pointer to parent object in hirarchie
+    Case #TUIA_CHILDOBJECT   : *ti_Data\l = *obj\child ; r  (*obj) pointer to child object in hirarchie
+    Case #TUIA_NEXTTABOBJECT : *ti_Data\l = ntui_GetNextTabObject{*obj}; r  (*obj) pointer to next object in tab chain
+    Case #TUIA_PREVTABOBJECT : *ti_Data\l = ntui_GetPrevTabObject{*obj}; r  (*obj) pointer to prevouis object in tab chain
+    Case #TUIA_MOUSEPOINTER  : *ti_Data\l = *obj\pointerID
+    Case #TUIA_USERDATA      : *ti_Data\l = *obj\userData
     Default
-      ;
+      done=False
   End Select
 
-  Function Return ti_Data
+  Function Return done
 
+End Function
+
+_ntui_DefaultNotifyCallback:
+Function.w _ntui_DefaultNotifyCallback{*obj.tuiObject,*ev.tuiEvent,*notifyID.str}
+  If *notifyID
+    str_Dup{&*ev\notifyID,*notifyID}
+    *ev\tuiObject = *obj
+    Function Return True
+  End If
+  Function Return False
 End Function
 
 
@@ -1162,6 +1201,9 @@ Statement _ntui_DispatchEvent{*ev.tuiEvent}
   !_ASSERT{*ev}
   *obj.tuiObject = *ev\tuiObject
   !_ASSERT{*obj}
+
+  If *obj\onEvent\callback Then !_CallFuncPointer{*obj\onEvent\callback,done.w,*obj,*ev,Null}
+  If done Then Statement Return
 
   If *obj\DispatchEvent Then !_CallFuncPointer{*obj\DispatchEvent,done.w,*obj,*ev}
   If done Then Statement Return
@@ -1398,6 +1440,9 @@ Function.tuiObject _ntui_CreateObject{typeID.l,sizeof_obj.l,help.s,flags.l,nameI
     *obj\SetAttr          = Null
     *obj\GetAttr          = Null
 
+    *obj\onEvent\callback = Null
+    *obj\onEvent\notifyID = Null
+
     *obj\margin\left   = *engine\defMargin\left
     *obj\margin\top    = *engine\defMargin\top
     *obj\margin\right  = *engine\defMargin\right
@@ -1423,20 +1468,20 @@ Function.tuiObject _ntui_CreateObject{typeID.l,sizeof_obj.l,help.s,flags.l,nameI
     If (help)   Then str_Write{&*obj\help   ,help}
     If (nameID) Then str_Write{&*obj\nameID, nameID}
 
-    bpflags.l = 0
-    If (*obj\flags&#TUIF_FIXWIDTH  = 0) Then bpflags | #TUIF_FIXWIDTH
-    If (*obj\flags&#TUIF_FIXHEIGHT = 0) Then bpflags | #TUIF_FIXHEIGHT
-    If (bpflags) ; backpropagate the sizing
-      *parent.tuiObject = *obj\parent
-      While *parent
-        If (*parent\flags&bpflags)
-          *parent\flags = (*parent\flags|bpflags) - bpflags
-          If *parent\classID><#TUICLASS_WINDOW AND *parent\classID><#TUICLASS_ENGINE Then *parent = *parent\parent : Else *parent=Null
-        Else
-          *parent=Null
-        End If
-      Wend
-    End If
+;    bpflags.l = 0
+;    If (*obj\flags&#TUIF_FIXWIDTH  = 0) Then bpflags | #TUIF_FIXWIDTH
+;    If (*obj\flags&#TUIF_FIXHEIGHT = 0) Then bpflags | #TUIF_FIXHEIGHT
+;    If (bpflags) ; backpropagate the sizing
+;      *parent.tuiObject = *obj\parent
+;      While *parent
+;        If (*parent\flags&bpflags)
+;          *parent\flags = (*parent\flags|bpflags) - bpflags
+;          If *parent\classID><#TUICLASS_WINDOW AND *parent\classID><#TUICLASS_ENGINE Then *parent = *parent\parent : Else *parent=Null
+;        Else
+;          *parent=Null
+;        End If
+;      Wend
+;    End If
 
     tuiGlobal\buildHelper\tuiCurrent = *obj
     tuiGlobal\buildHelper\tuiPrev    = *obj
@@ -1562,25 +1607,45 @@ End Statement
 
 
 XINCLUDE "obj.engine.ab3"
+Syntax 6
 XINCLUDE "obj.group.ab3"
+Syntax 6
 XINCLUDE "obj.space.ab3"
+Syntax 6
 XINCLUDE "obj.button.ab3"
+Syntax 6
 XINCLUDE "obj.label.ab3"
+Syntax 6
 XINCLUDE "obj.scroller.ab3"
+Syntax 6
 XINCLUDE "obj.slider.ab3"
+Syntax 6
 XINCLUDE "obj.cycle.ab3"
+Syntax 6
 XINCLUDE "obj.customview.ab3"
+Syntax 6  ;<=
 XINCLUDE "obj.scrollview.ab3"
+Syntax 6
 XINCLUDE "obj.progressbar.ab3"
+Syntax 6
 XINCLUDE "obj.tabview.ab3"
+Syntax 6
 XINCLUDE "obj.textbox.ab3"
+Syntax 6
 XINCLUDE "obj.seperator.ab3"
+Syntax 6
 XINCLUDE "obj.balancer.ab3"
+Syntax 6
 XINCLUDE "obj.treeview.ab3"
+Syntax 6
 XINCLUDE "obj.window.ab3"
+Syntax 6
 XINCLUDE "obj.menuitem.ab3"
+Syntax 6
 XINCLUDE "obj.listview.ab3"
+Syntax 6
 XINCLUDE "obj.image.ab3"
+Syntax 6
 
 
 ;///////////////////////////////////////////////////////////////////////////////
@@ -1647,7 +1712,20 @@ Statement _ntui_ShowToolTip{*engine.tuiEngine,*text.str,x.l,y.l}
 
 End Statement
 
-!_GetFuncPointer{tuiGlobal\showToolTip     ,_ntui_ShowToolTip,{0,Null,0,0}}
+!_GetFuncPointer{tuiGlobal\showToolTip     ,_ntui_ShowToolTip,{Null,Null,0,0}}
+
+
+Statement ntui_ShowToolTip{*engine.tuiEngine,text.s,@x.l,@y.l}
+  str_Write{&*text.str,text}
+
+  If (*engine\scr = Null) Then _ntui_OpenScreen{*engine,Null}
+  If (*engine\scr = Null) Then Statement Return ; no screen
+
+  If x<0 Then x=*engine\scr\MouseX
+  If y<0 Then y=*engine\scr\MouseY
+  _ntui_ShowToolTip{*engine,*text,x,y}
+  str_Free{&*text}
+End Statement
 
 
 ;///////////////////////////////////////////////////////////////////////////////
@@ -1669,11 +1747,12 @@ End Statement
 ;/ - succ.w               : True if popped up, False if failed                                                        /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.w ntui_PopUp{*engine.tuiEngine,@pubname.s,@*scr.Screen}
+Function.w ntui_PopUp{*engine.tuiEngine,@pubScreenName.s,@*scr.Screen}
   !_ASSERT{*engine}
 
   succ.w = False
-  If _ntui_OpenScreen{*engine,pubname.s,*scr}
+  ntui_SetAttr{*engine,#TUIEA_PUBSCREENNAME,&pubScreenName}
+  If _ntui_OpenScreen{*engine,*scr}
 
     *child.tuiObject=*engine\obj\child
     While *child
@@ -1891,14 +1970,32 @@ Statement _ntui_AmigaCollectIDCMPEvents{*engine.tuiEngine}
 
         Case #IDCMP_REFRESHWINDOW
           If *oswin
+            clip.tuiRect\left=0,0,0,0
+            If *obj\classID=#TUICLASS_WINDOW
+              *win.tuiWindow = (.tuiWindow)*obj
+              *win\osrefreshing = True
+            Else
+              *win=Null
+            End If
+
+            LockLayerInfo_ *oswin\WScreen\LayerInfo
             BeginRefresh_ *oswin
-            clip.tuiRect\left   = *oswin\WLayer\DamageList\bounds\MinX
-            clip.tuiRect\top    = *oswin\WLayer\DamageList\bounds\MinY
-            clip.tuiRect\right  = *oswin\WLayer\DamageList\bounds\MaxX
-            clip.tuiRect\bottom = *oswin\WLayer\DamageList\bounds\MaxY
+
+            If *oswin\WLayer\DamageList
+              clip\left   = *oswin\WLayer\DamageList\bounds\MinX
+              clip\top    = *oswin\WLayer\DamageList\bounds\MinY
+              clip\right  = *oswin\WLayer\DamageList\bounds\MaxX
+              clip\bottom = *oswin\WLayer\DamageList\bounds\MaxY
+              If !tuiValidRect{clip}
+                _ntui_Redraw{*obj,clip}
+              End If
+            End If
+
             EndRefresh_ *oswin,1
-            ;error{"Refresh Bounds:"+Str$(clip\left)+"/"+Str$(clip\top)+" - "+Str$(clip\right)+"/"+Str$(clip\bottom)}
-            _ntui_Redraw{*obj,clip}
+            UnlockLayerInfo_ *oswin\WScreen\LayerInfo
+            ;error{"Refresh Bounds Damage:"+Str$(clip\left)+"/"+Str$(clip\top)+" - "+Str$(clip\right)+"/"+Str$(clip\bottom)}
+            ;error{"Refresh Bounds Clip:"+Str$(clip2\left)+"/"+Str$(clip2\top)+" - "+Str$(clip2\right)+"/"+Str$(clip2\bottom)}
+            If *win Then *win\osrefreshing = False
           End If
 
         Case #IDCMP_EXTENDEDMOUSE
@@ -2125,7 +2222,7 @@ End Function
 ;/* auto init */
 If _ntui_Init{} =False Then End ; and call it
 
-*engine.tuiEngine = ntui_Engine{"NTUI-Demo","NTUI","NTUI-Demo-Menu","sys:disk.info",""}
+*engine.tuiEngine = ntui_Engine{"NTUI-Demo","NTUI","NTUI-Demo-Menu","sys:utilities/Amplifier.info",""}
 If *engine=Null Then error{"Unable to initialized Engine!"} : End ; Ooops!
 a.s = "Sys:Prefs/Presets/NTUI/def2"
 ntui_SetAttr{*engine,#TUIEA_SKINPATH,&a.s}
@@ -2166,9 +2263,9 @@ If *demoWin
         ntui_Label    {"Left Aligned Label",#TUIF_LEFT}
         ntui_Label    {"Right Aligned Label",#TUIF_RIGHT}
         *con.tuiTextBox = ntui_Console {"NTUI Console V1.0\\nReady.\\n",100,"",-1,"CON"}
-        CNIF @#TUI_HAS_SPACE
-        ntui_Space{0,0}
-        CEND
+        ;CNIF @#TUI_HAS_SPACE
+        ;ntui_Space{0,0}
+        ;CEND
       ntui_EndGroup{}
     ntui_EndGroup{}
 
@@ -2385,7 +2482,7 @@ If *demoWin
   ;          ntui_BindByID{*engine,"sc1","sc2"}
             ntui_Label    {"Disabled HScroller",#TUIF_RIGHT}
             ntui_HScroller{0,100,20,"","",#TUIF_DISABLED } : ntui_AddArrows{Null}
-          ntui_EndGroup{} : ntui_SetFlags{#TUIF_FIXSIZE}
+          ntui_EndGroup{} : ntuib_SetFlags{#TUIF_FIXSIZE}
           ntui_Space{0,0}
         ntui_EndGroup{}
 
@@ -2401,16 +2498,16 @@ If *demoWin
           ntui_Label    {"HSlider + Label",#TUIF_RIGHT}
           ntui_HSlider{0,0,100,"%d units","","",#TUIF_UNDERLINED}
           ntui_Label    {"HSlider + Label",#TUIF_RIGHT}
-          ntui_HSlider{0,0,100,"%d units","","",#TUIF_UNDERLINED} : ntui_SetBorder{#TUIBORDER_RECESSED}
+          ntui_HSlider{0,0,100,"%d units","","",#TUIF_UNDERLINED} : ntuib_SetBorder{#TUIBORDER_RECESSED}
           ntui_Label    {"Disabled HSlider + Label",#TUIF_RIGHT}
           ntui_HSlider{0,0,100,"%d units","","",#TUIF_DISABLED|#TUIF_UNDERLINED }
 
           ntui_Label    {"HSlider + Border",#TUIF_RIGHT}
-          ntui_HSlider{0,0,100,"%d units"}  : ntui_SetBorder{#TUIBORDER_RECESSED}
+          ntui_HSlider{0,0,100,"%d units"}  : ntuib_SetBorder{#TUIBORDER_RECESSED}
           ntui_Label    {"Disabled HSlider + Border",#TUIF_RIGHT}
-          ntui_HSlider{0,0,100,"%d units","","",#TUIF_DISABLED}  : ntui_SetBorder{#TUIBORDER_RECESSED}
+          ntui_HSlider{0,0,100,"%d units","","",#TUIF_DISABLED}  : ntuib_SetBorder{#TUIBORDER_RECESSED}
           ntui_Space{0,0,#TUIF_FIXWIDTH } : ntui_Space{0,0}
-        ntui_EndGroup{}  : ntui_SetFlags{#TUIF_FIXSIZE}
+        ntui_EndGroup{}  : ntuib_SetFlags{#TUIF_FIXSIZE}
         CEND
       ntui_EndGroup{}
 
@@ -2426,12 +2523,12 @@ If *demoWin
 
         ntui_VSlider{0,0,100,"%d","","",#TUIF_UNDERLINED}
         ntui_VSlider{0,0,100,"%d","","",#TUIF_DISABLED|#TUIF_UNDERLINED }
-        ntui_VSlider{0,0,100,"%d","","",#TUIF_UNDERLINED}                : ntui_SetBorder{#TUIBORDER_RECESSED}
-        ntui_VSlider{0,0,100,"%d"}  : ntui_SetBorder{#TUIBORDER_RECESSED}
-        ntui_VSlider{0,0,100,"%d","","",#TUIF_DISABLED}  : ntui_SetBorder{#TUIBORDER_RECESSED}
+        ntui_VSlider{0,0,100,"%d","","",#TUIF_UNDERLINED}                : ntuib_SetBorder{#TUIBORDER_RECESSED}
+        ntui_VSlider{0,0,100,"%d"}  : ntuib_SetBorder{#TUIBORDER_RECESSED}
+        ntui_VSlider{0,0,100,"%d","","",#TUIF_DISABLED}  : ntuib_SetBorder{#TUIBORDER_RECESSED}
         CEND
         ntui_Space{0,0}
-      ntui_EndGroup{}  : ntui_ClearFlags{#TUIF_FIXSIZE}
+      ntui_EndGroup{}  : ntuib_ClearFlags{#TUIF_FIXSIZE}
     ntui_EndGroup{} ; scroller
     CEND
 
@@ -2500,7 +2597,7 @@ If *demoWin
       ntui_Cycle    {"first|second|third|none",0,"",#TUIF_FIXSIZE,"excr"}
       CEND
       ntui_Space{0,0,#TUIF_FIXWIDTH}
-      ntui_EndGroup{}  : ntui_SetFlags{#TUIF_FIXSIZE}
+      ntui_EndGroup{}  : ntuib_SetFlags{#TUIF_FIXSIZE}
       ntui_BeginTabView{0,"",#TUIF_CENTER,"expa"}
         *obj.tuiObject =  ntui_BeginVGroup{0,"First Page"}
           ntui_Label    {"Content of page #1",#TUIF_CENTER}
@@ -2534,7 +2631,7 @@ If *demoWin
       CNIF @#TUI_HAS_PROGRESSBAR
       ntui_Label    {"ProgressBar",#TUIF_RIGHT}
       ntui_BeginHGroup{0}
-      ntui_ProgressBar{"%d of %t done (%p %)...",20,100}  : ntui_SetID{"SBAR"}
+      ntui_ProgressBar{"%d of %t done (%p %)...",20,100}  : ntuib_SetID{"SBAR"}
       ntui_ProgressBar{"%d of %t done (%p %)...",20,100,"",#TUIF_DISABLED}
       ntui_EndGroup{}
       CEND
@@ -2548,17 +2645,17 @@ If *demoWin
       ntui_Label    {"H/V Balancer",#TUIF_RIGHT}
       ntui_BeginVGroup{-1}
         ntui_BeginHGroup{-1}
-         ntui_Image{"UNKNOWN"} : ntui_ClearFlags{#TUIF_FIXSIZE}
+         ntui_Image{"UNKNOWN"} : ntuib_ClearFlags{#TUIF_FIXSIZE}
          ntui_VBalancer{}
-         ntui_Image{"UNKNOWN"} : ntui_ClearFlags{#TUIF_FIXSIZE}
-        ntui_EndGroup{}  : ntui_ClearFlags{#TUIF_FIXSIZE}
+         ntui_Image{"UNKNOWN"} : ntuib_ClearFlags{#TUIF_FIXSIZE}
+        ntui_EndGroup{}  : ntuib_ClearFlags{#TUIF_FIXSIZE}
         ntui_HBalancer{}
         ntui_BeginHGroup{-1}
-          ntui_Image{"UNKNOWN"} : ntui_ClearFlags{#TUIF_FIXSIZE}
+          ntui_Image{"UNKNOWN"} : ntuib_ClearFlags{#TUIF_FIXSIZE}
           ntui_VBalancer{}
-          ntui_Image{"UNKNOWN"} : ntui_ClearFlags{#TUIF_FIXSIZE}
-        ntui_EndGroup{}  : ntui_ClearFlags{#TUIF_FIXSIZE}
-      ntui_EndGroup{}  : ntui_ClearFlags{#TUIF_FIXSIZE}
+          ntui_Image{"UNKNOWN"} : ntuib_ClearFlags{#TUIF_FIXSIZE}
+        ntui_EndGroup{}  : ntuib_ClearFlags{#TUIF_FIXSIZE}
+      ntui_EndGroup{}  : ntuib_ClearFlags{#TUIF_FIXSIZE}
       CEND
 
 
@@ -2570,10 +2667,10 @@ If *demoWin
         ntui_BeginVGroup{0}
           ntui_BeginHGroup{0}
             *cs.tuiCustomView = ntui_CustomView {50,50,"this is a custom view",-1,"CView1"}
-            a.s = "CVMOVE"    : ntui_SetAttr{*cs,#TUICVA_ONMOUSEMOVE,&a}
-            a.s = "CVTOUCH"   : ntui_SetAttr{*cs,#TUIA_ONTOUCH,&a}
-            a.s = "CVRELEASE" : ntui_SetAttr{*cs,#TUIA_ONRELEASE,&a}
-            a.s = "CVSCROLL"  : ntui_SetAttr{*cs,#TUICVA_ONSCROLL,&a}
+            ;a.s = "CVMOVE"    : ntui_SetAttr{*cs,#TUICVA_ONMOUSEMOVE,&a}
+            ;a.s = "CVTOUCH"   : ntui_SetAttr{*cs,#TUIA_ONTOUCH,&a}
+            ;a.s = "CVRELEASE" : ntui_SetAttr{*cs,#TUIA_ONRELEASE,&a}
+            ;a.s = "CVSCROLL"  : ntui_SetAttr{*cs,#TUICVA_ONSCROLL,&a}
             ntui_SetAttr{*cs,#TUICVA_HTOTAL,512}
             ntui_SetAttr{*cs,#TUICVA_VTOTAL,512}
 
@@ -2588,7 +2685,7 @@ If *demoWin
              ntui_Image{"TBImages:list_zoom_100"}
           ntui_EndGroup{}
 
-          ntui_SetFlags{#TUIF_FIXSIZE}
+          ntuib_SetFlags{#TUIF_FIXSIZE}
           ntui_Label {"CustomView with bound Scrollers",#TUIF_CENTER}
         ntui_EndGroup{}
 
@@ -2597,9 +2694,9 @@ If *demoWin
         ntui_BeginVGroup{0}
           ntui_BeginScrollView{50,50,"",-1,"SCRVIEW"}
             *cs.tuiCustomView = ntui_CustomView {512,512,"this is a custom view",-1,"CView2"}
-            a.s = "CVMOVE"    : ntui_SetAttr{*cs,#TUICVA_ONMOUSEMOVE,&a}
-            a.s = "CVTOUCH"   : ntui_SetAttr{*cs,#TUIA_ONTOUCH,&a}
-            a.s = "CVRELEASE" : ntui_SetAttr{*cs,#TUIA_ONRELEASE,&a}
+            ;a.s = "CVMOVE"    : ntui_SetAttr{*cs,#TUICVA_ONMOUSEMOVE,&a}
+            ;a.s = "CVTOUCH"   : ntui_SetAttr{*cs,#TUIA_ONTOUCH,&a}
+            ;a.s = "CVRELEASE" : ntui_SetAttr{*cs,#TUIA_ONRELEASE,&a}
             ntui_SetAttr{*cs,#TUIA_BORDERTYPE,#TUIBORDER_NONE}
             ntui_SetAttr{*cs,#TUIA_PADDING,0}
             ntui_SetAttr{*cs,#TUIA_MARGIN,0}
@@ -2749,17 +2846,17 @@ If *demoWin
 
     ntui_BeginHGroup{2,"Group"}
       ntui_BeginHGroup{2}
-        ntui_BeginHGroup{-1,"Title Text","TBImages:favourites"} : ntui_Label{"Titled Group"} : ntui_EndGroup{}                       : ntui_ClearFlags{#TUIF_FIXSIZE}
-        ntui_BeginVGroup{-1,"Title Text","TBImages:favourites",#TUIF_DISABLED} : ntui_Label{"Disabled Group"} : ntui_EndGroup{}      : ntui_ClearFlags{#TUIF_FIXSIZE}
-        ntui_BeginHGroup{-1,"x"} : ntui_SetBorder{#TUIBORDER_GROUP}    : ntui_Label{"Group with Group Border"} : ntui_EndGroup{}     : ntui_ClearFlags{#TUIF_FIXSIZE}
-        ntui_BeginHGroup{-1,"x"} : ntui_SetBorder{#TUIBORDER_RAISED}   : ntui_Label{"Group with Raised Border"} : ntui_EndGroup{}    : ntui_ClearFlags{#TUIF_FIXSIZE}
-        ntui_BeginHGroup{-1,"x"} : ntui_SetBorder{#TUIBORDER_RECESSED} : ntui_Label{"Group with Recessed Border"} : ntui_EndGroup{}  : ntui_ClearFlags{#TUIF_FIXSIZE}
-       ; ntui_BeginHGroup{-1,"x"} : ntui_SetBorder{#TUIBORDER_FLAT}     : ntui_Label{"Group with Flat Border"} : ntui_EndGroup{}
+        ntui_BeginHGroup{-1,"Title Text","TBImages:favourites"} : ntui_Label{"Titled Group"} : ntui_EndGroup{}                       : ntuib_ClearFlags{#TUIF_FIXSIZE}
+        ntui_BeginVGroup{-1,"Title Text","TBImages:favourites",#TUIF_DISABLED} : ntui_Label{"Disabled Group"} : ntui_EndGroup{}      : ntuib_ClearFlags{#TUIF_FIXSIZE}
+        ntui_BeginHGroup{-1,"x"} : ntuib_SetBorder{#TUIBORDER_GROUP}    : ntui_Label{"Group with Group Border"} : ntui_EndGroup{}     : ntuib_ClearFlags{#TUIF_FIXSIZE}
+        ntui_BeginHGroup{-1,"x"} : ntuib_SetBorder{#TUIBORDER_RAISED}   : ntui_Label{"Group with Raised Border"} : ntui_EndGroup{}    : ntuib_ClearFlags{#TUIF_FIXSIZE}
+        ntui_BeginHGroup{-1,"x"} : ntuib_SetBorder{#TUIBORDER_RECESSED} : ntui_Label{"Group with Recessed Border"} : ntui_EndGroup{}  : ntuib_ClearFlags{#TUIF_FIXSIZE}
+       ; ntui_BeginHGroup{-1,"x"} : ntuib_SetBorder{#TUIBORDER_FLAT}     : ntui_Label{"Group with Flat Border"} : ntui_EndGroup{}
 
           CNIF @#TUI_HAS_SCROLLVIEW
           ntui_BeginScrollView{50,50}
             ntui_BeginVGroup{0}
-              ntui_BeginHGroup{0} : ntui_SetFlags{#TUIF_SAMESIZE}
+              ntui_BeginHGroup{0} : ntuib_SetFlags{#TUIF_SAMESIZE}
                 ntui_ToolButton  {"Open","TBImages:open",-1 ,"","this is a toolbar button with text"}
                 ntui_ToolButton  {"Save","TBImages:save",-1 ,"","this is a toolbar button with text"}
                 ntui_ToolButton  {"SaveAll","TBImages:saveall",-1 ,"","this is a toolbar button with text"}
@@ -2802,7 +2899,7 @@ If *demoWin
               ntui_CheckButton{"Check 5",False}
               ntui_CheckButton{"Check 6",False}
             ntui_EndGroup{}
-          ntui_EndScrollView{} :ntui_ClearFlags{#TUIF_FIXSIZE}
+          ntui_EndScrollView{} :ntuib_ClearFlags{#TUIF_FIXSIZE}
           CEND
 
 
@@ -2814,7 +2911,7 @@ If *demoWin
      ntui_Label    {"String",#TUIF_RIGHT}
      ntui_BeginHGroup{-1} : ntui_String   {"String",20,"",-1,"mystring"} :  ntui_String   {"Disabled",20,"",#TUIF_DISABLED} : ntui_EndGroup{}
      key.s="KEY"
-     ntui_SetAttrByID{*engine,"mystring",#TUIA_ONLOSEFOCUS,&key}
+     ;ntui_SetAttrByID{*engine,"mystring",#TUIA_ONLOSEFOCUS,&key}
 
      ntui_Label    {"EditLabel",#TUIF_RIGHT}
      ntui_BeginHGroup{-1} :ntui_EditLabel  {"Edit me!",20,#TUIPEN_BACKGROUND}:ntui_EditLabel  {"Edit me!",20,#TUIPEN_BACKGROUND,"",#TUIF_DISABLED}: ntui_EndGroup{}
@@ -3227,11 +3324,11 @@ While quitme=False
           mx.l   = ntui_GetEventAttr{*ev,#TUIEVA_CXPOS,0}
           my.l   = ntui_GetEventAttr{*ev,#TUIEVA_CYPOS,0}
 
-          objx.l = ntui_GetAttr{*obj,#TUIA_XPOS,0}
-          objy.l = ntui_GetAttr{*obj,#TUIA_YPOS,0}
+          ntui_GetAttr{*obj,#TUIA_XPOS,&objx.l}
+          ntui_GetAttr{*obj,#TUIA_YPOS,&objy.l}
 
-          xoff.l = ntui_GetAttr{*obj,#TUICVA_HOFFSET,0}
-          yoff.l = ntui_GetAttr{*obj,#TUICVA_VOFFSET,0}
+          ntui_GetAttr{*obj,#TUICVA_HOFFSET,&xoff.l}
+          ntui_GetAttr{*obj,#TUICVA_VOFFSET,&yoff.l}
 
           a.s = Str$(mx+xoff)+"/"+Str$(my+yoff)+"      " ; draw the mouse koos
           SetAPen_ *rp,1
@@ -3249,14 +3346,10 @@ While quitme=False
       Case "MenuHit3"   :
         *obj = ntui_GetEventObject{*ev}
         *win.tuiWindow = ntui_GetObjectRootWindow{*obj}
-        instanceID.l = ntui_GetAttr{*win,#TUIWA_INSTANCEID,0}
+        ntui_GetAttr{*win,#TUIWA_INSTANCEID,&instanceID.l}
         error{"Menuhit with: "+Str$(*obj)+" win:"+Str$(*win)+" ID:"+Str$(instanceID)}
 
-      Case "TEST"       : message{"User hit the button!"} : s.s = "TEST TITLE!" : ntui_SetAttr{*obj,#TUIWA_TITLE,&s}
-        *obj = ntui_GetEventObject{*ev}
-        *win.tuiWindow = ntui_GetObjectRootWindow{*obj}
-        instanceID.l = ntui_GetAttr{*win,#TUIWA_INSTANCEID,0}
-        error{"Menuhit with: "+Str$(*obj)+" win:"+Str$(*win)+" ID:"+Str$(instanceID)}
+      Case "TEST"       : message{"User hit the button!"}
                                                                                                                                                                                                                                                   
       Case "QUIT"       : quitme=True
       Case "CLOSE"      : quitme=True
@@ -3292,14 +3385,14 @@ While quitme=False
         If ntui_GetAttrByID{*engine,"tb_readonly"  ,#TUIA_VALUE,0} Then tbflags | #TUITBF_READONLY
 
         *tb.tuiTextBox = (.tuiTextBox)ntui_GetObjectByID{*engine,"TB1"}
-        flags.l = ntui_GetAttr{*tb,#TUITBA_TBFLAGS,0}
+        ntui_GetAttr{*tb,#TUITBA_TBFLAGS,&flags.l}
         flags | (#TUITBF_LINECURSOR|#TUITBF_SHOWCR|#TUITBF_READONLY)
         flags - (#TUITBF_LINECURSOR|#TUITBF_SHOWCR|#TUITBF_READONLY)
         flags | tbflags
 
         ntui_SetAttr{*tb,#TUITBA_TBFLAGS,flags}
 
-        flags.l = ntui_GetAttr{*tb,#TUIA_FLAGS,0}
+        ntui_GetAttr{*tb,#TUIA_FLAGS,&flags}
         flags | (#TUIF_SMALL|#TUIF_FIX|#TUIF_SERIF|#TUIF_NORMAL|#TUIF_BOLD|#TUIF_ITALIC)
         flags - (#TUIF_SMALL|#TUIF_FIX|#TUIF_SERIF|#TUIF_NORMAL|#TUIF_BOLD|#TUIF_ITALIC)
         flags | nflags
@@ -3315,14 +3408,14 @@ While quitme=False
               *rp.RastPort = ntui_ObtainRastPort{*obj}
               If *rp
 
-                objx.l   = ntui_GetAttr{*obj,#TUIA_XPOS,0}
-                objy.l   = ntui_GetAttr{*obj,#TUIA_YPOS,0}
+                ntui_GetAttr{*obj,#TUIA_XPOS,&objx}
+                ntui_GetAttr{*obj,#TUIA_YPOS,&objy}
 
-                width.l  = ntui_GetAttr{*obj,#TUIA_WIDTH,0}
-                height.l = ntui_GetAttr{*obj,#TUIA_HEIGHT,0}
+                ntui_GetAttr{*obj,#TUIA_WIDTH,&width.l}
+                ntui_GetAttr{*obj,#TUIA_HEIGHT,&height.l}
 
-                xoff.l   = ntui_GetAttr{*obj,#TUICVA_HOFFSET,0}
-                yoff.l   = ntui_GetAttr{*obj,#TUICVA_VOFFSET,0}
+                ntui_GetAttr{*obj,#TUICVA_HOFFSET,&xoff.l}
+                ntui_GetAttr{*obj,#TUICVA_VOFFSET,&yoff.l}
 
                 DrawCheckerBoard{*engine,*rp,objx,objy,xoff,yoff,width,height,64}
 
@@ -3331,25 +3424,27 @@ While quitme=False
 
             Case "CView2"
               *rp.RastPort = ntui_ObtainRastPort{*obj}
+              *oldRegion.Region = Null
               If *rp
                 *scrview.tuiScrollView = (.tuiScrollView)ntui_GetObjectByID{*engine,"SCRVIEW"}
                 If *scrview
-                  *cbox.tuiRect = ntui_GetAttr{*scrview,#TUIA_CBOX,0}
-                  ;If *cbox Then ntui_SetClip{*rp,*cbox}
+                   ntui_GetAttr{*scrview,#TUIA_CBOX,&*cbox.tuiRect}
+                  *oldRegion=ntui_AddClip{*rp,*cbox}
+
+                  ntui_GetAttr{*obj,#TUIA_XPOS,&objx}
+                  ntui_GetAttr{*obj,#TUIA_YPOS,&objy}
+
+                  ntui_GetAttr{*obj,#TUIA_WIDTH,&width.l}
+                  ntui_GetAttr{*obj,#TUIA_HEIGHT,&height.l}
+
+                  ntui_GetAttr{*obj,#TUICVA_HOFFSET,&xoff.l}
+                  ntui_GetAttr{*obj,#TUICVA_VOFFSET,&yoff.l}
+
+
+                  DrawCheckerBoard{*engine,*rp,objx,objy,xoff,yoff,width,height,64}
+
+                  ntui_RemClip{*rp,*oldRegion}
                 End If
-
-                objx.l   = ntui_GetAttr{*obj,#TUIA_XPOS,0}
-                objy.l   = ntui_GetAttr{*obj,#TUIA_YPOS,0}
-
-                width.l  = ntui_GetAttr{*obj,#TUIA_WIDTH,0}
-                height.l = ntui_GetAttr{*obj,#TUIA_HEIGHT,0}
-
-                xoff.l   = ntui_GetAttr{*obj,#TUICVA_HOFFSET,0}
-                yoff.l   = ntui_GetAttr{*obj,#TUICVA_VOFFSET,0}
-
-                DrawCheckerBoard{*engine,*rp,objx,objy,xoff,yoff,width,height,64}
-
-                ;If *cbox Then ntui_RemClip{*rp}
                 ntui_ReleaseRastPort{*obj}
               End If
           End Select
