@@ -29,8 +29,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 250
-; CursorColumn    = 1
+; CursorLine      = 120
+; CursorColumn    = 24
 ; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -110,6 +110,8 @@
 #TUITVA_TABSTYLE   = #TUITVA_BASE   + 1
 #TUITVA_ONSWITCH   = #TUITVA_BASE   + 2
 #TUITVA_ONSWITCHCB = #TUITVA_BASE   + 3
+#TUITVA_ACTIVETABOBJ = #TUITVA_BASE   + 4
+#TUITVA_NUMTABS      = #TUITVA_BASE + 5
 
 ; TODO: TUIF_TOP vs. TABSTYLE
 
@@ -143,9 +145,7 @@ Function.w _ntui_SetTabViewAttr{*tabView.tuiTabView,ti_Tag.l,ti_Data.l}
       If (ti_Data><*tabView\obj\value)
         *tabView\obj\value = ti_Data
         ntui_SendEvent{*tabView,#TUIEV_LAYOUT}
-        ;!tuiAddRectOffset{tbox.tuiRect,*tabView\tbox,*tabView\obj\bbox\left,*tabView\obj\bbox\top}
         ntui_Refresh{*tabView,Null}
-        ;If (*tabView\onSwitch) Then ntui_PostNotify{*tabView,str_Read{&*tabView\onSwitch},*tabView\obj\value}
       End If
 
     Case #TUITVA_TABSTYLE
@@ -153,8 +153,21 @@ Function.w _ntui_SetTabViewAttr{*tabView.tuiTabView,ti_Tag.l,ti_Data.l}
       ntui_SendEvent{*tabView,#TUIEV_LAYOUT}
       ntui_Refresh{*tabView,Null}
 
-    Case #TUITVA_ONSWITCH   : str_WritePtr{&*tabView\onSwitch\notifyID  ,ti_Data}
-    Case #TUITVA_ONSWITCHCB : *tabView\onSwitch\callback = ti_Data
+    Case #TUITVA_ONSWITCH     : str_WritePtr{&*tabView\onSwitch\notifyID  ,ti_Data}
+    Case #TUITVA_ONSWITCHCB   : *tabView\onSwitch\callback = ti_Data
+    Case #TUITVA_ACTIVETABOBJ
+      *child.tuiObject = *tabView\obj\child
+      tabX.l = 0
+      While *child
+        If *child=ti_Data
+          _ntui_SetTabViewAttr{*tabView,#TUITVA_ACTIVETAB,tabX}
+          *child = Null
+        Else
+          tabX+1
+          *child = *child\next_
+        End If
+      Wend
+
     Default
       done=False
 
@@ -174,6 +187,20 @@ Function.w _ntui_GetTabViewAttr{*tabView.tuiTabView,ti_Tag.l,*ti_Data.longP}
   done.w = True
   Select ti_Tag
     Case #TUITVA_ACTIVETAB  : *ti_Data\l = *tabView\obj\value
+    Case #TUITVA_NUMTABS    : *ti_Data\l = *tabView\numTabs
+    Case #TUITVA_ACTIVETABOBJ : *ti_Data\l = Null
+      *child.tuiObject = *tabView\obj\child
+      tabX.l = 0
+      While *child
+        If tabX=*tabView\obj\value
+          *ti_Data\l =  (.longP)*child
+          *child = Null
+        Else
+          tabX+1
+          *child = *child\next_
+        End If
+      Wend
+
     Case #TUITVA_TABSTYLE   : *ti_Data\l = *tabView\tabStyle
     Case #TUITVA_ONSWITCH   : *ti_Data\l = str_GetPtr{*tabView\onSwitch\notifyID}
     Case #TUITVA_ONSWITCHCB : *ti_Data\l = *tabView\onSwitch\callback
@@ -390,7 +417,8 @@ Statement _ntui_DrawTabView{*tabView.tuiTabView,*rp.RastPort,*rpclip.tuiRect}
     xmax.l  = 1
     *child.tuiObject = *tabView\obj\child
     For n.l = 0 To *tabView\numTabs-1
-      xs.l =  _ntui_GetTextWidth{*engine,*child\string,addFlags,*rp} + *tabView\tabPadding\left+*tabView\tabPadding\right+*tabView\tabBorder\left+*tabView\tabBorder\right
+      xs.l =  _ntui_GetTextWidth{*engine,*child\string,addFlags,*rp}
+      xs + *tabView\tabPadding\left+*tabView\tabPadding\right+*tabView\tabBorder\left+*tabView\tabBorder\right
       If *child\classID=#TUICLASS_GROUP    ; get the image, if any
         *group.tuiGroup = (.tuiGroup)*child
         If *group\tbi Then xs + ntui_GetTBImageWidth{*group\tbi} + *tabView\tabPadding\right
@@ -418,8 +446,10 @@ Statement _ntui_DrawTabView{*tabView.tuiTabView,*rp.RastPort,*rpclip.tuiRect}
     tabwidth.l = !tuiRectWidth{*tabView\tbox} - peb\left-peb\right   - pbb\left-pbb\right
     If *tabView\numTabs>1
       xrest.l = (tabwidth - xkeep) / (*tabView\numTabs-1)
-      If xmax<xrest Then xrest=xmax
+    Else
+      xrest.l = tabwidth
     End If
+    If xrest>xmax Then xrest=xmax
 
     If xrest>xkeep
       xkeep=xrest
@@ -579,7 +609,9 @@ Statement _ntui_CalculateTabViewMinSize{*tabView.tuiTabView,*rp.RastPort}
   _ntui_GetBorderSize{*engine,*tabView\obj\borderType,borderflags,*tabView\obj\border}
 
   *tabView\tabBarSize\x = 0
-  *tabView\tabBarSize\y = 0
+  *tabView\tabBarSize\y = _ntui_GetFontHeight{*engine,*tabView\obj\flags}
+  *tabView\obj\minsize\x = 0
+  *tabView\obj\minsize\y = 0
 
   *child.tuiObject = *tabView\obj\child
   While *child
@@ -617,21 +649,25 @@ Statement _ntui_CalculateTabViewMinSize{*tabView.tuiTabView,*rp.RastPort}
     Case #TUITABSTYLE_BOTTOM
       *tabView\tabBarSize\y + !tuiBorderHeight{*tabView\tabPadding} + !tuiBorderHeight{*tabView\tabBorder}
       *tabView\tabBarSize\x + !tuiBorderWidth{*tabView\tabPadding} + !tuiBorderWidth{*tabView\tabBorder}
+      *tabView\obj\minsize\y + *tabView\tabBarSize\y
     Case #TUITABSTYLE_TOP
       *tabView\tabBarSize\y + !tuiBorderHeight{*tabView\tabPadding} + !tuiBorderHeight{*tabView\tabBorder}
       *tabView\tabBarSize\x + !tuiBorderWidth{*tabView\tabPadding} + !tuiBorderWidth{*tabView\tabBorder}
+      *tabView\obj\minsize\y + *tabView\tabBarSize\y
     Case #TUITABSTYLE_LEFT
       *tabView\tabBarSize\y + !tuiBorderHeight{*tabView\tabPadding} + !tuiBorderHeight{*tabView\tabBorder}
       *tabView\tabBarSize\x + !tuiBorderWidth{*tabView\tabPadding} + !tuiBorderWidth{*tabView\tabBorder}
+      *tabView\obj\minsize\x + *tabView\tabBarSize\x
     Case #TUITABSTYLE_RIGHT
       *tabView\tabBarSize\y + !tuiBorderHeight{*tabView\tabPadding} + !tuiBorderHeight{*tabView\tabBorder}
       *tabView\tabBarSize\x + !tuiBorderWidth{*tabView\tabPadding} + !tuiBorderWidth{*tabView\tabBorder}
+      *tabView\obj\minsize\x + *tabView\tabBarSize\x
     Default
       *tabView\tabBarSize\x = 0,0
   End Select
 
-  *tabView\obj\minsize\x + *tabView\tabBarSize\x + !tuiBorderWidth{*tabView\obj\padding} + !tuiBorderWidth{*tabView\obj\border}
-  *tabView\obj\minsize\y + *tabView\tabBarSize\y + !tuiBorderHeight{*tabView\obj\padding}+ !tuiBorderHeight{*tabView\obj\border}
+  *tabView\obj\minsize\x + !tuiBorderWidth{*tabView\obj\padding} + !tuiBorderWidth{*tabView\obj\border}
+  *tabView\obj\minsize\y + !tuiBorderHeight{*tabView\obj\padding}+ !tuiBorderHeight{*tabView\obj\border}
 End Statement
 !_MakeGlobalFuncPointer{_ntui_CalculateTabViewMinSize,{Null,Null}}
 
