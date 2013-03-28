@@ -29,9 +29,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 190
-; CursorColumn    = 5
-; LabelSearch     = ""
+; CursorLine      = 297
+; CursorColumn    = 83
+; LabelSearch     = "cre"
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelPosition   = 0
@@ -103,6 +103,10 @@ Dim tuiMouseButtonMap.l(#TUIMAX_MOUSEBUTTONS)
 
 SHARED tuiRawKeyMap()
 SHARED tuiMouseButtonMap()
+
+CNIF @#NTUIEV_USEPOOLED=0
+  #NTUIEV_USEPOOLED = 0
+CEND
 
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
@@ -176,6 +180,17 @@ End Statement
 #TUIQUAL_DOUBLECLICK  = $10000                                   ; is a double click event
 #TUIQUAL_TRIPLECLICK  = $20000                                   ; is a tripple click event
 
+#TUIEVF_QUEUED          = $0001
+#TUIEVF_VALID           = $0002
+#TUIEVF_NOTIFY_MALLOC   = $0004
+#TUIEVF_NOTIFY_POOLED   = $0008
+#TUIEVF_STRING_MALLOC   = $0010
+#TUIEVF_STRING_POOLED   = $0020
+#TUIEVF_MALLOC          = $0040
+#TUIEVF_POOLED          = $0080
+
+
+
 Function.w ntui_GetEventAttr{*ev.tuiEvent,ti_Tag.l,*ti_Data_.l}
 
   If *ev=Null Then Function Return False
@@ -241,12 +256,10 @@ End Function
 Function.l ntui_GetSigFlag{*engine.tuiEngine}
   !_ASSERT{*engine}
   sigFlag.l=*engine\outQ\sigFlag
-  If *engine\inputTask=Null
-    If *engine\winPort Then sigFlag | (1 LSL *engine\winPort\mp_SigBit)
-    If *engine\rxPort  Then sigFlag | (1 LSL *engine\rxPort\mp_SigBit )
-    If *engine\appPort Then sigFlag | (1 LSL *engine\appPort\mp_SigBit)
-    sigFlag = sigFlag | *engine\inQ\sigFlag
-  End If
+  If *engine\winPort Then sigFlag | (1 LSL *engine\winPort\mp_SigBit)
+  If *engine\rxPort  Then sigFlag | (1 LSL *engine\rxPort\mp_SigBit )
+  If *engine\appPort Then sigFlag | (1 LSL *engine\appPort\mp_SigBit)
+  sigFlag = sigFlag | *engine\inQ\sigFlag
   Function Return sigFlag
 End Function
 
@@ -263,7 +276,7 @@ Function.l _ntui_UnqueueEvent{*eventQ.tuiEventQ}
       *eventQ\tail = Null
     End If
     ReleaseSemaphore_ *eventQ\lock
-    *ev\queued = False
+    *ev\evFlags = (*ev\evFlags | #TUIEVF_QUEUED) - #TUIEVF_QUEUED
     Function Return *ev
   End If
   ReleaseSemaphore_ *eventQ\lock
@@ -280,10 +293,11 @@ Statement _ntui_QueueEvent{*eventQ.tuiEventQ,*ev.tuiEvent}
   !_ASSERT{*obj}
   *engine.tuiEngine = *obj\engine
   !_ASSERT{*engine}
-  !_ASSERT{*ev\queued=False}
 
+  If (*ev=$DEADBEEF) Then error{"Event is DEADBEEF!!!"} :Statement Return
+  If (*ev\evFlags&#TUIEVF_QUEUED) Then error{"Tried to queue event twice!"} : Statement Return
 
-  *ev\queued = True
+  *ev\evFlags | #TUIEVF_QUEUED
 
   ObtainSemaphore_ *eventQ\lock
   If *eventQ\tail
@@ -305,7 +319,11 @@ Function.tuiEvent _ntui_CreateEvent{*obj.tuiObject,evID.l}
   *engine.tuiEngine = *obj\engine
   !_ASSERT{*engine}
 
-  *ev.tuiEvent = AllocPooled_(*engine\eventPool,SizeOf.tuiEvent)
+  CNIF #NTUIEV_USEPOOLED
+    *ev.tuiEvent = AllocPooled_(*engine\eventPool,SizeOf.tuiEvent)
+  CELSE
+    *ev.tuiEvent = AllocMem_(SizeOf.tuiEvent,#MEMF_ANY)
+  CEND
   If *ev
     *ev\next_      = Null
     *ev\obj        = *obj
@@ -318,7 +336,11 @@ Function.tuiEvent _ntui_CreateEvent{*obj.tuiObject,evID.l}
     *ev\evID       = evID
     *ev\seconds    = 0
     *ev\micros     = 0
-    *ev\queued     = False
+    CNIF #NTUIEV_USEPOOLED
+      *ev\evFlags    = #TUIEVF_VALID|#TUIEVF_POOLED
+    CELSE
+      *ev\evFlags    = #TUIEVF_VALID|#TUIEVF_MALLOC
+    CEND
   End If
 
   Function Return *ev
@@ -333,15 +355,29 @@ Statement _ntui_DestroyEvent{*ev.tuiEvent}
   !_ASSERT{*obj}
   *engine.tuiEngine = *obj\engine
   !_ASSERT{*engine}
-  If (*ev\string)   Then str_Free{&*ev\string}
-  ;If (*ev\notifyID) Then str_Free{&*ev\notifyID}
+
+  If (*ev=$DEADBEEF) Then error{"Event is DEADBEEF!!!"} :Statement Return
+
+  If ((*ev\evFlags&#TUIEVF_VALID ) = 0) Then error{"Tried to free an invalid event!"}:Statement Return
+  If ((*ev\evFlags&#TUIEVF_QUEUED)    ) Then error{"Tired to free an queued event!"}:Statement Return
+
+  If *ev\string
+    If (Peek.l(*ev\string)=$DEADBEEF) Then error{"Event string is DEADBEEF!!!"} :Statement Return
+    If (Peek.l(*ev\string)=$BEEFDEAD) Then error{"Event string is BEEFDEAD!!!"} :Statement Return
+  End If
+
+  If (*ev\evFlags&#TUIEVF_STRING_POOLED) Then If (*ev\string  ) Then str_Free{&*ev\string}
+  If (*ev\evFlags&#TUIEVF_NOTIFY_POOLED) Then If (*ev\notifyID) Then str_Free{&*ev\notifyID}
+  If (*ev\evFlags&#TUIEVF_STRING_MALLOC) Then If (*ev\string  ) Then str_FreeAsync{&*ev\string}
+  If (*ev\evFlags&#TUIEVF_NOTIFY_MALLOC) Then If (*ev\notifyID) Then str_FreeAsync{&*ev\notifyID}
+
   *ev\notifyID = Null ; the notify pointer is only stolen!
-  FreePooled_ *engine\eventPool,*ev,SizeOf.tuiEvent
+  If (*ev\evFlags&#TUIEVF_POOLED) Then *ev\evFlags = 0 : FreePooled_ *engine\eventPool,*ev,SizeOf.tuiEvent : Statement Return
+  If (*ev\evFlags&#TUIEVF_MALLOC) Then *ev\evFlags = 0 : FreeMem_ *ev,SizeOf.tuiEvent : Statement Return
+
+  *ev\evFlags = (*ev\evFlags | #TUIEVF_VALID) - #TUIEVF_VALID
 
 End Statement
-
-
-
 
 
 ;///////////////////////////////////////////////////////////////////////////////
@@ -370,8 +406,8 @@ Statement ntui_PostNotify{*obj.tuiObject,notifyID.s,@value.l,@string.s,@x.l,@y.l
   !_ASSERT{*engine}
   *ev.tuiEvent = _ntui_CreateEvent{*obj,#TUIEV_USER}
   If *ev
-    If (notifyID) Then str_Write{&*ev\notifyID,notifyID}
-    If (string)   Then str_Write{&*ev\string,string}
+    If (notifyID) Then str_Write{&*ev\notifyID,notifyID} : *ev\evFlags | #TUIEVF_NOTIFY_POOLED
+    If (string)   Then str_Write{&*ev\string,string}     : *ev\evFlags | #TUIEVF_STRING_POOLED
     *ev\value  = value
     *ev\pos\x  = x,y
     *ev\size\x = width,height
@@ -406,7 +442,7 @@ Statement ntui_PostEvent{*obj.tuiObject,evID.l,@value.l,@string.s,@x.l,@y.l,@wid
   !_ASSERT{*engine}
   *ev.tuiEvent = _ntui_CreateEvent{*obj,evID}
   If *ev
-    If (string) Then str_Write{&*ev\string,string}
+    If (string) Then str_Write{&*ev\string,string} : *ev\evFlags | #TUIEVF_STRING_POOLED
     *ev\value  = value
     *ev\pos\x  = x,y
     *ev\size\x = width,height
@@ -429,7 +465,7 @@ End Statement
 ;/ - *win.tuiWindow    : optional window, otherwise flush all window events                                            /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Statement ntui_FlushEvents_depricated{*win.tuiWindow}
+Statement ntui_FlushEvents_deprecated{*win.tuiWindow}
   !_ASSERT{*win}
   *engine.tuiEngine = *win\obj\engine
   !_ASSERT{*engine}
@@ -453,13 +489,11 @@ Statement ntui_FlushEvents_depricated{*win.tuiWindow}
     *ev = *tuiNext
   Wend
 
-
   *ev.tuiEvent = *engine\inQ\head
   *tuiPrev.tuiEvent  = Null
   *tuiNext.tuiEvent  = Null
   *engine\inQ\head = Null
   *engine\inQ\tail = Null
-
 
   While *ev
     *tuiNext.tuiEvent = *ev\next_
@@ -483,6 +517,7 @@ Statement ntui_FlushObjEvents{*obj.tuiObject}
   *engine.tuiEngine = *obj\engine
   !_ASSERT{*engine}
 
+  ObtainSemaphore_ *engine\outQ\lock
   *ev.tuiEvent = *engine\outQ\head
   *tuiPrev.tuiEvent  = Null
   *tuiNext.tuiEvent  = Null
@@ -501,7 +536,9 @@ Statement ntui_FlushObjEvents{*obj.tuiObject}
     End If
     *ev = *tuiNext
   Wend
+  ReleaseSemaphore_ *engine\outQ\lock
 
+  ObtainSemaphore_ *engine\inQ\lock
   *ev.tuiEvent = *engine\inQ\head
   *tuiPrev.tuiEvent  = Null
   *tuiNext.tuiEvent  = Null
@@ -520,6 +557,7 @@ Statement ntui_FlushObjEvents{*obj.tuiObject}
     End If
     *ev = *tuiNext
   Wend
+  ReleaseSemaphore_ *engine\inQ\lock
 
 End Statement
 

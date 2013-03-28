@@ -29,9 +29,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 3232
-; CursorColumn    = 4
-; LabelSearch     = "ond"
+; CursorLine      = 3226
+; CursorColumn    = 23
+; LabelSearch     = "fil"
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelPosition   = 0
@@ -155,6 +155,9 @@
 #TUITBA_UNDO               = #TUITBA_BASE + 36
 #TUITBA_HINT               = #TUITBA_BASE + 37
 #TUITBA_STYLECB            = #TUITBA_BASE + 38
+#TUITBA_ONFILELISTENERCLOSE   = #TUITBA_BASE + 39; rw
+#TUITBA_ONFILELISTENERCLOSECB = #TUITBA_BASE + 40; rw
+
 
 ;/* ntui TextBox Flags */
 #TUITBF_LEFTWRAP              = $00000001
@@ -223,7 +226,8 @@
 #TUITBUNDO_DELETELINE    = 3
 #TUITBUNDO_DELETEINLINE  = 4
 
-#TUITBEV_APPEND = #TUIEV_USER +1
+#TUITBEV_APPEND  = #TUIEV_USER +1
+#TUITBEV_FLCLOSE = #TUIEV_USER +2
 
 NEWTYPE.styleCommand
  clength.b  ; length to next command
@@ -247,23 +251,25 @@ sclength.l    ; command length
 End NEWTYPE
 
 ; Tui TextBox Style Command
-#TUITBSC_RESET      = 0 ; reset all decoration
-#TUITBSC_PENS       = 1 ; set color via #pen TextBoxPen
-#TUITBSC_BOLD       = 2 ; set bold
-#TUITBSC_ITALIC     = 3 ; set italic
-#TUITBSC_UNDERLINED = 4 ; set underlined
-#TUITBSC_WARN       = 5 ; set warning underline
-#TUITBSC_MARKED     = 6 ; set a marking with #pen TextBoxPen
-#TUITBSC_BOXED      = 7 ; text is in a "box"
-#TUITBSC_REPLACE    = 8 ; set replacement text
-#TUITBSC_FGPEN      = 9
-#TUITBSC_BGPEN      = 10
+#TUITBSC_RESET      =  0 ; reset all decoration
+#TUITBSC_PENS       =  1 ; set for and background pen (#TUITBPEN_...)
+#TUITBSC_BOLD       =  2 ; set bold
+#TUITBSC_ITALIC     =  3 ; set italic
+#TUITBSC_UNDERLINED =  4 ; set underlined
+#TUITBSC_WARN       =  5 ; set warning underline
+#TUITBSC_MARKED     =  6 ; set a marking with #pen TextBoxPen
+#TUITBSC_BOXED      =  7 ; text is in a "box"
+#TUITBSC_REPLACE    =  8 ; set replacement text
+#TUITBSC_FGPEN      =  9 ; set forground pen (#TUITBPEN_...)
+#TUITBSC_BGPEN      = 10 ; set background pen (#TUITBPEN_...)
+#TUITBSC_SKIP       = 11 ; skip the following n chars
+#TUITBSC_INSERT     = 12 ; insert n characters
 
 ; styling callback return codes
-#TUISCB_DONE        = 0  ; we are done tokenizing
+#TUISCB_DONE        =  0  ; we are done tokenizing
 #TUISCB_ERROR       = -1 ; error during tokenizing
-#TUISCB_NEXT        = 1  ; tokenize next line too
-#TUISCB_PREVFIRST   = 2  ; tokenize prev line FIRST
+#TUISCB_NEXT        =  1  ; tokenize next line too
+#TUISCB_PREVFIRST   =  2  ; tokenize prev line FIRST
 
 NEWTYPE.tuiTextBox
 obj.tuiObject        ; tui object header
@@ -349,11 +355,12 @@ penObtained.w [#TUITBPEN_MAX]
 onChange.tuiNotifyHandler     ; called everytime the text changes (but not on every key)
 onKey.tuiNotifyHandler        ; called on every key-stroke
 onCursor.tuiNotifyHandler     ; called everytime the cursor changes its position
+onFileListenerClose.tuiNotifyHandler
 
 *styleCB.tuiFunc
 
 *filename.str    ; file name of last loaded file or NULL
-edited.w         ; text has been edited
+edited.l         ; text has been edited
 
 *hint.str
 
@@ -521,18 +528,18 @@ End Statement
 
 
 
-Function.w _tb_ExpandStyle{*tline.tline,minCommands.l}
+Function.w _tb_ExpandStyle_deprecated{*tline.tline,minCommands.l}
 
   succ.w = False
   If minCommands*SizeOf.styleCommand>*tline\sblength
-    newstyle.l = AllocVec_(minCommands*SizeOf.styleCommand,#MEMF_CLEAR)
+    newstyle.l = AllocMem_(minCommands*SizeOf.styleCommand,#MEMF_ANY)
     If newstyle
       If *tline\style
         CopyMem_ *tline\style,newstyle,*tline\sblength
-        FreeVec_ *tline\style
+        FreeMem_ *tline\style,*tline\sblength*SizeOf.styleCommand
       End If
-      *tline\style = newstyle
-      *tline\sblength = minCommands*SizeOf.styleCommand
+      *tline\style    = newstyle
+      *tline\sblength = minCommands
       succ.w = True
     End If
   End If
@@ -548,9 +555,9 @@ Function.w _tb_RemStyleCommand{*tline.tline, cpos1.l, cpos2.l, command.b}
   *sc.styleCommand = *tline\style
 
   While seekcpos<=cpos2 AND scpos<*tline\sclength
-    ncpos.l = seekcpos + *sc\clength
+    ncpos.l = seekcpos + (*sc\clength)&$FF
     If ncpos>=cpos1 AND ncpos<=cpos2 AND *sc\command = command
-      clength.l = *sc\clength
+      clength.l = *sc\clength&$FF
       copylen.l = *tline\sclength-scpos-1
       If copylen>0
         _tb_CopyMem{*sc+SizeOf.styleCommand,*sc,copylen*SizeOf.styleCommand}
@@ -558,7 +565,7 @@ Function.w _tb_RemStyleCommand{*tline.tline, cpos1.l, cpos2.l, command.b}
       End If
       *tline\sclength-1
     Else
-      seekcpos + *sc\clength
+      seekcpos + (*sc\clength&$FF)
       *sc      + SizeOf.styleCommand
       scpos    + 1
     End If
@@ -604,11 +611,11 @@ Function.w _tb_SetStyleCommand{*tline.tline, cpos.l, command.b, @data1.b, @data2
 
   If (*tline\sclength>=*tline\sblength)
     newsblen.l = (*tline\sclength+2)
-    newstyle.l = AllocVec_(newsblen*SizeOf.styleCommand,#MEMF_CLEAR)
+    newstyle.l = AllocMem_(newsblen*SizeOf.styleCommand,#MEMF_ANY)
     If newstyle
       If *tline\style
         CopyMem_ *tline\style,newstyle,*tline\sblength*SizeOf.styleCommand
-        FreeVec_ *tline\style
+        FreeMem_ *tline\style,*tline\sblength*SizeOf.styleCommand
       End If
       *tline\style    = newstyle
       *tline\sblength = newsblen
@@ -621,15 +628,15 @@ Function.w _tb_SetStyleCommand{*tline.tline, cpos.l, command.b, @data1.b, @data2
   scpos.l    = 0
   *sc.styleCommand = *tline\style
   While seekcpos<=cpos AND scpos<*tline\sclength
-    seekcpos + *sc\clength
+    seekcpos + (*sc\clength&$FF)
     *sc      + SizeOf.styleCommand
     scpos    + 1
   Wend
   If seekcpos>cpos
     *sc - SizeOf.styleCommand
     scpos -1
-    seekcpos - *sc\clength
-    *sc\clength = seekcpos + *sc\clength - cpos
+    seekcpos - (*sc\clength)&$FF
+    *sc\clength = seekcpos + ((*sc\clength)&$FF) - cpos
     ;*sc + SizeOf.styleCommand
   End If
 
@@ -637,10 +644,13 @@ Function.w _tb_SetStyleCommand{*tline.tline, cpos.l, command.b, @data1.b, @data2
 
   If copysize>0
     _tb_CopyMem{*sc,*sc+SizeOf.styleCommand,copysize*SizeOf.styleCommand}
-    *sc\clength = cpos - seekcpos
-  Else
-    *sc\clength = cpos - seekcpos
   End If
+  length_.l = cpos - seekcpos
+
+  ;While length_>255
+  ;Wend
+
+  *sc\clength = length_
   *sc\command = command
   *sc\data1   = data1
   *sc\data2   = data2
@@ -1384,6 +1394,7 @@ Statement _tb_DrawStyledLine{*textBox.tuiTextBox,*rp.RastPort,lpos.l,x.l,y.l,x2.
   bgTBPen.l = #TUITBPEN_BG
   warn.w = False
   boxed.w = False
+  skip.l = 0
   *penA.penA = &*textBox\penN[0]
 
   If \selection_end_lpos>lpos AND \selection_begin_lpos<lpos
@@ -1417,13 +1428,26 @@ Statement _tb_DrawStyledLine{*textBox.tuiTextBox,*rp.RastPort,lpos.l,x.l,y.l,x2.
       cpos.l = 0
       While cpos<*tline\clength
         If *sc
-          clen.l = *sc\clength
+          clen.l = (*sc\clength)&$FF - skip
           If clen>0
             !_tb_StyledText
             cpos + clen
+          Else
+            skip = -clen
           End If
 
           Select *sc\command
+            Case #TUITBSC_RESET
+              SetSoftStyle_ *rp,#FS_NORMAL,#FSF_BOLD
+              SetSoftStyle_ *rp,#FS_NORMAL,#FSF_UNDERLINED
+              SetSoftStyle_ *rp,#FS_NORMAL,#FSF_ITALIC
+              fgTBPen.l = #TUITBPEN_TEXT
+              bgTBPen.l = #TUITBPEN_BG
+              warn.w = False
+              boxed.w = False
+            Case #TUITBSC_SKIP
+              cpos+*sc\data1
+              skip + *sc\data1
             Case #TUITBSC_BOLD
               If *sc\data1 Then SetSoftStyle_ *rp,#FSF_BOLD,#FSF_BOLD : Else SetSoftStyle_ *rp,#FS_NORMAL,#FSF_BOLD
             Case #TUITBSC_ITALIC
@@ -1566,7 +1590,7 @@ Statement _ntui_UpdateTextBoxString{*textBox.tuiTextBox}
           If newstring><string
             If *tline\blength<=FLen(newstring)
               nl.l = FLen(newstring)+1+8
-              If ((*tline\flags&#TUITBLF_STOLEN)=0) Then FreeMem_ *tline\text ,*tline\blength : *tline\flags-#TUITBLF_STOLEN
+              If ((*tline\flags&#TUITBLF_STOLEN)=0) Then FreeMem_ *tline\text ,*tline\blength : Else *tline\flags-#TUITBLF_STOLEN
               *tline\text = AllocMem_ (nl,#MEMF_ANY)
               *tline\blength = nl
             End If
@@ -2390,10 +2414,13 @@ Statement _tb_InsertNewLine{*textBox.tuiTextBox,lpos.l,textP.l,tlength.l}
   If *tline
 
     *tline\flags = (flags | #TUITBLF_STYLED) - #TUITBLF_STYLED
+    *tline\sclength = 0
+    *tline\sblength = 0
+    *tline\style    = Null
     If tlength<0 Then tlength = 0 : If textP Then While Peek.b(textP+tlength) : tlength+1:Wend
 
     *tline\blength = (tlength+1+7)/8*8 ; 8-byte align
-    *tline\text = AllocMem_ (*tline\blength,#MEMF_CLEAR)
+    *tline\text = AllocMem_ (*tline\blength,#MEMF_ANY)
     If *tline\text
       ;If tlength>0 AND textP Then CopyMem_ textP,*tline\text,tlength
       If tlength>0 AND textP Then _tb_CopyMem{textP,*tline\text,tlength}
@@ -2456,7 +2483,7 @@ Statement _tb_InsertInLine{*textBox.tuiTextBox,lpos.l,cpos.l,textP.l,tlength.l}
       newline.l = AllocMem_ (blength,#MEMF_CLEAR)
       If *tline\text
         _tb_CopyMem{ *tline\text,newline,*tline\clength}
-        If ((*tline\flags&#TUITBLF_STOLEN)=0) Then FreeMem_ *tline\text,*tline\blength : *tline\flags-#TUITBLF_STOLEN
+        If ((*tline\flags&#TUITBLF_STOLEN)=0) Then FreeMem_ *tline\text,*tline\blength : Else *tline\flags-#TUITBLF_STOLEN
       End If
       *tline\blength = blength
       *tline\text    = newline
@@ -2525,10 +2552,13 @@ Statement _tb_DeleteLine{*textBox.tuiTextBox,lpos.l}
   If *tline
     If \undo Then ntui_StoreUndoContainer{\undo,#TUITBUNDO_DELETELINE,*tline\text,*tline\clength,lpos,0}
     If *tline\text
-      If ((*tline\flags&#TUITBLF_STOLEN)=0) Then FreeMem_ *tline\text ,*tline\blength : *tline\flags-#TUITBLF_STOLEN
+      If ((*tline\flags&#TUITBLF_STOLEN)=0) Then FreeMem_ *tline\text ,*tline\blength : Else *tline\flags-#TUITBLF_STOLEN
       *tline\text=Null : *tline\blength=0 : *tline\clength=0
     End If
-    ;_tb_Tokenize{*textBox ,lpos}
+    If *tline\style
+      FreeMem_ *tline\style,*tline\sblength*SizeOf.styleCommand
+      *tline\style=Null : *tline\sblength = 0 : *tline\sclength=0
+    End If
   End If
   \edited+1
   _tb_Damage{*textBox,lpos,*textBox\totalLines} ; ... to the end of text
@@ -2558,9 +2588,12 @@ Statement _tb_DeleteInLine{*textBox.tuiTextBox,lpos.l,cpos.l,dlength.l}
       If clength<=0
         clength=0
         If *tline\text
-          If ((*tline\flags&#TUITBLF_STOLEN)=0) Then FreeMem_ *tline\text ,*tline\blength : *tline\flags-#TUITBLF_STOLEN
-          *tline\text=Null
-          *tline\blength = 0
+          If ((*tline\flags&#TUITBLF_STOLEN)=0) Then FreeMem_ *tline\text ,*tline\blength : Else *tline\flags-#TUITBLF_STOLEN
+          *tline\text=Null : *tline\blength = 0 : *tline\clength = 0
+        End If
+        If *tline\style
+          FreeMem_ *tline\style,*tline\sblength*SizeOf.styleCommand
+          *tline\style=Null : *tline\sblength = 0 : *tline\sclength=0
         End If
       Else
         copylength.l = *tline\clength-cpos-dlength ; length of string on right side
@@ -2846,20 +2879,23 @@ If \doc
   For lpos.l = 0 To \totalLines-1
     !line_use {*tline, lpos}
     If *tline
-
       If *tline\text
-        If ((*tline\flags&#TUITBLF_STOLEN)=0) Then FreeMem_ *tline\text ,*tline\blength : *tline\flags-#TUITBLF_STOLEN
-        *tline\text=Null
-        *tline\blength=0
+        If ((*tline\flags&#TUITBLF_STOLEN)=0) Then FreeMem_ *tline\text ,*tline\blength : Else *tline\flags-#TUITBLF_STOLEN
       End If
-;      If *tline\ttext Then FreeMem_ *tline\ttext ,*tline\tblength : *tline\ttext=Null
-  ;    ted_tokenize {*ted ,lpos}
-      ;FreeMem_ *tline,SizeOf.tline
-      ;Poke.l \doc+lpos*4,0
+      *tline\text     = Null
+      *tline\blength  = 0
+      *tline\clength  = 0
+      If *tline\style
+        FreeMem_ *tline\style ,*tline\sblength*SizeOf.styleCommand
+      End If
+      *tline\style    = Null
+      *tline\sclength = 0
+      *tline\sblength = 0
     End If
   Next
 End If
 If \tank Then FreeVec_ \tank : \tank=Null
+_tb_Damage{*textBox,0,\totalLines}
 \totalLines = 0
 \totalWidth = 1
 \leftOffset = 0
@@ -3233,7 +3269,23 @@ Function.l ntui_AppendTextBox{*textBox.tuiTextBox,textP.l,length_.l}
   If *tline
     cpos.l = *tline\clength
     _tb_Insert{*textBox,lpos,cpos,textP,length_}
+  Else
+    _tb_Insert{*textBox,0,0,textP,length_}
   End If
+  *rp.RastPort = ntui_ObtainRastPort{*textBox}
+  If *rp
+    _tb_Repair{*textBox,*rp}
+    lpos.l = *textBox\totalLines-1
+    cpos.l = 0
+    !line_use{*tline, lpos}
+    If *tline
+      cpos.l = *tline\clength
+    End If
+    _tb_SetCursor{*textBox,lpos,cpos,-1,-1,*rp}
+    _tb_DoBlink{*textBox,*rp,On}
+    ntui_ReleaseRastPort{*textBox}
+  End If
+
   Function Return True
 
 End Function
@@ -3246,7 +3298,7 @@ Function.l _tb_OnDataCB{*fileListener.tuiFileListener,dataP.l,dataLen.l}
 
   *ev.tuiEvent = _ntui_CreateEvent{*fileListener\obj,#TUITBEV_APPEND}
    If *ev
-     str_WritePtr{&*ev\string,dataP,dataLen}
+     str_WritePtrAsync{&*ev\string,dataP,dataLen} : *ev\evFlags | #TUIEVF_MALLOC
      _ntui_QueueEvent{*fileListener\obj\engine\inQ,*ev}
      Function Return #TUIFLE_OK
    End If
@@ -3260,10 +3312,13 @@ End Function
 _tb_OnCloseCB:
 Function.l _tb_OnCloseCB{*fileListener.tuiFileListener}
 
-   !_CallFuncPointer{*fileListener\onDataCB,  *fileListener\err,*fileListener,?__tb_closedmsg,11}
-   Function Return #TUIFLE_OK
-   __tb_closedmsg:
-   Dc.b "=> Closed.",10,0
+  *ev.tuiEvent = _ntui_CreateEvent{*fileListener\obj,#TUITBEV_FLCLOSE}
+   If *ev
+     _ntui_QueueEvent{*fileListener\obj\engine\inQ,*ev}
+     Function Return #TUIFLE_OK
+   End If
+
+   Function Return #TUIFLE_USERERROR
 
 End Function
 !_MakeGlobalFuncPointer_RunErrsOff{_tb_OnCloseCB,{Null}}
@@ -3284,14 +3339,7 @@ End Function
 _tb_OnOpenCB:
 Function.l _tb_OnOpenCB{*fileListener.tuiFileListener}
 
-  *ev.tuiEvent = _ntui_CreateEvent{*fileListener\obj,#TUITBEV_APPEND}
-   If *ev
-     a.s = "Listening to \\22"+str_Read{&*fileListener\fileName}+"\\22\\n"
-     str_WritePtr{&*ev\string,&a,FLen(a)}
-     _ntui_QueueEvent{*fileListener\obj\engine\inQ,*ev}
-     Function Return #TUIFLE_OK
-   End If
-   Function Return #TUIFLE_USERERROR
+  Function Return #TUIFLE_OK
 
 End Function
 !_MakeGlobalFuncPointer_RunErrsOff{_tb_OnOpenCB,{Null}}
@@ -3304,7 +3352,6 @@ Function.w ntui_SetTextBoxFileListener{*textBox.tuiTextBox,*filenameP.b}
 
   If *textBox\fileListener Then ntui_FreeFileListener{*textBox\fileListener}
   *textBox\fileListener = ntui_FileListener{*textBox,*filenameP,(.tuiFunc)*_tb_OnOpenCB,(.tuiFunc)*_tb_OnCloseCB,(.tuiFunc)*_tb_OnFailCB,(.tuiFunc)*_tb_OnDataCB}
-  ;*textBox\fileListener = ntui_FileListener{*textBox,*filenameP,Null,Null,Null,(.tuiFunc)*_tb_OnDataCB}
   Function Return *textBox\fileListener><Null
 
 End Function
@@ -3719,10 +3766,19 @@ Function.w _ntui_SetTextBoxAttr{*textBox.tuiTextBox,ti_Tag.l,ti_Data.l}
     Case #TUITBA_ONKEYCB            : *textBox\onKey\callback = ti_Data
     Case #TUITBA_ONCURSOR           : str_WritePtr{&*textBox\onCursor\notifyID ,ti_Data}
     Case #TUITBA_ONCURSORCB         : *textBox\onCursor\callback = ti_Data
+    Case #TUITBA_ONFILELISTENERCLOSE   :  str_WritePtr{&*textBox\onFileListenerClose\notifyID ,ti_Data}
+    Case #TUITBA_ONFILELISTENERCLOSECB : *textBox\onFileListenerClose\callback = ti_Data
     Case #TUITBA_SCROLLERMODE       : *textBox\scrollerMode = ti_Data
     Case #TUITBA_FILENAME           : ntui_LoadTextBox{*textBox,ti_Data}
-    Case #TUITBA_HINT               : str_WritePtr{&*textBox\hint ,ti_Data}
+    Case #TUITBA_HINT               : str_WritePtr{&*textBox\hint ,ti_Data} : _tb_Damage{*textBox,0,0}
     Case #TUITBA_STYLECB            : *textBox\styleCB = ti_Data
+      *tline.tline = *textBox\doc
+      For lpos.l = 0 To *textBox\totalLines-1
+        *tline\flags = (*tline\flags|#TUITBLF_STYLED|#TUITBLF_COMMENT) - (#TUITBLF_STYLED|#TUITBLF_COMMENT)
+        *tline + SizeOf.tline
+      Next
+      _tb_Damage{*textBox,0,*textBox\totalLines-1}
+
     Case #TUITBA_UNDO
       If ti_Data=0
         If \undo Then ntui_FreeUndoStack{\undo} : \undo = Null
@@ -3804,6 +3860,8 @@ Function.w _ntui_GetTextBoxAttr{*textBox.tuiTextBox,ti_Tag.l,*ti_Data.longP}
     Case #TUITBA_ONKEYCB            : *ti_Data\l = *textBox\onKey\callback
     Case #TUITBA_ONCURSOR           : *ti_Data\l = str_GetPtr{*textBox\onCursor\notifyID}
     Case #TUITBA_ONCURSORCB         : *ti_Data\l = *textBox\onCursor\callback
+    Case #TUITBA_ONFILELISTENERCLOSE   : *ti_Data\l = str_GetPtr{*textBox\onCursor\notifyID}
+    Case #TUITBA_ONFILELISTENERCLOSECB : *ti_Data\l = *textBox\onCursor\callback
     Case #TUITBA_FILENAME           : *ti_Data\l = str_GetPtr{*textBox\filename}
     Case #TUITBA_HINT               : *ti_Data\l = str_GetPtr{*textBox\hint}
     Case #TUITBA_UNDO               : *ti_Data\l = (*textBox\undo><Null)
@@ -3845,22 +3903,10 @@ Function.w _ntui_DispatchTextBoxEvent{*textBox.tuiTextBox,*ev.tuiEvent}
   Select *ev\evID
     Case #TUITBEV_APPEND
       ntui_AppendTextBox{*textBox,str_GetPtr{*ev\string},str_Len{*ev\string}}
-      ;ntui_Refresh{*textBox,Null}
-      *rp.RastPort = ntui_ObtainRastPort{*textBox}
-      If *rp
-        ;_tb_ScrollTo{*textBox,*textBox\totalLines,0,*rp}
-        _tb_Repair{*textBox,*rp}
-        lpos.l = *textBox\totalLines-1
-        cpos.l = 0
-        !line_use{*tline, lpos}
-        If *tline
-          cpos.l = *tline\clength
-        End If
-        _tb_SetCursor{*textBox,lpos,cpos,-1,-1,*rp}
-        _tb_DoBlink{*textBox,*rp,On}
-        ntui_ReleaseRastPort{*textBox}
-      End If
-      done=True
+
+    Case #TUITBEV_FLCLOSE:
+      !tuiHandleNotify{done.w,*textBox,onFileListenerClose,*ev}
+      done=False
 
     Case #TUIEV_MOUSEDOWN:
       If *ev\value=0
@@ -4312,6 +4358,7 @@ Statement _ntui_DeinitTextBox{*textBox.tuiTextBox}
   !tuiFreeNotifyHandler{*textBox\onChange}
   !tuiFreeNotifyHandler{*textBox\onKey}
   !tuiFreeNotifyHandler{*textBox\onCursor}
+  !tuiFreeNotifyHandler{*textBox\onFileListenerClose}
   str_Free{&\filename}
 
   If *textBox\fileListener Then ntui_FreeFileListener{*textBox\fileListener} : *textBox\fileListener=Null
@@ -4347,14 +4394,19 @@ Function.tuiTextBox ntui_TextBox{*tagList.TagItem}
     Next
 
     *textBox\step_\x                         = *textBox\obj\engine\defStep\x
-    *textBox\step_\y                         = 1
+    *textBox\step_\y                         = 4
 
     ; highlightning
     *textBox\tuiPenN[#TUITBPEN_STRING]       = #TUIPEN_SHADOW
     *textBox\tuiPenN[#TUITBPEN_TOKEN]        = #TUIPEN_MARKER
     *textBox\tuiPenN[#TUITBPEN_NUMBER]       = #TUIPEN_MARKER
     *textBox\tuiPenN[#TUITBPEN_CONSTANT]     = #TUIPEN_SHADOW
+    *textBox\tuiPenN[#TUITBPEN_FUNCTION]     = #TUIPEN_GREEN
+    *textBox\tuiPenN[#TUITBPEN_DIRECTIVE]    = #TUIPEN_RED
+    *textBox\tuiPenN[#TUITBPEN_COMMENT]      = #TUIPEN_HALFMARKER
     *textBox\tuiPenN[#TUITBPEN_FUNCTION]     = #TUIPEN_SHADOW
+    *textBox\tuiPenN[#TUITBPEN_MACRO]        = #TUIPEN_RED
+    *textBox\tuiPenN[#TUITBPEN_TYPE]         = #TUIPEN_MARKER
 
     *textBox\font                            = Null
     *textBox\fontstolen                      = True
@@ -4364,6 +4416,7 @@ Function.tuiTextBox ntui_TextBox{*tagList.TagItem}
     *textBox\doc                             = Null
     *textBox\edflags                         = #TUITBF_NotePad|#TUITBF_LINECURSOR;|#TUITBF_SHOWCR ;|#TUITBF_BLOCKSELECT;
     *textBox\blink_speed                     = 5
+    *textBox\edited                          = 0
     *textBox\obj\borderType                  = #TUIBORDER_RECESSED
     *textBox\leftOffset                      = 0
     *textBox\topLine                         = 0
@@ -4393,6 +4446,7 @@ Function.tuiTextBox ntui_TextBox{*tagList.TagItem}
     !tuiInitNotifyHandler{*textBox\onChange}
     !tuiInitNotifyHandler{*textBox\onKey}
     !tuiInitNotifyHandler{*textBox\onCursor}
+    !tuiInitNotifyHandler{*textBox\onFileListenerClose}
 
     If *tagList Then ntui_SetAttrs{*textBox,*tagList}
 
@@ -4708,6 +4762,9 @@ Statement ntui_InitTextBoxClass{}
   ntui_RegisterAttr{classID,"onkeycb"          ,#TUITBA_ONKEYCB            ,#TUIAT_PTR      , 0,0 }
   ntui_RegisterAttr{classID,"oncursor"         ,#TUITBA_ONCURSOR           ,#TUIAT_STRING   , 0,0 }
   ntui_RegisterAttr{classID,"oncursorcb"       ,#TUITBA_ONCURSORCB         ,#TUIAT_PTR      , 0,0 }
+  ntui_RegisterAttr{classID,"onfilelistenerclose"         ,#TUITBA_ONFILELISTENERCLOSE          ,#TUIAT_STRING   , 0,0 }
+  ntui_RegisterAttr{classID,"onfilelistenerclosecb"       ,#TUITBA_ONFILELISTENERCLOSECB         ,#TUIAT_PTR      , 0,0 }
+
   ntui_RegisterAttr{classID,"text"             ,#TUITBA_TEXT               ,#TUIAT_STRING   , 0,0 }
   ntui_RegisterAttr{classID,"subclassid"       ,#TUITBA_SUBCLASSID         ,#TUIAT_INT      , 0,0 }
   ntui_RegisterAttr{classID,"scrollermode"     ,#TUITBA_SCROLLERMODE       ,#TUIAT_INT      , 0,0 }
