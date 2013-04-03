@@ -29,9 +29,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 424
-; CursorColumn    = 5
-; LabelSearch     = "cre"
+; CursorLine      = 448
+; CursorColumn    = 25
+; LabelSearch     = "que"
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelPosition   = 0
@@ -407,14 +407,16 @@ End Function
 
 
 RunErrsOff ; debugger must be switched off for file listener
-Statement _ntui_QueueEvent{*eventQ.tuiEventQ,*ev.tuiEvent}
+Statement _ntui_QueueEvent{*obj.tuiObject,*ev.tuiEvent,*eventQ.tuiEventQ}
 
   !_ASSERT{*eventQ}
   !_ASSERT{*ev}
+  !_ASSERT{*obj}
 
   If (*ev=$DEADBEEF) Then error{"Event is DEADBEEF!!!"} :Statement Return
   If (*ev\flags&#TUIEVF_QUEUED) Then error{"Tried to queue event twice!"} : Statement Return
 
+  *ev\target_ = *obj
   ObtainSemaphore_ *eventQ\lock
   *ev\flags | #TUIEVF_QUEUED
   If *eventQ\tail
@@ -430,8 +432,8 @@ Statement _ntui_QueueEvent{*eventQ.tuiEventQ,*ev.tuiEvent}
 End Statement
 
 
-Statement _ntui_QueueEventAsync{*eventQ.tuiEventQ,*ev.tuiEvent}
-  _ntui_QueueEvent{*eventQ,*ev}
+Statement _ntui_QueueEventAsync{*obj.tuiObject,*ev.tuiEvent,*eventQ.tuiEventQ}
+  _ntui_QueueEvent{*obj,*ev,*eventQ}
 End Statement
 
 
@@ -463,14 +465,12 @@ Statement _ntui_QueueNotifyAsync{*notifyQ.tuiNotifyQ,*notify.tuiNotify}
 End Statement
 
 
-Function.tuiEvent _ntui_CreateEventAsync{*obj.tuiObject,evID.l}
-
-  !_ASSERT{*obj}
+Function.tuiEvent _ntui_CreateEventAsync{*engine.tuiEngine,evID.l}
 
   *ev.tuiEvent = AllocMem_(SizeOf.tuiEvent,#MEMF_ANY)
   If *ev
     *ev\next_      = Null
-    *ev\obj        = *obj
+    *ev\target_    = Null
     *ev\value      = 0
     *ev\string     = Null
     *ev\pos\x      = 0,0
@@ -499,7 +499,7 @@ Function.tuiNotify _ntui_CreateNotifyAsync{*obj.tuiObject,*ev.tuiEvent,*id.str}
     *notify\ev\string     = Null
     *notify\ev\next_      = Null
     If *ev
-      *notify\ev\obj        = *ev\obj
+      *notify\ev\target_    = *ev\target_
       *notify\ev\value      = *ev\value
       *notify\ev\pos\x      = *ev\pos\x,*ev\pos\y
       *notify\ev\size\x     = *ev\size\x,*ev\size\y
@@ -510,6 +510,7 @@ Function.tuiNotify _ntui_CreateNotifyAsync{*obj.tuiObject,*ev.tuiEvent,*id.str}
       *notify\ev\flags      = *ev\flags | #TUIEVF_STOLEN | #TUIEVF_ASYNC
       If str_Len{*ev\string}>0 Then str_WritePtrAsync{&*notify\ev\string,str_GetPtr{*ev\string},str_Len{*ev\string}}
     Else
+      *notify\ev\target_  = Null
       *notify\ev\id       = #TUIEV_UNDEFINED
       *notify\ev\flags    = #TUIEVF_STOLEN | #TUIEVF_ASYNC | #TUIEVF_VALID
     EndIf
@@ -520,6 +521,35 @@ Function.tuiNotify _ntui_CreateNotifyAsync{*obj.tuiObject,*ev.tuiEvent,*id.str}
   Function Return *notify
 
 End Function
+
+
+Statement ntui_PostEvent{*target.tuiObject,evID.l,@value.l,@*stringP.b,@x.l,@y.l,@width.l,@height.l}
+
+  !_ASSERT{*target}
+  *engine.tuiEngine = *target\engine
+  !_ASSERT{*engine}
+  *ev.tuiEvent = _ntui_CreateEventAsync{*target\engine,evID}
+  If *ev
+    If (*stringP><-1) Then str_WritePtrAsync{&*ev\string,*stringP}
+    *ev\value  = value
+    *ev\pos\x  = x,y
+    *ev\size\x = width,height
+    _ntui_QueueEvent{*target,*ev,*engine\eventQ}
+  End If
+
+End Statement
+
+
+Statement ntui_PostNotify{*obj.tuiObject,*ev.tuiEvent,*id.str}
+  !_ASSERT{*obj}
+
+  *notify.tuiNotify = _ntui_CreateNotifyAsync{*obj,*ev,*id}
+  If *notify
+    _ntui_QueueNotify{*obj\engine\notifyQ,*notify}
+  End If
+
+End Statement
+
 
 
 LastRunErrsMode
@@ -533,14 +563,14 @@ Function.tuiNotify _ntui_CreateNotify{*obj.tuiObject,*ev.tuiEvent,*id.str}
 End Function
 
 
-Function.tuiEvent _ntui_CreateEvent{*obj.tuiObject,evID.l}
+Function.tuiEvent _ntui_CreateEvent{*engine.tuiEngine,evID.l}
 
-  !_ASSERT{*obj}
+  !_ASSERT{*engine}
 
-  *ev.tuiEvent = AllocPooled_(*obj\engine\eventPool,SizeOf.tuiEvent)
+  *ev.tuiEvent = AllocPooled_(*engine\eventPool,SizeOf.tuiEvent)
   If *ev
     *ev\next_      = Null
-    *ev\obj        = *obj
+    *ev\target_    = Null
     *ev\value      = 0
     *ev\string     = Null
     *ev\pos\x      = 0,0
@@ -567,7 +597,9 @@ Statement _ntui_DestroyEvent{*engine.tuiEngine,*ev.tuiEvent}
   If ((*ev\flags&#TUIEVF_VALID ) = 0) Then error{"Tried to free an invalid event!"}:Statement Return
   If ((*ev\flags&#TUIEVF_QUEUED)    ) Then error{"Tired to free an queued event!"}:Statement Return
 
-  *ev\flags = (*ev\flags | #TUIEVF_VALID) - #TUIEVF_VALID
+  *ev\flags   = (*ev\flags | #TUIEVF_VALID) - #TUIEVF_VALID
+  *ev\target_ = Null
+  *ev\next_   = Null
 
   If (*ev\flags&#TUIEVF_ASYNC)
     If (*ev\string)
@@ -600,6 +632,8 @@ Statement _ntui_DestroyNotify{*notify.tuiNotify}
   _ntui_DestroyEvent{*engine,*notify\ev}
 
   *notify\flags = (*notify\flags | #TUINF_VALID) - #TUINF_VALID
+  *notify\next_ = Null
+  *notify\obj   = Null
 
   If (*notify\flags&#TUINF_ASYNC)
     If (*notify\id)
@@ -611,74 +645,6 @@ Statement _ntui_DestroyNotify{*notify.tuiNotify}
       If (*notify\flags&#TUINF_ID_STOLEN)=0 Then str_Free{&*notify\id}
     End If
     If (*notify\flags&#TUINF_STOLEN)=0 Then FreePooled_ *engine\notifyPool,*notify,SizeOf.tuiNotify
-  End If
-
-End Statement
-
-
-;///////////////////////////////////////////////////////////////////////////////
-;/                                                                             /
-;/ Syntax: result.l = ntui_CauseEvent {notify.l,*win.tuiWindow,@*tuiOb:: /
-;/ ject.tuiObject,@x.l,@y.l,@width.l,@height.l}                                /
-;/                                                                             /
-;/ Description:                                                                /
-;/ Cause an event to happen manually. The event will be passed to the tuiEngines input queue.                                      /
-;/                                                                             /
-;/ Inputs:                                                                     /
-;/ - notify.l               : notify value                                                         /
-;/ - *win.tuiWindow   : tuiWindow of the event                                             /
-;/ - *obj.tuiObject   : tuiObject of the event (if any)                                             /
-;/ - x/y.l                  : x/y position of event                                                    /
-;/ - width.l                : ???                                                          /
-;/ - height.l               : ???                                                         /
-;/                                                                             /
-;/ Result:                                                                     /
-;/ - result.l               : pointer to created tuiEvent struture                                                        /
-;/                                                                             /
-;///////////////////////////////////////////////////////////////////////////////
-Statement ntui_PostNotify{*obj.tuiObject,*ev.tuiEvent,*id.str}
-  !_ASSERT{*obj}
-
-  *notify.tuiNotify = _ntui_CreateNotify{*obj,*ev,*id}
-  If *notify
-    _ntui_QueueNotify{*obj\engine\notifyQ,*notify}
-  End If
-
-End Statement
-
-
-;///////////////////////////////////////////////////////////////////////////////
-;/                                                                             /
-;/ Syntax: result.l = ntui_CauseEvent {notify.l,*win.tuiWindow,@*tuiOb:: /
-;/ ject.tuiObject,@x.l,@y.l,@width.l,@height.l}                                /
-;/                                                                             /
-;/ Description:                                                                /
-;/ Cause an event to happen manually. The event will be passed to the tuiEngines input queue.                                      /
-;/                                                                             /
-;/ Inputs:                                                                     /
-;/ - notify.l               : notify value                                                         /
-;/ - *win.tuiWindow   : tuiWindow of the event                                             /
-;/ - *obj.tuiObject   : tuiObject of the event (if any)                                             /
-;/ - x/y.l                  : x/y position of event                                                    /
-;/ - width.l                : ???                                                          /
-;/ - height.l               : ???                                                         /
-;/                                                                             /
-;/ Result:                                                                     /
-;/ - result.l               : pointer to created tuiEvent struture                                                        /
-;/                                                                             /
-;///////////////////////////////////////////////////////////////////////////////
-Statement ntui_PostEvent{*obj.tuiObject,evID.l,@value.l,@*stringP.b,@x.l,@y.l,@width.l,@height.l}
-
-  !_ASSERT{*obj}
-  *engine.tuiEngine = *obj\engine
-  !_ASSERT{*engine}
-  *ev.tuiEvent = _ntui_CreateEventAsync{*obj,evID}
-  If *ev
-    If (*stringP><-1) Then str_WritePtrAsync{&*ev\string,*stringP}
-    *ev\value  = value
-    *ev\pos\x  = x,y
-    *ev\size\x = width,height
-    _ntui_QueueEvent{*engine\eventQ,*ev}
   End If
 
 End Statement
@@ -721,7 +687,7 @@ Statement ntui_FlushObjEvents{*obj.tuiObject}
 
   While (*ev)
     *nextEv.tuiEvent = *ev\next_
-    If (*ev\obj = *obj)
+    If (*ev\target_ = *obj)
       _ntui_DestroyEvent{*engine,*ev}
       If *prevEv Then *prevEv\next_ = *nextEv
     Else
