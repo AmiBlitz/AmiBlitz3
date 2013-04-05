@@ -29,9 +29,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 3905
-; CursorColumn    = 13
-; LabelSearch     = "fil"
+; CursorLine      = 4008
+; CursorColumn    = 67
+; LabelSearch     = "ap"
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelPosition   = 0
@@ -159,7 +159,7 @@
 #TUITBA_STYLECB            = #TUITBA_BASE + 40
 #TUITBA_ONFILELISTENERCLOSE   = #TUITBA_BASE + 41; rw
 #TUITBA_ONFILELISTENERCLOSECB = #TUITBA_BASE + 42; rw
-
+#TUITBA_APPENDTEXT         = #TUITBA_BASE + 43
 
 ;/* ntui TextBox Flags */
 #TUITBF_LEFTWRAP              = $00000001
@@ -1645,7 +1645,7 @@ Statement _ntui_DrawTextBoxIntern{*textBox.tuiTextBox,x1.l,y1.l,x2.l,y2.l,*rp.Ra
 ;  *textBox\tuiPenN[#TUITBPEN_BG]  = bgTuiPen
 ;  If bgTuiPen><#TUIPEN_TRANSPARENT Then *textBox\pen[#TUITBPEN_BG] = *engine\pen[bgTuiPen] : Else *textBox\pen[#TUITBPEN_BG]=0
 
-  _tb_DoBlink{*textBox,*rp,Off}
+
   SetFont_ *rp,\font
   If *textBox\obj\flags&#TUIF_BOLD   Then SetSoftStyle_ *rp,#FSF_BOLD,#FSF_BOLD
   If *textBox\obj\flags&#TUIF_ITALIC Then SetSoftStyle_ *rp,#FSF_ITALIC,#FSF_ITALIC
@@ -1696,6 +1696,8 @@ Statement _ntui_DrawTextBoxIntern{*textBox.tuiTextBox,x1.l,y1.l,x2.l,y2.l,*rp.Ra
 
   cbox.tuiRect\left = x1,y1,x2,y2
   *oldRegion.Region = ntui_AddClip{*rp,&cbox}
+  _tb_DoBlink{*textBox,*rp,Off}
+
   If \styleCB><Null ;tokenizing=False
     For lpos.l = lpos_a To lpos_b
       _tb_DrawStyledLine{*textBox,*rp,lpos,x,y,x2}
@@ -2925,10 +2927,10 @@ End Statement
 
 
 
-Statement ntui_SetTextBoxText{*textBox.tuiTextBox,textP.l,@blength.l,@*rp.RastPort}
+Statement _ntui_SetTextBoxText{*textBox.tuiTextBox,textP.l,length_.l}
 If *textBox
   _tb_FreeText{*textBox}
-  If textP Then _tb_Insert{*textBox,0,0,textP,blength}
+  If textP Then _tb_Insert{*textBox,0,0,textP,length_}
   \cursor_lpos   = 0
   \cursor_cpos   = 0
   \topLine       = 0
@@ -3264,7 +3266,7 @@ End Statement
 
 
 
-Function.l ntui_AppendTextBox{*textBox.tuiTextBox,textP.l,length_.l}
+Function.l _ntui_AppendTextBox{*textBox.tuiTextBox,textP.l,length_.l}
 
   If textP=Null Then Function Return False
   lpos.l = *textBox\totalLines-1
@@ -3275,24 +3277,29 @@ Function.l ntui_AppendTextBox{*textBox.tuiTextBox,textP.l,length_.l}
   Else
     _tb_Insert{*textBox,0,0,textP,length_}
   End If
-  *rp.RastPort = ntui_ObtainRastPort{*textBox}
-  If *rp
-    _tb_Repair{*textBox,*rp}
-    lpos.l = *textBox\totalLines-1
-    cpos.l = 0
-    !line_use{*tline, lpos}
-    If *tline
-      cpos.l = *tline\clength
-    End If
-    _tb_SetCursor{*textBox,lpos,cpos,-1,-1,*rp}
-    _tb_DoBlink{*textBox,*rp,On}
-    ntui_ReleaseRastPort{*textBox}
-  End If
 
   Function Return True
 
 End Function
 
+
+Statement ntui_ScrollTextBoxBottom{*textBox.tuiTextBox}
+  If *textBox\obj\flags&#TUIF_ONSCREEN
+        *rp.RastPort = ntui_ObtainRastPort{*textBox}
+        If *rp
+          _tb_Repair{*textBox,*rp}
+          lpos.l = *textBox\totalLines-1
+          cpos.l = 0
+          !line_use{*tline, lpos}
+          If *tline
+            cpos.l = *tline\clength
+          End If
+          _tb_SetCursor{*textBox,lpos,cpos,-1,-1,*rp}
+          _tb_DoBlink{*textBox,*rp,On}
+          ntui_ReleaseRastPort{*textBox}
+        End If
+      End If
+End Statement
 
 RunErrsOff ; debugger must be switched off
 ; return 0 if everything is fine, or error code
@@ -3764,7 +3771,10 @@ Function.l _ntui_SetTextBoxAttr{*textBox.tuiTextBox,ti_Tag.l,ti_Data.l}
     Case #TUITBA_LINE               : ; todo
     Case #TUITBA_SELECTION          : ; todo
 ;    Case #TUITBA_HIGHLIGHTNING      : *textBox\tokenizing = ti_Data  : ntui_Refresh{*textBox,Null}
-    Case #TUITBA_TEXT               : ntui_SetTextBoxText{*textBox,ti_Data} : ntui_Refresh{*textBox,Null}
+    Case #TUITBA_TEXT               : _ntui_SetTextBoxText{*textBox,ti_Data,-1}   ;: ntui_Refresh{*textBox,Null}
+    Case #TUITBA_APPENDTEXT         : _ntui_AppendTextBox {*textBox,ti_Data,-1}
+                                      ntui_ScrollTextBoxBottom{*textBox}
+
     Case #TUITBA_ONCHANGE           : str_WritePtr{&*textBox\onChange\notifyID ,ti_Data}
     Case #TUITBA_ONCHANGECB         : *textBox\onChange\callback = ti_Data
     Case #TUITBA_ONKEY              : str_WritePtr{&*textBox\onKey\notifyID ,ti_Data}
@@ -3910,8 +3920,28 @@ Function.l _ntui_DispatchTextBoxEvent{*textBox.tuiTextBox,*ev.tuiEvent}
   done.l = False
 
   Select *ev\id
+    Case #TUIEV_LOSEFOCUS
+      *rp.RastPort = ntui_ObtainRastPort{*textBox}
+      _tb_DoBlink{*textBox,*rp,Off}
+      If *rp Then ntui_ReleaseRastPort{*textBox}
+      done=True
+
+    Case #TUIEV_FOCUS
+      *rp.RastPort = ntui_ObtainRastPort{*textBox}
+      _tb_DoBlink{*textBox,*rp,On}
+      If *rp Then ntui_ReleaseRastPort{*textBox}
+      done=True
+
+    Case #TUIEV_LOSEMOVER
+      done=True
+
+    Case #TUIEV_MOVER
+      done=True
+
     Case #TUITBEV_APPEND:
-      ntui_AppendTextBox{*textBox,str_GetPtr{*ev\string},str_Len{*ev\string}}
+      _ntui_AppendTextBox{*textBox,str_GetPtr{*ev\string},str_Len{*ev\string}}
+      ntui_ScrollTextBoxBottom{*textBox}
+      ;ntui_SetAttr{*textbox,#TUITBA_APPEND,str_GetPtr{*ev\string}}
 
     Case #TUITBEV_FLCLOSE:
       !tuiHandleNotify{done.l,*textBox,onFileListenerClose,*ev}
@@ -3923,7 +3953,7 @@ Function.l _ntui_DispatchTextBoxEvent{*textBox.tuiTextBox,*ev.tuiEvent}
           ntui_SetFocus{*textBox}
           *textBox\obj\flags | #TUIF_ACTIVE
           ;str_Dup{&*ev\notifyID,*textBox\obj\onTouch}
-          ntui_Refresh{*textBox,Null}
+          ;ntui_Refresh{*textBox,Null}
           \accept=1
 
           dbl.l = 0
@@ -4050,8 +4080,7 @@ Function.l _ntui_DispatchTextBoxEvent{*textBox.tuiTextBox,*ev.tuiEvent}
       done=True
 
     Case #TUIEV_BIND_STRING
-      ntui_SetTextBoxText{*textBox,str_GetPtr{*ev\string}}
-;      str_Dup{&*textBox\obj\string,*ev\string}
+      _ntui_SetTextBoxText{*textBox,str_GetPtr{*ev\string},str_Len{*ev\string}}
       ntui_Refresh{*textBox,Null}
       !tuiHandleNotify{done,*textBox,onChange,*ev}
       done=True
