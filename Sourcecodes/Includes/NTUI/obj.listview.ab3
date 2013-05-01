@@ -29,9 +29,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1356
-; CursorColumn    = 22
-; LabelSearch     = "di"
+; CursorLine      = 217
+; CursorColumn    = 54
+; LabelSearch     = "set"
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelPosition   = 0
@@ -144,6 +144,12 @@
 #TUILVA_ONSELECTCB        =  #TUILVA_BASE + 13
 #TUILVA_ONTOUCH           =  #TUILVA_BASE + 14
 #TUILVA_ONTOUCHCB         =  #TUILVA_BASE + 15
+#TUILVA_ONFILELISTENERCLOSE   =  #TUILVA_BASE + 16
+#TUILVA_ONFILELISTENERCLOSECB =  #TUILVA_BASE + 17
+
+#TUILVEV_APPEND  = #TUIEV_USER +1
+#TUILVEV_FLCLOSE = #TUIEV_USER +2
+
 
 NEWTYPE.tuiListCell
 
@@ -217,9 +223,89 @@ NEWTYPE.tuiListView
   ; onEvents...
   onSelect.tuiNotifyHandler
   onTouch.tuiNotifyHandler
+  onFileListenerClose.tuiNotifyHandler
+
+  *fileListener.tuiFileListener
 
 End NEWTYPE
 
+RunErrsOff ; debugger must be switched off
+; return 0 if everything is fine, or error code
+_lv_OnDataCB:
+Function.l _lv_OnDataCB{*fileListener.tuiFileListener,dataP.l,dataLen.l}
+
+   m.l = 0
+   For n.l=0 To dataLen-1
+     c.b = Peek.b(dataP+n)
+     Select c
+       Case 10
+         Poke.b *fileListener\tempPtr + *fileListener\tempOff,0
+         ntui_PostEvent{*fileListener\obj,#TUILVEV_APPEND,0,*fileListener\tempPtr}
+         *fileListener\tempOff = 0
+       Default
+         Poke.b *fileListener\tempPtr + *fileListener\tempOff,c
+         If *fileListener\tempOff<1023 Then *fileListener\tempOff+1
+     End Select
+   Next
+
+   Function Return #TUIFLE_OK
+
+End Function
+!_MakeGlobalFuncPointer_RunErrsOff{_lv_OnDataCB,{Null,Null,0}}
+
+
+; return 0 if everything is fine, or error code
+_lv_OnCloseCB:
+Function.l _lv_OnCloseCB{*fileListener.tuiFileListener}
+
+  If *fileListener\tempOff>0
+    Poke.b *fileListener\tempPtr + *fileListener\tempOff,0
+    ntui_PostEvent{*fileListener\obj,#TUILVEV_APPEND,0,*fileListener\tempPtr}
+  End If
+  FreeVec_ *fileListener\tempPtr : *fileListener\tempPtr=Null
+
+  ntui_PostEvent{*fileListener\obj,#TUILVEV_FLCLOSE}
+  Function Return #TUIFLE_OK
+
+End Function
+!_MakeGlobalFuncPointer_RunErrsOff{_lv_OnCloseCB,{Null}}
+
+
+_lv_OnFailCB:
+Function.l _lv_OnFailCB{*fileListener.tuiFileListener,err.l}
+
+   !_CallFuncPointer{*fileListener\onDataCB,  *fileListener\err,*fileListener,?__lv_errmsg,12}
+   Function Return err
+
+   __lv_errmsg:
+   Dc.b "Pipe ERROR!",10,0
+End Function
+!_MakeGlobalFuncPointer_RunErrsOff{_lv_OnFailCB,{Null,0}}
+
+
+; return 0 if everything is fine, or error code
+_lv_OnOpenCB:
+Function.l _lv_OnOpenCB{*fileListener.tuiFileListener}
+
+  *fileListener\tempPtr = AllocVec_(1024,#MEMF_ANY)
+  *fileListener\tempOff = 0
+  If *fileListener\tempPtr=Null Then Function Return #TUIFLE_USERERROR
+  Function Return #TUIFLE_OK
+
+End Function
+!_MakeGlobalFuncPointer_RunErrsOff{_lv_OnOpenCB,{Null}}
+LastRunErrsMode
+
+
+Function.l ntui_SetListViewFileListener{*listView.tuiListView,*filenameP.b}
+  !_ASSERT{*listView}
+  !_ASSERT{*filenameP}
+
+  If *listView\fileListener Then ntui_FreeFileListener{*listView\fileListener}
+  *listView\fileListener = ntui_FileListener{*listView,*filenameP,(.tuiFunc)*_lv_OnOpenCB,(.tuiFunc)*_lv_OnCloseCB,(.tuiFunc)*_lv_OnFailCB,(.tuiFunc)*_lv_OnDataCB}
+  Function Return *listView\fileListener><Null
+
+End Function
 
 
 ;///////////////////////////////////////////////////////////////////////////////
@@ -823,6 +909,8 @@ Function.l _ntui_SetListViewAttr{*listView.tuiListView,ti_Tag.l,ti_Data.l}
     Case #TUILVA_ONSELECTCB : *listView\onSelect\callback = ti_Data
     Case #TUILVA_ONTOUCH    : str_WritePtr{&*listView\onTouch\notifyID ,ti_Data}
     Case #TUILVA_ONTOUCHCB  : *listView\onTouch\callback = ti_Data
+    Case #TUILVA_ONFILELISTENERCLOSE   : str_WritePtr{&*listView\onFileListenerClose\notifyID ,ti_Data}
+    Case #TUILVA_ONFILELISTENERCLOSECB : *listView\onFileListenerClose\callback = ti_Data
 
     Default
       done = False
@@ -855,6 +943,8 @@ Function.l _ntui_GetListViewAttr{*listView.tuiListView,ti_Tag.l,*ti_Data.longP}
     Case #TUILVA_ONSELECTCB    : *ti_Data\l = *listView\onSelect\callback
     Case #TUILVA_ONTOUCH       : *ti_Data\l = str_GetPtr{*listView\onTouch\notifyID}
     Case #TUILVA_ONTOUCHCB     : *ti_Data\l = *listView\onTouch\callback
+    Case #TUILVA_ONFILELISTENERCLOSE   : *ti_Data\l = str_GetPtr{*listView\onFileListenerClose\notifyID}
+    Case #TUILVA_ONFILELISTENERCLOSECB : *ti_Data\l = *listView\onFileListenerClose\callback
 
     Default
       done=False
@@ -1418,6 +1508,14 @@ Function.l _ntui_DispatchListViewEvent{*listView.tuiListView,*ev.tuiEvent}
 
   done.l = False
   Select *ev\id
+    Case #TUILVEV_APPEND:
+      ntui_AddListItem{*listView,-1,str_Read{&*ev\string},*ev\value,Null,#TUI_NOFLAGS}
+      _ntui_SetListViewAttr{*listView,#TUILVA_TOPITEM,*listView\totalItems-*listView\visibleItems}
+
+    Case #TUILVEV_FLCLOSE:
+      !tuiHandleNotify{done.l,*listView,onFileListenerClose,*ev}
+      done=True
+
     Case #TUIEV_LOSEFOCUS
       done=True
 
@@ -1917,6 +2015,7 @@ Statement _ntui_DeinitListView{*listView.tuiListView}
 
   !tuiFreeNotifyHandler{*listView\onSelect}
   !tuiFreeNotifyHandler{*listView\onTouch}
+  !tuiFreeNotifyHandler{*listView\onFileListenerClose}
 
 End Statement
 !_MakeGlobalFuncPointer{_ntui_DeinitListView,{Null}}
@@ -2003,6 +2102,7 @@ Function.tuiListView ntui_ListView{*tagList.TagItem}
 
     !tuiInitNotifyHandler{*listView\onSelect}
     !tuiInitNotifyHandler{*listView\onTouch}
+    !tuiInitNotifyHandler{*listView\onFileListenerClose}
 
     If *tagList Then ntui_SetAttrs{*listView,*tagList}
 
@@ -2074,6 +2174,8 @@ Statement ntui_InitListViewClass{}
   ntui_RegisterAttr{classID,"onselectcb"      ,#TUILVA_ONSELECTCB       ,#TUIAT_PTR    ,0,0}
   ntui_RegisterAttr{classID,"ontouch"         ,#TUILVA_ONTOUCH          ,#TUIAT_STRING ,0,0}
   ntui_RegisterAttr{classID,"ontouchcb"       ,#TUILVA_ONTOUCHCB        ,#TUIAT_PTR    ,0,0}
+  ntui_RegisterAttr{classID,"onfilelistenerclose"         ,#TUILVA_ONFILELISTENERCLOSE   ,#TUIAT_STRING ,0,0}
+  ntui_RegisterAttr{classID,"onfilelistenerclosecb"       ,#TUILVA_ONFILELISTENERCLOSECB ,#TUIAT_PTR    ,0,0}
 
 End Statement
 
