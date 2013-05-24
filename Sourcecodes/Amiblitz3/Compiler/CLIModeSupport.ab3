@@ -13,7 +13,7 @@
 ; StringBuffer    = 4096
 ; MakeSmallest    = 1
 ; Version         = 3.3.1
-; NumberOfBuilds  = 87
+; NumberOfBuilds  = 89
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -29,26 +29,26 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 642
-; CursorColumn    = 11
-; LabelSearch     = "ab3_"
+; CursorLine      = 808
+; CursorColumn    = 34
+; LabelSearch     = ""
 ; LabelRemark     = 0
-; LabelAll        = 1
+; LabelAll        = 0
 ; LabelPosition   = 0
 ; 
 ; Blitz Objects
 ; -------------------------------------------------------
-; Max TCPSock     = 5
-; Max AsyncReq    = 4
-; Max PTModule    = 5
+; Max IconInfo    = 1
 ; Max NChunky     = 50
 ; Max MUIObject   = 50
-; Max IconInfo    = 1
-; Max Chunky      = 20
-; Max Console     = 5
+; Max PTModule    = 5
+; Max AsyncReq    = 4
 ; Max Req-Lib     = 5
 ; Max GTMenuList  = 25
+; Max Console     = 5
+; Max TCPSock     = 5
 ; Max XBSound     = 10
+; Max Chunky      = 20
 ; Max File        = 25
 ; Max GadgetList  = 5
 ; Max Queue       = 10
@@ -73,7 +73,6 @@
 ; Max MenuList    = 5
 ; Max BlitzFont   = 4
 ; Max GTList      = 25
-; Max ChunkyBuffer= 2
 ; /XTRA
 SHARED global_exefilename.s
 
@@ -105,7 +104,7 @@ End Statement
 
 
 ; set the current directory
-Statement SetCurrentDirx{path.s}
+Statement SetCurrentDir_deprecated{path.s}
   ;MaxLen tempstr.s = 1024
 
   ;Print "Set lock to ",path
@@ -319,6 +318,7 @@ Function.l LoadSource{sourcefile.s}
             ExeFile.s        = "Prog.exe"
             StringBuffer.l   = 8192
             MakeSmallest.l   = False
+            FuncOptimize.l   = False
             StackSize.l      = 32768
             CliArgs.s        = ""
             NumberOfBuilds.l = 0
@@ -433,6 +433,7 @@ Function.l LoadSource{sourcefile.s}
                     Case "stringbuffer"   : StringBuffer = lvalue : If StringBuffer<4096 Then StringBuffer=4096
                     Case "stacksize"      : StackSize    = lvalue : If StackSize<#MIN_STACKSIZE Then StackSize=#MIN_STACKSIZE
                     Case "makesmallest"   : MakeSmallest = lvalue
+                    Case "funcoptimize"   : FuncOptimize = lvalue
                     Case "version"
                       mpos.l = Instr(value,".",1)
                       ppos.l = Instr(value,".",mpos+1)                          ; fixed search of the second "." because we must start +1 behind the first founded one
@@ -501,7 +502,7 @@ Function.l LoadSource{sourcefile.s}
             GetD0 LabelRemark   : !ComData_SetW{comWord_LabelRemark,d0}
             GetD0 LabelAll      : !ComData_SetW{comWord_LabelAll,d0}
             GetD0 LabelPosition : !ComData_SetL{comLong_Label1VisableItemStore,d0}    ; added the load of the inner postion of the labellist  tomsmart1
-
+            GetD0 FuncOptimize  : !ComData_SetB{comByte_FuncOptimize,d0}
           End If
           byteLength = preproc_Tokenize{*PreProcessor,tempBuffer+offset,tempBuffer,byteLength-offset}
         End If
@@ -626,6 +627,7 @@ End Function
 Statement RunSource{debug.l}         ; added argument to indicate if ted.library use is needed  tomsmart1 2012 06 11
   workpath.s = Peek.s(?exepath)
   SetCurrentDir{workpath}
+  If cli_verbose>=2 Then NPrint "Set working directory to \\22",workpath+"\\22..."
 
   If debug                           ; check if debug is used  tomsmart1 2012 06 11
     If ted_OpenLib{0}                ; ted.library is only necessary for the Debugger  tomsmart1 2012 06 11
@@ -638,6 +640,9 @@ Statement RunSource{debug.l}         ; added argument to indicate if ted.library
       error{"ERROR: Unable to open ted.library, REDDebugger will not work!"}
     End If
   End If
+
+  fh.l = Output_()     ; flush the stdout before we do something else
+  If fh Then Flush_ fh
 
   MOVE.l A4,-(A7)
   !asm
@@ -653,14 +658,15 @@ End Statement
 
 
 Function.l CompileSource{exefile.s,debug.l,release.l}
+
   If debug ; set debugger
     !SetBoolXtra{use_debugger     ,1}
     !SetBoolXtra{link_debuginfo   ,1}
 
-    !SetBoolXtra{overflowcheck    ,1}
-    !SetBoolXtra{assemblercheck   ,1}
-    !SetBoolXtra{interruptcheck   ,1}
-    !SetBoolXtra{autorun          ,1}
+    ;!SetBoolXtra{overflowcheck    ,1} ; leave this setting to the individual .xtra information
+    ;!SetBoolXtra{assemblercheck   ,1} ; Wanderer 2013 05 15
+    ;!SetBoolXtra{interruptcheck   ,1}
+    ;!SetBoolXtra{autorun          ,1}
   Else
     !SetBoolXtra{use_debugger     ,0}
     !SetBoolXtra{link_debuginfo   ,0}
@@ -668,9 +674,11 @@ Function.l CompileSource{exefile.s,debug.l,release.l}
 
   If release   ; set make smallest (for release); only for release we overwrite the settings of the sourcefile  tomsmart1
     !SetBoolXtra{make_smallestcode,1}
-  ;Else                                         ; deactivate else because we use the settings of the sourcefile  tomsmart1
-  ;  !SetBoolXtra{make_smallestcode,0}
-  End If
+  Else                                         ; NO, it is debug, we dont care about size, but want 1-pass compiling
+                                               ; deactivate else because we use the settings of the sourcefile  tomsmart1
+    !SetBoolXtra{make_smallestcode,0}          ; If someone doesnt want to release, he gives a damn about the size (usually)
+    !ComData_SetB{comByte_FuncOptimize,0}      ; if we dont make smallest, we dont need to prune functions
+  End If                                       ; Wanderer 2013 05 15
 
   newexesize.l = $7FFFFFFF
 
@@ -731,7 +739,14 @@ Function.l CompileSource{exefile.s,debug.l,release.l}
     MOVE.l anyerrs,d0
     err.l = PutD0
 
-    If cli_verbose>=1 Then NPrint counter-1," line(s) compiled."
+    errcount.l = Peek.l(?errorcounter)
+    If cli_verbose>=1 Then Print counter-1," line(s) compiled, "
+
+    If errcount>0
+      NPrint "\\1B[1m",errcount," error(s)!"
+    Else
+      If cli_verbose>=1 Then NPrint "0 errors."
+    End If
 
     If err=0
       If exefile
@@ -748,7 +763,11 @@ Function.l CompileSource{exefile.s,debug.l,release.l}
 
   Until newexesize>=oldexesize
 
- Function Return err
+  fh.l = Output_()     ; flush the stdout before we do something else
+  If fh Then Flush_ fh
+
+  Function Return err
+
 End Function
 
 
@@ -863,6 +882,9 @@ Function.l SaveSource{filename.s}
           !ComData_GetL{comLong_Label1VisableItemStore,d0}        ; added the save of the inner postion of the labellist  tomsmart1
           LabelPosition.l= PutD0
 
+          !ComData_GetB{comByte_FuncOptimize,d0}        ; added the save of the inner postion of the labellist  tomsmart1
+          FuncOptimize.l= PutD0
+
           file_WriteLine{fid,"; XTRA"}
           file_WriteLine{fid,"; Embedded .xtra Header"}
           file_WriteLine{fid,"; "}
@@ -877,6 +899,7 @@ Function.l SaveSource{filename.s}
           file_WriteLine{fid,"; -------------------------------------------------------"}
           file_WriteLine{fid,"; StringBuffer    = "+Str$(Peek.l(?stringbuffer))}
           file_WriteLine{fid,"; MakeSmallest    = "+Str$(MakeSmallest)}
+          file_WriteLine{fid,"; FuncOptimize    = "+Str$(FuncOptimize)}
           file_WriteLine{fid,"; Version         = "+Str$(MajorVersion)+"."+Str$(MinorVersion)+"."+Str$(PatchVersion)}
           file_WriteLine{fid,"; NumberOfBuilds  = "+Str$(Peek.l(?number_of_builds))}
           file_WriteLine{fid,"; "}
