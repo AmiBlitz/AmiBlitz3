@@ -222,7 +222,10 @@ NEWTYPE.custommenu
   itemname.s
   shortcut.s
   id.l
-  command.s
+  path.s
+  runwbmode.l
+  stacksize.l
+  prio.l
 End NEWTYPE
 
 NEWTYPE.templates
@@ -17506,6 +17509,11 @@ BRA message_vanillakey
 
 
 
+
+
+
+
+
  'nohelp
   CMP.w #$1b,d7                          ; check for "ESC"
   BNE 'noesc
@@ -18675,21 +18683,23 @@ Return
 
   Gosub load_custommenus
   If LastItem(custommenu())
-    GTMenuTitle 0,6,"Custom"
+    GTMenuTitle 0,6,    !TRANS{"Custom"                      }
+    GTMenuItem 0,0,6, 0,!TRANS{"MenuEditor..."               },""          ,0,#MENU_CUSTOM
+    GTMenuItem 0,0,6, 1
     If FirstItem(custommenu())
-      menuentry = 0
+      menuentry = 2
       Repeat
-        If custommenu()\itemname = "~"
-          GTMenuItem 0,0,6,menuentry
-        Else
+        ;If custommenu()\itemname = "~"
+        ;  GTMenuItem 0,0,6,menuentry
+        ;Else
           shortc = #MENU_CUSTOM+menuentry
           GTMenuItem 0,0,6,menuentry,custommenu()\itemname,"",0,shortc
-        EndIf
+        ;EndIf
         menuentry + 1
       Until NOT NextItem(custommenu())
     EndIf
   EndIf
-
+                                                                                                                                                                                                                                                        
   CreateMenuStrip 0
   ;If templates = 0 Then GTMenuState 0,1,0,Off
   If Peek.l(Addr GTMenuList(0))<>0
@@ -18701,19 +18711,23 @@ Return
   EndIf
 Return
 
+
 .load_custommenus:
   If dos_Exist{tedmenufile$}
     fid.l = file_Open{tedmenufile$,#file_read}
-    If fid>=0
+    If fid >= 0
       ClearList custommenu()
       While file_EOF{fid} = False
         textline.s = file_ReadLine{fid}
-        If textline<>"" AND AddLast(custommenu())
+        If textline <> "" AND AddLast(custommenu())
           InitArgParse textline
-          custommenu()\itemname = NextArgChar$(@",")
-          custommenu()\shortcut = NextArgChar$(@",")
-          custommenu()\id = Vallong(NextArgChar$(@","))
-          custommenu()\command = NextArgChar$(@",")
+          custommenu()\itemname  = NextArgChar$(@",")
+          custommenu()\shortcut  = NextArgChar$(@",")
+          custommenu()\id        = Vallong(NextArgChar$(@","))
+          custommenu()\path      = NextArgChar$(@",")
+          custommenu()\runwbmode = Vallong(NextArgChar$(@","))
+          custommenu()\stacksize = Vallong(NextArgChar$(@","))
+          custommenu()\prio      = Vallong(NextArgChar$(@","))
         EndIf
       Wend
       file_Close{fid}
@@ -21439,24 +21453,28 @@ RTS
   LEA str_defaultpubscreen,A0
   JSR _SetDefaultPubScreen(A6)
 
- JL_0_FB72:
+  JL_0_FB72:
   MOVE.l d6,-(a7)
   !basic
   MOVE.l (a7)+,D0 : id_menuitem.l = PutD0 - (#MENU_CUSTOM -1)          ;replace hardcode ID (-1) with constant  tomsmart1
-  If id_menuitem = 1
+  If id_menuitem = 1            ; added to call the menueditor from the fix menuentry  tomsmart1
     Gosub open_menueditor
     Gosub init_menus
   Else
-    If FirstItem(custommenu())
-      menuentry = 1
+    If id_menuitem > 2          ; added to skip the first two menu entrys  tomsmart1
+      ResetList custommenu()
+      id_menuitem -2            ; to get the correct custummenu() entry because we have to fixed menuentrys  tomsmart 1
+      menuentry = 0
       While id_menuitem > menuentry
         dummy = NextItem(custommenu())
         menuentry + 1
       Wend
-      If custommenu()\command = ""
-        dummy.l = ask{custommenu()\itemname+" "+!TRANS{"has no assigned command."},!TRANS{"Ok"},!TRANS{"Error"}}
-      Else
-        Execute_ &custommenu()\command,0,0
+      If custommenu()\path <> ""
+        If custommenu()\runwbmode = False
+          dos_RunCli{custommenu()\path,custommenu()\prio,custommenu()\stacksize,False}
+        Else
+          dos_RunWB{custommenu()\path}
+        EndIf
       EndIf
     EndIf
   EndIf
@@ -21470,31 +21488,169 @@ RTS
   DEFTYPE.List menuedlist
   ; -- get all the defined menuentries
   If FirstItem(custommenu())
+    item_counter.b = 0
     Repeat
       WZListAdd menuedlist,custommenu()\itemname,-2
+      item_counter+1
     Until NOT NextItem(custommenu())
   EndIf
   WZPrint "MENUED_LIST",0,menuedlist
+  If FirstItem(custommenu())
+    WZPrint "MENUED_ITEMNAME",custommenu()\itemname
+    WZPrint "MENUED_STACK",custommenu()\stacksize
+    WZPrint "MENUED_PRIO",custommenu()\prio
+    If custommenu()\runwbmode = 1
+      WZPrint "MENUED_RUNMODE",On
+      WZDisable "MENUED_STACK": WZDisable "MENUED_PRIO"
+    Else
+      WZPrint "MENUED_RUNMODE",Off
+      WZEnable "MENUED_STACK": WZEnable "MENUED_PRIO"
+    EndIf
+  EndIf
   menued_exit.b = False
+
   Repeat
     menued_ev.l = WaitEvent
     Select menued_ev
-    Case #IDCMP_CLOSEWINDOW
-      menued_exit = True
-    Case #IDCMP_IDCMPUPDATE
-      Select WZGadName
-      Case "MENUED_EXIT" : menued_exit = True
-      Case "MENUED_LIST" : selected_item.b = WZInput
-        item_counter.b = 0
-        ResetList custommenu()
-        While (item_counter < selected_item) AND NextItem(custommenu())
-          item_counter + 1
-        Wend
-        If item_counter = selected_item
-          WZPrint "MENUED_ITEMNAME",custommenu()\itemname
-          WZPrint "MENUED_COMMAND",custommenu()\command
-        EndIf
-      End Select
+      Case #IDCMP_CLOSEWINDOW
+        menued_exit = True
+      Case #IDCMP_IDCMPUPDATE
+        Select WZGadName
+          Case "MENUED_ADD"
+            ResetList custommenu()
+            If AddLast (custommenu())
+              Repeat
+                WZListAdd menuedlist,"",-2
+                custommenu()\itemname = ""
+                custommenu()\path     = ""
+                custommenu()\runwbmode = False
+                custommenu()\stacksize = 8192
+                custommenu()\prio = -1
+              Until NOT NextItem(custommenu())
+            EndIf
+            WZPrint "MENUED_LIST",WZListItems (menuedlist)-1,menuedlist,0 ; neue Position in der Liste anspringen und Liste erneuern
+            WZPrint "MENUED_ITEMNAME",""
+            WZEnable "MENUED_SAVE"
+
+          Case "MENUED_DEL"
+            ResetList custommenu()
+            item_counter = 0
+            While (item_counter < WZListNum ("MENUED_LIST")) AND NextItem(custommenu())
+              item_counter + 1
+            Wend
+            If item_counter = WZListNum ("MENUED_LIST")
+              KillItem custommenu()
+              WZListRemove menuedlist,WZListNum ("MENUED_LIST")
+            EndIf
+            WZPrint "MENUED_LIST",item_counter,menuedlist,0
+            WZPrint "MENUED_ITEMNAME",""
+            WZEnable "MENUED_SAVE"
+
+          Case "MENUED_SORT"
+            ResetList custommenu()
+            If FirstItem(custommenu())
+              SortList custommenu(),SizeOf.custommenu\itemname
+            EndIf
+            WZListRemove menuedlist
+            ResetList custommenu()
+            While NextItem (custommenu())
+              WZListAdd menuedlist,custommenu()\itemname,-2
+            Wend
+            WZPrint "MENUED_LIST",0,menuedlist,0
+            ResetList custommenu()
+            If FirstItem(custommenu())
+              WZPrint "MENUED_ITEMNAME",custommenu()\itemname
+              WZPrint "MENUED_STACK",custommenu()\stacksize
+              WZPrint "MENUED_PRIO",custommenu()\prio
+              If custommenu()\runwbmode = 1
+                WZPrint "MENUED_RUNMODE",On
+                WZDisable "MENUED_STACK": WZDisable "MENUED_PRIO"
+              Else
+                WZPrint "MENUED_RUNMODE",Off
+                WZEnable "MENUED_STACK": WZEnable "MENUED_PRIO"
+              EndIf
+
+            EndIf
+            WZEnable "MENUED_SAVE"
+
+          Case "MENUED_LIST" :
+            item_counter = 0
+            ResetList custommenu()
+            While (item_counter < WZListNum ("MENUED_LIST")) AND NextItem(custommenu())
+              item_counter + 1
+            Wend
+            If item_counter = WZListNum ("MENUED_LIST")
+              WZPrint "MENUED_ITEMNAME",custommenu()\itemname
+              WZPrint "MENUED_STACK",custommenu()\stacksize
+              WZPrint "MENUED_PRIO",custommenu()\prio
+              If custommenu()\runwbmode = 1
+                WZPrint "MENUED_RUNMODE",On
+                WZDisable "MENUED_STACK": WZDisable "MENUED_PRIO"
+              Else
+                WZPrint "MENUED_RUNMODE",Off
+                WZEnable "MENUED_STACK": WZEnable "MENUED_PRIO"
+              EndIf
+            EndIf
+
+          Case "MENUED_PATH"
+            aslfr_SetRequesterTitle {0,"Select a Programm","Ok","Cancel"}
+            aslfr_SetPath {0,dos_PathPart{custommenu()\path},dos_FilePart{custommenu()\path} }
+            If aslfr_Request {0,False,False,False}
+              custommenu()\path = aslfr_GetNextFile{}
+              If custommenu()\path <>""
+                custommenu()\itemname = dos_FilePart{custommenu()\path}
+                WZPrint "MENUED_ITEMNAME",custommenu()\itemname
+
+                WZListRemove menuedlist
+                ResetList custommenu()
+                While NextItem (custommenu())
+                  WZListAdd menuedlist,custommenu()\itemname,-2
+                Wend
+
+                WZPrint "MENUED_LIST",0,menuedlist,0
+              EndIf
+            EndIf
+
+          Case "MENUED_STACK"
+            stacksize.l = WZInput
+            custommenu()\stacksize = stacksize
+            WZEnable "MENUED_SAVE"
+
+          Case "MENUED_PRIO"
+            prio.l = WZInput
+            custommenu()\prio = prio
+            WZEnable "MENUED_SAVE"
+
+          Case "MENUED_RUNMODE"
+            checked.l = WZInput
+            If checked = 1
+              custommenu()\runwbmode = 1
+              WZDisable "MENUED_STACK": WZDisable "MENUED_PRIO"
+            Else
+              custommenu()\runwbmode = False
+              WZEnable "MENUED_STACK": WZEnable "MENUED_PRIO"
+            EndIf
+            WZEnable "MENUED_SAVE"
+
+          Case "MENUED_SAVE"
+            If custommenu()\itemname <> "" OR custommenu()\path <> ""
+              If dos_Exist{tedmenufile$}
+                ResetList custommenu()
+                fid.l = file_Open{tedmenufile$,#file_forcewrite}
+                If fid >= 0
+                  If FirstItem(custommenu())
+                    Repeat
+                      file_WriteLine{fid,custommenu()\itemname+",~,0,"+custommenu()\path+","+Str$(custommenu()\runwbmode)+","+Str$(custommenu()\stacksize)+","+Str$(custommenu()\prio)}
+                    Until NOT NextItem(custommenu())
+                  EndIf
+                EndIf
+                file_Close{fid}
+              EndIf
+            EndIf
+            WZDisable "MENUED_SAVE"
+
+          Case "MENUED_EXIT" : menued_exit = True
+        End Select
     End Select
   Until menued_exit = True
 
