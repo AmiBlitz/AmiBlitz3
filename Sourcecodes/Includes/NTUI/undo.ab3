@@ -1,0 +1,1482 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "ram:"
+; ExeFile         = "UndoDemo"
+; CreateIcon      = 0
+; Residents       = "all.res,SDSTCP2.res,xpk.res,ttengine.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 100000
+; MakeSmallest    = 1
+; FuncOptimize    = 0
+; Version         = 0.0.0
+; NumberOfBuilds  = 97
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 1
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 213
+; CursorColumn    = 34
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 5
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 5
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 5
+; Max GadgetList  = 5
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 15
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 15
+; Max BlitzFont   = 4
+; Max GTList      = 15
+; /XTRA
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Name: undo.include                                                          /
+;/                                                                             /
+;/ Platforms: Classic, WinUAE, Amithlon, MorphOS, AmigaOS4                     /
+;/                                                                             /
+;/ Date: 29/12/2006                                                            /
+;/                                                                             /
+;/ Author: Thilo Koehler                                                       /
+;/                                                                             /
+;/ Requirements:  Amiblitz2.4                                                  /
+;/                                                                             /
+;/ Purpose:                                                                    /
+;/ Provide undo functionality to AB2.                                          /
+;/                                                                             /
+;/ Abstract:                                                                   /
+;/ 'Undo' and 'redo' are both hard to implement features in an application.    /
+;/ The undo.inlcude will give you a hand here.                                 /
+;/                                                                             /
+;/ The undo.include works like this:                                           /
+;/ Imagine a big trashbin (called "undo stack"). You can throw anything in y:: /
+;/ ou like, from very small items, e.g. a deleted line or character in an te:: /
+;/ xteditor, or very big items like a pixel area in your 24 bit bitmap that :: /
+;/ was painted over in a paint program.                                        /
+;/ Every item you throw in will be labeled with an ID number YOU can define.:: /
+;/  The trashbin behaves like a stack. The last thing you threw in, will be :: /
+;/ the first you can get out again.                                            /
+;/                                                                             /
+;/ The undo.include manages everything you throw in automatically, can swap :: /
+;/ it to disk if necessary or 'forget' an item if it gets too old or if it c:: /
+;/ onsumes too much memory.                                                    /
+;/                                                                             /
+;/ You can create an infinite number of virtual trashbins/undo stack.          /
+;/                                                                             /
+;/ What to throw into the undo stack?                                          /
+;/ To know what an undo system has to do you have to identify how a 'do' can:: /
+;/  be undone.                                                                 /
+;/ There are 3 types:                                                          /
+;/ 1. Constructors: the undo stack has only to remember which object was con:: /
+;/ structed and can undo it by destroying.                                     /
+;/ 2. Manipulators: the undo stack has either:                                 /
+;/                  - to know how to reverse the manipluation (if possible a:: /
+;/ t all)                                                                      /
+;/                  - to save the manipulated data area BEFORE modifying       /
+;/ 3. Destructors:  the undo stack has to save the whole object BEFORE it is:: /
+;/  destroyed                                                                  /
+;/                                                                             /
+;/ To identify which actions have to be undone per undo step (an undo step c:: /
+;/ an contain one or more actions that have to be undone),                     /
+;/ you throw in a 'blank page' to seperate the containers into undo steps.     /
+;/ Sounds complicated, but is easy:                                            /
+;/                                                                             /
+;/ Example :                                                                   /
+;/ A Paint Program: You create an empty, black picture and draw red box, the:: /
+;/ n a blue circle and then you delete the picture.                            /
+;/ The undo stack might look like this:                                        /
+;/                                                                             /
+;/ Container: 'destroy bitmap'     / Data Block: whole bitmap                  /
+;/ _STEP 3                                                                    /
+;/ Container: 'draw a blue circle' / Data Block: area covered by blue circle   /
+;/ _STEP 2                                                                    /
+;/ container: 'draw a red box'     / Data Block: area covered by red box       /
+;/ _STEP 1                                                                    /
+;/ Container: 'fill bitmap black'  / Data Block: whole bitmap                  /
+;/ Container: 'create bitmap'      / Data Block: empty                         /
+;/ _STEP 0                                                                    /
+;/                                                                             /
+;/ Everytime the user hits undo, you will do a while loop on undo_GetContain:: /
+;/ er and you will get all containers from top of the stack till the next st:: /
+;/ ep seperator, until you reach step 0.                                       /
+;/ Each container has an ID how to interpret the content and an optional dat:: /
+;/ a block, that can contain e.g. parts of a bitmap.                           /
+;/ NOTE: the 'create bitmap' does not need any data block, it can just destr:: /
+;/ oy the bitmap, while the 'destroy bitmap' needs to know the whole bitmap :: /
+;/ to re-create it again.                                                      /
+;/                                                                             /
+;/ The undo.include works very efficient on very small undo steps, e.g. a de:: /
+;/ leted character in a texteditor, and also on very big data blocks like re:: /
+;/ storing a whole bitmap.                                                     /
+;/                                                                             /
+;/ Terminology:                                                                /
+;/ undo stack : a stack that is filled with undo steps that can contain mult:: /
+;/ iple containers. It is a FILO buffer (first in, last out).                  /
+;/ undo step  : an undo step contains all actions that have to be reversed t:: /
+;/ o undo the latest edit step in the application. One undo step can contain:: /
+;/  zero, one, or multiple containers.                                         /
+;/ container  : a container represents an atomic action that has to be rever:: /
+;/ sed. It consists at least of the cID, identifying what to do with this co:: /
+;/ ntainer. It has also two user data fields and an optionally data block.     /
+;/ data block : the data block is an optional part of a container and can ho:: /
+;/ ld any data you need to revers the action indicated by the cID.             /
+;/ user data  : each container has 2 user data long words. They can contain :: /
+;/ any information you like, e.g. object ID numbers etc.                       /
+;/ cID        : container identifier, defines what to do with the container    /
+;/ stepID     : ID of one undo step.                                           /
+;/                                                                             /
+;/ User Constants: no user definable                                           /
+;/                                                                             /
+;/ Example:                                         The build in example is :: /
+;/ more a test of the functionality than a real world example.                 /
+;/ See the example/ dir for more examples.                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+
+CNIF #__include=0
+optimize 7
+Syntax 6
+;XINCLUDE "error.include.bb2"
+;XINCLUDE "dos.include.bb2"
+XINCLUDE "strptr.include.bb2"
+XINCLUDE "definitions.ab3"
+XINCLUDE "mousepointer.ab3"
+XINCLUDE "tempbuffer.ab3"
+XINCLUDE "file.ab3"
+XINCLUDE "global.ab3"
+
+CEND
+
+
+
+#TUIUNDO_TEMPBUFFERSIZE = 4096
+#TUIUNDO_HEAPINCSIZE    = 8
+#TUIUNDO_COLLECTSIZE    = 2512
+
+; container types
+#TUIUNDO_CTYP_EMPTY     = 0
+#TUIUNDO_CTYP_RAM       = 1
+#TUIUNDO_CTYP_DISK      = 2
+#TUIUNDO_CTYP_STEP      = 3
+#TUIUNDO_CTYP_COLLECT   = 4
+
+
+NEWTYPE.tuiUndoContainer
+cID.w         ; containerID
+dat_blength.l ; length of data
+user_data1.l  ; user data 1
+user_data2.l  ; user data 2
+End NEWTYPE
+
+
+NEWTYPE.tuiUndoContainerIndex
+ctyp.w
+ptr.l   ; pointer or step id if ctyp = #TUIUNDO_CTYP__STEP
+End NEWTYPE
+
+NEWTYPE.tuiUndoEngine
+*tempPath.str
+mem_use.l
+disk_use.l
+max_mem.l
+max_disk.l
+
+tempBuffer.l
+use_count.l
+;dummycont.tuiUndoContainer
+*undoStackList.tuiUndoStack
+End NEWTYPE
+
+
+NEWTYPE.tuiUndoStack
+*prev.tuiUndoStack
+*next_.tuiUndoStack
+*engine.tuiUndoEngine
+
+active.l         ; currently open step
+changes.l        ; number of changes
+
+max_steps.l      ; maximum number of steps
+steps_use.l      ; steps used
+
+last_stepID.l    ; stepID cache of last undo step
+
+unicount.l       ; running ID for file names
+
+mem_use.l        ; RAM memory usage
+disk_use.l       ; disk memory usage
+
+dofile.l
+
+next_index.l
+last_index.l
+
+heap.l
+heapsize.l
+
+last_use.l
+
+collect_file.l
+collect_count.l
+
+ac_index.tuiUndoContainerIndex
+ac_container.tuiUndoContainer
+End NEWTYPE
+
+
+
+
+
+Function.tuiUndoEngine ntui_CreateUndoEngine{tempPath.s,max_mem.l,max_disk.l}
+If tempPath="" Then tempPath = "SYS:T"
+*undoEngine.tuiUndoEngine = AllocVec_(SizeOf.tuiUndoEngine,#MEMF_CLEAR)
+If *undoEngine
+  *undoEngine\tempPath      = Null
+  *undoEngine\undoStackList = Null
+  *undoEngine\mem_use       = 0
+  *undoEngine\disk_use      = 0
+  *undoEngine\use_count     = 0
+  *undoEngine\tempBuffer    = AllocVec_(#TUIUNDO_TEMPBUFFERSIZE,#MEMF_ANY)
+
+  str_Write{&*undoEngine\tempPath,tempPath}
+  If max_mem >=0 Then *undoEngine\max_mem =max_mem  : Else *undoEngine\max_mem =2500000
+  If max_disk>=0 Then *undoEngine\max_disk=max_disk : Else *undoEngine\max_disk=2500000*1024
+End If
+Function Return *undoEngine
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l = _undo_collect_open {*undo.tuiUndoStack}                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private                                                                   /
+;/ Open the collect file for small items.                                      /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : ???                                                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l _ntui_OpenUndoCollectFile{*undo.tuiUndoStack}
+
+  filename.s = _ntui_AddPart {str_Read{&*undo\engine\tempPath},"__undo"+Hex$(*undo)+"main.tmp"}
+  lock.l = Open_(&filename.s,#MODE_READWRITE)
+  If lock
+    *undo\collect_file = lock
+    Function Return  True
+  EndIf
+
+  Function Return False
+
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _undo_collect_close {*undo.tuiUndoStack}                               /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private                                                                   /
+;/ Close collect file.                                                         /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _ntui_CloseUndoCollectFile{*undo.tuiUndoStack}
+
+  If *undo\collect_file
+    ;tmp.l = ntui_ObtainTempBuffer{}
+    If NameFromFH_ (*undo\collect_file,*undo\engine\tempBuffer,#TUIUNDO_TEMPBUFFERSIZE)
+      *fib.FileInfoBlock = AllocDosObject_ (#DOS_FIB,#TAG_DONE)
+      If *fib
+        If ExamineFH_(*undo\collect_file,*fib) <> 0
+          *undo\disk_use        - *fib\fib_Size
+          *undo\engine\disk_use - *fib\fib_Size
+        End If
+        FreeDosObject_ #DOS_FIB,*fib : *fib=Null
+      End If
+      Close_ *undo\collect_file
+      DeleteFile_ *undo\engine\tempBuffer
+    Else
+      Close_ *undo\collect_file
+    End If
+    *undo\collect_file = 0
+  End If
+
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _undo_c_destroy {*undo.tuiUndoStack,*ci.tuiUndoContainerIndex}                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Destroy (=free) a container of an undo stack, disk or ram type.             /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : ???                                                  /
+;/ - *ci.tuiUndoContainerIndex    : ???                                               /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _ntui_DestroyUndoContainer{*undo.tuiUndoStack,*ci.tuiUndoContainerIndex}
+
+If *ci
+  Select *ci\ctyp
+    Case #TUIUNDO_CTYP_RAM
+      *container.tuiUndoContainer = *ci\ptr
+      If *container
+        mem.l = SizeOf.tuiUndoContainer+*container\dat_blength
+        *undo\mem_use      - mem
+        *undo\engine\mem_use - mem
+        FreeMem_ *container,mem
+      End If
+
+    Case #TUIUNDO_CTYP_DISK
+      If NameFromFH_ (*ci\ptr,*undo\engine\tempBuffer,#TUIUNDO_TEMPBUFFERSIZE)
+        *fib.FileInfoBlock = AllocDosObject_ (#DOS_FIB,#TAG_DONE)
+        If *fib
+          If ExamineFH_(*ci\ptr,*fib) <> 0
+            *undo\disk_use      - *fib\fib_Size
+            *undo\engine\disk_use - *fib\fib_Size
+          End If
+          FreeDosObject_ #DOS_FIB,*fib : *fib=Null
+        End If
+        Close_ *ci\ptr
+        DeleteFile_ *undo\engine\tempBuffer
+      End If
+
+    Case #TUIUNDO_CTYP_COLLECT
+      *undo\collect_count-1
+      If *undo\collect_count<=0 Then _ntui_CloseUndoCollectFile{*undo}
+
+    Case #TUIUNDO_CTYP_STEP
+
+  End Select
+  *ci\ctyp   = #TUIUNDO_CTYP_EMPTY
+  *ci\ptr    = Null
+End If
+
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_Flush {*undo.tuiUndoStack}                                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Free all containers of an undo stack.                                       /
+;/ After that, all undo steps on this undo stack are lost.                     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/                                                                             /
+;/ See also:    undo_FlushAll                                                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_FlushUndoStack{*undo.tuiUndoStack}
+
+  !_ASSERT{*undo}
+  _ntui_DestroyUndoContainer{*undo,*undo\ac_index}
+  For n.l = 0 To *undo\heapsize-1
+    *ci.tuiUndoContainerIndex = *undo\heap + SizeOf.tuiUndoContainerIndex*n
+    _ntui_DestroyUndoContainer{*undo,*ci}
+  Next
+  _ntui_CloseUndoCollectFile{*undo}
+  If *undo\heapsize>0 AND *undo\heap><0 Then FreeMem_ *undo\heap,*undo\heapsize*SizeOf.tuiUndoContainerIndex
+  *undo\heap       = 0
+  *undo\heapsize   = 0
+  *undo\mem_use    = 0
+  *undo\disk_use   = 0
+  *undo\last_index = 0
+  *undo\next_index = 0
+  *undo\active     = 0
+  *undo\steps_use  = 0
+  *undo\last_stepID= 0
+
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_FlushAll {}                                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Fush all undo stacks.                                                       /
+;/ NOTE: This function calls undo_Flush for all undo stacks created.           /
+;/                                                                             /
+;/ See also:    undo_Flush                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_FlushUndoEngine{*undoEngine.tuiUndoEngine}
+
+  ; flush Em all
+
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _undo_check_steps {*undo.tuiUndoStack}                                 /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Check undo stack and free undo steps above the maximum,                     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _ntui_LimitUndoSteps{*undo.tuiUndoStack}
+
+  If *undo\max_steps>0
+    If *undo\steps_use>=*undo\max_steps
+      If *undo\heap
+        *ci.tuiUndoContainerIndex = *undo\heap+*undo\last_index*SizeOf.tuiUndoContainerIndex
+        Repeat
+          _ntui_DestroyUndoContainer{*undo,*ci}
+          *undo\last_index+1
+          If *undo\last_index>=*undo\heapsize Then *undo\last_index=0
+          *ci = *undo\heap+*undo\last_index*SizeOf.tuiUndoContainerIndex
+        Until *ci\ctyp = #TUIUNDO_CTYP_STEP OR *ci\ctyp=#TUIUNDO_CTYP_EMPTY
+        *undo\steps_use-1
+
+      End If
+    End If
+  End If
+
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _undo_check_disk {*undo.tuiUndoStack,bdisk.l}                          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Check undo stack to provide a minimum amount of memory on disk.             /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack  : pointer to undo stack                                  /
+;/ - bdisk.l        : bytes to guarantee on disk                               /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _ntui_LimitUndoDiskUsage{*undo.tuiUndoStack,bdisk.l}
+  If *undo\engine\disk_use+bdisk>*undo\engine\max_disk
+    ; ... free bdisk memory on disk
+  End If
+End Statement
+
+
+;//////////////////////////////////////////////////////////////////////////m: /////
+;/                                                                             /
+;/ Syntax:  succ.l = _undo_c_todisk {*undo.tuiUndoStack,*ci.tuiUndoContainerIndex}       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Write a container of an undo stack to disk.                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/ - *ci.tuiUndoContainerIndex    : index of the container                            /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : ???                                                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l _ntui_WriteUndoContainerToDisk{*undo.tuiUndoStack,*ci.tuiUndoContainerIndex}
+succ.l = False
+If *ci
+  Select *ci\ctyp
+    Case #TUIUNDO_CTYP_RAM
+      *container.tuiUndoContainer = *ci\ptr
+      mem.l = SizeOf.tuiUndoContainer+*container\dat_blength
+      _ntui_LimitUndoDiskUsage{*undo,mem}
+
+      If mem>#TUIUNDO_COLLECTSIZE
+        filename.s = _ntui_AddPart {str_Read{&*undo\engine\tempPath},"__undo"+Hex$(*undo)+Hex$(*undo\unicount)+".tmp"}
+        *undo\unicount+1
+        lock.l = Open_(&filename.s,#MODE_READWRITE)
+        If lock
+          If Write_(lock,*container,mem)=mem
+            FreeMem_ *container,mem
+            *ci\ctyp   = #TUIUNDO_CTYP_DISK
+            *ci\ptr    = lock
+            *undo\engine\mem_use -mem
+            *undo\mem_use        -mem
+            *undo\engine\disk_use+mem
+            *undo\disk_use       +mem
+            succ.l = True
+          Else
+            Close_ lock
+          End If
+        End If
+      Else
+        If *undo\collect_file=Null Then succ.l = _ntui_OpenUndoCollectFile{*undo}
+        If *undo\collect_file
+          If Seek_ (*undo\collect_file,0,#OFFSET_END)><-1
+            *ci\ptr    = Seek_(*undo\collect_file,0,#OFFSET_CURRENT)
+            If Write_(*undo\collect_file,*container,mem)=mem
+              FreeMem_ *container,mem
+              *ci\ctyp    = #TUIUNDO_CTYP_COLLECT
+              *undo\engine\mem_use -mem
+              *undo\mem_use        -mem
+              *undo\engine\disk_use+mem
+              *undo\disk_use       +mem
+              succ.l = True
+              *undo\collect_count+1
+            End If
+          End If
+        End If
+      End If
+
+    Case #TUIUNDO_CTYP_COLLECT : ; we are already on disk!
+
+    Case #TUIUNDO_CTYP_DISK : ; we are already on disk!
+
+    Case #TUIUNDO_CTYP_STEP : ; nothing to write here
+
+  End Select
+End If
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _undo_check_mem {*undo.tuiUndoStack,bmem.l}                            /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ check undoengine to provide a minimum of bytes of memory.                   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/ - bmem.l    : ???                                                           /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _ntui_LimitUndoRamUsage{*undo.tuiUndoStack,bmem.l}
+succ.l = True
+Statement Return
+While *undo\engine\mem_use+bmem>*undo\engine\max_mem AND succ><False
+  *minundo.tuiUndoStack = Null
+  minlast.l             = $7fffffff
+  *undo=*undo\engine\undoStackList
+  Repeat
+    If *undo
+      If (*undo\last_use-*undo\steps_use/2)<minlast AND *undo\mem_use>0
+        minlast = (*undo\last_use-*undo\steps_use/2)
+        *minundo.tuiUndoStack = *undo
+      End If
+      *undo = *undo\next_
+    End If
+
+  Until *undo=Null
+
+  If *minundo
+    maxsize.l  = 0
+    maxindex.l = -1
+    n.l = 0
+    ind.l = *minundo\next_index-1:If ind<0 Then ind=*minundo\heapsize-1
+    While ind><*minundo\last_index
+      *ci.tuiUndoContainerIndex = *minundo\heap+ind*SizeOf.tuiUndoContainerIndex
+      If *ci\ctyp = #TUIUNDO_CTYP_RAM
+        *container.tuiUndoContainer=*ci\ptr
+        If *container
+          If *container\dat_blength+n*255>maxsize
+            maxindex = ind
+            maxsize  = *container\dat_blength+n*n
+          End If
+        End If
+      End If
+      ind-1
+      n+1
+      If ind<0 Then ind=*minundo\heapsize-1
+    Wend
+    If maxindex>=0
+      succ=_ntui_WriteUndoContainerToDisk{*minundo,*minundo\heap+maxindex*SizeOf.tuiUndoContainerIndex}
+    Else
+      succ=False
+    End If
+  Else
+    succ=False
+  End If
+Wend
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l = _undo_c_add {*undo.tuiUndoStack,*ci.tuiUndoContainerIndex,cID.l,@:: /
+;/ dat_ptr.l,@dat_blength.l,@user_data1.l,@user_data2.l}                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Add a new container to the undo stack.                                      /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/ - *ci.tuiUndoContainerIndex : container index                                      /
+;/ - cID.l              : container id                                         /
+;/ - dat_ptr.l          : pointer to data                                      /
+;/ - dat_blength.l      : length of data                                       /
+;/ - user_data1.l       : user data 1                                          /
+;/ - user_data2.l       : user data 2                                          /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : ...                                                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l _ntui_AddUndoContainer{*undo.tuiUndoStack,*ci.tuiUndoContainerIndex,cID.l,@dat_ptr.l,@dat_blength.l,@user_data1.l,@user_data2.l}
+SHARED undoengine
+If *ci
+  If *ci\ctyp><#TUIUNDO_CTYP_EMPTY Then _ntui_DestroyUndoContainer{*undo,*ci}
+  If dat_blength<=0 Then dat_blength=0:dat_ptr=0
+  mem.l = SizeOf.tuiUndoContainer+dat_blength
+  done.l = False
+
+  _ntui_LimitUndoRamUsage{*undo,mem}
+
+  If *undo\engine\mem_use + mem<=*undo\engine\max_mem
+    *container.tuiUndoContainer = AllocMem_(mem,0)
+    If *container
+      If dat_blength>0 AND dat_ptr><0
+        CopyMem_ dat_ptr,*container+SizeOf.tuiUndoContainer,dat_blength
+      End If
+      *undo\mem_use      + mem
+      *undo\engine\mem_use + mem
+      *container\cID             = cID
+      *container\user_data1      = user_data1
+      *container\user_data2      = user_data2
+      *container\dat_blength     = dat_blength
+      *ci\ctyp   = #TUIUNDO_CTYP_RAM
+      *ci\ptr    = *container
+
+      done = True
+    End If
+  End If
+
+
+  If done=False
+    If *undo\engine\disk_use + mem<=*undo\engine\max_disk
+      *undo\ac_container\cID             = cID            ; was engine\dummycont
+      *undo\ac_container\user_data1      = user_data1
+      *undo\ac_container\user_data2      = user_data2
+      *undo\ac_container\dat_blength     = dat_blength
+
+      filename.s = _ntui_AddPart {str_Read{&*undo\engine\tempPath},"__undo"+Hex$(*undo)+Hex$(*undo\unicount)+".tmp"}
+      *undo\unicount+1
+      lock.l = Open_(&filename.s,#MODE_READWRITE)
+      If lock
+        If Write_(lock,*undo\ac_container,SizeOf.tuiUndoContainer)
+          If dat_blength>0 AND dat_ptr><0
+            succ.l = Write_(lock,dat_ptr,dat_blength)
+          Else
+            succ.l = True
+          End If
+          If succ
+            *ci\ctyp   = #TUIUNDO_CTYP_DISK
+            *ci\ptr    = lock
+            *undo\engine\disk_use+mem
+            *undo\disk_use     +mem
+            done=True
+          Else
+            Close_ lock
+          End If
+        Else
+          Close_ lock
+        End If
+      End If
+    Else
+      ; too big for disk as well...
+    End If
+  End If
+
+  If done=False
+    ntui_FlushUndoStack{*undo}
+  End If
+
+End If
+Function Return done
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l = _undo_c_addstep {*undo.tuiUndoStack,*ci.tuiUndoContainerIndex,@st:: /
+;/ epID.l}                                                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private                                                                   /
+;/ Add a new step to the undo stack.                                           /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/ - *ci.tuiUndoContainerIndex    : container index                                   /
+;/ - stepID.l    : step id                                                     /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : ???                                                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l _ntui_AddUndoStep{*undo.tuiUndoStack,*ci.tuiUndoContainerIndex,@stepID.l}
+succ.l = False
+If *ci
+  If *ci\ctyp><#TUIUNDO_CTYP_EMPTY Then _ntui_DestroyUndoContainer{*undo,*ci}
+  *ci\ctyp = #TUIUNDO_CTYP_STEP
+  *ci\ptr = stepID
+  succ.l = True
+End If
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_Free {*undo.tuiUndoStack}                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Free undo stack and all containers.                                         /
+;/ NOTE: The pointer to the undo stack is not valid anymore after this call!   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/                                                                             /
+;/ See also:    undo_Create                                                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_FreeUndoStack{*undo.tuiUndoStack}
+If *undo
+  ntui_FlushUndoStack{*undo}
+
+  If *undo\prev  Then *undo\prev\next_ = *undo\next_   ; unlink
+  If *undo\next_ Then *undo\next_\prev = *undo\prev
+  If *undo=*undo\engine\undoStackList Then *undo\engine\undoStackList = *undo\next_
+
+  FreeMem_ *undo,SizeOf.tuiUndoStack : *undo = Null
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_FreeAll {}                                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Free all undo stacks and undoengine.                                        /
+;/ NOTE: This function is called on autoexit.                                  /
+;/                                                                             /
+;/ See also:    undo_Free                                                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_FreeUndoEngine{*undoEngine.tuiUndoEngine}
+
+While *undoEngine\undoStackList><Null
+  ntui_FreeUndoStack{*undoEngine\undoStackList}
+Wend
+If *undoEngine\tempBuffer Then FreeVec_ *undoEngine\tempBuffer : *undoEngine\tempBuffer = Null
+FreeVec_ *undoEngine
+*undoEngine=Null
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  *undo.l = undo_Create {@maxsteps.l,@kickit.l}                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Create a new undo stack and set the maximum number of undo steps kept.      /
+;/ If you ommit maxsteps or set it to -1, the undo stack will take as much s:: /
+;/ teps as the memory settings (undo_Config) allow.                            /
+;/ NOTE: It is not allways wise to allow an infinite number of undo stacks, :: /
+;/ because multiple stacks might compete against each other. If you dont nee:: /
+;/ d really a lot of history, set it to a reasonable value (e.g. 10).          /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - maxsteps.l  : maximum number of undo steps to remember                    /
+;/ - swapable.l    : ><0 allow to swap to disk (is default)                    /
+;/ - kickit.l    : ???                                                         /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - *undo.tuiUndoStack     : pointer to an undo stack                            /
+;/                                                                             /
+;/ See also:    undo_Free                                                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.tuiUndoStack ntui_CreateUndoStack{*undoEngine.tuiUndoEngine,@maxsteps.l,@kickit.l}
+*undo.tuiUndoStack = AllocMem_(SizeOf.tuiUndoStack,#MEMF_CLEAR)
+If *undo
+  *undo\prev            = Null
+  *undo\next_           = (.tuiUndoStack)*undoEngine\undoStackList
+  If *undo\next_ Then *undo\next_\prev = *undo
+  *undoEngine\undoStackList = *undo
+  *undo\engine          = *undoEngine
+  *undo\active          = False
+  *undo\dofile          = NOT(kickit)
+  *undo\max_steps       = maxsteps
+  *undo\unicount        = 0
+  *undo\last_index      = 0
+  *undo\next_index      = 0
+  *undo\heap            = 0
+  *undo\heapsize        = 0
+  *undo\changes         = 0
+  *undo\steps_use       = 0
+  *undo\mem_use         = 0
+  *undo\disk_use        = 0
+  *undo\last_stepID     = 0
+  *undo\ac_index\ctyp   = #TUIUNDO_CTYP_EMPTY
+  *undo\ac_index\ptr    = 0
+End If
+Function Return *undo
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  *ci.l = _undo_nextindex {*undo.tuiUndoStack}                          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Step to the next index and increase indexlist if necessary.                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - *ci.tuiUndoContainerIndex     : pointer to an container omdex                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.tuiUndoContainerIndex _ntui_GetNextUndoContainerIndex {*undo.tuiUndoStack}
+If *undo\heap=0
+  *undo\heapsize = #TUIUNDO_HEAPINCSIZE
+  *undo\heap     = AllocMem_(*undo\heapsize*SizeOf.tuiUndoContainerIndex,#MEMF_CLEAR)
+  If *undo\heap=0 Then *undo\heapsize=0:error {"undo_nextindex: Unable to create undo heap index!"}
+  *ci.tuiUndoContainerIndex = (*undo\heap)
+  *undo\last_index=0
+  *undo\next_index=0
+Else
+  *ci.tuiUndoContainerIndex = (*undo\heap + *undo\next_index * SizeOf.tuiUndoContainerIndex)
+  If *ci\ctyp><#TUIUNDO_CTYP_EMPTY
+    newsize.l = *undo\heapsize+#TUIUNDO_HEAPINCSIZE
+    newheap.l = AllocMem_(newsize*SizeOf.tuiUndoContainerIndex,#MEMF_CLEAR)
+    If newheap
+      startind.l = *undo\last_index
+      endind.l   = *undo\next_index-1 : If endind<0 Then endind=*undo\heapsize-1
+      If startind<=endind
+        CopyMem_ *undo\heap+startind*SizeOf.tuiUndoContainerIndex,newheap,(endind-startind+1)*SizeOf.tuiUndoContainerIndex
+        *undo\next_index = endind-startind+1
+      Else
+        CopyMem_ *undo\heap+startind*SizeOf.tuiUndoContainerIndex,newheap,(*undo\heapsize-startind)*SizeOf.tuiUndoContainerIndex
+        CopyMem_ *undo\heap,newheap + (*undo\heapsize-startind)*SizeOf.tuiUndoContainerIndex,(endind+1)*SizeOf.tuiUndoContainerIndex
+        *undo\next_index = *undo\heapsize
+      End If
+      FreeMem_ *undo\heap,*undo\heapsize*SizeOf.tuiUndoContainerIndex
+      *undo\heap       = newheap
+      *undo\heapsize   = newsize
+      *undo\last_index = 0
+      *ci.tuiUndoContainerIndex = (*undo\heap + *undo\next_index * SizeOf.tuiUndoContainerIndex)
+    Else
+      ntui_FlushUndoStack{*undo}
+      *ci=0
+    End If
+  End If
+End If
+If *ci Then *undo\next_index+1 : If *undo\next_index>=*undo\heapsize Then *undo\next_index=0
+Function Return *ci
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_Start {*undo.tuiUndoStack,@stepID.l}                              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Start a new undo step on the given undo stack, ready to take containers.    /
+;/ NOTE: Do not create unnecessary undo steps that contain no containers. It:: /
+;/  does not harm the undo stack, but an 'undo' will have no effect.           /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack  : pointer to undo stack                                  /
+;/ - stepID.l       : free definable step identifier (avoid -1 for use with :: /
+;/ undo_GetStepID)                                                             /
+;/                                                                             /
+;/ See also:    undo_Stop, undo_Continue, undo_Store                           /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_StartUndoStep{*undo.tuiUndoStack,@stepID.l}
+If *undo
+  _ntui_LimitUndoSteps{*undo}
+  *undo\active=True
+  *ci.tuiUndoContainerIndex = _ntui_GetNextUndoContainerIndex{*undo}
+  If *ci
+
+    If _ntui_AddUndoStep{*undo,*ci,stepID.l}
+      *undo\steps_use +1
+      *undo\last_stepID = stepID
+      ; step check, evtl. muessen alte steps verworfen werden
+      *undo\last_use = *undo\engine\use_count
+      *undo\engine\use_count+1
+      *undo\changes    +1
+    End If
+  Else
+    ntui_FlushUndoStack{*undo}
+  End If
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_Continue {*undo.tuiUndoStack,@stepID.l}                           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Same like undo_Start, but starts a new undo step only if the step ID is d:: /
+;/ ifferent. If the last step ID is the same, the function returns without d:: /
+;/ oing anything.                                                              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack : pointer to undo stack                                   /
+;/ - stepID.l        : free definable step identifier                          /
+;/                                                                             /
+;/ See also:    undo_Start, undo_Stop, undo_Store                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_ContinueUndoStep{*undo.tuiUndoStack,@stepID.l}
+If *undo
+  If *undo\last_stepID><stepID OR *undo\active=False
+    ntui_StartUndoStep{*undo,stepID}
+  End If
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_Store {*undo.tuiUndoStack,cID.l,@dat_ptr.l,@dat_blength.l,@user:: /
+;/ _data1.l,@user_data2.l}                                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Store some information and/or data block into a new container on the undo:: /
+;/  stack.                                                                     /
+;/ NOTE: undo_Start must have been called before to define a new undo step. :: /
+;/ One undo step can contain multiple containers!                              /
+;/ NOTE: This function is always needed BEFORE you are going to manipluate y:: /
+;/ our application data and should rescue everything that will be destroyed.   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack : pointer to undo stack                                   /
+;/ - cID.w            : free definable container identifier                    /
+;/ - dat_ptr.l         : pointer to data, can be 0                             /
+;/ - dat_blength.l   : length of data, can be 0                                /
+;/ - user_data1.l    : free definable long word                                /
+;/ - user_data2.l    : free definable long word                                /
+;/ - cID.l    : ???                                                            /
+;/                                                                             /
+;/ See also:    undo_Start, undo_Stop, undo_Continue                           /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_StoreUndoContainer{*undo.tuiUndoStack,cID.l,@dat_ptr.l,@dat_blength.l,@user_data1.l,@user_data2.l}
+SHARED undoengine
+If *undo
+  If *undo\active
+    *ci.tuiUndoContainerIndex = _ntui_GetNextUndoContainerIndex{*undo}
+    If *ci
+      succ.l = _ntui_AddUndoContainer{*undo,*ci,cID,dat_ptr,dat_blength,user_data1,user_data2}
+    End If
+  End If
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l = undo_GetContainer {*undo.tuiUndoStack}                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Test if there is another container waiting within this undo step.           /
+;/ NOTE: This function is needed if you are going to undo something.           /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : -1 if there is a container, 0 otherwise                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l ntui_GetUndoContainer {*undo.tuiUndoStack}
+succ.l = False
+If *undo
+  If *undo\steps_use>0
+    _ntui_DestroyUndoContainer{*undo,*undo\ac_index}
+
+    acindex.l = *undo\next_index-1
+    If acindex<0 Then acindex=*undo\heapsize-1
+
+    *ci.tuiUndoContainerIndex = (*undo\heap + acindex * SizeOf.tuiUndoContainerIndex)
+
+    *undo\ac_index\ctyp  = *ci\ctyp
+    *undo\ac_index\ptr   = *ci\ptr
+
+    *ci\ctyp = #TUIUNDO_CTYP_EMPTY
+    *ci\ptr  = 0
+    *undo\next_index=acindex
+    Select *undo\ac_index\ctyp
+      Case #TUIUNDO_CTYP_DISK
+        If Seek_(*undo\ac_index\ptr,0,#OFFSET_BEGINNING)><-1
+          succ.l =  (Read_ (*undo\ac_index\ptr,*undo\ac_container,SizeOf.tuiUndoContainer) = SizeOf.tuiUndoContainer)
+        End If
+
+      Case #TUIUNDO_CTYP_COLLECT
+        If Seek_(*undo\collect_file,*undo\ac_index\ptr,#OFFSET_BEGINNING)><-1
+          x.l = Read_ (*undo\collect_file,*undo\ac_container,SizeOf.tuiUndoContainer)
+          succ.l =  (x = SizeOf.tuiUndoContainer)
+        End If
+        If succ=False Then error {"undo_GetContainer: Unable to read container head ! "+Str$(x)+"><"+Str$(SizeOf.tuiUndoContainer)}:succ=True
+
+      Case #TUIUNDO_CTYP_RAM
+        CopyMem_ *undo\ac_index\ptr,*undo\ac_container,SizeOf.tuiUndoContainer
+        succ = True
+
+      Case #TUIUNDO_CTYP_STEP
+        succ=False
+        _ntui_DestroyUndoContainer{*undo,*undo\ac_index}
+        *undo\changes -1
+        *undo\steps_use-1
+      Default
+        error {"undo_GetContainer: Invalid typ in undo container detected !"}
+    End Select
+  End If
+End If
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  n.l = undo_GetNumSteps {*undo.tuiUndoStack}                           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the number of undo steps on the undo stack.                          /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - n.l     : number of undo steps on undo stack                              /
+;/                                                                             /
+;/ See also:    undo_GetStepID                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l ntui_GetNumberOfUndoSteps{*undo.tuiUndoStack}
+Function Return *undo\steps_use
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  stepID.l = undo_GetStepID {*undo.tuiUndoStack,@sindex.l}              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the stepID of an undo step on the undo stack.                        /
+;/ If sindex is ommitted or 0, the latest undo step identifier is returned.    /
+;/ If sindex>0, the undo step ifentifier of previous steps is returned.        /
+;/ If sindex>number of steps, -1 is returned.                                  /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/ - sindex.l           : index of undo step (0=latest step)                   /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - stepID.l     : undo step identifier                                       /
+;/                                                                             /
+;/ See also:    undo_GetNumSteps                                               /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l ntui_GetUndoStepID {*undo.tuiUndoStack,@sindex.l}
+If sindex<0 Then sindex=0
+If *undo\steps_use<sindex Function Return -1
+If *undo\heap = 0 Then Function Return -1
+cindex.l = 0
+sID.l = -1
+Repeat
+  *ci.tuiUndoContainerIndex = (*undo\heap + cindex * SizeOf.tuiUndoContainerIndex)
+  If *ci\ctyp = #TUIUNDO_CTYP_STEP
+    sindex-1
+    sID = *ci\ptr
+  End If
+  cindex+1
+Until sindex=0
+Function Return sID
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_Stop {*undo.tuiUndoStack}                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Stop the current undo step. Subsequent calls to undo_Store will be ignored. /
+;/ NOTE: This function is useful if your undo step contains already all data:: /
+;/  needed to restore, and further manipulations of the application data don:: /
+;/ t matter (but still do an undo_Store).                                      /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/                                                                             /
+;/ See also:    undo_Start, undo_Store, undo_Continue                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ntui_StopUndoStep{*undo.tuiUndoStack}
+If *undo
+  *undo\active=False
+  *undo\last_stepID= 0
+End If
+End Statement
+
+#TUIUSA_NUMBEROFCHANGES           = 1
+#TUIUSA_CURRENTCONTAINERID        = 2
+#TUIUSA_CURRENTCONTAINERSIZE      = 3
+#TUIUSA_CURRENTCONTAINERUSERDATA1 = 4
+#TUIUSA_CURRENTCONTAINERUSERDATA2 = 5
+#TUIUSA_CURRENTCONTAINERDATA      = 6
+#TUIUSA_UNDOSTEPS                 = 7
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  changes.l = undo_GetNumChanges {*undo.tuiUndoStack}                   /
+;/                                                                             /
+;/ Description:
+
+;/ TUIUSA_NUMCHANGES                                                            /
+;/ Get the number of changes made on the given undo stack.                     /
+;/ NOTE: The undo.include is keeping track of the number of changes based on:: /
+;/  the number of undo steps.                                                  /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - changes.l     : number of changes                                         /
+;/                                                                             /
+;/ See also:    undo_GetNumGlobalChanges                                       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l ntui_GetUndoStackAttr{*undo.tuiUndoStack,ti_Tag.l,*ti_DataP.l}
+  !_ASSERT{*undo}
+  *ti_Data.longP = *ti_DataP
+  succ.l = True
+
+  Select ti_Tag
+    Case #TUIUSA_UNDOSTEPS                 : *ti_Data\l = *undo\steps_use
+    Case #TUIUSA_NUMBEROFCHANGES           : *ti_Data\l = *undo\changes
+    Case #TUIUSA_CURRENTCONTAINERID        : *ti_Data\l = *undo\ac_container\cID
+    Case #TUIUSA_CURRENTCONTAINERSIZE      : *ti_Data\l = *undo\ac_container\dat_blength
+    Case #TUIUSA_CURRENTCONTAINERUSERDATA1 : *ti_Data\l = *undo\ac_container\user_data1
+    Case #TUIUSA_CURRENTCONTAINERUSERDATA2 : *ti_Data\l = *undo\ac_container\user_data2
+    Case #TUIUSA_CURRENTCONTAINERDATA      :
+      succ = False
+      dest_ptr.l = *ti_DataP
+      max_blength.l = *undo\ac_container\dat_blength
+      Select *undo\ac_index\ctyp
+        Case #TUIUNDO_CTYP_DISK
+          max_blength.l = Min(max_blength,*undo\ac_container\dat_blength)
+          If Seek_(*undo\ac_index\ptr,SizeOf.tuiUndoContainer,#OFFSET_BEGINNING)><-1
+            succ = (Read_ (*undo\ac_index\ptr,dest_ptr,max_blength) = max_blength)
+          End If
+
+        Case #TUIUNDO_CTYP_COLLECT
+          max_blength = Min(max_blength,*undo\ac_container\dat_blength)
+          If Seek_(*undo\collect_file,*undo\ac_index\ptr+SizeOf.tuiUndoContainer,#OFFSET_BEGINNING)><-1
+            succ = (Read_ (*undo\collect_file,dest_ptr,max_blength) = max_blength)
+          End If
+
+        Case #TUIUNDO_CTYP_RAM
+          max_blength = Min(max_blength,*undo\ac_container\dat_blength)
+          CopyMem_ *undo\ac_index\ptr +SizeOf.tuiUndoContainer,dest_ptr,max_blength
+          succ = True
+
+      End Select
+      If succ = False Then ntui_FlushUndoStack{*undo}
+
+    Default
+      succ = False
+
+  End Select
+
+  Function Return succ
+
+End Function
+
+
+
+Function.l ntui_SetUndoStackAttr{*undo.tuiUndoStack,ti_Tag.l,ti_Data.l}
+  !_ASSERT{*undo}
+
+  done.l = True
+  Select ti_Tag
+    Case #TUIUSA_NUMBEROFCHANGES  : *undo\changes = ti_Data
+
+    Default
+      done=False
+
+  End Select
+
+  Function Return done
+
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  data_ptr.l = undo_GetContainerDataPtr {*undo.tuiUndoStack}            /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the pointer to the current container data block (after undo_GetContai:: /
+;/ ner).                                                                       /
+;/ NOTE: This requres the undo.inlcude to hold the data lock in memory for y:: /
+;/ ou. If you just copy the data somewhere else, it is more efficient to cal:: /
+;/ l undo_GetContainerData.                                                    /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - data_ptr.l     : pointer to data block                                    /
+;/                                                                             /
+;/ See also:    undo_GetContainer                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+;Function.l ntui_GetCurrentContainerDataPtr{*undo.tuiUndoStack}
+;ptr.l = 0
+;If *undo\ac_container\dat_blength>0
+;
+;Select *undo\ac_index\ctyp
+;  Case #TUIUNDO_CTYP_RAM
+;    ptr.l = *undo\ac_index\ptr + SizeOf.tuiUndoContainer
+;
+;  Case #TUIUNDO_CTYP_DISK
+;    undoengine\temp_ptr     = AllocMem_(*undo\ac_container\dat_blength,0)
+;    undoengine\temp_blength = *undo\ac_container\dat_blength
+;    If undoengine\temp_ptr
+;      If Seek_ (*undo\ac_index\ptr,SizeOf.tuiUndoContainer,#OFFSET_BEGINNING)><-1
+;        succ.l = (Read_ (*undo\ac_index\ptr,undoengine\temp_ptr,*undo\ac_container\dat_blength) = *undo\ac_container\dat_blength)
+;        ptr = undoengine\temp_ptr
+;      Else
+;        error {"Unable to seek !"}
+;      End If
+;    End If
+;    If ptr=0 Then error {"Unable to get ptr !"}:undo_Flush{*undo}
+;
+;  Case #TUIUNDO_CTYP_COLLECT
+;    _undo_temp_free{}
+;    undoengine\temp_ptr     = AllocMem_(*undo\ac_container\dat_blength,0)
+;    undoengine\temp_blength = *undo\ac_container\dat_blength
+;    If undoengine\temp_ptr
+;      If Seek_(*undo\collect_file,*undo\ac_index\ptr+SizeOf.tuiUndoContainer,#OFFSET_BEGINNING)
+;        succ.l = (Read_ (*undo\collect_file,undoengine\temp_ptr,*undo\ac_container\dat_blength) = *undo\ac_container\dat_blength)
+;        ptr = undoengine\temp_ptr
+;      Else
+;        error {"Unable to seek !"}
+;      End If
+;    End If
+;    If ptr=0 Then error {"Unable to get ptr !"}:undo_Flush{*undo}
+;
+;  Case #TUIUNDO_CTYP_STEP
+;End Select
+;Else
+;  ;error {"Ptr on undo container blength<=0 !"+Str$(*undo\ac_container\dat_blength)}
+;End If
+;Function Return ptr
+;End Function
+;
+
+
+CNIF #__include=0
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _drawstat {*undo.tuiUndoStack,*undo2.tuiUndoStack}                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Used only for visualisation of internal demo.                               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.tuiUndoStack    : pointer to undo stack                                /
+;/ - *undo2.tuiUndoStack    : ???                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _drawstat{*undo.tuiUndoStack,*undo2.tuiUndoStack}
+SHARED undoengine
+       WLocate 0,0
+       WJam 1
+       NPrint "Mem Use Global :    ",*undo\engine\mem_use," / Disk: ",*undo\engine\disk_use,"      "
+       NPrint "Mem Use Local 1:    ",*undo\mem_use," / Disk: ",*undo\disk_use," / in ",*undo\steps_use," steps     "
+       NPrint "Mem Use Local 2:    ",*undo2\mem_use," / Disk: ",*undo2\disk_use," / in ",*undo2\steps_use," steps     "
+
+      ; NPrint "Last Index: ",*undo\last_index," / Next Index: ",*undo\next_index,"   "
+       NPrint "Heapsize 1: ",*undo\heapsize," index   "
+       NPrint "Heapsize 2: ",*undo2\heapsize," index   "
+
+WBox 8,100,1000,135,0
+For n.l = 0 To *undo\heapsize-1
+  *ci.tuiUndoContainerIndex = *undo\heap+n*SizeOf.tuiUndoContainerIndex
+  Select *ci\ctyp
+    Case 0
+      WBox 8+n*2,100,8+n*2+1,104,1
+    Case 1
+      WBox 8+n*2,100,8+n*2+1,104,3
+    Case 2
+      WBox 8+n*2,100,8+n*2+1,104,0
+    Case 3
+      WBox 8+n*2,100,8+n*2+1,104,2
+
+  End Select
+  If n=*undo\last_index Then WBox 8+n*2,105,8+n*2,114,1
+  If n=*undo\next_index Then WBox 8+n*2,105,8+n*2,114,1
+Next
+
+For n.l = 0 To *undo2\heapsize-1
+  *ci.tuiUndoContainerIndex = *undo2\heap+n*SizeOf.tuiUndoContainerIndex
+  Select *ci\ctyp
+    Case 0
+      WBox 8+n*2,120,8+n*2+1,124,1
+    Case 1
+      WBox 8+n*2,120,8+n*2+1,124,3
+    Case 2
+      WBox 8+n*2,120,8+n*2+1,124,0
+    Case 3
+      WBox 8+n*2,120,8+n*2+1,124,2
+
+  End Select
+  If n=*undo2\last_index Then WBox 8+n*2,125,8+n*2,134,1
+  If n=*undo2\next_index Then WBox 8+n*2,125,8+n*2,134,1
+Next
+Delay_ 1
+End Statement
+
+
+*undoEngine.tuiUndoEngine = ntui_CreateUndoEngine {"RAM:T",200000,2000000}
+*undo.tuiUndoStack  = ntui_CreateUndoStack {*undoEngine,20}
+*undo2.tuiUndoStack = ntui_CreateUndoStack {*undoEngine,20}
+If *undo
+
+Window 0,0,0,620,200,$e,"",1,0
+
+buff.l = AllocMem(20000,0)
+breakme.l = False
+While breakme=False
+  go.l = False
+  While go=False
+  Repeat
+    ev.l = Event
+    If ev=#IDCMP_CLOSEWINDOW Then breakme=True:go=True
+    If ev=#IDCMP_MOUSEBUTTONS Then go=True
+    go=True
+  Until ev=0
+  Delay_ 1
+  Wend
+
+  If breakme=False
+
+a.l = RRnd(0,20)
+b.l = RRnd(0,5)
+
+For n.l = 0 To a
+  ntui_StartUndoStep{*undo}
+  c.l = RRnd(0,10)
+  For m.l = 0 To c
+    s.l = RRnd(4,19000)
+    Poke.l buff,$BEEFBEEF
+    ntui_StoreUndoContainer{*undo,-1,buff,s,-1,-1}
+    _drawstat{*undo,*undo2}
+  Next
+Next
+
+
+For n.l = 0 To b      ; free b undo steps!
+  While ntui_GetUndoContainer{*undo}
+    Poke.l buff,$DEADDEAD
+    size.l = ntui_GetUndoStackAttr{*undo,#TUIUSA_CURRENTCONTAINERSIZE,0}
+    succ.l = ntui_GetUndoStackAttr{*undo,#TUIUSA_CURRENTCONTAINERDATA,buff}
+    If succ=False Then error {"Unable to copy the content back !"}
+    If Peek.l (buff)><$BEEFBEEF Then error {"Did not get right buffer: "+Mkl$(Peek.l(buff))}
+    _drawstat{*undo,*undo2}
+  Wend
+Next
+
+
+a.l = RRnd(0,20)
+b.l = RRnd(0,5)
+
+For n.l = 0 To a
+  ntui_StartUndoStep{*undo2}
+  c.l = RRnd(0,10)
+  For m.l = 0 To c
+    s.l = RRnd(4,19000)
+    Poke.l buff,$BEEFBEEF
+    ntui_StoreUndoContainer{*undo2,-1,buff,s,-1,-1}
+    _drawstat{*undo,*undo2}
+  Next
+Next
+
+For n.l = 0 To b      ; free b undo steps!
+  While ntui_GetUndoContainer{*undo2}
+    Poke.l buff,$DEADDEAD
+    size.l = ntui_GetUndoStackAttr{*undo2,#TUIUSA_CURRENTCONTAINERSIZE,0}
+    succ.l = ntui_GetUndoStackAttr{*undo2,#TUIUSA_CURRENTCONTAINERDATA,buff}
+
+  ;  succ.l = undo_GetContainerData{*undo2,buff,undo_GetContainerDataSize {*undo2}}
+    If succ=False Then error {"Unable to copy the content back !"}
+    If Peek.l (buff)><$BEEFBEEF Then error {"Did not get right buffer: "+Mkl$(Peek.l(buff))}
+    _drawstat{*undo,*undo2}
+  Wend
+Next
+
+_drawstat{*undo,*undo2}
+
+End If
+Wend
+
+
+ntui_FreeUndoEngine{*undoEngine}
+End If
+End
+CEND
+
+
