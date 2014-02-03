@@ -1,0 +1,1648 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "/Bin"
+; ExeFile         = "UndoDemo"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 100000
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 2
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 7
+; CursorColumn    = 9
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 5
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 5
+; Max GadgetList  = 5
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 15
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 15
+; Max BlitzFont   = 4
+; Max GTList      = 15
+; Max ChunkyBuffer= 2
+; /XTRA
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Name: undo.include                                                          /
+;/                                                                             /
+;/ Platforms: Classic, WinUAE, Amithlon, MorphOS, AmigaOS4                     /
+;/                                                                             /
+;/ Date: 29/12/2006                                                            /
+;/                                                                             /
+;/ Author: Thilo Koehler                                                       /
+;/                                                                             /
+;/ Requirements:  Amiblitz2.4                                                  /
+;/                                                                             /
+;/ Purpose:                                                                    /
+;/ Provide undo functionality to AB2.                                          /
+;/                                                                             /
+;/ Abstract:                                                                   /
+;/ 'Undo' and 'redo' are both hard to implement features in an application.    /
+;/ The undo.inlcude will give you a hand here.                                 /
+;/                                                                             /
+;/ The undo.include works like this:                                           /
+;/ Imagine a big trashbin (called "undo stack"). You can throw anything in y:: /
+;/ ou like, from very small items, e.g. a deleted line or character in an te:: /
+;/ xteditor, or very big items like a pixel area in your 24 bit bitmap that :: /
+;/ was painted over in a paint program.                                        /
+;/ Every item you throw in will be labeled with an ID number YOU can define.:: /
+;/  The trashbin behaves like a stack. The last thing you threw in, will be :: /
+;/ the first you can get out again.                                            /
+;/                                                                             /
+;/ The undo.include manages everything you throw in automatically, can swap :: /
+;/ it to disk if necessary or 'forget' an item if it gets too old or if it c:: /
+;/ onsumes too much memory.                                                    /
+;/                                                                             /
+;/ You can create an infinite number of virtual trashbins/undo stack.          /
+;/                                                                             /
+;/ What to throw into the undo stack?                                          /
+;/ To know what an undo system has to do you have to identify how a 'do' can:: /
+;/  be undone.                                                                 /
+;/ There are 3 types:                                                          /
+;/ 1. Constructors: the undo stack has only to remember which object was con:: /
+;/ structed and can undo it by destroying.                                     /
+;/ 2. Manipulators: the undo stack has either:                                 /
+;/                  - to know how to reverse the manipluation (if possible a:: /
+;/ t all)                                                                      /
+;/                  - to save the manipulated data area BEFORE modifying       /
+;/ 3. Destructors:  the undo stack has to save the whole object BEFORE it is:: /
+;/  destroyed                                                                  /
+;/                                                                             /
+;/ To identify which actions have to be undone per undo step (an undo step c:: /
+;/ an contain one or more actions that have to be undone),                     /
+;/ you throw in a 'blank page' to seperate the containers into undo steps.     /
+;/ Sounds complicated, but is easy:                                            /
+;/                                                                             /
+;/ Example :                                                                   /
+;/ A Paint Program: You create an empty, black picture and draw red box, the:: /
+;/ n a blue circle and then you delete the picture.                            /
+;/ The undo stack might look like this:                                        /
+;/                                                                             /
+;/ Container: 'destroy bitmap'     / Data Block: whole bitmap                  /
+;/ __Step 3                                                                    /
+;/ Container: 'draw a blue circle' / Data Block: area covered by blue circle   /
+;/ __Step 2                                                                    /
+;/ container: 'draw a red box'     / Data Block: area covered by red box       /
+;/ __Step 1                                                                    /
+;/ Container: 'fill bitmap black'  / Data Block: whole bitmap                  /
+;/ Container: 'create bitmap'      / Data Block: empty                         /
+;/ __Step 0                                                                    /
+;/                                                                             /
+;/ Everytime the user hits undo, you will do a while loop on undo_GetContain:: /
+;/ er and you will get all containers from top of the stack till the next st:: /
+;/ ep seperator, until you reach step 0.                                       /
+;/ Each container has an ID how to interpret the content and an optional dat:: /
+;/ a block, that can contain e.g. parts of a bitmap.                           /
+;/ NOTE: the 'create bitmap' does not need any data block, it can just destr:: /
+;/ oy the bitmap, while the 'destroy bitmap' needs to know the whole bitmap :: /
+;/ to re-create it again.                                                      /
+;/                                                                             /
+;/ The undo.include works very efficient on very small undo steps, e.g. a de:: /
+;/ leted character in a texteditor, and also on very big data blocks like re:: /
+;/ storing a whole bitmap.                                                     /
+;/                                                                             /
+;/ Terminology:                                                                /
+;/ undo stack : a stack that is filled with undo steps that can contain mult:: /
+;/ iple containers. It is a FILO buffer (first in, last out).                  /
+;/ undo step  : an undo step contains all actions that have to be reversed t:: /
+;/ o undo the latest edit step in the application. One undo step can contain:: /
+;/  zero, one, or multiple containers.                                         /
+;/ container  : a container represents an atomic action that has to be rever:: /
+;/ sed. It consists at least of the cID, identifying what to do with this co:: /
+;/ ntainer. It has also two user data fields and an optionally data block.     /
+;/ data block : the data block is an optional part of a container and can ho:: /
+;/ ld any data you need to revers the action indicated by the cID.             /
+;/ user data  : each container has 2 user data long words. They can contain :: /
+;/ any information you like, e.g. object ID numbers etc.                       /
+;/ cID        : container identifier, defines what to do with the container    /
+;/ stepID     : ID of one undo step.                                           /
+;/                                                                             /
+;/ User Constants: no user definable                                           /
+;/                                                                             /
+;/ Example:                                         The build in example is :: /
+;/ more a test of the functionality than a real world example.                 /
+;/ See the example/ dir for more examples.                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+
+CNIF #__include=0
+optimize 7
+Syntax 2
+CEND
+
+XINCLUDE "error.include.ab3"
+XINCLUDE "dos.include.ab3"
+
+#undo_stringbuffsize = 4096
+
+#undo_heapincsize = 8
+
+#undo_collectsize = 2512
+
+; container types
+#undo_ctyp_empty   = 0
+#undo_ctyp_ram     = 1
+#undo_ctyp_disk    = 2
+#undo_ctyp_step    = 3
+#undo_ctyp_collect = 4
+
+
+NEWTYPE.undo_container
+cID.w         ; containerID
+dat_blength.l ; length of data
+user_data1.l  ; user data 1
+user_data2.l  ; user data 2
+End NEWTYPE
+
+
+NEWTYPE.containerindex
+ctyp.w
+ptr.l   ; pointer or step id if ctyp = #undo_ctyp__step
+End NEWTYPE
+
+
+
+NEWTYPE.undostack
+active.l
+changes.l
+
+max_steps.l
+steps_use.l
+
+last_stepID.l
+
+unicount.l
+
+mem_use.l
+disk_use.l
+
+dofile.l
+
+next_index.l
+last_index.l
+
+heap.l
+heapsize.l
+
+last_use.l
+
+collect_file.l
+collect_count.l
+
+ac_index.containerindex
+ac_container.undo_container
+End NEWTYPE
+
+
+NEWTYPE.undoengine
+temppath.s
+mem_use.l
+disk_use.l
+max_mem.l
+max_disk.l
+stringbuffer.l
+temp_ptr.l
+temp_blength.l
+use_count.l
+dummycont.undo_container
+End NEWTYPE
+
+
+DEFTYPE.undoengine undoengine
+DEFTYPE.FileInfoBlock undo_fib
+undoengine\temppath     = "SYS:T"
+undoengine\stringbuffer = AllocMem_(#undo_stringbuffsize,0)
+If undoengine\stringbuffer=0 Then serror {"Unable to init string buffer for undo system !"}
+undoengine\max_mem  = 250000
+undoengine\max_disk = 250000 * 1024
+
+Dim List undo_list.l(0)
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_Config {max_mem.l,max_disk.l,temp.s}                           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Set the global parameters.                                                  /
+;/ NOTE: Unless you set max_disk=0, you need to specify a temp dir. The temp:: /
+;/  dir should NOT be the RAM Disk !                                           /
+;/ NOTE: The memory will be shared among all undo stacks.                      /
+;/ NOTE: undo stacks might free containers BEFORE their step limit is reache:: /
+;/ d, if the memory limit is exceeded.                                         /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - max_mem.l   : maximum memory used for all undo stacks                     /
+;/ - max_disk.l  : maximum disk space used for all undo stacks                 /
+;/ - temp.s      : path to the temporary directory                             /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement undo_Config {max_mem.l,max_disk.l,temp.s}
+SHARED undoengine
+If dos_Exist {temp.s}
+  undoengine\temppath = temp.s  ; Sollte noch auf freien Speicher getestet werden !
+End If
+If max_mem<0  Then max_mem  = 250000
+If max_disk<0 Then max_disk = 250000 * 1024
+undoengine\max_mem  = max_mem
+undoengine\max_disk = max_disk
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _undo_temp_free {}                                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private                                                                   /
+;/ Free temporary buffer.                                                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _undo_temp_free{}
+SHARED undoengine
+If undoengine\temp_ptr
+  FreeMem_ undoengine\temp_ptr,undoengine\temp_blength
+  undoengine\temp_ptr     = 0
+  undoengine\temp_blength = 0
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l = _undo_collect_open {*undo.undostack}                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private                                                                   /
+;/ Open the collect file for small items.                                      /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : ???                                                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l _undo_collect_open{*undo.undostack}
+SHARED undoengine
+filename.s = dos_AddPart {undoengine\temppath,"__undo"+Hex$(*undo)+"main.tmp"}
+lock.l = Open_(&filename.s,#MODE_READWRITE)
+succ.l = False
+If lock
+  *undo\collect_file = lock
+  succ.l = True
+Else
+  error {"undo_collect_open: Unable to open collect file !"}
+End If
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _undo_collect_close {*undo.undostack}                               /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private                                                                   /
+;/ Close collect file.                                                         /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _undo_collect_close{*undo.undostack}
+SHARED undoengine,undo_fib
+If *undo\collect_file
+  If NameFromFH_ (*undo\collect_file,undoengine\stringbuffer,#undo_stringbuffsize)
+    If ExamineFH_(*undo\collect_file,undo_fib) <> 0
+      *undo\disk_use      - undo_fib\fib_Size
+      undoengine\disk_use - undo_fib\fib_Size
+    End If
+    Close_ *undo\collect_file
+    DeleteFile_ undoengine\stringbuffer
+    *undo\collect_file = 0
+  Else
+    error {"undo_collect_close: Unable to get name from lock !"}
+  End If
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _undo_c_destroy {*undo.undostack,*ci.containerindex}                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Destroy (=free) a container of an undo stack, disk or ram type.             /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : ???                                                  /
+;/ - *ci.containerindex    : ???                                               /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _undo_c_destroy {*undo.undostack,*ci.containerindex}
+SHARED undoengine,undo_fib
+;DEFTYPE.FileInfoBlock fib
+If *ci
+  Select *ci\ctyp
+    Case #undo_ctyp_ram
+      *container.undo_container = *ci\ptr
+      If *container
+        mem.l = SizeOf.undo_container+*container\dat_blength
+        *undo\mem_use      - mem
+        undoengine\mem_use - mem
+        FreeMem_ *container,mem
+      Else
+        error {"undo_c_destroy: Container has a NULL pointer !"}
+      End If
+
+    Case #undo_ctyp_disk
+      If NameFromFH_ (*ci\ptr,undoengine\stringbuffer,#undo_stringbuffsize)
+        If ExamineFH_(*ci\ptr,undo_fib) <> 0
+          *undo\disk_use      - undo_fib\fib_Size
+          undoengine\disk_use - undo_fib\fib_Size
+        End If
+        Close_ *ci\ptr
+        DeleteFile_ undoengine\stringbuffer
+      Else
+        error {"undo_flush: Unable to get name from lock !"}
+      End If
+
+    Case #undo_ctyp_collect
+      *undo\collect_count-1
+      If *undo\collect_count<=0 Then _undo_collect_close{*undo}
+
+    Case #undo_ctyp_step
+
+  End Select
+  *ci\ctyp    = #undo_ctyp_empty
+  *ci\ptr    = 0
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_Flush {*undo.undostack}                                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Free all containers of an undo stack.                                       /
+;/ After that, all undo steps on this undo stack are lost.                     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ See also:    undo_FlushAll                                                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement undo_Flush {*undo.undostack}
+If *undo
+  _undo_c_destroy{*undo,*undo\ac_index}
+  For n.l = 0 To *undo\heapsize-1
+    *ci.containerindex = *undo\heap + SizeOf.containerindex*n
+    _undo_c_destroy{*undo,*ci}
+  Next
+  _undo_collect_close{*undo}
+  If *undo\heapsize>0 AND *undo\heap><0 Then FreeMem_ *undo\heap,*undo\heapsize*SizeOf.containerindex
+  *undo\heap       = 0
+  *undo\heapsize   = 0
+  *undo\mem_use    = 0
+  *undo\disk_use   = 0
+  *undo\last_index = 0
+  *undo\next_index = 0
+  *undo\active     = 0
+  *undo\steps_use  = 0
+  *undo\last_stepID= 0
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_FlushAll {}                                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Fush all undo stacks.                                                       /
+;/ NOTE: This function calls undo_Flush for all undo stacks created.           /
+;/                                                                             /
+;/ See also:    undo_Flush                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement undo_FlushAll{}
+SHARED undo_list(),undoengine
+ResetList undo_list()
+While NextItemFast(undo_list())
+  undo_Flush {undo_list()}
+Wend
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _undo_check_steps {*undo.undostack}                                 /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Check undo stack and free undo steps above the maximum,                     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _undo_check_steps {*undo.undostack}
+If *undo\max_steps>0
+  If *undo\steps_use>=*undo\max_steps
+    If *undo\heap
+      *ci.containerindex = *undo\heap+*undo\last_index*SizeOf.containerindex
+      Repeat
+        _undo_c_destroy {*undo,*ci}
+        *undo\last_index+1
+        If *undo\last_index>=*undo\heapsize Then *undo\last_index=0
+        *ci.containerindex = *undo\heap+*undo\last_index*SizeOf.containerindex
+      Until *ci\ctyp = #undo_ctyp_step OR *ci\ctyp=#undo_ctyp_empty
+      *undo\steps_use-1
+
+    End If
+  End If
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _undo_check_disk {*undo.undostack,bdisk.l}                          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Check undo stack to provide a minimum amount of memory on disk.             /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack  : pointer to undo stack                                  /
+;/ - bdisk.l        : bytes to guarantee on disk                               /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _undo_check_disk {*undo.undostack,bdisk.l}
+SHARED undoengine
+If undoengine\disk_use+bdisk>undoengine\max_disk
+  ; ... free bdisk memory on disk
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l = _undo_c_todisk {*undo.undostack,*ci.containerindex}       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Write a container of an undo stack to disk.                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/ - *ci.containerindex    : index of the container                            /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : ???                                                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l _undo_c_todisk {*undo.undostack,*ci.containerindex}
+SHARED undoengine
+succ.l = False
+If *ci
+  Select *ci\ctyp
+    Case #undo_ctyp_ram
+      *container.undo_container = *ci\ptr
+      mem.l = SizeOf.undo_container+*container\dat_blength
+      _undo_check_disk{*undo,mem}
+
+      If mem>#undo_collectsize
+        filename.s = dos_AddPart {undoengine\temppath,"__undo"+Hex$(*undo)+Hex$(*undo\unicount)+".tmp"}
+        *undo\unicount+1
+        lock.l = Open_(&filename.s,#MODE_READWRITE)
+        If lock
+          If Write_(lock,*container,mem)=mem
+            FreeMem_ *container,mem
+            *ci\ctyp   = #undo_ctyp_disk
+            *ci\ptr    = lock
+            undoengine\mem_use -mem
+            *undo\mem_use      -mem
+            undoengine\disk_use+mem
+            *undo\disk_use     +mem
+            succ.l = True
+          Else
+            error {"undo_todisk: Unable to write data to file !"}
+            Close_ lock
+          End If
+        Else
+          error {"undo_todisk: Unable to open undo file !"}
+        End If
+      Else
+        If *undo\collect_file=0 Then succ.l = _undo_collect_open{*undo}
+        If *undo\collect_file
+          If Seek_ (*undo\collect_file,0,#OFFSET_END)><-1
+            *ci\ptr    = Seek_(*undo\collect_file,0,#OFFSET_CURRENT)
+            If Write_(*undo\collect_file,*container,mem)=mem
+              FreeMem_ *container,mem
+              *ci\ctyp    = #undo_ctyp_collect
+              undoengine\mem_use -mem
+              *undo\mem_use      -mem
+              undoengine\disk_use+mem
+              *undo\disk_use     +mem
+              succ.l = True
+              *undo\collect_count+1
+            Else
+              error {"unable to write data into collect file !"}
+            End If
+          Else
+            error {"Unable to append to main collect file !"}
+          End If
+        End If
+      End If
+    Case #undo_ctyp_disk
+
+    Case #undo_ctyp_step
+
+  End Select
+End If
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _undo_check_mem {*undo.undostack,bmem.l}                            /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ check undoengine to provide a minimum of bytes of memory.                   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/ - bmem.l    : ???                                                           /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _undo_check_mem {*undo.undostack,bmem.l}
+SHARED undoengine,undo_list()
+succ.l = True
+While undoengine\mem_use+bmem>undoengine\max_mem AND succ
+  *minundo.undostack = 0
+  minlast.l        = $7fffffff
+  ResetList undo_list()
+  While NextItemFast(undo_list())
+    *undo.undostack = undo_list()
+    If *undo
+      If (*undo\last_use-*undo\steps_use/2)<minlast AND *undo\mem_use>0
+        minlast = (*undo\last_use-*undo\steps_use/2)
+        *minundo.undostack = *undo
+      End If
+    End If
+  Wend
+  If *minundo
+    maxsize.l  = 0
+    maxindex.l = -1
+    n.l = 0
+    ind.l = *minundo\next_index-1:If ind<0 Then ind=*minundo\heapsize-1
+    While ind><*minundo\last_index
+      *ci.containerindex = *minundo\heap+ind*SizeOf.containerindex
+      If *ci\ctyp = #undo_ctyp_ram
+        *container.undo_container=*ci\ptr
+        If *container
+          If *container\dat_blength+n*255>maxsize
+            maxindex = ind
+            maxsize  = *container\dat_blength+n*n
+          End If
+        End If
+      End If
+      ind-1
+      n+1
+      If ind<0 Then ind=*minundo\heapsize-1
+    Wend
+    If maxindex>=0
+      succ=_undo_c_todisk {*minundo,*minundo\heap+maxindex*SizeOf.containerindex}
+    Else
+      succ=False
+    End If
+  Else
+    succ=False
+  End If
+Wend
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l = _undo_c_add {*undo.undostack,*ci.containerindex,cID.l,@:: /
+;/ dat_ptr.l,@dat_blength.l,@user_data1.l,@user_data2.l}                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Add a new container to the undo stack.                                      /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/ - *ci.containerindex : container index                                      /
+;/ - cID.l              : container id                                         /
+;/ - dat_ptr.l          : pointer to data                                      /
+;/ - dat_blength.l      : length of data                                       /
+;/ - user_data1.l       : user data 1                                          /
+;/ - user_data2.l       : user data 2                                          /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : ...                                                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l _undo_c_add {*undo.undostack,*ci.containerindex,cID.l,@dat_ptr.l,@dat_blength.l,@user_data1.l,@user_data2.l}
+SHARED undoengine
+If *ci
+  If *ci\ctyp><#undo_ctyp_empty Then error {"undo_c_add: container not empty !"}:_undo_c_destroy{*undo,*ci}
+  If dat_blength<=0 Then dat_blength=0:dat_ptr=0
+  mem.l = SizeOf.undo_container+dat_blength
+  done.l = False
+
+  _undo_check_mem {*undo,mem}
+
+  If undoengine\mem_use + mem<=undoengine\max_mem
+    *container.undo_container = AllocMem_(mem,0)
+    If *container
+      If dat_blength>0 AND dat_ptr><0
+        CopyMem_ dat_ptr,*container+SizeOf.undo_container,dat_blength
+      End If
+      *undo\mem_use      + mem
+      undoengine\mem_use + mem
+      *container\cID             = cID
+      *container\user_data1      = user_data1
+      *container\user_data2      = user_data2
+      *container\dat_blength     = dat_blength
+      *ci\ctyp   = #undo_ctyp_ram
+      *ci\ptr    = *container
+
+      done = True
+    End If
+  End If
+
+
+  If done=False
+    If undoengine\disk_use + mem<=undoengine\max_disk
+      undoengine\dummycont\cID           = cID
+      undoengine\dummycont\user_data1      = user_data1
+      undoengine\dummycont\user_data2      = user_data2
+      undoengine\dummycont\dat_blength     = dat_blength
+
+      filename.s = dos_AddPart {undoengine\temppath,"__undo"+Hex$(*undo)+Hex$(*undo\unicount)+".tmp"}
+      *undo\unicount+1
+      lock.l = Open_(&filename.s,#MODE_READWRITE)
+      If lock
+        If Write_(lock,undoengine\dummycont,SizeOf.undo_container)
+          If dat_blength>0 AND dat_ptr><0
+            succ.l = Write_(lock,dat_ptr,dat_blength)
+          Else
+            succ.l = True
+          End If
+          If succ
+            *ci\ctyp   = #undo_ctyp_disk
+            *ci\ptr    = lock
+            undoengine\disk_use+mem
+            *undo\disk_use     +mem
+            done=True
+          Else
+            error {"undo_a_add: Unable to write container data to file!"}
+            Close_ lock
+          End If
+        Else
+          error {"undo_c_add: Unable to write data to file !"}
+          Close_ lock
+        End If
+      Else
+        error {"undo_todisk: Unable to open file !"}
+      End If
+    Else
+      ; too big for disk as well...
+    End If
+  End If
+
+  If done=False
+    error {"Undo operation is too big for disk and will be flushed !"}
+    undo_Flush{*undo}
+    ; alle container verwerfen !
+  End If
+End If
+Function Return done
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l = _undo_c_addstep {*undo.undostack,*ci.containerindex,@st:: /
+;/ epID.l}                                                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private                                                                   /
+;/ Add a new step to the undo stack.                                           /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/ - *ci.containerindex    : container index                                   /
+;/ - stepID.l    : step id                                                     /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : ???                                                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l _undo_c_addstep {*undo.undostack,*ci.containerindex,@stepID.l}
+succ.l = False
+If *ci
+  If *ci\ctyp><#undo_ctyp_empty Then error {"undo_c_add_step: container not empty !"}:_undo_c_destroy{*undo,*ci}
+  *ci\ctyp = #undo_ctyp_step
+  *ci\ptr = stepID
+  succ.l = True
+End If
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_Free {*undo.undostack}                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Free undo stack and all containers.                                         /
+;/ NOTE: The pointer to the undo stack is not valid anymore after this call!   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ See also:    undo_Create                                                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement undo_Free {*undo.undostack}
+SHARED undo_list(),undoengine
+If *undo
+  ResetList undo_list()
+  succ.l = True
+  While NextItemFast(undo_list()) AND succ
+    If undo_list()=*undo Then KillItem undo_list() : succ=False
+  Wend
+
+  undo_Flush {*undo}
+
+  FreeMem_ *undo,SizeOf.undostack : *undo = 0
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_FreeAll {}                                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Free all undo stacks and undoengine.                                        /
+;/ NOTE: This function is called on autoexit.                                  /
+;/                                                                             /
+;/ See also:    undo_Free                                                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement undo_FreeAll {}
+SHARED undo_list(),undoengine
+ResetList undo_list()
+While NextItemFast(undo_list())
+  undo_Free {undo_list()}
+  ResetList undo_list()
+Wend
+_undo_temp_free{}
+If undoengine\stringbuffer Then FreeMem_ undoengine\stringbuffer,#undo_stringbuffsize : undoengine\stringbuffer = 0
+End Statement
+!autoexit{undo_FreeAll}
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  *undo.l = undo_Create {@maxsteps.l,@kickit.l}                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Create a new undo stack and set the maximum number of undo steps kept.      /
+;/ If you ommit maxsteps or set it to -1, the undo stack will take as much s:: /
+;/ teps as the memory settings (undo_Config) allow.                            /
+;/ NOTE: It is not allways wise to allow an infinite number of undo stacks, :: /
+;/ because multiple stacks might compete against each other. If you dont nee:: /
+;/ d really a lot of history, set it to a reasonable value (e.g. 10).          /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - maxsteps.l  : maximum number of undo steps to remember                    /
+;/ - swapable.l    : ><0 allow to swap to disk (is default)                    /
+;/ - kickit.l    : ???                                                         /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - *undo.undostack     : pointer to an undo stack                            /
+;/                                                                             /
+;/ See also:    undo_Free                                                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l undo_Create {@maxsteps.l,@kickit.l}
+SHARED undo_list()
+*undo.undostack = AllocMem_(SizeOf.undostack,#MEMF_CLEAR)
+If *undo
+  If AddItem (undo_list())
+    undo_list() = *undo
+  End If
+  *undo\active          = False
+  *undo\dofile          = NOT(kickit)
+  *undo\max_steps       = maxsteps
+  *undo\unicount        = 0
+  *undo\last_index      = 0
+  *undo\next_index      = 0
+  *undo\heap            = 0
+  *undo\heapsize        = 0
+  *undo\changes         = 0
+  *undo\steps_use       = 0
+  *undo\mem_use         = 0
+  *undo\disk_use        = 0
+  *undo\last_stepID     = 0
+  *undo\ac_index\ctyp   = #undo_ctyp_empty
+  *undo\ac_index\ptr    = 0
+End If
+Function Return *undo
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  *ci.l = _undo_nextindex {*undo.undostack}                          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Step to the next index and increase indexlist if necessary.                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - *ci.containerindex     : pointer to an container omdex                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l _undo_nextindex {*undo.undostack}
+If *undo\heap=0
+  *undo\heapsize = #undo_heapincsize
+  *undo\heap     = AllocMem_(*undo\heapsize*SizeOf.containerindex,#MEMF_CLEAR)
+  If *undo\heap=0 Then *undo\heapsize=0:error {"undo_nextindex: Unable to create undo heap index!"}
+  *ci.containerindex = (*undo\heap)
+  *undo\last_index=0
+  *undo\next_index=0
+Else
+  *ci.containerindex = (*undo\heap + *undo\next_index * SizeOf.containerindex)
+  If *ci\ctyp><#undo_ctyp_empty
+    newsize.l = *undo\heapsize+#undo_heapincsize
+    newheap.l = AllocMem_(newsize*SizeOf.containerindex,#MEMF_CLEAR)
+    If newheap
+      startind.l = *undo\last_index
+      endind.l   = *undo\next_index-1 : If endind<0 Then endind=*undo\heapsize-1
+      If startind<=endind
+        CopyMem_ *undo\heap+startind*SizeOf.containerindex,newheap,(endind-startind+1)*SizeOf.containerindex
+        *undo\next_index = endind-startind+1
+      Else
+        CopyMem_ *undo\heap+startind*SizeOf.containerindex,newheap,(*undo\heapsize-startind)*SizeOf.containerindex
+        CopyMem_ *undo\heap,newheap + (*undo\heapsize-startind)*SizeOf.containerindex,(endind+1)*SizeOf.containerindex
+        *undo\next_index = *undo\heapsize
+      End If
+      FreeMem_ *undo\heap,*undo\heapsize*SizeOf.containerindex
+      *undo\heap       = newheap
+      *undo\heapsize   = newsize
+      *undo\last_index = 0
+      ;error {"Heap increase!"}
+      *ci.containerindex = (*undo\heap + *undo\next_index * SizeOf.containerindex)
+    Else
+      error {"Unable to increase undo heap !"}
+      undo_Flush{*undo}
+      *ci=0
+    End If
+  End If
+End If
+If *ci Then *undo\next_index+1 : If *undo\next_index>=*undo\heapsize Then *undo\next_index=0
+Function Return *ci
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_Start {*undo.undostack,@stepID.l}                              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Start a new undo step on the given undo stack, ready to take containers.    /
+;/ NOTE: Do not create unnecessary undo steps that contain no containers. It:: /
+;/  does not harm the undo stack, but an 'undo' will have no effect.           /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack  : pointer to undo stack                                  /
+;/ - stepID.l       : free definable step identifier (avoid -1 for use with :: /
+;/ undo_GetStepID)                                                             /
+;/                                                                             /
+;/ See also:    undo_Stop, undo_Continue, undo_Store                           /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement undo_Start {*undo.undostack,@stepID.l}
+SHARED undoengine
+If *undo
+  _undo_check_steps{*undo}
+  *undo\active=True
+  *ci.containerindex = _undo_nextindex{*undo}
+  If *ci
+
+    If _undo_c_addstep {*undo,*ci,stepID.l}
+      *undo\steps_use +1
+      *undo\last_stepID = stepID
+      ; step check, evtl. muessen alte steps verworfen werden
+      *undo\last_use = undoengine\use_count
+      undoengine\use_count+1
+      *undo\changes    +1
+    End If
+  Else
+    error {"undo_start: Unable to store undo step !"}
+    undo_Flush{*undo}
+  End If
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_Continue {*undo.undostack,@stepID.l}                           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Same like undo_Start, but starts a new undo step only if the step ID is d:: /
+;/ ifferent. If the last step ID is the same, the function returns without d:: /
+;/ oing anything.                                                              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack : pointer to undo stack                                   /
+;/ - stepID.l        : free definable step identifier                          /
+;/                                                                             /
+;/ See also:    undo_Start, undo_Stop, undo_Store                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement undo_Continue {*undo.undostack,@stepID.l}
+SHARED undoengine
+If *undo
+  If *undo\last_stepID><stepID OR *undo\active=False
+    undo_Start{*undo,stepID}
+  End If
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_Store {*undo.undostack,cID.l,@dat_ptr.l,@dat_blength.l,@user:: /
+;/ _data1.l,@user_data2.l}                                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Store some information and/or data block into a new container on the undo:: /
+;/  stack.                                                                     /
+;/ NOTE: undo_Start must have been called before to define a new undo step. :: /
+;/ One undo step can contain multiple containers!                              /
+;/ NOTE: This function is always needed BEFORE you are going to manipluate y:: /
+;/ our application data and should rescue everything that will be destroyed.   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack : pointer to undo stack                                   /
+;/ - cID.w            : free definable container identifier                    /
+;/ - dat_ptr.l         : pointer to data, can be 0                             /
+;/ - dat_blength.l   : length of data, can be 0                                /
+;/ - user_data1.l    : free definable long word                                /
+;/ - user_data2.l    : free definable long word                                /
+;/ - cID.l    : ???                                                            /
+;/                                                                             /
+;/ See also:    undo_Start, undo_Stop, undo_Continue                           /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement undo_Store {*undo.undostack,cID.l,@dat_ptr.l,@dat_blength.l,@user_data1.l,@user_data2.l}
+SHARED undoengine
+If *undo
+  If *undo\active
+    *ci.containerindex = _undo_nextindex{*undo}
+    If *ci
+      succ.l = _undo_c_add {*undo,*ci,cID,dat_ptr,dat_blength,user_data1,user_data2}
+    End If
+  End If
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l = undo_GetContainer {*undo.undostack}                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Test if there is another container waiting within this undo step.           /
+;/ NOTE: This function is needed if you are going to undo something.           /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : -1 if there is a container, 0 otherwise                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l undo_GetContainer {*undo.undostack}
+succ.l = False
+If *undo
+  If *undo\steps_use>0
+    _undo_c_destroy {*undo,*undo\ac_index}
+    _undo_temp_free{}
+    acindex.l = *undo\next_index-1
+    If acindex<0 Then acindex=*undo\heapsize-1
+
+    *ci.containerindex = (*undo\heap + acindex * SizeOf.containerindex)
+
+    *undo\ac_index\ctyp  = *ci\ctyp
+    *undo\ac_index\ptr   = *ci\ptr
+
+    *ci\ctyp = #undo_ctyp_empty
+    *ci\ptr  = 0
+    *undo\next_index=acindex
+    Select *undo\ac_index\ctyp
+      Case #undo_ctyp_disk
+        If Seek_(*undo\ac_index\ptr,0,#OFFSET_BEGINNING)><-1
+          succ.l =  (Read_ (*undo\ac_index\ptr,*undo\ac_container,SizeOf.undo_container) = SizeOf.undo_container)
+        End If
+
+      Case #undo_ctyp_collect
+        If Seek_(*undo\collect_file,*undo\ac_index\ptr,#OFFSET_BEGINNING)><-1
+          x.l = Read_ (*undo\collect_file,*undo\ac_container,SizeOf.undo_container)
+          succ.l =  (x = SizeOf.undo_container)
+        End If
+        If succ=False Then error {"undo_GetContainer: Unable to read container head ! "+Str$(x)+"><"+Str$(SizeOf.undo_container)}:succ=True
+
+      Case #undo_ctyp_ram
+        CopyMem_ *undo\ac_index\ptr,*undo\ac_container,SizeOf.undo_container
+        succ = True
+
+      Case #undo_ctyp_step
+        succ=False
+        _undo_c_destroy {*undo,*undo\ac_index}
+        *undo\changes +1
+        *undo\steps_use-1
+      Default
+        error {"undo_GetContainer: Invalid typ in undo container detected !"}
+    End Select
+  End If
+End If
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  n.l = undo_GetNumSteps {*undo.undostack}                           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the number of undo steps on the undo stack.                          /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - n.l     : number of undo steps on undo stack                              /
+;/                                                                             /
+;/ See also:    undo_GetStepID                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l undo_GetNumSteps {*undo.undostack}
+Function Return *undo\steps_use
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  stepID.l = undo_GetStepID {*undo.undostack,@sindex.l}              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the stepID of an undo step on the undo stack.                        /
+;/ If sindex is ommitted or 0, the latest undo step identifier is returned.    /
+;/ If sindex>0, the undo step ifentifier of previous steps is returned.        /
+;/ If sindex>number of steps, -1 is returned.                                  /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/ - sindex.l           : index of undo step (0=latest step)                   /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - stepID.l     : undo step identifier                                       /
+;/                                                                             /
+;/ See also:    undo_GetNumSteps                                               /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l undo_GetStepID {*undo.undostack,@sindex.l}
+If sindex<0 Then sindex=0
+If *undo\steps_use<sindex Function Return -1
+If *undo\heap = 0 Then Function Return -1
+cindex.l = 0
+sID.l = -1
+Repeat
+  *ci.containerindex = (*undo\heap + cindex * SizeOf.containerindex)
+  If *ci\ctyp = #undo_ctyp_step
+    sindex-1
+    sID = *ci\ptr
+  End If
+  cindex+1
+Until sindex=0
+Function Return sID
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_Stop {*undo.undostack}                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Stop the current undo step. Subsequent calls to undo_Store will be ignored. /
+;/ NOTE: This function is useful if your undo step contains already all data:: /
+;/  needed to restore, and further manipulations of the application data don:: /
+;/ t matter (but still do an undo_Store).                                      /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ See also:    undo_Start, undo_Store, undo_Continue                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement undo_Stop {*undo.undostack}
+If *undo
+  *undo\active=False
+  *undo\last_stepID= 0
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  changes.l = undo_GetNumChanges {*undo.undostack}                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the number of changes made on the given undo stack.                     /
+;/ NOTE: The undo.include is keeping track of the number of changes based on:: /
+;/  the number of undo steps.                                                  /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - changes.l     : number of changes                                         /
+;/                                                                             /
+;/ See also:    undo_GetNumGlobalChanges                                       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l undo_GetNumChanges {*undo.undostack}
+changes.l = 0
+If *undo
+  changes=*undo\changes
+End If
+Function Return changes
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_SetSaved {*undo.undostack}                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Tell the undo stack that the application data was saved.                    /
+;/ NOTE: This function just resets the "number of changes" counter to 0.       /
+;/ NOTE: Usually, you do an "changes are not saved!" type of requester if th:: /
+;/ e user wants to quit your application and undo_changes is bigger than 0. :: /
+;/ If the user saves the applicaion data to disk, you might want to reset th:: /
+;/ e number of changes to 0.                                                   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ See also:    undo_GetNumChanges                                             /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement undo_SetSaved {*undo.undostack}
+If *undo
+  *undo\changes = 0
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  changes.l = undo_GetNumGlobalChanges {}                            /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the global number of changes. This prevents you from going through al:: /
+;/ l undo stacks and check them if they have some changes still pending.       /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - changes.l     : number of changes                                         /
+;/                                                                             /
+;/ See also:    undo_GetNumChanges                                             /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l undo_GetNumGlobalChanges {}
+SHARED undo_list()
+changes.l = 0
+ResetList undo_list()
+While NextItemFast(undo_list())
+  changes + undo_GetNumChanges {undo_list()}
+Wend
+Function Return changes
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: undo_SetGlobalSaved {}                                              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Tell all undo stacks that their application data was saved.                 /
+;/ NOTE: This resets the "number of changes" counter of all undo stacks to 0.  /
+;/                                                                             /
+;/ See also:    undo_GetNumGlobalChanges                                       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement undo_SetGlobalSaved {}
+SHARED undo_list()
+ResetList undo_list()
+While NextItemFast(undo_list())
+  undo_SetSaved {undo_list()}
+Wend
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  cID.w = undo_GetContainerID {*undo.undostack}                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the container id of the current container (after undo_GetContainer).    /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - cID.w     : container identifier                                          /
+;/                                                                             /
+;/ See also:    undo_GetContainer                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w undo_GetContainerID {*undo.undostack}
+Function Return *undo\ac_container\cID
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  data_ptr.l = undo_GetContainerDataPtr {*undo.undostack}            /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the pointer to the current container data block (after undo_GetContai:: /
+;/ ner).                                                                       /
+;/ NOTE: This requres the undo.inlcude to hold the data lock in memory for y:: /
+;/ ou. If you just copy the data somewhere else, it is more efficient to cal:: /
+;/ l undo_GetContainerData.                                                    /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - data_ptr.l     : pointer to data block                                    /
+;/                                                                             /
+;/ See also:    undo_GetContainer                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l undo_GetContainerDataPtr {*undo.undostack}
+SHARED undoengine
+ptr.l = 0
+If *undo\ac_container\dat_blength>0
+
+Select *undo\ac_index\ctyp
+  Case #undo_ctyp_ram
+
+    ptr.l = *undo\ac_index\ptr + SizeOf.undo_container
+
+  Case #undo_ctyp_disk
+    _undo_temp_free{}
+    undoengine\temp_ptr     = AllocMem_(*undo\ac_container\dat_blength,0)
+    undoengine\temp_blength = *undo\ac_container\dat_blength
+    If undoengine\temp_ptr
+      If Seek_ (*undo\ac_index\ptr,SizeOf.undo_container,#OFFSET_BEGINNING)><-1
+        succ.l = (Read_ (*undo\ac_index\ptr,undoengine\temp_ptr,*undo\ac_container\dat_blength) = *undo\ac_container\dat_blength)
+        ptr = undoengine\temp_ptr
+      Else
+        error {"Unable to seek !"}
+      End If
+    End If
+    If ptr=0 Then error {"Unable to get ptr !"}:undo_Flush{*undo}
+
+  Case #undo_ctyp_collect
+    _undo_temp_free{}
+    undoengine\temp_ptr     = AllocMem_(*undo\ac_container\dat_blength,0)
+    undoengine\temp_blength = *undo\ac_container\dat_blength
+    If undoengine\temp_ptr
+      If Seek_(*undo\collect_file,*undo\ac_index\ptr+SizeOf.undo_container,#OFFSET_BEGINNING)
+        succ.l = (Read_ (*undo\collect_file,undoengine\temp_ptr,*undo\ac_container\dat_blength) = *undo\ac_container\dat_blength)
+        ptr = undoengine\temp_ptr
+      Else
+        error {"Unable to seek !"}
+      End If
+    End If
+    If ptr=0 Then error {"Unable to get ptr !"}:undo_Flush{*undo}
+
+  Case #undo_ctyp_step
+End Select
+Else
+  ;error {"Ptr on undo container blength<=0 !"+Str$(*undo\ac_container\dat_blength)}
+End If
+Function Return ptr
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  blength.l = undo_GetContainerDataSize {*undo.undostack}            /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the byte length of the current container data block.                    /
+;/ NOTE: If the container does not contain a data block, the length will be 0. /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - blength.l     : byte length                                               /
+;/                                                                             /
+;/ See also:    undo_GetContainer                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l undo_GetContainerDataSize {*undo.undostack}
+Function Return *undo\ac_container\dat_blength
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  userdata.l = undo_GetContainerUserData1 {*undo.undostack}          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the user data 1 of the current container.                               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - userdata.l     : long word                                                /
+;/                                                                             /
+;/ See also:    undo_GetContainer                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l undo_GetContainerUserData1 {*undo.undostack}
+Function Return *undo\ac_container\user_data1
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  userdata.l = undo_GetContainerUserData2 {*undo.undostack}          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the user data 2 of the current container.                               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - userdata.l     : long word                                                /
+;/                                                                             /
+;/ See also:    undo_GetContainer                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l undo_GetContainerUserData2 {*undo.undostack}
+Function Return *undo\ac_container\user_data2
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l = undo_GetContainerData {*undo.undostack,dest_ptr.l,max_b:: /
+;/ length.l}                                                                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Copy the current container data block to a memory pointer.                  /
+;/ This function is more efficient than undo_GetContainerDataPtr and a manua:: /
+;/ l copy of the data.                                                         /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack  : pointer to undo stack                                  /
+;/ - dest_ptr.l       : memory pointer                                         /
+;/ - max_blength.l    : maximum byte length to copy                            /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : -1 if all data was copied, 0 otherwise                       /
+;/                                                                             /
+;/ See also:    undo_GetContainer                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l undo_GetContainerData {*undo.undostack,dest_ptr.l,max_blength.l}
+succ.l = False
+Select *undo\ac_index\ctyp
+  Case #undo_ctyp_disk
+    max_blength = Min(max_blength,*undo\ac_container\dat_blength)
+    If Seek_(*undo\ac_index\ptr,SizeOf.undo_container,#OFFSET_BEGINNING)><-1
+      succ.l = (Read_ (*undo\ac_index\ptr,dest_ptr,max_blength) = max_blength)
+    End If
+
+  Case #undo_ctyp_collect
+    max_blength = Min(max_blength,*undo\ac_container\dat_blength)
+    If Seek_(*undo\collect_file,*undo\ac_index\ptr+SizeOf.undo_container,#OFFSET_BEGINNING)><-1
+      succ.l = (Read_ (*undo\collect_file,dest_ptr,max_blength) = max_blength)
+    End If
+
+  Case #undo_ctyp_ram
+    max_blength = Min(max_blength,*undo\ac_container\dat_blength)
+    CopyMem_ *undo\ac_index\ptr +SizeOf.undo_container,dest_ptr,max_blength
+    succ.l = True
+
+End Select
+If succ = False Then error {"Something went wrong while reading undo data!"}:undo_Flush{*undo}
+Function Return succ
+End Function
+
+
+CNIF #__include=0
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _drawstat {*undo.undostack,*undo2.undostack}                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Used only for visualisation of internal demo.                               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *undo.undostack    : pointer to undo stack                                /
+;/ - *undo2.undostack    : ???                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _drawstat{*undo.undostack,*undo2.undostack}
+SHARED undoengine
+       WLocate 0,0
+       WJam 1
+       NPrint "Mem Use Global :    ",undoengine\mem_use," / Disk: ",undoengine\disk_use,"      "
+       NPrint "Mem Use Local 1:    ",*undo\mem_use," / Disk: ",*undo\disk_use," / in ",*undo\steps_use," steps     "
+       NPrint "Mem Use Local 2:    ",*undo2\mem_use," / Disk: ",*undo2\disk_use," / in ",*undo2\steps_use," steps     "
+
+      ; NPrint "Last Index: ",*undo\last_index," / Next Index: ",*undo\next_index,"   "
+       NPrint "Heapsize 1: ",*undo\heapsize," index   "
+       NPrint "Heapsize 2: ",*undo2\heapsize," index   "
+
+WBox 8,100,1000,135,0
+For n.l = 0 To *undo\heapsize-1
+  *ci.containerindex = *undo\heap+n*SizeOf.containerindex
+  Select *ci\ctyp
+    Case 0
+      WBox 8+n*2,100,8+n*2+1,104,1
+    Case 1
+      WBox 8+n*2,100,8+n*2+1,104,3
+    Case 2
+      WBox 8+n*2,100,8+n*2+1,104,0
+    Case 3
+      WBox 8+n*2,100,8+n*2+1,104,2
+
+  End Select
+  If n=*undo\last_index Then WBox 8+n*2,105,8+n*2,114,1
+  If n=*undo\next_index Then WBox 8+n*2,105,8+n*2,114,1
+Next
+
+For n.l = 0 To *undo2\heapsize-1
+  *ci.containerindex = *undo2\heap+n*SizeOf.containerindex
+  Select *ci\ctyp
+    Case 0
+      WBox 8+n*2,120,8+n*2+1,124,1
+    Case 1
+      WBox 8+n*2,120,8+n*2+1,124,3
+    Case 2
+      WBox 8+n*2,120,8+n*2+1,124,0
+    Case 3
+      WBox 8+n*2,120,8+n*2+1,124,2
+
+  End Select
+  If n=*undo2\last_index Then WBox 8+n*2,125,8+n*2,134,1
+  If n=*undo2\next_index Then WBox 8+n*2,125,8+n*2,134,1
+Next
+Delay_ 1
+End Statement
+
+
+undo_Config {200000,2000000,"RAM:T"}
+undo.l  = undo_Create {20}
+undo2.l = undo_Create {20}
+If undo
+
+Window 0,0,0,620,200,$e,"",1,0
+
+buff.l = AllocMem(20000,0)
+breakme.l = False
+While breakme=False
+  go.l = False
+  While go=False
+  Repeat
+    ev.l = Event
+    If ev=#IDCMP_CLOSEWINDOW Then breakme=True:go=True
+    If ev=#IDCMP_MOUSEBUTTONS Then go=True
+    go=True
+  Until ev=0
+  Delay_ 1
+  Wend
+
+  If breakme=False
+
+a.l = RRnd(0,20)
+b.l = RRnd(0,5)
+
+For n.l = 0 To a
+  undo_Start{undo}
+  c.l = RRnd(0,10)
+  For m.l = 0 To c
+    s.l = RRnd(4,19000)
+    Poke.l buff,$BEEFBEEF
+    undo_Store{undo,-1,buff,s,-1,-1}
+    _drawstat{undo,undo2}
+  Next
+Next
+
+
+For n.l = 0 To b      ; free b undo steps!
+  While undo_GetContainer{undo}
+    Poke.l buff,$DEADDEAD
+    succ.l = undo_GetContainerData{undo,buff,undo_GetContainerDataSize{undo}}
+    If succ=False Then error {"Unable to copy the content back !"}
+    If Peek.l (buff)><$BEEFBEEF Then error {"Did not get right buffer: "+Mkl$(Peek.l(buff))}
+    _drawstat{undo,undo2}
+  Wend
+Next
+
+
+a.l = RRnd(0,20)
+b.l = RRnd(0,5)
+
+For n.l = 0 To a
+  undo_Start{undo2}
+  c.l = RRnd(0,10)
+  For m.l = 0 To c
+    s.l = RRnd(4,19000)
+    Poke.l buff,$BEEFBEEF
+    undo_Store{undo2,-1,buff,s,-1,-1}
+    _drawstat{undo,undo2}
+  Next
+Next
+
+For n.l = 0 To b      ; free b undo steps!
+  While undo_GetContainer{undo2}
+    Poke.l buff,$DEADDEAD
+    succ.l = undo_GetContainerData{undo2,buff,undo_GetContainerDataSize {undo2}}
+    If succ=False Then error {"Unable to copy the content back !"}
+    If Peek.l (buff)><$BEEFBEEF Then error {"Did not get right buffer: "+Mkl$(Peek.l(buff))}
+    _drawstat{undo,undo2}
+  Wend
+Next
+
+_drawstat{undo,undo2}
+
+End If
+Wend
+
+
+undo_FreeAll{}
+End If
+End
+CEND
+
+

@@ -1,0 +1,354 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "/Bin"
+; ExeFile         = "GTimerDemo"
+; CreateIcon      = 1
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 1
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 1
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 7
+; CursorColumn    = 9
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 5
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 5
+; Max GadgetList  = 5
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 20
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 5
+; Max BlitzFont   = 4
+; Max GTList      = 20
+; Max ChunkyBuffer= 2
+; /XTRA
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Name: timer_gui.include                                                     /
+;/                                                                             /
+;/ Platforms: Classic, WinUAE, Amithlon, MorphOS, AmigaOS4                     /
+;/                                                                             /
+;/ Date: 30/12/2006                                                            /
+;/                                                                             /
+;/ Author: Thilo Koehler                                                       /
+;/                                                                             /
+;/ Requirements:  Amiblitz2.4                                                  /
+;/                                                                             /
+;/ Purpose:                                                                    /
+;/ The purpose of this include is to do timing for GUI output, like a spectr:: /
+;/ um meter in WinAmp.                                                         /
+;/                                                                             /
+;/ Abstract:                                                                   /
+;/ The accuracy my not be very high, so do not use this e.g. to time musical:: /
+;/  notes or make benchmarks.                                                  /
+;/ The advantage over the vvblank.inlcude is, that your program is not sleep:: /
+;/ ing till the next tick has passed, so you can react on user input or othe:: /
+;/ r signals immediately, not with the delay of one tick.                      /
+;/ This make this timer_gui.inlcude suitable for applications, while the vvb:: /
+;/ lank.include does well for frame-by-frame based games.                      /
+;/                                                                             /
+;/ The timer_gui.inlcude works simple:                                         /
+;/ Call gtimer_Init. Get the signal flag with gtimer_GetSigFlag and add this:: /
+;/  signal flag to your signal flags you are waiting for with Wait_().         /
+;/ Then, everytime you receive this signal, call gtimer_Check. It will retur:: /
+;/ n -1 if the desired amount of time has passed, 0 otherwise (normally it h:: /
+;/ as passed of course, if you receive this signal).                           /
+;/ If your program spent too much time in another function and you call this:: /
+;/  too late, do not mind, gtimer_Check will return -1 and continue normally.  /
+;/                                                                             /
+;/ Note: If you want to time a game, better use the vvblank.include            /
+;/                                                                             /
+;/ User Constants:  none                                                       /
+;/                                                                             /
+;/ See also:    vvblank.include                                                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+#gtimer_debug=0
+
+CNIF #__include=0
+optimize 7
+Syntax 2
+CEND
+
+XINCLUDE "error.include.ab3"
+
+NEWTYPE.gtimerdat
+is_open.w
+is_sent.w
+msgport.l  ; .MsgPort
+msg.l      ; .timerequest
+quantum_secs.l
+quantum_micro.l
+timer_base.l
+sigflag.l
+End NEWTYPE
+
+DEFTYPE.gtimerdat gtimerdat
+DEFTYPE.timerequest *gTimeIO
+USEPATH gtimerdat
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: gtimer_SetFreq {@vfreq.f}                                           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Re-Configure the vertical frequency in Hz after gtimer_Init.                /
+;/ Default vfreq is 50Hz, which is already ok for most graphical effects.      /
+;/ Many visual effects need only 25Hz to look smooth.                          /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - vfreq.f    : desired frame rate [Hz]                                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement gtimer_SetFreq {@vfreq.f} ; freq in hz
+SHARED gtimerdat
+If \is_open
+  If vfreq<.001 Then vfreq=50
+  quantf.f  = 1000000 / vfreq
+  quantl.l  = Int(quantf)
+  \quantum_secs  = quantl  /  1000000
+  \quantum_micro = quantl MOD 1000000
+Else
+  error {"gtimer: Tried to set timer while closed !"}
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _gtimer_Abort {}                                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement FAST _gtimer_Abort {}
+SHARED gtimerdat
+If \msg
+  AbortIO_ \msg
+  WaitIO_  \msg
+  SetSignal_ 0,\sigflag
+  CNIF #gtimer_debug
+  \is_sent=False
+  CEND
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  sigflag.l =  gtimer_GetSigFlag {}                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the signal flag for use with Wait_().                                   /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - sigflag.l     : signal flag                                               /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l FAST gtimer_GetSigFlag {}
+SHARED gtimerdat
+Function Return \sigflag
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: !gtimer_GetSigFlag                                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Macro gtimer_GetSigFlag
+gtimerdat\sigflag
+End Macro
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _gtimer_Start {}                                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _gtimer_Start {}
+SHARED gtimerdat,*gTimeIO
+CNIF #gtimer_debug
+If \is_sent Then error {"gtimer: Timer stared twice !"} : _gtimer_Abort{}
+\is_sent=True
+CEND
+*gTimeIO\tr_time\tv_secs  = \quantum_secs
+*gTimeIO\tr_time\tv_micro = \quantum_micro
+SendIO_ \msg
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l =  gtimer_Check {}                                          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Check if the time for one frame has already passed.                         /
+;/ NOTE: You can do a bussy loop to check for a new frame, but it is highly :: /
+;/ recommended to put the timer signal flag (gtimer_GetSigFlag) into your Wa:: /
+;/ it_() function to avoid unnecessary CPU load. Call this function only, if:: /
+;/  you received this signal.                                                  /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : -1 if the timer for one frame has passed, 0 otherwise        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l FAST gtimer_Check {}
+SHARED gtimerdat,*gTimeIO
+If CheckIO_(\msg)
+  WaitIO_ \msg
+  *gTimeIO\tr_time\tv_secs  = \quantum_secs
+  *gTimeIO\tr_time\tv_micro = \quantum_micro
+  SendIO_ \msg
+  CNIF #gtimer_debug
+  \is_sent=True
+  CEND
+  Function Return True
+End If
+Function Return False
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: gtimer_Free {}                                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Close the timer.                                                            /
+;/ NOTE: This is an autoexit function, you do not have to call this by your :: /
+;/ own.                                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement gtimer_Free {}
+SHARED gtimerdat
+_gtimer_Abort {}
+If \timer_base Then CloseDevice_ (\msg)       :\timer_base = False
+If \msg        Then DeleteIORequest_ (\msg)   :\msg        = False
+If \msgport    Then DeleteMsgPort_ (\msgport) :\msgport    = False
+\is_open = False
+\is_sent = False
+End Statement
+!autoexit{gtimer_Free}
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l = gtimer_Init {@vfreq.f,@device.s}                          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Open the timer.                                                             /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - vfreq.f    : desired frame rate [Hz]                                      /
+;/ - device.s   : device name to use (default is "timer.device")               /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : -1 if the timer was created, 0 otherwise                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l gtimer_Init {@vfreq.f,@device.s}
+SHARED gtimerdat,*gTimeIO
+succ.l = False
+\msgport = CreateMsgPort_()
+If  \msgport
+  \msg = CreateIORequest_(\msgport,SizeOf.timerequest)
+  If \msg
+    If device.s = "" Then device.s = "timer.device"
+    If OpenDevice_ (&device.s,#UNIT_MICROHZ,\msg,0) = False
+      *gTimeIO = \msg
+      *gTimeIO\tr_node\io_Command = #TR_ADDREQUEST
+      succ        = True
+      \is_open    = True
+      \is_sent    = False
+      *mp.MsgPort = \msgport
+      \sigflag    = 1 LSL *mp\mp_SigBit
+      \timer_base = *gTimeIO\tr_node\io_Device
+      gtimer_SetFreq {vfreq}
+      _gtimer_Start {}
+    Else
+      error {"gtimer: Unable to open timer.device !"}
+    End If
+  Else
+    error {"gtimer: Failed to create timerequest !"}
+  End If
+Else
+  error {"gtimer: Failed to create msgport !"}
+End If
+If succ = False Then gtimer_Free {}
+Function Return succ
+End Function
+
+
+CNIF #__include=0
+Hz.f = 2
+breakme.l = False
+If gtimer_Init {Hz}
+  mysig.l = gtimer_GetSigFlag{}
+  NPrint "Quit with CTRL+C."
+  While breakme=False
+    signals.l = Wait_ (mysig|#SIGBREAKF_CTRL_C)
+    If signals & mysig
+      If gtimer_Check{} Then NPrint Hz,"Hz tick..."
+    End If
+    If (signals & #SIGBREAKF_CTRL_C) Then breakme = True
+  Wend
+End If
+End
+CEND

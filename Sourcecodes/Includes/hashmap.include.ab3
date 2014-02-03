@@ -1,0 +1,592 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "///System"
+; ExeFile         = "PED_Beta"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 100000
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 237
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 1
+; DebugInfo       = 1
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 7
+; CursorColumn    = 27
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 100
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 100
+; Max GadgetList  = 100
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 200
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 100
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 1
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 10
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 100
+; Max BlitzFont   = 1
+; Max GTList      = 100
+; Max ChunkyBuffer= 2
+; /XTRA
+CNIF #__include=0
+Syntax 2
+optimize 7
+CEND
+
+XINCLUDE "useful.include.ab3"
+
+NEWTYPE.hashmap
+  numitems.l
+  searchpos.l
+  base.l
+  order.l
+  mask.l
+  size.l
+  numclashes.l
+  tank.l
+  tanksize.l
+End NEWTYPE
+
+
+Function.l FAST hashmap_Adler32{buff.l, bytelength.l}
+
+  s1.l = 1
+  s2.l = 0
+  For n.l = 0 To bytelength-1
+     s1 = (s1 + PeekUB(buff)) MOD 65521
+     s2 = (s2 + s1) MOD 65521
+  Next
+
+  Function  Return (s2 LSL 16) | s1
+
+End Function
+
+
+Function.l FAST hashmap_Koehler32{buff.l,bytelength.l}
+
+  s1.l = 0
+  For n.l = 0 To bytelength-1
+     s1 = (s1 + Peek.b(buff+n)) * 196314165 ; best hash function EVER!
+  Next
+
+  Function Return s1
+
+End Function
+
+
+Function.l FAST hashmap_GetHashIndex{*hm.hashmap,buff.l,bytelength.l}
+
+  If (*hm=#NULL) Then Function Return 0
+  hash.l = hashmap_Koehler32{buff,bytelength}
+  Function Return Xor(hash,(hash LSR 16)) & *hm\mask
+
+End Function
+
+
+Statement hashmap_Free{*hm.hashmap}
+
+  If *hm=#NULL Then Statement Return
+  If *hm\base
+    ptr.l = *hm\base
+    For n.l=0 To *hm\size-1
+      datptr.l = Peek.l(ptr)
+      If datptr
+        If (*hm\tank)
+          If ((datptr<*hm\tank) OR (datptr>=*hm\tank+*hm\tanksize))
+            FreeVec_ datptr
+          End If
+        Else
+          FreeVec_ datptr
+        End If
+        Poke.l ptr,#NULL
+      End If
+      ptr+4
+    Next
+    FreeVec_ *hm\base : *hm\base = #NULL
+  End If
+  *hm\numitems   = 0
+  *hm\mask       = 0
+  *hm\size       = 0
+  *hm\searchpos  = 0
+  *hm\numclashes = 0
+  If *hm\tank Then FreeVec_ *hm\tank : *hm\tank =#NULL
+  *hm\tanksize   = 0
+  FreeVec_ *hm
+  *hm = #NULL
+
+End Statement
+
+
+Function.l hashmap_Create{order.l}
+
+  If order>24 Then order=24
+  If order<1 Then order=1
+
+  *hm.hashmap = AllocVec_(SizeOf.hashmap,#MEMF_CLEAR)
+  If *hm
+    *hm\order        = order
+    *hm\size         = (1 LSL order)
+    *hm\base         = AllocVec_(4 * *hm\size,#MEMF_CLEAR)
+    *hm\mask         = *hm\size-1
+    *hm\numitems     = 0
+    *hm\searchpos    = 0
+    *hm\numclashes   = 0
+    *hm\tank         = #NULL
+    *hm\tanksize     = 0
+    If *hm\base = #NULL Then hashmap_Free{*hm} : *hm = #NULL
+  End If
+
+  Function Return *hm
+
+End Function
+
+
+Statement hashmap_RemItem{*hm.hashmap,key.s}
+
+  If (*hm=#NULL) Then Statement Return
+  If (*hm\base=#NULL) Then Statement Return
+  kl.l       = FLen(key)
+  hash.l     = hashmap_GetHashIndex{*hm,&key,kl}
+  baseptr.l  = Peek.l(*hm\base + (hash&*hm\mask)*4)
+  If baseptr =#NULL Then Statement Return
+  oldsize.l  = Peek.l(baseptr)
+  ptr.l      = baseptr +4
+  endptr.l   = ptr + oldsize
+  While ptr<endptr
+    ikl.l = Peek.l(ptr) : ptr + 4 : listkey.s = Peeks$(ptr,ikl) : ptr + ikl
+    isl.l = Peek.l(ptr) : ptr + 4                              : ptr + isl
+
+    If listkey=key
+      newsize.l = oldsize - ikl-4 -isl-4
+      If newsize>0
+        newptr.l = AllocVec_ (newsize+4,#MEMF_ANY)
+        Poke.l newptr,newsize
+        beginsize.l = (ptr)-(baseptr+4) - ikl-4 - isl-4 : CopyMem_ baseptr+4,newptr+4,beginsize
+        endsize.l   = oldsize - (ptr)+(baseptr+4)       : CopyMem_ ptr,newptr+4+beginsize,endsize
+      Else
+        newptr = #NULL
+      End If
+      Poke.l *hm\base + (hash&*hm\mask)*4,newptr
+      *hm\numitems-1
+      If (*hm\tank)
+        If baseptr<*hm\tank OR baseptr>=*hm\tank+*hm\tanksize
+          FreeVec_ baseptr
+        End If
+      Else
+        FreeVec_ baseptr
+      End If
+      Statement Return
+    End If
+  Wend
+
+End Statement
+
+
+Function.l hashmap_AddItem{*hm.hashmap,key.s,string.s}
+
+  If (*hm=#NULL) Then Function Return #NULL
+  hashmap_RemItem{*hm.hashmap,key.s}
+  kl.l     = FLen(key)
+  sl.l     = FLen(string)
+  hash.l   = hashmap_GetHashIndex{*hm,&key,kl}
+
+  oldptr.l = Peek.l(*hm\base + (hash&*hm\mask)*4)
+  CNIF #__include=0
+  WPlot hash MOD 512, hash /512,3
+  CEND
+  If oldptr
+    oldsize.l = Peek.l(oldptr)
+    *hm\numclashes+1
+    CNIF #__include=0
+    WPlot hash MOD 512, hash /512,2
+    CEND
+  Else
+    oldsize.l = 0
+  End If
+
+  newsize.l = oldsize + 4+kl + 4+sl
+  newptr.l  = AllocVec_ (4+newsize,#MEMF_ANY)
+  If newptr
+    Poke.l newptr,newsize
+
+    If oldptr
+      CopyMem_ oldptr+4,newptr+4,oldsize
+      itemptr.l = newptr+4+oldsize
+    Else
+      itemptr.l = newptr+4
+    End If
+
+    Poke.l itemptr,kl      : CopyMem_ &key,itemptr+4,kl
+    Poke.l itemptr+4+kl,sl : CopyMem_ &string,itemptr+4+kl+4,sl
+
+    Poke.l *hm\base + (hash&*hm\mask)*4,newptr
+    If oldptr Then FreeVec_ oldptr
+    *hm\numitems+1
+  End If
+
+  Function Return newptr
+
+End Function
+
+
+Function.l FAST hashmap_GetItemByHash{*hm.hashmap,keyPtr.l,keyLength.l,preHash.l,@keyOffset.l}
+
+  If (*hm=#NULL) Then Function Return #NULL
+  If (*hm\base=#NULL) Then Function Return #NULL
+  If keyOffset<0 Then keyOffset=0  : Else keyLength+keyOffset
+  hash.l  = Xor(preHash,(preHash LSR 16))
+  ptr.l   = Peek.l(*hm\base + (hash&*hm\mask)*4)
+  If (ptr=#NULL) Then Function Return #NULL
+  size.l   = Peek.l(ptr) : ptr +4
+  endptr.l = ptr + size
+
+  While ptr<endptr
+    ikl.l = Peek.l(ptr) : ptr +4+ikl
+    isl.l = Peek.l(ptr) : ptr +4+isl
+    If keyLength=ikl
+      lptr.l = ptr-isl-4-ikl + keyOffset
+      If Peek.b(lptr)=Peek.b(keyPtr)
+        succ.l = True
+        For n.l=1 To ikl-1-keyOffset
+          If Peek.b(lptr+n)><Peek.b(keyPtr+n) Then succ=False
+        Next
+        If succ
+          Function Return ptr-isl
+        End If
+      End If
+    End If
+  Wend
+
+  Function Return #NULL
+
+End Function
+ 
+
+Function.s hashmap_GetItem{*hm.hashmap,key.s}
+
+  If (*hm=#NULL) Then Function Return ""
+  If (*hm\base=#NULL) Then Function Return ""
+  kl.l     = FLen(key)
+  hash.l   = hashmap_GetHashIndex{*hm,&key,kl}
+  ptr.l    = Peek.l(*hm\base + (hash&*hm\mask)*4)
+  If (ptr=#NULL) Then Function Return ""
+  size.l   = Peek.l(ptr) : ptr +4
+  endptr.l = ptr + size
+  While ptr<endptr
+    ikl.l = Peek.l(ptr) : ptr +4 : listkey.s = Peeks$(ptr,kl) : ptr +ikl
+    isl.l = Peek.l(ptr) : ptr +4 :                           : ptr +isl
+    If listkey=key
+      Function Return Peeks$(ptr-isl,isl)
+    End If
+  Wend
+
+  Function Return "" ; not found
+
+End Function
+
+Function.l hashmap_Export{*hm.hashmap,filename.s}
+  succ.l = False
+  If (*hm=#NULL) Then Function Return False
+  If (*hm\base=#NULL) Then Function Return False
+  *fh.FileHandle = Open_(&filename,#MODE_NEWFILE)
+  If *hm><#NULL AND *fh><#NULL
+    For n.l=0 To *hm\size-1
+      datptr.l = Peek.l(*hm\base+n*4)
+      If datptr
+        datl.l = Peek.l(datptr)
+        datptr+4
+        text.s = ""
+
+        While datl>0
+          kl.l = Peek.l(datptr)
+          key.s = Peeks$(datptr+4,kl)
+          datptr + 4 + kl : datl - 4 - kl
+          dl.l = Peek.l(datptr)
+          dat.s = Peeks$(datptr+4,dl)
+          datptr + 4 + dl : datl - 4 - dl
+          text + key+"="+dat+"\\n"
+        Wend
+        Write_ *fh,&text,FLen(text)
+      End If
+    Next
+    succ.l = True
+    Close_ *fh
+  End If
+  Function Return succ
+End Function
+
+
+Function.l hashmap_Write{*hm.hashmap,*fh.FileHandle}
+
+  succ.l = False
+  If *hm><#NULL AND *fh><#NULL
+    ;/* write main chunk */
+    header.l = @"HMAP" : Write_ *fh,&header,4
+    spos_fsize.l = Seek_ (*fh,0,#OFFSET_CURRENT)
+    Write_ *fh,&header,4
+
+    ;/* write geometrics */
+    header.l = @"ORDR" : Write_ *fh,&header,4 : Write_ *fh,&*hm\order      ,4
+    header.l = @"ITEM" : Write_ *fh,&header,4 : Write_ *fh,&*hm\numitems   ,4
+    header.l = @"CLSH" : Write_ *fh,&header,4 : Write_ *fh,&*hm\numclashes ,4
+
+    ;/* write maptable chunk */
+    size.l = *hm\size*4
+    header.l = @"MAPT" : Write_ *fh,&header,4 : Write_ *fh,&size   ,4
+    spos_maptable.l = Seek_ (*fh,0,#OFFSET_CURRENT)
+    tmpbase.l = AllocVec_(*hm\size*4,#MEMF_ANY)
+    If tmpbase=#NULL Then Function Return False
+    tmpptr.l  = 0
+    Write_ *fh,tmpbase,*hm\size*4
+
+    ;/* write data chunk */
+    header.l = @"TANK" : Write_ *fh,&header,4
+    spos_tanksize.l = Seek_ (*fh,0,#OFFSET_CURRENT)
+    tanksize.l = 0
+    Write_ *fh,&tanksize ,4
+
+    For n.l=0 To *hm\size-1
+      datptr.l = Peek.l(*hm\base+n*4)
+      If datptr
+        datl.l = Peek.l(datptr)+4
+        Write_ *fh,datptr,datl
+        Poke.l tmpbase+n*4,tmpptr+4
+        tmpptr + datl
+        tanksize + datl
+      Else
+        Poke.l tmpbase+n*4,0
+      End If
+    Next
+    totalsize.l = Seek_ (*fh,0,#OFFSET_CURRENT) - 8
+    If Seek_ (*fh,spos_fsize   ,#OFFSET_BEGINNING)><-1 Then Write_ *fh,&totalsize,4
+    If Seek_ (*fh,spos_maptable,#OFFSET_BEGINNING)><-1 Then Write_ *fh,tmpbase,*hm\size*4 : FreeVec_ tmpbase : tmpbase=#NULL
+    If Seek_ (*fh,spos_tanksize,#OFFSET_BEGINNING)><-1 Then Write_ *fh,&tanksize,4
+    succ.l = True
+  End If
+
+  Function Return succ
+
+End Function
+
+
+Function.l hashmap_Save{*hm.hashmap,filename.s}
+
+  succ.l = False
+  *fh.FileHandle = Open_(&filename,#MODE_NEWFILE)
+  If *fh
+    succ = hashmap_Write{*hm,*fh}
+    Close_ *fh
+  End If
+
+  Function Return succ
+
+End Function
+
+
+Function.l hashmap_Read{*fh.FileHandle}
+
+  *hm.hashmap = #NULL
+  more.l = True
+  While more
+    header.l = 0
+    more     = Read_ (*fh,&header,4)
+    Select header
+      Case 0 : more=False
+
+      Case @"ORDR" : more=Read_(*fh,&order.l,4)
+        If order>1 AND order<25
+          *hm.hashmap = hashmap_Create{order}
+        End If
+      Case @"ITEM" : more=Read_(*fh,&items.l,4)
+         If *hm Then *hm\numitems = items
+
+      Case @"CLSH" : more=Read_(*fh,&clashes.l,4)
+         If *hm Then *hm\numclashes = clashes
+
+      Case @"MAPT"
+        If *hm
+          Read_ *fh,&size.l,4
+          Read_ *fh,*hm\base,Min(*hm\size*4,size)
+        Else
+          Function Return #NULL
+        End If
+
+      Case @"TANK"
+        If *hm
+          Read_ *fh,&*hm\tanksize,4
+          *hm\tank = AllocVec_ (*hm\tanksize,#MEMF_ANY)
+          If *hm\tank
+            Read_ *fh,*hm\tank,*hm\tanksize
+            For n.l=0 To *hm\size-1
+              If Peek.l(*hm\base+n*4)>0
+                Poke.l *hm\base+n*4,Peek.l(*hm\base+n*4)+*hm\tank-4
+              End If
+            Next
+          End If
+        Else
+          Function Return #NULL
+        End If
+
+      Default : more = Read_ (*fh,&dummy.l,4)
+
+    End Select
+  Wend
+
+  If *hm
+    If *hm\tank=#NULL Then hashmap_Free{*hm} : *hm = #NULL
+  End If
+
+  Function Return *hm
+
+End Function
+
+
+Function.l hashmap_Load{filename.s}
+
+  *hm.hashmap = #NULL
+  *fh.FileHandle = Open_(&filename,#MODE_OLDFILE)
+  If *fh
+    *hm = hashmap_Read{*fh}
+    Close_ *fh
+  End If
+
+  Function Return *hm
+
+End Function
+
+
+Function.s hashmap_Search{*hm.hashmap,string.s}
+
+  If (*hm=#NULL) Then Function Return ""
+  If *hm\searchpos<*hm\size
+
+    result.s = ""
+    *hm\searchpos+1
+  Else
+    *hm\searchpos = 0
+    Function Return ""
+  End If
+
+  Function Return result
+
+End Function
+
+
+
+
+CNIF #__include=0
+XINCLUDE "file.include.ab3"
+WbToScreen 0
+ShowScreen 0
+Window 0,0,0,640,470,$E|#WFLG_GIMMEZEROZERO,"",1,0
+*hm.hashmap = hashmap_Create{14}
+x.l = 0
+If *hm
+  fid.l = file_Open{"sourcecodes:amiblitz3/blitzlibs/tokenlist.txt",#file_read}
+  While file_EOF{fid}=False
+    string.s = file_ReadLine{fid}
+    If string
+      pos.l = Instr(string," ")+1
+      If pos
+        pos2.l = Instr(string," ",pos)
+        If pos2<pos Then pos2=FLen(string)+1
+        token.s = Mid$(string,pos,pos2-pos)
+        help.s  = Right$(string,FLen(string)-pos2)
+
+       x+1
+
+       pos.l = Instr(string,"(")+1
+       pos2.l = Instr(string,")")-1
+       libid.l = Vallong( Mid$(string,pos,pos2-pos+1))
+
+       pos.l = Instr(string,":")+1
+       pos2.l = Instr(string," ")-1
+       tokid.l = Vallong( Mid$(string,pos,pos2-pos+1))
+
+       tokenid.s = Right$(Hex$(tokid),2)
+       tokenid.s + Right$(Hex$(libid),2)
+        hashmap_AddItem{*hm,token,tokenid}
+          If x<20 NPrint "<"+token+"> ",tokenid
+      End If
+    End If
+  Wend
+  string.s = hashmap_GetItem{*hm,"NPrint"}
+  NPrint "String: NPrint from hm....",string
+  usage.l = 0
+  For n.l=0 To *hm\mask
+    If Peek.l(*hm\base+n*4) Then usage+1
+  Next
+  p.f = usage*100/(*hm\size)
+  pcl.f = *hm\numclashes*100 / (*hm\numitems+1)
+
+  NPrint "Items: ",*hm\numitems," / Clashes: ",*hm\numclashes," ("+Str$(Int(pcl+0.5))+"%) / ",usage," of ",*hm\size," ("+Str$(Int(p+0.5))+"%) cells used."
+  hashmap_Save{*hm,"ram:test1.hashmap"}
+  NPrint "SAVED"
+
+  *hm2.hashmap = hashmap_Load{"ram:test1.hashmap"}
+  If *hm2
+    string.s = hashmap_GetItem{*hm2,"NPrint"}
+    NPrint "String: NPrint from hm2....",string
+    NPrint "Items: ",*hm2\numitems," / Clashes: ",*hm2\numclashes," ("+Str$(Int(pcl+0.5))+"%) / ",usage," of ",*hm2\size," ("+Str$(Int(p+0.5))+"%) cells used."
+    hashmap_Free{*hm2}
+  Else
+    NPrint "Unable to load hashmap!"
+  End If
+
+  dummy.l = $22002200
+  a.s = Peeks$(&dummy,3)
+  NPrint a.s
+
+  hashmap_Free{*hm}
+End If
+MouseWait
+End
+CEND

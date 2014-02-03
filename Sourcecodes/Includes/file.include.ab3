@@ -1,0 +1,2063 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "/Bin"
+; ExeFile         = "FileDemo"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 208
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 7
+; CursorColumn    = 30
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 5
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 5
+; Max GadgetList  = 50
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 50
+; Max Anim        = 100
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 5
+; Max BlitzFont   = 4
+; Max GTList      = 50
+; Max ChunkyBuffer= 2
+; /XTRA
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Name: file.include                                                          /
+;/                                                                             /
+;/ Platforms: Classic, WinUAE, Amithlon, MorphOS, AmigaOS4                     /
+;/                                                                             /
+;/ Date: 27/12/2006                                                            /
+;/                                                                             /
+;/ Author: Thilo Koehler                                                       /
+;/                                                                             /
+;/ Requirements:  Amiblitz2.4                                                  /
+;/                                                                             /
+;/ Purpose:                                                                    /
+;/ Provide file I/O functions.                                                 /
+;/                                                                             /
+;/ Abstract:                                                                   /
+;/ This include provides easy-to-use file I/O, with a high degree of control:: /
+;/  and extra functionality.                                                   /
+;/                                                                             /
+;/ User Constants:                                                             /
+;/ #max_files = 100                                                            /
+;/ Set the maximum amount if file object IDs you plan to use.                  /
+;/                                                                             /
+;/ Example:                                                                    /
+;/ _______________________________________________________________ snip!       /
+;/ #max_files = 100                                                            /
+;/ XINCLUDE "file.include.bb2"                                                 /
+;/                                                                             /
+;/ fid.l = file_Open{"DH0:myfile.dat",#file_open}                              /
+;/ If fid>=0                                                                   /
+;/   file_ReadMem {fid,ptr,blength} ; read something into memory               /
+;/   file_Close {fid}                                                          /
+;/ Else                                                                        /
+;/   NPrint "Unable to open file !"                                            /
+;/ EndIf                                                                       /
+;/ End                                                                         /
+;/ _______________________________________________________________ snip!       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+CNIF @#max_files=0
+  #max_files = 100
+CEND
+
+CNIF #__include=0
+  Syntax 2
+  optimize 7
+  XINCLUDE "error.include.ab3"
+  error{"This include has no internal demo!"}
+  End
+CELSE
+
+
+XINCLUDE "error.include.ab3"
+XINCLUDE "dos.include.ab3"
+XINCLUDE "asl.include.ab3"
+;XINCLUDE "strptr.include.ab3"
+
+#file_read       = 1
+#file_write      = 2
+#file_open       = 3
+#file_forcewrite = 4
+
+#file_maxbuffer  = 8192  ; block larger than maxbuffer will not be buffered
+
+MaxLen ASL_path.s    = 4096
+MaxLen ASL_file.s    = 256
+MaxLen ASL_pattern.s = 4096
+
+MaxLen IO_errmsg.s  = 64
+
+ASL_x.l = -1
+ASL_y.l = -1
+ASL_xs.l = -1
+ASL_ys.l = -1
+
+ASL_path.s = "SYS:"
+ASL_file.s = ""
+ASL_pattern.s = "#?"
+
+.FILE_NEWTYPES
+NEWTYPE.filedat
+is_used.w      ; -1 if used, 0 otherwise
+occupied.w     ; file can not be closed right now
+blength.l      ; cache for the current file length
+seekpos.l      ; cache for the current seekpos
+accessmode.w   ; #ACCESS_WRITE, #ACCESS_READ
+name.s         ; file name
+path.s         ; path part
+intel.w        ; littel vs. big endian mode, needed for chunks
+fh.l           ; file handle for OS functions
+buffer_used.w  ; use a buffer
+cache_ptr.l    ; pointer to the buffer of a read-cached file
+cache_blength.l; length of the read-cached file (should be the same like blength)
+End NEWTYPE
+
+NEWTYPE.chunk
+head.l
+offset.l
+blength.l
+End NEWTYPE
+
+NEWTYPE.fileengine
+string.s
+tagitem.TagItem
+End NEWTYPE
+
+.FILE_GLOBALS
+Dim filedat.filedat (#max_files-1)
+Dim chunk.chunk(8)
+DEFTYPE.fileengine fileengine
+
+USEPATH filedat(fid)
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.w = file_WFlip {value.w}                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Change endianess of a 16 bit value.                                         /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - value.w    : 16 bit value                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.w     : 16 bit value with changed endianess                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w file_WFlip {value.w}
+GetReg a0,&value
+CLR.l d0
+CLR.l d1
+MOVE.b  (a0),d0
+MOVE.b 1(a0),d1
+LSL.w #8,d1
+OR.w d0,d1
+MOVE.w d1,(a0)
+Function Return value
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = file_LFlip {value.l}                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Perform 32bit endian flip of the value.                                     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - value.l    : 32bit value                                                  /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : 32 bit value in changed endianess                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_LFlip {value.l}
+GetReg a0,&value
+CLR.l d0
+CLR.l d1
+CLR.l d2
+CLR.l d3
+MOVE.b  (a0),d0
+MOVE.b 1(a0),d1
+MOVE.b 2(a0),d2
+MOVE.b 3(a0),d3
+LSL.l #8,d1
+LSL.l #8,d3
+OR.l d0,d1
+OR.l d2,d3
+SWAP d3
+OR.l d1,d3
+MOVE.l d3,(a0)
+Function Return value
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: file_SetBufferSize {fid.l,@buffsize.l}                              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Set the cache buffer size for an open file.                                 /
+;/ Increasing the buffer can lead to faster reading/writing, but not always.   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - buffsize.l    : new buffer size in bytes (should be >4096)                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement file_SetBufferSize {fid.l,@buffsize.l}
+SHARED filedat()
+If \is_used
+  If buffsize<512 Then buffsize=4096
+  If \fh
+    SetVBuf_ \fh,0,1,buffsize
+  End If
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  *fh.l = file_GetFH {fid.l}                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the AmigaOS file handle associated with the open file.               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - *fh.FileHandle     : pointer to an AmigaOS file handle                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_GetFH {fid.l}
+SHARED filedat()
+Function Return filedat(fid)\fh
+End Function
+ 
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  length.l = file_GetLength {fid.l}                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the length in bytes of the open file.                                   /
+;/ NOTE: this works on files open for reading and writing.                     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - length.l     : length in bytes                                            /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_GetLength {fid.l}
+SHARED filedat()
+If \is_used
+  If \blength<=0
+    *fib.FileInfoBlock = AllocDosObject_ (#DOS_FIB,#TAG_DONE)
+    If *fib
+      ExamineFH_ \fh,*fib
+      \blength = *fib\fib_Size
+      FreeDosObject_ #DOS_FIB,*fib
+    End If
+  End If
+Else
+  error{"\\__THIS_FUNCTION: Requested file is not open!"}
+End If
+Function Return \blength
+End Function
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.w = file_Seek {fid.l,filepos.l}                             /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Seek wihtin a file to a fix position.                                       /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - filepos.l    : seek position within the file. 0 is the begin of file.     /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.w     : -1 if everything went well, 0 if it failed                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w file_Seek {fid.l,filepos.l}
+SHARED filedat()
+succ.w = True
+If \seekpos >< filepos
+  If \cache_ptr
+    If filepos>=0 AND filepos<=\blength
+      \seekpos = filepos
+    Else
+      succ = False
+    End If
+  Else
+    succ.w = False
+    If \is_used
+      ;If \blength<=0 Then \blength = file_GetLength {fid.l}
+      If Seek_ (\fh,filepos,#OFFSET_BEGINNING) = -1
+        succ.w=False
+        error{"\\__THIS_FUNCTION: Tried to seek at invalid position!"}
+      Else succ.w = True
+        \seekpos = filepos
+      End If
+    Else
+      error{"\\__THIS_FUNCTION: Requested file is not open!"}
+    End If
+  End If
+End If
+Function Return succ
+End Function
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.w =  file_SeekRel {fid.l,offset.l}                          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Same like file_Seek, but seek relative to the current file position.        /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - offset.l    : offset to seek from the current position, might be negative /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.w     : -1 if everything went well, 0 if it failed                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w FAST file_SeekRel {fid.l,offset.l}
+SHARED filedat()
+Function Return file_Seek {fid,\seekpos+offset}
+End Function
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  fid.l = file_GetFreeFID {}                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Find a free file object ID.                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - fid.l     : file object ID                                                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_GetFreeFID{}
+SHARED filedat()
+fid.l = 0
+While (\is_used=True OR \occupied=True) AND fid < #max_files-1
+  fid+1
+Wend
+If \is_used=True Then fid = -1 ;: error{"Too many files open !"}
+Function Return fid
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: file_Lock {fid.l}                                                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Lock a file object ID. It can not be used by file_Open anymore.             /
+;/ This way you can reserve a certain file object ID.                          /
+;/ Note: Use it only if you really know what you are doing.                    /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement file_Lock {fid.l}
+SHARED filedat()
+\occupied = True
+End Statement
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: file_Unlock {fid.l}                                                 /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Unlock a file previously locked by file_Lock.                               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement file_Unlock {fid.l}
+SHARED filedat()
+\occupied = False
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: file_Close {fid.l}                                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Close a file previously opened with file_Open.                              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ See also:    file_Open                                                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement file_Close {fid.l}
+SHARED filedat()
+If fid>=0
+  If \fh Then Close_ \fh : \fh = False
+  \name       = ""
+  \path       = ""
+  \seekpos    = 0
+  \blength    = 0
+  \is_used    = False
+  \accessmode = 0
+  \occupied   = False
+  If \cache_ptr Then FreeMem_ \cache_ptr,\cache_blength : \cache_ptr = 0
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: file_CloseAll {}                                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Close all open files.                                                       /
+;/ NOTE: This function is called on autoexit. However, it is always a good p:: /
+;/ rogramming style to close all files you opened explicitly.                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement file_CloseAll {}
+;error{"Calling file.include/autoexit"}
+For fid.l=0 To #max_files-1
+  file_Close{fid}
+Next
+End Statement
+!autoexit{file_CloseAll}
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = file_GetDosName {fid.l}                                 /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the real full filename.                                                 /
+;/ Same like file_fullname, but based on what the dos.library says about the:: /
+;/  name, rather than how you opended the file.                                /
+;/ This may resolve assigns or current directories.                            /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : real dos.library file name including path                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s file_GetDosName {fid.l}
+SHARED filedat()
+If fid>=0
+  If \fh
+    MaxLen name.s = 2096
+    NameFromFH_ \fh,&name.s,2096
+    name.s = Peek.s(&name.s)
+  End If
+End If
+Function Return name.s
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: file_Erase {fid.l}                                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Erase an open file. The file object ID is not valid any more after this f:: /
+;/ unction.                                                                    /
+;/ Note: This command is useful if you want to erase a file e.g. if an error:: /
+;/  occured during writing and you decide to erase the file you started to w:: /
+;/ rite.                                                                       /
+;/ Note: This does the same like file_Close and a subsequent file_delete.      /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement file_Erase {fid.l}
+SHARED filedat()
+If \is_used
+  fname.s = dos_AddPart {\path,\name}
+  file_Close {fid}
+  DeleteFile_ &fname.s
+Else
+  error{"\\__THIS_FUNCTION: Tried to erase a non-existing file !!! (#"+Str$(fid)+")"}
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  fid.l = file_IsOpen {name.s}                                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Check if the file is already opened via dos.inlcude and return the file o:: /
+;/ bject ID.                                                                   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - name.s    : filename (including path)                                     /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - fid.l     : file object ID or -1 if the file is not open                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_IsOpen {name.s}
+SHARED filedat()
+fid.l = -1
+For n.l = 0 To #max_files-1
+  If \is_used
+    If \name = name.s Then fid = n
+  End If
+Next
+Function Return fid
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  error.s = file_GetIOErr {}                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the plain text string of the last dos.library error.                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - error.s     : dos.library error text, e.g. "Disk object not found!"       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s file_GetIOErr {}
+SHARED IO_errmsg.s
+Fault_ IoErr_(),0,&IO_errmsg.s,64 : Poke.b &IO_errmsg.s+63,0
+Function Return Peek.s(&IO_errmsg.s)
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  fid.l = file_Open {name.s,mode.l,@extention.s}                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Open a file and return file object ID on success, or -1 if it failed.       /
+;/ NOTE: Always check for fid>=0 for success. [0...#max_files-1] is a valid :: /
+;/ file object ID, -1 is not.                                                  /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - name.s    : file name including path                                      /
+;/ - extention.s    : optionally file extention to set automatically           /
+;/ - mode.w    : can be one of                                                 /
+;/     #file_read                                                              /
+;/ Open the file for read access.                                              /
+;/ Fails if the file does not exist.                                           /
+;/ However, writing is also allowed too.                                       /
+;/     #file_forcewrite                                                        /
+;/ Open the file for write access.                                             /
+;/ Creates a new file for writing. If the file already exists, it will be ov:: /
+;/ erwritten.                                                                  /
+;/ You are the exclusive owner of the file, not other program can access it :: /
+;/ while you have it open.                                                     /
+;/ However, you can also read from the file.                                   /
+;/     #file_write                                                             /
+;/ Same like #file_forcewrite, but with asking before it overwrites anyexist:: /
+;/ ing file.                                                                   /
+;/     #file_open                                                              /
+;/ Open the file for read/write access without overwriting the content.        /
+;/ The file is created if it does not exist.                                   /
+;/ Other programs can open the file while you have access to it.               /
+;/ - mode.l    : ???                                                           /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - fid.l     : file object ID or -1 if it failed.                            /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_Open {name.s,mode.l,@extention.s}
+SHARED filedat(),ASL_path.s,ASL_file.s,ASL_pattern.s,ASL_x,ASL_y,ASL_xs,ASL_ys
+openfid.l = -1
+fid.l = file_GetFreeFID{}
+If fid>=0
+  Select mode
+    Case #file_read
+      a.s = "Select file to read ..."
+    Case #file_open
+      a.s = "Select file to open ..."
+    Case #file_write
+      a.s = "Select file to write ..."
+    Case #file_forcewrite
+      a.s = "Select file to write ..."
+  End Select
+
+  If mode = #file_read Then savemode.l = False:Else savemode = True
+
+  If name.s=""
+    aslfr_SetPath {0,ASL_path.s,ASL_file.s,ASL_pattern.s}
+    If aslfr_Request {0,savemode.l,False,False}
+      name.s = aslfr_GetNextFile {}
+    End If
+  End If
+
+  If name.s><""
+    path.s  = dos_PathPart {name.s}
+    fname.s = dos_FilePart {name.s}
+;    fname.s = dos_SetExt {fname.s,extention.s}
+    name.s  = dos_AddPart {path.s,fname.s}
+    ASL_path.s = path.s
+    ASL_file.s  = fname.s
+    Select mode
+      Case #file_read
+        \fh = Open_ (&name.s,#MODE_OLDFILE)
+        If \fh = False
+          If extention.s><"" Then fname.s = dos_SetExt {fname.s,extention.s}
+          name.s  = dos_AddPart {path.s,fname.s}
+          \fh =  Open_ (&name.s,#MODE_OLDFILE)
+        End If
+        If \fh
+          openfid = fid
+        Else
+          error{"\\__THIS_FUNCTION: Unable to read " + Chr$(34)+name.s+Chr$(34)+" : "+ file_GetIOErr{}+"!"}
+        End If
+
+      Case #file_write
+        If extention.s><"" Then fname.s = dos_SetExt {fname.s,extention.s}
+        name.s  = dos_AddPart {path.s,fname.s}
+        If dos_Exist {name.s} Then bool.l = ask {"File "+Chr$(34)+fname.s+Chr$(34)+" already exists!","Overwrite|Cancel"}:Else bool = True
+        If bool
+          \fh = Open_ (&name.s,#MODE_NEWFILE)
+          If \fh
+            openfid = fid
+          Else
+            error{"\\__THIS_FUNCTION: Unable to write " + Chr$(34)+name.s+Chr$(34)+" : "+ file_GetIOErr{}+"!"}
+          End If
+        End If
+
+      Case #file_open
+        \fh = Open_ (&name.s,#MODE_READWRITE)
+        If \fh = False
+          If extention.s><"" Then fname.s = dos_SetExt {fname.s,extention.s}
+          name.s  = dos_AddPart {path.s,fname.s}
+          \fh =  Open_ (&name.s,#MODE_READWRITE)
+        End If
+
+        If \fh
+          openfid = fid
+        Else
+          error{"\\__THIS_FUNCTION: Unable to open " + Chr$(34)+name.s+Chr$(34)+" : "+ file_GetIOErr{}+"!"}
+        End If
+
+      Case #file_forcewrite
+        If extention.s><"" Then fname.s = dos_SetExt {fname.s,extention.s}
+        name.s  = dos_AddPart {path.s,fname.s}
+        \fh = Open_ (&name.s,#MODE_NEWFILE)
+        If \fh
+          openfid = fid
+        Else
+          error{"\\__THIS_FUNCTION: Unable to write " + Chr$(34)+name.s+Chr$(34)+" : "+ file_GetIOErr{}+"!"}
+        End If
+
+      Default
+        error{"\\__THIS_FUNCTION: Undefined accessmode!"}
+    End Select
+  EndIf
+Else
+  error{"\\__THIS_FUNCTION: Unable to open file \\22"+dos_FilePart {name.s}+"\\22: Too many files open!"}
+End If
+
+If openfid>=0
+  \is_used = True
+  \name = dos_FilePart {name.s}
+  \path = dos_PathPart {name.s}
+  If mode = #file_forcewrite Then mode = #file_write
+  \accessmode = mode
+  \seekpos = 0
+  \intel = False
+End If
+Function Return openfid
+End Function
+
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = file_GetName {fid.l}                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the file name associated with the open file object ID.                  /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : file name (without path)                                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s file_GetName {fid.l}
+SHARED filedat()
+If \is_used = False Then error{"\\__THIS_FUNCTION: Requested file is not open!"}
+Function Return \name
+End Function
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = file_GetPath {fid.l}                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the path of the open file.                                              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : path (e.g. "DH0:MyFiles")                                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s file_GetPath {fid.l}
+SHARED filedat()
+If \is_used = False Then error{"\\__THIS_FUNCTION: Requested file is not open!"}
+Function Return \path
+End Function
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = file_GetFullName {fid.l}                                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the full filename of the open file referenced by the file object ID.    /
+;/ The full filename contains path+file.                                       /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : filename                                                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s file_GetFullName {fid.l}
+SHARED filedat()
+filename.s = dos_AddPart {\path,\name}
+If \is_used = False Then error{"\\__THIS_FUNCTION: Requested file is not open!"}
+Function Return filename.s
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.w = file_IsUsed {fid.l}                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Check the file object ID if it is valid (= associated file is open).        /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.w     : -1 if the file is open, 0 otherwise                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w file_IsUsed {fid.l}
+SHARED filedat()
+If fid>=0 AND fid<#max_files Then Function Return \is_used
+Function Return False
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  fid.l = file_Clone {ofid.l}                                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Clone a file. You will get another file object ID that is open on the sam:: /
+;/ e file at the same seek position.                                           /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - ofid.l    : original file object ID                                       /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_Clone {ofid.l}
+SHARED filedat()
+fid.l = -1
+If ofid>=0
+  If filedat(ofid)\accessmode = #file_open OR filedat(ofid)\accessmode = #file_read
+    fid.l = file_Open {file_GetFullName{ofid},filedat(ofid)\accessmode}
+  End If
+End If
+Function Return fid
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.w = file_WriteMem {fid.l,sourceaddr.l,blength.l}            /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Write a memory block to a file.                                             /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - sourceaddr.l    : address to read data from                               /
+;/ - blength.l    : byte length                                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.w     : -1 if everything went well, 0 otherwise                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w file_WriteMem {fid.l,sourceaddr.l,blength.l}
+SHARED filedat() : USEPATH filedat(fid)
+succ.w = False
+If fid>=0 AND fid<#max_files
+If \is_used
+  If blength>#file_maxbuffer
+    If \buffer_used Then Flush_ \fh:\buffer_used = False
+    wlength.l = Write_ (\fh,sourceaddr,blength)
+  Else
+    wlength.l = FWrite_ (\fh,sourceaddr,blength,1) * blength
+    \buffer_used = True
+  End If
+
+  If wlength=blength
+    succ.w = True
+  Else
+    If wlength>=0
+      error{"\\__THIS_FUNCTION: Failed to write data to \\22"+\name+"\\22!\\nWanted to write "+Str$(blength)+" bytes but did "+Str$(wlength)+"!"}
+    Else
+      a.s = LSet$ (" ",85)
+      err.l = IoErr_()
+      If Fault_ (err.l,0,&a.s,81) = False Then a.s = "undefined dos error"
+      error{a.s}
+    End If
+  End If
+  If wlength>=0 Then \seekpos + wlength
+  If \seekpos>\blength Then \blength = \seekpos
+Else
+  error{"\\__THIS_FUNCTION: Tried to write a non-existing file!"}
+End If
+Else
+ error{"\\__THIS_FUNCTION: Invalid dos number! "+Str$(fid)}
+End If
+Function Return succ
+End Function
+
+Statement file_Flush{fid.l}
+SHARED filedat() : USEPATH filedat(fid)
+succ.w = False
+If fid>=0 AND fid<#max_files
+  If \is_used
+    If \buffer_used Then Flush_ \fh:\buffer_used = False
+  End If
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l =  file_ReadMem {fid.l,destaddr.l,blength.l}              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : ???                                                            /
+;/ - destaddr.l    : ???                                                       /
+;/ - blength.l    : ???                                                        /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l FAST file_ReadMem {fid.l,destaddr.l,blength.l}
+SHARED filedat()
+succ.l = False
+If \is_used
+  If \cache_ptr
+    If blength<\cache_blength-\seekpos
+      CopyMem_ \cache_ptr+\seekpos,destaddr,blength
+      \seekpos + blength
+      succ.l = True
+    Else
+      \seekpos = \blength
+      succ=False
+    End If
+  Else
+    If blength>#file_maxbuffer
+      If \buffer_used Then Flush_ \fh:\buffer_used = False
+      rlength.l = Read_ (\fh,destaddr,blength)
+    Else
+      rlength.l = FRead_ (\fh,destaddr,blength,1) * blength
+      \buffer_used = True
+    End If
+    If rlength=blength
+      succ = True ; rlength
+    Else
+      If rlength>=0
+        succ.l = False ; rlength
+      Else
+        error{"\\__THIS_FUNCTION: "+file_GetIOErr{}}
+      End If
+    End If
+    If rlength>=0 Then \seekpos + rlength
+  End If
+End If
+Function Return succ
+End Function
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: file_Cache {fid.l}                                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Cache a file to ram.                                                        /
+;/ All subsequent file reading commands will read from the cache.              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement file_Cache {fid.l}
+SHARED filedat()
+If \is_used
+  \cache_blength = file_GetLength {fid}
+  If \cache_blength<1024*256 AND \cache_blength>0
+    oldpos.l = \seekpos
+    If file_Seek {fid,0}
+      cache_ptr.l = AllocMem_ (\cache_blength,0)
+      If cache_ptr
+        succ.l = file_ReadMem {fid,cache_ptr,\cache_blength}
+        \cache_ptr= cache_ptr
+        If succ=False
+          FreeMem_ \cache_ptr,\cache_blength : \cache_ptr = 0 :error{"\\__THIS_FUNCTION: Unable to cache file!"}
+        End If
+      End If
+    End If
+    If oldpos>=0 Then succ = file_Seek {fid,oldpos}
+  End If
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.w =  file_EOF {fid.l}                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ "End Of File": Test if the file has reached the end while reading.          /
+;/ This is useful to detect the end of a file while reading e.g. line by lin:: /
+;/ e via file_readln.                                                          /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.w    : -1 if the end of file is reached, 0 otherwise                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w FAST file_EOF {fid.l}
+SHARED filedat()
+succ.w = False
+If \blength <=0 Then \blength = file_GetLength{fid}
+If \blength <= \seekpos Then succ=True
+Function Return succ
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = file_FindChunk {fid.l,chunk.l,@pos.l,@blength.l,@immed:: /
+;/ iate.l,@nowordalign.l}                                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Start at the current seek position and try to find the chunk.               /
+;/ It must be a position already pointing to a valid chunk, .e.g pointing to:: /
+;/  "BMHD" in an IFF-ILBM file.                                                /
+;/ It returns the file seek position or 0 if the chunk is not found.           /
+;/ The file position will be set to the first byte of the chunk, e.g. "BODY"   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - chunk.l    : 4-byte chunk identifier, e.g. @"BODY"                        /
+;/ - pos.l    : position to start seeking from (must point to a valid chunk)   /
+;/ - blength.l    : maximum length within the file to search for the chunk     /
+;/ - immediate.l    : allow the current position to be the found chunk         /
+;/ - nowordalign.l    : 0=do automatic word align (like found in most FORM f:: /
+;/ iles), -1 allow odd seek positions                                          /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ seekpos.l   : file seek position that points to the chunk identifier, fol:: /
+;/ lowed by the chunk size                                                     /
+;/                                                                             /
+;/ See also:    file_WriteChunk, file_CloseChunk                               /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_FindChunk {fid.l,chunk.l,@pos.l,@blength.l,@immediate.l,@nowordalign.l}
+SHARED filedat()
+If blength<=0 Then blength = file_GetLength{fid}-pos
+If pos<0 Then pos.l = filedat(fid)\seekpos
+count.l = 0
+If immediate Then immediate = 0:Else immediate=1
+Repeat
+  If nowordalign=0 AND (pos&1)=1 Then pos+1
+  If file_Seek {fid,pos}
+    dummy2.l = file_ReadMem {fid,&dummy.l,4}
+    dummy2.l & file_ReadMem {fid,&chlen.l,4}
+    If dummy2
+      If filedat(fid)\intel Then chlen = file_LFlip{chlen}
+      blength-chlen - 8
+      pos + chlen + 8
+      If pos>=file_GetLength{fid} OR pos<=0 Then blength=-1
+      count+1
+    Else
+      blength=-1
+      dummy=0
+    End If
+  Else
+    blength=0
+    dummy=0
+    error{"\\__THIS_FUNCTION: Invalid seek position! ("+Str$(pos)+")"}
+  End If
+  If count<=immediate Then dummy=0
+
+Until dummy = chunk OR blength<=0
+If dummy = chunk Then succ.l = pos-chlen-8:dummy=file_Seek{fid,succ}:Else succ.l = False
+Function Return succ
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = file_GetChunk {fid.l,chunk.l,@pos.l,@blength.l,@immed:: /
+;/ iate.l,@nowordalign.l}                                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Same like file_FindChunk{}, but returns already the chunk size of the fou:: /
+;/ nd chunk or 0.                                                              /
+;/                                                                             /
+;/ NOTE: As a side effect, you file position pointer will be moved to the po:: /
+;/ sition that points to the 4-byte chunk identifier.                          /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - chunk.l    : 4-byte chunk identifier, e.g. @"BODY"                        /
+;/ - pos.l    : seek position to start from (-1 for current position)          /
+;/ - blength.l    : maximum byte length to seek within the file                /
+;/ - immediate.l    : allow current chunk to be found                          /
+;/ - nowordalign.l    : 0=force word allignments (as found in most FORM file:: /
+;/ formats), -1 no alignment                                                   /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : size of the found chunk or 0 if no chunk was found         /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_GetChunk {fid.l,chunk.l,@pos.l,@blength.l,@immediate.l,@nowordalign.l}
+SHARED filedat()
+If blength<=0 Then blength = file_GetLength {fid}-pos
+If pos<0 Then pos.l = filedat(fid)\seekpos
+count.l = 0
+If immediate Then immediate = 0:Else immediate=1
+Repeat
+  If nowordalign=0 AND (pos&1)=1 Then pos+1
+
+  If file_Seek {fid,pos}
+    dummy2.l = file_ReadMem{fid,&dummy.l,4}
+    dummy2.l & file_ReadMem{fid,&chlen.l,4}
+    If dummy2
+      If filedat(fid)\intel Then chlen = file_LFlip{chlen}
+      blength-chlen - 8
+      pos + chlen + 8
+      If pos>=file_GetLength{fid} OR pos<=0 Then blength=-1
+      count+1
+    Else
+      blength=-1
+      dummy=0
+    End If
+  Else
+    blength=0
+    dummy=0
+    error{"\\__THIS_FUNCTION: Invalid seek position! ("+Str$(pos)+")"}
+  End If
+  If count<=immediate Then dummy=0
+
+Until dummy = chunk OR blength<=0
+If dummy = chunk Then dummy=file_Seek{fid,pos-chlen}:Else chlen=0
+Function Return chlen
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.w = file_WriteChunk {fid.l,head.l,@blength.l,@nowordalign:: /
+;/ .l}                                                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Write a chunk to a file.                                                    /
+;/ NOTE: if you know the size of the chunk, you can supply it via blength.l,:: /
+;/  this will give a little speed up. If blength is not correct or -1, it wi:: /
+;/ ll be corrected on file_CloseChunk.                                         /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - head.l    : 4 byte chunk identifier                                       /
+;/ - blength.l    : byte length, if known                                      /
+;/ - nowordalign.l    : 0=do word alignment (write a 0 byte if the chunk end:: /
+;/ s on an odd address), -1 = no alignment                                     /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.w     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w file_WriteChunk {fid.l,head.l,@blength.l,@nowordalign.l}
+SHARED chunk(),file_chunkcounter.l,filedat()
+succ.w = False
+If file_chunkcounter<8 AND file_chunkcounter>=0
+  If nowordalign=0 AND (filedat(fid)\seekpos&1)=1 Then dummy.l = 0:file_WriteMem {fid,&dummy,1}
+  succ.w = file_WriteMem {fid,&head,4}
+  If succ
+    succ.w = file_WriteMem {fid,&blength,4}
+    If succ
+      chunk(file_chunkcounter)\head   = head
+      chunk(file_chunkcounter)\offset = filedat(fid)\seekpos
+      chunk(file_chunkcounter)\blength = blength
+      file_chunkcounter+1
+    End If
+  End If
+Else
+  error{"\\__THIS_FUNCTION: Invalid chunk counter!"}
+End If
+Function Return succ
+End Function
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.w = file_CloseChunk {fid.l,head.l}                            /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Close a structured chunk ina file created with file_WriteChunk.             /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - head.l    : 4-byte identifier for the chunk, e.g. @"ILBM"                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.w    : -1 if everything went well, 0 otherwise                       /
+;/                                                                             /
+;/ See also:    file_WriteChunk                                                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w file_CloseChunk {fid.l,head.l}
+SHARED chunk(),filedat(),file_chunkcounter.l
+succ.w = False
+If file_chunkcounter>0
+  file_chunkcounter-1
+  If chunk(file_chunkcounter)\head=head
+    chunklength.l = filedat(fid)\seekpos - chunk(file_chunkcounter)\offset
+    If chunklength>=0
+      If chunk(file_chunkcounter)\blength><chunklength AND chunk(file_chunkcounter)\blength>0
+        error{"\\__THIS_FUNCTION: Chunk length was told wrong ("+Mkl$(head)+": "+Str$(chunk(file_chunkcounter)\blength)+"><"+Str$(chunklength)+") !"}
+        chunk(file_chunkcounter)\blength = 0
+      End If
+      If chunk(file_chunkcounter)\blength<=0
+        lastpos.l = filedat(fid)\seekpos
+        succ.w = file_Seek {fid,chunk(file_chunkcounter)\offset-4}
+        If succ
+          If filedat(fid)\intel Then chunklength = file_LFlip{chunklength}
+          succ = file_WriteMem {fid,&chunklength,4}
+          If succ Then succ = file_Seek {fid,lastpos}
+        Else
+          error{"\\__THIS_FUNCTION: unable to seek within file!"}
+        End If
+      Else
+        succ.w = True
+      End If
+    Else
+      error{"\\__THIS_FUNCTION: Length of chunk is <0! ("+Str$(chunklength)+") ("+Mkl$(head)+")"}
+    End If
+  Else
+    error{"\\__THIS_FUNCTION: Closed wrong chunk! ("+Mkl$(chunk(file_chunkcounter)\head)+" >< "+Mkl$(head)+")"}
+  End If
+Else
+  error{"\\__THIS_FUNCTION: There is no chunk To close!"}
+End If
+Function Return succ
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: file_SetASLPos {x.l,y.l,xs.l,ys.l}                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Set the pixel dimensions of the ASL requester.                              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - x.l    : left edge                                                        /
+;/ - y.l    : top edge                                                         /
+;/ - xs.l    : width                                                           /
+;/ - ys.l    : height                                                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement file_SetASLPos {x.l,y.l,xs.l,ys.l}
+SHARED filedat(),ASL_x,ASL_y,ASL_xs,ASL_ys
+ASL_x = x
+ASL_y = y
+ASL_xs = xs
+ASL_ys = ys
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: file_SetASLPath {path.s,fil.s,patt.s}                               /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Set the default path, file and pattern for the ASL requester.               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - path.s    : disk path                                                     /
+;/ - fil.s    : file name, might be empty                                      /
+;/ - patt.s    : dos pattern, e.g. "#?.mp3" to show only mp3 files in ASL re:: /
+;/ quester                                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement file_SetASLPath {path.s,fil.s,patt.s}
+SHARED filedat(),ASL_x,ASL_y,ASL_xs,ASL_ys,ASL_pattern.s,ASL_path.s,ASL_file.s
+If fil.s><"" Then ASL_file.s = fil.s
+If path.s><"" Then ASL_path.s = path.s
+ASL_pattern.s = patt.s
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = file_GetSeekPos {fid.l}                                 /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the current file seek position.                                         /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : file position                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_GetSeekPos {fid.l}
+SHARED filedat()
+Function Return filedat(fid)\seekpos
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: file_SetLittleEndian {fid.l}                                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Set the file to Intel mode, means all chunks and values are interpreted a:: /
+;/ s little endian.                                                            /
+;/ This influences only file_WriteChunk, file_FindChunk, file_GetChunk.        /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement file_SetLittleEndian {fid.l}
+SHARED filedat()
+filedat(fid)\intel = True
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = file_WriteString {fid.l,string.s}                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Write a string to a binary file in a way that it can be read by file_Read:: /
+;/ String.                                                                     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - string.s    : string to write                                             /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : -1 if everything went well, 0 otherwise                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_WriteString {fid.l,string.s}
+SHARED filedat()
+If \is_used
+  succ.l = file_WriteMem {fid,&string.s-4,Peek.l(&string.s-4)+4}
+Else
+  error{"\\__THIS_FUNCTION: Tried to write a non-existing file !"}
+  succ.l = False
+End If
+Function Return succ
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = file_ReadString2 {fid.l}                                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Same like file_ReadString, but without some wired terminating character t:: /
+;/ esting. (<32)                                                               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : a string                                                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s file_ReadString2 {fid.l}
+SHARED filedat()
+succ.l = False
+string.s = ""
+If \is_used
+  If  file_ReadMem{fid,&blength.l,4}
+    If blength<0 OR blength>1024
+      error{"\\__THIS_FUNCTION: Internal error: string is longer than 1024 chars!"}
+    Else
+      If blength>0
+        string.s = LSet$ (" ",blength)
+        succ = file_ReadMem{fid,&string.s,blength}
+      End If
+    End If
+  End If
+Else
+  error{"\\__THIS_FUNCTION: Tried to write a non-existing file!"}
+End If
+Function Return string.s
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = file_ReadString {fid.l,@limit.l}                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Read a string from a binary file, previous store using "file_writestring".  /
+;/ The format of the string in the file is                                     /
+;/                                                                             /
+;/ $LLLLLLLLMyString$00                                                        /
+;/                                                                             /
+;/ Where                                                                       /
+;/ $LLLLLLLL is a 4 byte value that specifies the length of the string.        /
+;/ MyString is the acutal string.                                              /
+;/ $00 is the terminating 0 byte.                                              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - limit.l    : Maximum characters allowed (this is for protection if you :: /
+;/ read Garbadge)                                                              /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : a string                                                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s file_ReadString {fid.l,@limit.l}
+SHARED filedat()
+succ.l = False
+string.s = ""
+If \is_used
+  If  file_ReadMem{fid,&blength.l,4}
+    If limit<1 Then limit = 4096
+    If blength<0 OR blength>limit
+      error{"\\__THIS_FUNCTION: String is longer than "+Str$(limit)+" chars ! ("+Str$(blength)+":"+Mkl$(blength)+")"}
+    Else
+      If blength>0
+        string.s = LSet$ (" ",blength)
+        succ = file_ReadMem{fid,&string.s,blength}
+        If Right$(string.s,1)<" "
+          string.s = Left$(string.s,Peek.l(&string.s-4)-1)
+        End If
+      End If
+    End If
+  End If
+Else
+  error{"\\__THIS_FUNCTION: Tried to read a non-existing file !"}
+End If
+Function Return string.s
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.b =  file_ReadByte {fid.l}                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Read 1 byte from the file and interpret them as a signed byte.              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.b     : byte that was read                                         /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.b FAST file_ReadByte {fid.l}
+SHARED filedat()
+If \cache_ptr
+  If \seekpos<=\cache_blength Then \seekpos+1 : Function Return Peek.b(\cache_ptr+\seekpos-1)
+  dummy.b=0
+Else
+  If file_ReadMem{fid,&dummy.b,1}=0 Then dummy=0
+End If
+Function Return dummy
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l =  file_ReadLong {fid.l}                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : ???                                                            /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l FAST file_ReadLong {fid.l}
+SHARED filedat()
+If \cache_ptr
+  If \seekpos<=\cache_blength Then \seekpos+4 : Function Return Peek.l(\cache_ptr+\seekpos-4)
+  dummy.l=0
+Else
+  If file_ReadMem{fid,&dummy.l,4}=0 Then dummy=0
+End If
+Function Return dummy
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.f =  file_ReadFloat {fid.l}                                 /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : ???                                                            /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.f     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.f FAST file_ReadFloat {fid.l}
+SHARED filedat()
+If \cache_ptr
+  If \seekpos<=\cache_blength Then \seekpos+4 : Function Return Peek.f(\cache_ptr+\seekpos-4)
+  dummy.f=0
+Else
+  If file_ReadMem{fid,&dummy.f,4}=0 Then dummy=0
+End If
+Function Return dummy
+End Function
+ 
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.w =  file_ReadWord {fid.l}                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : ???                                                            /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.w     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w FAST file_ReadWord {fid.l}
+SHARED filedat()
+If \cache_ptr
+  If \seekpos<=\cache_blength Then \seekpos+2 : Function Return Peek.w(\cache_ptr+\seekpos-2)
+  dummy.w=0
+Else
+  If file_ReadMem{fid,&dummy.w,2}=0 Then dummy=0
+End If
+Function Return dummy
+End Function
+ 
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l =  file_WriteByte {fid.l,byte8.b}                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Write a byte to a file.                                                     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - byte8.b    : byte                                                         /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l FAST file_WriteByte {fid.l,byte8.b}
+SHARED filedat()
+succ.l=file_WriteMem {fid,&byte8,1}
+Function Return succ
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l =  file_WriteWord {fid.l,word16.w}                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Write a 16 bit integer to a file.                                           /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - word16.w    : 16 bit integer                                              /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : -1 if everything went well, 0 otherwise                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l FAST file_WriteWord {fid.l,word16.w}
+SHARED filedat()
+succ.l=file_WriteMem {fid,&word16,2}
+Function Return succ
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l =  file_WriteLong {fid.l,long32.l}                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Write a long integer (32 bit) to a file.                                    /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - long32.l    : 32 bit integer value                                        /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : -1 if everything went well, 0 otherwise                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l FAST file_WriteLong {fid.l,long32.l}
+SHARED filedat()
+succ.l=file_WriteMem {fid,&long32,4}
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l =  file_WriteFloat {fid.l,float32.f}                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : ???                                                            /
+;/ - float32.f    : ???                                                        /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l FAST file_WriteFloat {fid.l,float32.f}
+SHARED filedat()
+succ.l=file_WriteMem {fid,&float32,4}
+Function Return succ
+End Function
+
+
+; read a line from a textfile, can be amiga or windows return code
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = file_ReadLine {fid.l}                                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Read a line from a textfile, can be Amiga (\\n) or Windows return code (\:: /
+;/ \r\\n).                                                                     /
+;/ NOTE: If the file has reached the end, this function returns the empty st:: /
+;/ ring. To detect the end of file, use file_EOF.                              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : One line of a text file                                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s file_ReadLine {fid.l}
+dummy.l = 0
+dummy2.l = 0
+MaxLen a.s=512
+While dummy>=0
+  If file_EOF{fid}
+    dummy=-1
+  Else
+    dummy=0
+    If file_ReadMem {fid,&dummy+3,1} = False Then dummy=-1
+    If dummy=13
+      If file_ReadMem {fid,&dummy2+3,1}
+        If dummy2=10
+          dummy=-1
+        Else
+          file_SeekRel{fid,1}
+        End If
+      End If
+    End If
+    ;If dummy=0 Then dummy=-1
+    If dummy=10 Then dummy=-1
+  End If
+
+  If dummy>=0
+    a.s + Chr$(dummy)
+  End If
+Wend
+;NPrint "readline: ",a.s
+Function Return a.s
+End Function
+
+
+Function.s file_ReadLineF {fid.l}
+SHARED filedat()
+
+a.s = ""
+done.l = 0
+MaxLen buff.s = 4096
+Repeat
+  res.l = FGets_ (\fh,&buff,4091)
+  If res
+    buff.s = Peek.s(&buff)
+    done + FLen(buff)
+    ;If FLen(buff)><4091 Then res=0
+    If Peek.b(&buff+FLen(buff)-1)=10 Then res=0
+    a.s + buff
+  End If
+  ;NPrint "read: ",done
+Until res=0
+\seekpos + done
+
+Function Return a.s
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = file_ReadLinex {fid.l}                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Line file_ReadLine, but does some wired textiltering too.                   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s file_ReadLinex {fid.l}
+quoted.w = 0
+breakme.w = False
+While breakme.w = False
+
+  If file_EOF{fid}
+    breakme=1
+    dummy.b=0
+  Else
+    If file_ReadMem {fid,&dummy.b,1} = False Then dummy=0
+    If dummy=0 Then breakme = 1
+    If dummy=10 Then breakme = True
+  End If
+  If dummy>31 OR dummy<0
+    If dummy = 34
+      quoted = 1-quoted
+    Else
+      If quoted = 1 OR dummy > 31 OR dummy<0
+        a.s = a.s + Chr$(dummy)
+      End If
+    End If
+  End If
+Wend
+If a.s = "" AND breakme=1 Then a.s = "-"
+Function Return a.s
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = file_WriteLine {fid.l,textline.s}                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Write a string as a line of a text file.                                    /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l       : file object ID                                              /
+;/ - textline.s  : string                                                      /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l    : -1 if everything went well, 0 otherwise                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_WriteLine {fid.l,textline.s}
+slen.l = FLen(textline)
+Poke.b &textline+slen,10 ; dont try this at home, kids!
+succ.l = file_WriteMem {fid,&textline,slen+1}
+Poke.b &textline+slen,0
+Function Return succ
+End Function
+
+
+; read a line from an BB2 tokenized source code
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = file_ReadBB2Line {fid.l}                                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Read a line from an bb2 (BlitzBasic source code) tokenized source code.     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : string that contains a line of the sourcecode.             /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s file_ReadBB2Line {fid.l}
+dummy.l = 0
+dummy2.l = 0
+a.s = ""
+While dummy>=0
+  If file_EOF{fid}
+    dummy=-1
+  Else
+    dummy=0
+    If file_ReadMem {fid,&dummy+3,1} = False Then dummy=-1
+    If dummy=0 Then dummy=-1
+  End If
+
+  If dummy>=0
+    a.s + Chr$(dummy)
+  End If
+Wend
+Function Return a.s
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = file_WriteBB2Line {fid.l,a.s}                           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Write a string as an .bb2 source code line. (BlitzBasic)                    /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - a.s    : text line                                                        /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : -1 if everything went well, 0 otherwise                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_WriteBB2Line {fid.l,a.s}
+Function Return file_WriteMem{fid,&a.s,FLen(a.s)+1}
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = file_WriteTag {fid.l,tag.l,value.l}                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Write a tag to the file.                                                    /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - tag.l    : tag identiefier, e.g. @"TAG_"                                  /
+;/ - value.l    : value                                                        /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : -1 if everything went well, 0 otherwise                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_WriteTag{fid.l,tag.l,value.l}
+SHARED fileengine
+fileengine\tagitem\ti_Tag = tag,value
+Function Return file_WriteMem{fid,fileengine\tagitem,8}
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = file_WriteTagString {fid.l,tag.l,string.s}              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Write a string tag.                                                         /
+;/ NOTE: It is highly recommended to name the tag with a "$" at the end, so :: /
+;/ it can be automatically skipped.                                            /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/ - tag.l    : tag name, e.g. @"TAG$"                                         /
+;/ - string.s    : string                                                      /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : -1 if everything went well, 0 otherwise                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_WriteTagString{fid.l,tag.l,string.s}
+SHARED fileengine
+slen.l = FLen(string.s)
+tag.l = (tag & $FFFFFF00) | @"$"
+fileengine\tagitem\ti_Tag = tag,slen
+succ.l = file_WriteMem {fid,fileengine\tagitem,8}
+succ & file_WriteMem {fid,&string.s,slen+1}
+aligns.l = 4 - ((slen+1) MOD 4)
+If aligns<4
+  dummy.l =0
+  succ & file_WriteMem {fid,&dummy,aligns}
+End If
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = file_ReadTag {fid.l}                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Read a tag from a file.                                                     /
+;/ Note: A tag is usually a 4 byte identifier followed by a 4 byte data value. /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file object ID                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_ReadTag{fid.l}
+SHARED fileengine
+succ.l = file_ReadMem{fid,fileengine\tagitem,8}
+If (fileengine\tagitem\ti_Tag & $FF) = @"$"
+  fileengine\string = LSet$(" ",fileengine\tagitem\ti_Data)
+  file_ReadMem{fid,&fileengine\string,fileengine\tagitem\ti_Data}
+  dummy.l = file_ReadByte{fid} ; read the 0 byte
+  aligns.l = 4 - ((fileengine\tagitem\ti_Data+1) MOD 4)
+  If aligns<4
+    dummy.l =0
+    succ & file_ReadMem {fid,&dummy,aligns}
+  End If
+Else
+  fileengine\string = ""
+End If
+Function Return fileengine\tagitem\ti_Tag
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = file_GetTagValue {}                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Interpet the tag value as a 32 bit integer.                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : integer value                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l file_GetTagValue{}
+SHARED fileengine
+Function Return fileengine\tagitem\ti_Data
+End Function
+
+Function.l file_GetTagID{}
+SHARED fileengine
+Function Return fileengine\tagitem\ti_Tag
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = file_GetTagString {}                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Interpret the read tag as a string.                                         /
+;/ It is highly recommended to name a string tag with a "$" sign at the end,:: /
+;/  so that unknown tags can be skipped.                                       /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : a string                                                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s file_GetTagString{}
+SHARED fileengine
+Function Return fileengine\string
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.f = file_GetTagFloat {}                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Get the last read tag interpreted as a 32bit float value.                   /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.f     : float value                                                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.f file_GetTagFloat{}
+SHARED fileengine
+Function Return Peek.f(&fileengine\tagitem\ti_Data)
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = file_Identify {filename.s}                              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/ Try to identify the file, works only for audio formats.                     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - filename.s    : ???                                                       /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s file_Identify{filename.s}
+form.s = "UNKNOWN"
+fid.l = file_Open {filename.s,#file_read}
+If fid>=0
+  If file_IsUsed {fid}
+    succ.w = file_Seek {fid,0}
+    If succ
+      succ.w = file_ReadMem {fid,&header.l,4}
+      Select header
+        Case @"FORM"
+          succ&file_ReadMem{ fid,&header,4 }  ; size
+          succ&file_ReadMem{ fid,&header,4 }
+          Select header
+            Case @"MAUD"
+              form.s = "MAUD"
+
+            Case @"AIFF"
+              form.s = "AIFF"
+
+            Case @"AIFC"
+              form.s = "AIFF"
+
+            Case @"8SVX"
+              form.s = "8SVX"
+
+            Default
+              If ask {"File has an unidentified FORM !"+Chr$(10)+"Load as RAW data ?","RAW Data|Cancel"} Then form.s="RAW"
+
+          End Select
+
+        Case @"MThd"
+          form.s = "MIDI"
+
+        Case @"RIFF"
+          succ&file_ReadMem{ fid,&header,4 } ; size
+          succ&file_ReadMem{ fid,&header,4 }
+          Select header
+            Case @"WAVE"
+              form.s = "WAVE"
+            Default
+              If ask {"File has an unidentified RIFF-type !"+Chr$(10)+"Load as RAW data ?","RAW Data|Cancel"} Then form.s="RAW"
+          End Select
+
+        Default
+          If file_GetLength{fid} MOD 2352 = 0
+            form.s = "CDDA"
+          Else
+            If ask {"Unknown fileformat !"+Chr$(10)+"Load as RAW data ?","RAW Data|Cancel"} Then form = "RAW"
+          End If
+        End If
+    End Select
+  End If
+End If
+Function Return form.s
+End Function
+
+CEND

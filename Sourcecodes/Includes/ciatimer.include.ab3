@@ -1,0 +1,712 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "/Bin"
+; ExeFile         = "CIATimerDemo"
+; CreateIcon      = 1
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 5
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 1
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 7
+; CursorColumn    = 9
+; LabelSearch     = ""
+; LabelRemark     = 62
+; LabelAll        = 1
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 1
+; Max Req-Lib     = 5
+; Max GTMenuList  = 5
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 5
+; Max GadgetList  = 5
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 5
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 5
+; Max BlitzFont   = 4
+; Max GTList      = 5
+; Max ChunkyBuffer= 2
+; /XTRA
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Name: ciatimer.include                                                      /
+;/                                                                             /
+;/ Platforms: Classic, WinUAE, Amithlon                                        /
+;/                                                                             /
+;/ Date: 11.03.2006                                                            /
+;/                                                                             /
+;/ Author: Thilo Koehler                                                       /
+;/                                                                             /
+;/ Requirements: CIA chip, Amiblitz2.4                                         /
+;/                                                                             /
+;/ Purpose:                                                                    /
+;/ Provide a very accurate timer.                                              /
+;/                                                                             /
+;/ Abstract:                                                                   /
+;/ This include provides functionality to create an interrupt driven timer. :: /
+;/ It is very accurate, and the best way to make a proper timing on Classic,:: /
+;/  Amithlon and WinUAE. Unfortunately, it uses the CIA custom chip directly:: /
+;/ , so it wont work on AmigaOS4, MOS or AROS.                                 /
+;/ If you want to implement a system friendly timer, better use the HD-Rec_t:: /
+;/ imerdev.include (HD-Rec specific, nearly API compatible to this one) or t:: /
+;/ he timer_gui.include or the vvblank.include. For time messuring the ecloc:: /
+;/ k.include is the better choice.                                             /
+;/                                                                             /
+;/ User Constants:    none                                                     /
+;/                                                                             /
+;/ Example:                                                                    /
+;/ __________________________________________________________________ snip!    /
+;/ . XINCLUDE "ciatimer.include.bb2"                                           /
+;/ .                                                                           /
+;/ . tpm.l = 60 * 100 ; 6000 ticks per minute = 100 ticks per second           /
+;/ . If timer_Open {&timeindex.l,&cia_running.l,tpm}                           /
+;/ .   timer_Start {}                                                          /
+;/ .   For n.l = 0 To 10                                                       /
+;/ .     NPrint "CIA running: ",cia_running," ... ticks: ",timeindex           /
+;/ .     Delay_ 50 ; wait a second                                             /
+;/ .   Next                                                                    /
+;/ .   timer_Stop {}                                                           /
+;/ . End If                                                                    /
+;/ . End                                                                       /
+;/ __________________________________________________________________ snip!    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+CNIF #__include=0
+Syntax 2
+optimize 7
+CEND
+
+#STOPA_AND= #CIACRAF_TODIN | #CIACRAF_PBON | #CIACRAF_OUTMODE | #CIACRAF_SPMODE  ; CIA, A timer Stop mask (and sets it up)
+#STOPB_AND= #CIACRBF_ALARM | #CIACRBF_PBON | #CIACRBF_OUTMODE                    ; CIA, B timer Stop mask (and sets it up)
+#STARTA_OR= #CIACRAF_START          ; CIA, A timer Start mask
+#STARTB_OR= #CIACRBF_START          ; CIA, B timer Start mask
+
+#cia_freq_pal  = 709379
+#cia_freq_ntsc = 715909
+
+NEWTYPE.ciatimer
+ciabase.l     ; Cia library base
+timerbit.l    ; Timer A or B?
+cia.l         ; CIA hardware base
+ciacr.l       ; pointer to CIA control register
+cialo.l       ; pointer to CIA low byte register
+ciahi.l       ; pointer to CIA high byte register
+timerint.Interrupt  ; Our Interrupt structure
+stopmask.b          ; mask for stopping interrupt (and setting correct modes)
+startmask.b         ; mask for starting interrupt
+name.s
+count_hi.l
+count_lo.l
+cia_freq.l
+signum.l
+sigflag.l
+sigtask.l
+End NEWTYPE
+
+
+
+DEFTYPE.ciatimer ciatimer
+USEPATH ciatimer
+ciatimer\name = "HD-Rec MIDI-Timer"
+\timerint\is_Node\ln_Type      = #NT_INTERRUPT
+\timerint\is_Node\ln_Pri      = 0
+\timerint\is_Node\ln_Name      = &ciatimer\name
+\timerint\is_Data              = ?cia_timeindex
+\timerint\is_Code              = ?cia_interrupt
+
+\cia_freq = #cia_freq_pal
+\signum = -1
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cia_SetInterruptCode {codeptr.l,@userdata.l}                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - codeptr.l    : ???                                                        /
+;/ - userdata.l    : ???                                                       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement cia_SetInterruptCode{codeptr.l,@userdata.l}
+SHARED ciatimer
+\timerint\is_Data              = codeptr
+\timerint\is_Code              = userdata
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cia_start {}                                                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement cia_start {}      ; this starts timer firing
+SHARED ciatimer
+*cia.CIA=\cia
+If \timerbit=#CIAICRB_TA       ; if Timer A
+  \ciacr=&*cia.CIA\ciacra      ; control register
+  \cialo=&*cia.CIA\ciatalo     ; low byte register
+  \ciahi=&*cia.CIA\ciatahi     ; high byte register
+
+  \stopmask=#STOPA_AND
+  \startmask=#STARTA_OR
+Else                             ; Else Timer B
+  \ciacr=&*cia.CIA\ciacrb      ; control register
+  \cialo=&*cia.CIA\ciatblo     ; low byte register
+  \ciahi=&*cia.CIA\ciatbhi     ; high byte register
+
+  \stopmask=#STOPB_AND
+  \startmask=#STARTB_OR
+EndIf
+Disable_
+a.b=Peek.b(\ciacr)     ; grab original mask
+a  =a&\stopmask      ; AND it with stopmask
+Poke.b  \ciacr,a       ; stop timer and set correct modes
+Enable_
+Poke.b \cialo,\count_lo  ; } Set how fast timer fires
+Poke.b \ciahi,\count_hi   ; }
+Disable_
+a.b=Peek.b(\ciacr)     ; grab original mask
+a  =a|\startmask     ; OR it with startmask
+Poke.b \ciacr,a        ; start timer firing
+Enable_
+End Statement
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cia_asm_free {a.l,b.l,c.l}                                          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - a.l    : ???                                                              /
+;/ - b.l    : ???                                                              /
+;/ - c.l    : ???                                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement cia_asm_free {a.l,b.l,c.l}         ; this deallocates the timer resource and stops interrupt
+MOVE.l a6,-(a7)           ; save A6
+MOVE.l d0,a6              ; cia_resource  A6
+CLR.l  d0
+MOVE.w d1,d0              ; iCRBit  D0   - Timer A or B
+MOVE.l d2,a1              ; pointer to interrupt structure  A1
+JSR -12(a6)               ; jump to RemICRVector_ in CIA lib
+MOVE.l (a7)+,a6           ; restore A6
+AsmExit
+End Statement
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = cia_try {a.l,b.l,c.l}                                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - a.l    : ???                                                              /
+;/ - b.l    : ???                                                              /
+;/ - c.l    : ???                                                              /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l cia_try{a.l,b.l,c.l}      ; attempt to allocate timer
+MOVE.l a6,-(a7)           ; save A6
+MOVE.l d0,a6              ; cia_resource  A6
+CLR.l  d0
+MOVE.w d1,d0              ; iCRBit  D0   - Timer A or B
+MOVE.l d2,a1              ; pointer to interrupt structure  A1
+JSR -6(a6)                ; jump to AddICRVector_ in CIA reesource
+MOVE.l (a7)+,a6           ; restore A6
+AsmExit
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cia_settpm {tpm.l}                                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - tpm.l    : ???                                                            /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement cia_settpm {tpm.l}
+SHARED ciatimer
+cia_freq.l     = \cia_freq * 60 / tpm
+\count_lo = cia_freq MOD 256
+\count_hi = cia_freq  /  256
+If \cialo><0 AND \ciahi><0
+  Enable_
+  Poke.b \cialo,\count_lo  ; } Set how fast timer fires
+  Poke.b \ciahi,\count_hi   ; }
+  Disable_
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.w = cia_find {preferA.w}                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - preferA.w    : ???                                                        /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.w     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w cia_find {preferA.w}
+SHARED ciatimer
+ciaabase.l= OpenResource_("ciaa.resource")  ; pointer to the CIA A resource (lib)
+ciabbase.l= OpenResource_("ciab.resource")  ; pointer to the CIA B resource (lib)
+cia_settpm {192*120}
+If preferA=True        ; try for a CIA-A timer first ?
+  \ciabase=ciaabase  ; resource (library) address
+  \cia=$bfe001        ; hardware address
+Else
+  \ciabase=ciabbase  ; resource (library) address
+  \cia=$bfd000          ; hardware address
+EndIf
+If cia_try{\ciabase,#CIAICRB_TA,&\timerint}=False      ; try for Timer A
+  \timerbit=#CIAICRB_TA
+  Function Return True
+Else
+  If cia_try {\ciabase,#CIAICRB_TB,&\timerint}=False    ; try for Timer B
+    \timerbit=#CIAICRB_TB
+    Function Return True
+  EndIf
+EndIf
+If preferA=False       ; try for a CIA-A timer first ?
+  \ciabase=ciaabase  ; library address
+  \cia=$bfe001       ; hardware address
+Else
+  \ciabase=ciabbase  ; library address
+  \cia=$bfd000          ; hardware address
+EndIf
+If cia_try {\ciabase,#CIAICRB_TA,&\timerint}=False    ; try for Timer A
+  \timerbit=#CIAICRB_TA
+  Function Return True
+Else
+  If cia_try {\ciabase,#CIAICRB_TB,&\timerint}=False  ; try for Timer B
+    \timerbit=#CIAICRB_TB
+    Function Return True
+  EndIf
+EndIf
+Function Return False
+End Function
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cia_setsigtask {sigflag.l,sigtask.l}                                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - sigflag.l    : ???                                                        /
+;/ - sigtask.l    : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement cia_setsigtask {sigflag.l,sigtask.l}
+SHARED ciatimer
+GetReg d0,sigflag
+MOVE.l d0,cia_sigflag
+GetReg d0,sigtask
+MOVE.l d0,cia_sigtask
+End Statement
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cia_settimeindex_ptr {timeindex_ptr.l}                              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - timeindex_ptr.l    : ???                                                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement cia_settimeindex_ptr {timeindex_ptr.l}
+SHARED ciatimer
+\timerint\is_Data = timeindex_ptr
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cia_setcontrol_ptr {cia_control_ptr.l}                              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - cia_control_ptr.l    : ???                                                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement cia_setcontrol_ptr {cia_control_ptr.l}
+GetReg d0,cia_control_ptr
+MOVE.l d0,cia_control
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cia_setciafreq {cia_freq.l}                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - cia_freq.l    : ???                                                       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement cia_setciafreq {cia_freq.l}
+SHARED ciatimer
+\cia_freq = cia_freq
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cia_free {}                                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement cia_free {}
+SHARED ciatimer
+If \ciabase Then cia_asm_free {\ciabase,\timerbit,&\timerint}:\ciabase = False
+End Statement
+
+
+
+
+BRA skiptimerasm
+
+
+cia_interrupt:
+MOVEM.l a0-a6/d2-d4,-(a7)
+
+MOVE.l cia_control,a0
+
+CMPA.l #0,a0
+BEQ cia_exit
+
+MOVE.l (a0),d0
+CMP.l #-1,d0
+BNE cia_exit
+
+
+ADD.l #1,(a1)
+
+TST.l cia_sigtask
+BEQ cia_exit
+
+
+
+MOVE.l cia_sigflag,d0      ; flag
+MOVE.l cia_sigtask,a1       ; task
+MOVE.l cia_execbase,a6
+JSR -324(a6)          ; signal
+
+
+
+cia_exit:
+MOVEM.l (a7)+,a0-a6/d2-d4
+RTS
+
+
+
+cia_timeindex: Dc.l 0
+cia_sigflag:   Dc.l 0
+cia_sigtask:   Dc.l 0
+cia_execbase:  Dc.l 0
+cia_control:   Dc.l 0
+
+skiptimerasm:
+
+
+Poke.l ?cia_execbase,execbase
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: timer_SetTPM {tpm.l,resdiv.l}                                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Set the ticks-per-minute after the timer was already created.               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - tpm.l    : ticks-per-minute                                               /
+;/ - resdiv.l    : resolution divisor (do only every n-th update)              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement timer_SetTPM {tpm.l,resdiv.l}
+If resdiv<1 Then resdiv=1
+cia_settpm {tpm/resdiv}
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: timer_Close {}                                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Close the timer and free all assicitated resources with this include.       /
+;/ This function is called on autoexit.                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement timer_Close {}
+SHARED ciatimer
+cia_free {}
+If \signum>=0 Then FreeSignal_ \signum:\signum = -1
+End Statement
+!autoexit{timer_Close}
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: !timer_Stop                                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Stop the timer.                                                             /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Macro timer_Stop
+MOVE.l cia_control,a0
+
+CMPA.l #0,a0
+BEQ 'cia_exit_stop
+
+MOVE.l #0,(a0)
+'cia_exit_stop:
+
+End Macro
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: !timer_Start                                                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Start the timer running after it is created.                                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Macro timer_Start
+MOVE.l cia_control,a0
+
+CMPA.l #0,a0
+BEQ 'cia_exit_start
+
+MOVE.l #-1,(a0)
+'cia_exit_start:
+
+End Macro
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: timer_Start {}                                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Make the timer running.                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement timer_Start {}
+!timer_Start
+AsmExit
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: timer_Stop {}                                                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Stop the timer running.                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement timer_Stop {}
+!timer_Stop
+AsmExit
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.w = timer_Open {timeindex_ptr.l,control_ptr.l,tpm.l,@resdiv:: /
+;/ .l}                                                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Open the timer. You have to provide a pointer to a long word, that holds :: /
+;/ a counter. You also have to provide a pointer to a controller long word. :: /
+;/ If the long word contains a 0, the timer will stop, otherwise it will run.  /
+;/ This way you are able to controll the interrupt. The timer_start/timer_St:: /
+;/ op functions are exactly doing this.                                        /
+;/ The speed of the timer is given as ticks-per-minute.                        /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - timeindex_ptr.l    : pointer to the timeindex counter (long word)         /
+;/ - control_ptr.l    : pointer to the controller field (long word)            /
+;/ - tpm.l    : ticks-per-minute                                               /
+;/ - resdiv.l    : resolution divisor (do only every n-th update)              /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.w     : -1 if the timer was created, 0 otherwise                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w timer_Open {timeindex_ptr.l,control_ptr.l,tpm.l,@resdiv.l}
+SHARED ciatimer
+timer_Close {}
+succ.w = False
+cia_settimeindex_ptr {timeindex_ptr}
+cia_setcontrol_ptr {control_ptr}
+If cia_find {True}
+  \signum  = AllocSignal_(-1)
+  \sigflag = 1 LSL \signum
+  \sigtask = FindTask_(0)
+  succ.w = True
+
+
+  timer_SetTPM {tpm,resdiv}
+  timer_Stop {}
+  cia_setsigtask {\sigflag,\sigtask}
+
+  cia_start {}
+End If
+Function Return succ
+End Function
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  sigflag.l = timer_GetSigFlag {}                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ The timer will signal the own task on every tick. This is the sigflag tha:: /
+;/ t will be set.                                                              /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - sigflag.l     : sigflag to use with Wait_()                               /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l timer_GetSigFlag {}
+SHARED ciatimer
+Function Return \sigflag
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: timer_Abort {}                                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Abort timer, actually it does nothing. This is only for API compatibelity:: /
+;/  to the timer.device version.                                               /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement timer_Abort {}
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: timer_Send {x.l}                                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Does nothing. Only for compatibelity to timer.device version.               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - x.l    : ???                                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement timer_Send {x.l}
+End Statement
+
+
+CNIF #__include=0
+timeindex.l = 0
+cia_running.l = 0
+tpm.l = 192*120 ; ticks per minute
+If timer_Open {&timeindex,&cia_running,tpm}
+
+  NPrint "CIA running: ",cia_running
+  timer_Start {}
+  For n.l = 0 To 20
+    NPrint "CIA running: ",cia_running," ... ticks: ",timeindex
+    Delay_ 2
+  Next
+  timer_Stop {}
+  NPrint "CIA running: ",cia_running
+
+  timer_Close {}
+End If
+Delay_ 200
+End
+CEND
+

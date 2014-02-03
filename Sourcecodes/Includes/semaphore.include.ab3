@@ -1,0 +1,423 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "/Bin"
+; ExeFile         = "SemaDemo"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 33
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 7
+; CursorColumn    = 28
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 30
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 1
+; Max GadgetList  = 1
+; Max Queue       = 1
+; Max Screen      = 2
+; Max Shape       = 1
+; Max CopList     = 1
+; Max Sprite      = 1
+; Max Stencil     = 1
+; Max Module      = 1
+; Max Window      = 30
+; Max Anim        = 1
+; Max Sound       = 1
+; Max Bank        = 1
+; Max Buffer      = 1
+; Max BitMap      = 1
+; Max Slice       = 1
+; Max Page        = 1
+; Max Tape        = 1
+; Max IntuiFont   = 12
+; Max MedModule   = 1
+; Max Palette     = 1
+; Max MenuList    = 1
+; Max BlitzFont   = 1
+; Max GTList      = 30
+; Max ChunkyBuffer= 2
+; /XTRA
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Name: semaphore.include                                                     /
+;/                                                                             /
+;/ Platforms: Classic, WinUAE, Amithlon, MorphOS, AmigaOS4                     /
+;/                                                                             /
+;/ Date: 29/12/2006                                                            /
+;/                                                                             /
+;/ Author: Thilo Koehler                                                       /
+;/                                                                             /
+;/ Requirements:  Amiblitz2.4                                                  /
+;/                                                                             /
+;/ Purpose:                                                                    /
+;/ Provide easy semaphore handling.                                            /
+;/                                                                             /
+;/ Abstract:                                                                   /
+;/ A semaphore is a simple contruct to coordinate the access to a resource w:: /
+;/ hile several tasks are using it.                                            /
+;/                                                                             /
+;/ Imagine a toilet in an air plane as our "resource". Many people want to a:: /
+;/ ccess it, but only one of them can be in at the same time.                  /
+;/ The green/red light, that indicates if the toilet is occupied, is our sem:: /
+;/ aphore.                                                                     /
+;/ If the light is green, the toilet is free and anybody can enter it any ti:: /
+;/ me. As soon (actually before) he uses the toilet, he turns the light to r:: /
+;/ ed (locks the semaphore). If in the meanwhile someone else wants to use t:: /
+;/ he toilet, he is put into waiting state until the toilet is free and the :: /
+;/ light is turned to green (semaphore unlocked).                              /
+;/                                                                             /
+;/ Usually you protect a memory block using a semaphore, if you want to make:: /
+;/  sure while you manipulating it, no one else is manipulating it. This can:: /
+;/  easily result into an inconsistent state.                                  /
+;/                                                                             /
+;/ NOTE: This include can handle one one semaphore at a time. If you need se:: /
+;/ veral semaphores in parallel, please notify the author. This can be easil:: /
+;/ y extended.                                                                 /
+;/                                                                             /
+;/ User Constants:   none                                                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+XINCLUDE "error.include.ab3"
+
+NEWTYPE.semadat
+is_used.w
+name.s
+counter.w
+stolen.w
+removeOnExit.w
+End NEWTYPE
+
+DEFTYPE.SignalSemaphore *sema
+DEFTYPE.semadat semadat
+
+#semaphore_debug = 0
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.w = sema_Create {name.s,@removeOnExit.l}                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Create a semaphore identified system wide by name.s.                        /
+;/ If the semaphore already exists, this function will fail. You can share a:: /
+;/ n already existing semphpre with sema_Find.                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - name.s    : name of the semaphore                                         /
+;/ - removeOnExit.l    : ???                                                   /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.w     : -1 if the semaphore is ready to use, 0 if something went w:: /
+;/ rong or the semaphore already exists                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w sema_Create {name.s,@removeOnExit.l}
+SHARED *sema,semadat
+succ.w = False
+If semadat\is_used = False
+  Forbid_
+  *sema = FindSemaphore_(&name.s)
+  Permit_
+  If *sema=False
+    semadat\name    = name.s
+    semadat\counter = 0
+    semadat\stolen  = False
+    *sema = AllocMem_ (SizeOf.SignalSemaphore,#MEMF_PUBLIC|#MEMF_CLEAR)
+    If *sema
+      *sema\ss_Link\ln_Name = &semadat\name
+      *sema\ss_Link\ln_Pri  = 1
+      *sema\ss_Link\ln_Type = #NT_SIGNALSEM
+      InitSemaphore_ *sema
+      AddSemaphore_ *sema
+      semadat\removeOnExit = removeOnExit
+      semadat\is_used = True
+      succ.w = True
+    Else
+      error {"Can`t allocate memory for semaphore!"}
+    End If
+  ;Else
+    ;error {"Semaphore already exists !"}
+  End If
+Else
+  error {"Semaphore "+semadat\name+" is already used!"}
+End If
+Function Return succ
+End Function
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: sema_Remove {}                                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Remove the semaphore. If you were the last owner, it will be removed from:: /
+;/  the system.                                                                /
+;/ The semaphore can not be used anymore.                                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement sema_Remove {}
+SHARED *sema,semadat
+If semadat\is_used
+  While semadat\counter>0:ReleaseSemaphore_ *sema:semadat\counter-1:Wend ; remove all shared locks
+  If semadat\counter<0 Then ReleaseSemaphore_ *sema:semadat\counter=0 ; remove if exclusivly locked
+  If semadat\stolen = False AND semadat\removeOnExit><False
+    ObtainSemaphore_ *sema
+    RemSemaphore_ *sema
+    ReleaseSemaphore_ *sema
+    FreeMem_ *sema,SizeOf.SignalSemaphore
+  End If
+  semadat\is_used = False
+  *sema=0
+;Else
+;  error {"Tried to remove a non-existing semaphore !"}
+End If
+End Statement
+!autoexit{sema_Remove}
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = sema_AttemptExclusive {}                                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l sema_AttemptExclusive{}
+SHARED semadat,*sema
+succ.l = False
+If semadat\is_used
+  If semadat\counter=0
+    succ = AttemptSemaphore_ (*sema)
+    semadat\counter=-1
+  Else
+    error {"Tried to obtain an already obtained semaphore!"}
+  End If
+End If
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = sema_AttemptShared {}                                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l sema_AttemptShared{}
+SHARED semadat,*sema
+succ.l = False
+If semadat\is_used
+  If semadat\counter>=0
+    succ = AttemptSemaphoreShared_ (*sema)
+    semadat\counter+1
+  Else
+    error {"Tried to obtain an exclusive obtained semaphore!"}
+  End If
+End If
+Function Return succ
+End Function
+ 
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: sema_ObtainExclusive {}                                             /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Become the exclusive owner of the semaphore.                                /
+;/ If the semaphore is currently occupied, your task will put to wait till t:: /
+;/ he semaphore becomes free again.                                            /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement sema_ObtainExclusive {}
+SHARED *sema,semadat
+If semadat\is_used
+  If semadat\counter=0
+    ObtainSemaphore_ *sema
+    semadat\counter=-1
+  Else
+    error {"Tried to obtain an already obtained semaphore!"}
+  End If
+Else
+  error {"Tried to obtain a non-existing semaphore!"}
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: sema_ObtainShared {}                                                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Obtain the semaphore non-exclusive. That means no one else can get exclus:: /
+;/ ive access to it, but other non-exclusive locks are allowed.                /
+;/ If the semaphore is currently exclusive obtained, your task is put to wai:: /
+;/ t until the semaphore becomes free again.                                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement sema_ObtainShared {}
+SHARED *sema,semadat
+If semadat\is_used
+  If semadat\counter>=0
+    CNIF #semaphore_debug
+    If semadat\counter>0 Then error {"Obtained a semaphore >1 times !"+Str$(semadat\counter+1)}
+    CEND
+    ObtainSemaphoreShared_ *sema
+    semadat\counter+1
+  Else
+    error {"Tried to obtain an exclusive obtained semaphore!"}
+  End If
+Else
+  error {"Tried to obtain a non-existing semaphore!"}
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: sema_Release {}                                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Release the semaphore. The semaphore has to be successfully obtained befo:: /
+;/ re.                                                                         /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement sema_Release {}
+SHARED *sema,semadat
+If semadat\is_used
+  If semadat\counter><0
+    ReleaseSemaphore_ *sema
+    semadat\counter-1:If semadat\counter<0 Then semadat\counter=0
+  Else
+    error {"Tried to release a free semaphore!"}
+  End If
+Else
+  error {"Tried to release a non-existing semaphore!"}
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.w = sema_Find {name.s}                                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Try to find if someone else created the semaphore. If the semaphore does :: /
+;/ not already exist, the function will fail.                                  /
+;/ If the function succeeds, the semaphore is ready to use.                    /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - name.s    : name of the semaphore                                         /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.w     : -1 if the semaphore was found, 0 otherwise                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w sema_Find {name.s}
+SHARED *sema,semadat
+succ.w = False
+If semadat\is_used = False
+  Forbid_
+  *sema = FindSemaphore_(&name.s)
+  Permit_
+  If *sema
+    semadat\is_used = True
+    semadat\stolen  = True
+    semadat\name    = name.s
+    semadat\counter = 0
+    succ.w = True
+  ;Else
+  ;  error {"Can`t find semaphore "+name.s+" !"}
+  End If
+Else
+  error {"Semaphore "+semadat\name+" is already used!"}
+End If
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = sema_Get {name.s,@removeOnExit.l}                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - name.s    : ???                                                           /
+;/ - removeOnExit.l    : ???                                                   /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l sema_Get {name.s,@removeOnExit.l}
+SHARED *sema,semadat
+succ.l = sema_Find{name.s}
+If succ = False Then succ = sema_Create{name.s,removeOnExit}
+Function Return succ
+End Function
+
+
+CNIF #__include=0
+message {"Starting ...."}
+If sema_Create {"Bubblebobble!"}
+  message {"Created !!!!!!"}
+  sema_ObtainExclusive {}
+  sema_ObtainExclusive {}
+  message {"and obtained  ......"}
+  sema_Release {}
+  sema_Release {}
+  message {"......released ........."}
+  sema_Remove {}
+  message {"uuuhhh - removed !"}
+End If
+message {"click to quit .."}
+End
+CEND
+

@@ -1,0 +1,1061 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "/Bin"
+; ExeFile         = "PreFixTreeDemo"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 100000
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 161
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 33
+; CursorColumn    = 35
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 100
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 100
+; Max GadgetList  = 100
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 200
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 100
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 1
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 10
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 100
+; Max BlitzFont   = 1
+; Max GTList      = 100
+; Max ChunkyBuffer= 2
+; /XTRA
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Name: prefixtree.include                                                    /
+;/                                                                             /
+;/ Platforms: Classic, WinUAE, Amithlon, MorphOS, AmigaOS4                     /
+;/                                                                             /
+;/ Date: 08/01/2008                                                            /
+;/                                                                             /
+;/ Author: Thilo Koehler                                                       /
+;/                                                                             /
+;/ Requirements:  Amiblitz3                                                    /
+;/                                                                             /
+;/ Purpose:                                                                    /
+;/ Add a prefix tree data structure to AB3.                                    /
+;/                                                                             /
+;/ Abstract:                                                                   /
+;/ A prefix tree is a tree-structure that stores efficiently string pairs, o:: /
+;/ ne called the 'key' and the other one 'value'.                              /
+;/ You can add string values to the structure with a key string to find it. :: /
+;/ This is ideal for e.g.a lexicon for voice synthesis, where the key is the written form :: /
+;/ and the string value is the phonem sequence.                                        /
+;/ The string values are found in O(k) time, where k is the length of the key. /
+;/                                                                             /
+;/ User Constants:                                                             /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+CNIF #__include=0
+optimize 7
+Syntax 2
+CEND
+XINCLUDE "file.include.ab3"
+XINCLUDE "useful.include.ab3"
+XINCLUDE "dynamicarray.include.ab3"
+
+NEWTYPE.prefixpointer
+offset.l
+key.l
+End NEWTYPE
+
+NEWTYPE.prefixtree
+curPos.l
+curDepth.l
+foundPos.l
+foundDepth.l
+*curPath.dynArray
+dbase.l
+dbaseAlloc.l
+dbaseAdd.l
+dbaseRoot.l
+dbaseUsed.l
+dbaseBlock.l
+itemN.l
+End NEWTYPE
+
+#PFT_FOUND = 0
+#PFT_ADD   = 1
+#PFT_SPLIT = 2
+
+NEWTYPE.pftmatch
+lastMatchedKeyPos.l
+preNode.l
+preOff.l
+kpos.l
+node.l
+nodeOff.l
+state.l  ; 0 = found, 1 = add, 2 = split
+End NEWTYPE
+
+USEPATH *pft
+
+; Tree Structure:
+;--- Node
+;len[BYTE] aa..a[STRING] jump[LONG]
+;len[BYTE] bb..b[STRING] jump[LONG]
+; ...
+;len[BYTE] xx..x[STRING] jump[LONG]
+;0
+;pron[STRING]
+;0
+;-----
+;
+;0
+;pron[STRING]
+;0
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: pft_Free {*pft.prefixtree}                                          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pt.prefixtree    : ???                                                   /
+;/ - *pft.prefixtree    : ???                                                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement pft_Free{*pft.prefixtree}
+If *pft
+  If \dbase Then FreeVec_ \dbase
+  If \curPath Then da_Free{\curPath}
+  \dbase = #NULL : \dbaseAlloc = 0
+  FreeVec_ *pft
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = pft_Create {@blocksize.l}                               /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Create a new prefix tree.                                            /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - blocksize.l  : minimum blocksize if data container need to be increased.                                                      /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : pointer to the prefix tree or NULL if failed                                                       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l pft_Create{@blocksize.l}
+*pft.prefixtree = AllocVec_ (SizeOf.prefixtree,#MEMF_CLEAR)
+If *pft
+  If blocksize< 1 Then blocksize=1024
+  \dbaseAlloc = 0
+  \dbaseUsed  = 0
+  \dbaseAdd   = 0
+  \dbaseRoot  = 0
+  \dbaseBlock = blocksize
+  \dbase      = #NULL
+  \dbaseRoot  = 0
+  \dbaseAdd   = 0
+  \dbaseUsed  = 0
+  \curPath    = da_Create{SizeOf.prefixpointer,16}
+  \curPos     = -1
+  \curDepth   = -1
+  \foundPos   = -1
+  \foundDepth = -1
+  \itemN      = 0
+End If
+Function Return *pft
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = pft_Expand {*pft.prefixtree,minFree.l}                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pft.prefixtree    : ???                                                  /
+;/ - minFree.l    : ???                                                        /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l pft_Expand{*pft.prefixtree,minFree.l}
+succ.l = False
+If *pft
+  If (\dbaseAlloc - \dbaseAdd)<minFree
+    newsize.l  = \dbaseAlloc + Max(minFree,\dbaseBlock)
+    newdbase.l = AllocVec_(newsize ,#MEMF_CLEAR)
+    If newdbase
+      If \dbase
+        CopyMem_ \dbase,newdbase,\dbaseAlloc
+        FreeVec_ \dbase
+      End If
+      \dbase      = newdbase
+      \dbaseAlloc = newsize
+      succ.l = True
+    Else
+      succ = False
+      NPrint "Unable to expand pft!!!!"
+    End If
+  Else
+    succ = True
+  End If
+End If
+Function Return succ
+End Function
+ 
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = pft_Match {*pft.prefixtree,key.s,*pftmatch.pftmatch}     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pft.prefixtree    : ???                                                  /
+;/ - key.s    : ???                                                            /
+;/ - *pftmatch.pftmatch    : ???                                               /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l pft_Match{*pft.prefixtree,key.s,*pftmatch.pftmatch}
+If *pft   = #NULL Then Function Return False
+If \dbase = #NULL
+  pft_Expand{*pft,\dbaseBlock}
+  If \dbase Then Poke.w \dbase,0 : \dbaseRoot = 0 : \dbaseAdd = 2 : \dbaseUsed = 2
+End If
+If \dbase = #NULL Then Function Return False
+klen.l = FLen(key)
+node.l = \dbaseRoot   ;start at the root
+preNode.l = -1
+preOff.l  = 0
+nodeOff.l = 0
+lastMatchedKeyPos.l = 0
+kpos.l = 0
+break.l = False
+*pftmatch\state = #PFT_ADD
+; walk the tree till key is found or break
+While kpos<klen AND break=False
+  tlen.l = Peek.b(\dbase+ node+nodeOff) & $FF
+  ; found a branch
+  If tlen>0
+    succ.l=True
+    ; can we follow it ?
+    For n.l=1 To tlen
+      kc.b = Peek.b(&key+kpos+n-1)
+      tc.b = Peek.b(\dbase+ node+nodeOff+n)
+      If kc><tc Then succ=False : n=tlen : Else *pftmatch\state = #PFT_SPLIT
+    Next
+    If succ ; yes!
+      kpos + tlen
+      preOff.l = nodeOff+tlen+1
+      preNode.l = node
+      jump.l = Peek.l(\dbase+ preNode+preOff)
+      node = jump
+
+      nodeOff = 0
+      Repeat
+        tlen.l = Peek.b(\dbase+ node+nodeOff) & $FF : nodeOff+1
+        If tlen>0 Then nodeOff + (tlen + 4)
+      Until tlen = 0
+      If Peek.b(\dbase+ node+nodeOff)><0 Then lastMatchedKeyPos = kpos
+      nodeOff = 0
+
+      *pftmatch\state = #PFT_ADD
+
+    Else   ; ehm, no, check the next one
+      If *pftmatch\state = #PFT_SPLIT
+        break = True
+      Else
+        nodeOff + 1 + tlen + 4
+      End If
+    End If
+  Else
+    ; no further branch found, and we are still searching => break
+    break = True
+  End If
+Wend
+If kpos=klen
+  *pftmatch\state = #PFT_FOUND
+  Repeat
+    tlen.l = Peek.b(\dbase+ node+nodeOff) & $FF : nodeOff+1
+    If tlen>0 Then nodeOff + (tlen + 4)
+  Until tlen = 0
+End If
+
+*pftmatch\preNode = preNode
+*pftmatch\preOff  = preOff
+*pftmatch\kpos    = kpos
+*pftmatch\node    = node
+*pftmatch\nodeOff = nodeOff
+*pftmatch\lastMatchedKeyPos = lastMatchedKeyPos
+
+Function Return True
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.s = pft_GetLongestMatch {*pft.prefixtree,key.s}              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pft.prefixtree   : ???                                                  /
+;/ - key.s             : ???                                                            /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s pft_GetLongestMatch{*pft.prefixtree,key.s}
+If pft_Match{*pft,key,pftmatch.pftmatch}
+  match.s = Left$(key,pftmatch\lastMatchedKeyPos)
+Else
+  match.s = ""
+End If
+Function Return match
+End Function
+
+Function.l pft_GetNumItems{*pft.prefixtree}
+Function Return *pft\itemN
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = pft_AddItem {*pft.prefixtree,key.s,string.s}            /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Add a new key/string pair to the prefixtree.                                              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pft          : prefix tree                                                      /
+;/ - string.s      : string (data) to add                                                         /
+;/ - key.s         : key (name) to add                                                            /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l      : -1 if succeded, 0 otherwise                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l pft_AddItem{*pft.prefixtree,key.s,string.s}
+succ.l = False
+If pft_Match{*pft,key,pftmatch.pftmatch}
+  prefix.s  = Left$(key,pftmatch\kpos)
+  postfix.s = Right$(key,FLen(key)-pftmatch\kpos)
+
+  Select pftmatch\state
+    Case #PFT_FOUND
+      oldstring.s = Peek.s(\dbase+pftmatch\node+pftmatch\nodeOff)
+      \dbaseUsed + FLen(string) - FLen(oldstring)
+      If FLen(oldstring)>=FLen(string)
+        Poke.s \dbase+ pftmatch\node+pftmatch\nodeOff,string
+        succ.l = True
+      Else
+        ; realloc node and set string!
+        node.l = pftmatch\node
+        nodeOff.l = 0
+        Repeat
+          tlen.l = Peek.b(\dbase+ node+nodeOff) & $FF : nodeOff+1
+          If tlen>0 Then nodeOff + (tlen + 4)
+        Until tlen = 0
+        expNodeSize.l = nodeOff-1 + 1 + FLen(string) + 1
+        If pft_Expand{*pft,expNodeSize}
+          ; expand the current node and attach new strong
+          expNode.l = \dbaseAdd
+          \dbaseAdd + expNodeSize
+          CopyMem_ \dbase+ node,\dbase+ expNode,nodeOff
+          Poke.b \dbase+ expNode+nodeOff-1,0
+          Poke.s \dbase+ expNode+nodeOff,string
+          succ.l = True
+          ; correct prev jump
+          If pftmatch\preNode=-1
+            \dbaseRoot = expNode
+          Else
+            Poke.l \dbase + pftmatch\preNode + pftmatch\preOff,expNode
+          End If
+        End If
+      End If
+
+    Case #PFT_ADD
+      ; calculate size of node
+      node.l = pftmatch\node
+      nodeOff.l = 0
+      Repeat
+        tlen.l = Peek.b(\dbase+ node+nodeOff) & $FF : nodeOff+1
+        If tlen>0 Then nodeOff + (tlen + 4)
+      Until tlen = 0
+      nodeString.s = Peek.s(\dbase+ node+nodeOff)
+      expNodeSize.l = nodeOff + FLen(nodeString) + 1
+      \dbaseUsed - expNodeSize
+      expNodeSize + FLen(postfix.s) + 1 + 4
+      newNodeSize.l = 1 + FLen(string) + 1
+      If pft_Expand{*pft,newNodeSize+expNodeSize}
+        ; expand the current node
+        expNode.l = \dbaseAdd
+        newNode.l = expNode + expNodeSize
+        CopyMem_ \dbase+ node,\dbase+ expNode,nodeOff-1
+        Poke.b \dbase+ expNode+nodeOff-1,FLen(postfix)
+        Poke.s \dbase+ expNode+nodeOff,postfix : nodeOff + FLen(postfix)
+        Poke.l \dbase+ expNode+nodeOff,newNode : nodeOff+4
+        Poke.b \dbase+ expNode+nodeOff,0       : nodeOff+1
+        Poke.s \dbase+ expNode+nodeOff,nodeString
+
+        ; create the new leaf node
+        Poke.b \dbase+ newNode,0
+        Poke.s \dbase+ newNode+1,string.s
+        \dbaseAdd  + expNodeSize + newNodeSize
+        \dbaseUsed + expNodeSize + newNodeSize
+
+        ; correct the precessor Node
+        If pftmatch\preNode=-1
+          \dbaseRoot = expNode
+        Else
+          Poke.l \dbase + pftmatch\preNode + pftmatch\preOff,expNode
+        End If
+        \itemN + 1
+        succ.l = True
+      End If
+
+    Case #PFT_SPLIT
+      ; calculate split point
+      node.l    = pftmatch\node
+      nodeOff.l = pftmatch\nodeOff
+      kpos.l    = pftmatch\kpos
+      spos.l    = 0
+      rulelen.l = Peek.b(\dbase+node+nodeOff)
+      rule.s    = ""
+      For n.l=1 To rulelen
+        rule.s + Chr$(Peek.b(\dbase+node+nodeOff+n))
+      Next
+      nextNode.l = Peek.l(\dbase+node+nodeOff+rulelen+1)
+
+      While Peek.b(&key+kpos)=Peek.b(\dbase+node+nodeOff+spos+1)
+        spos + 1
+        kpos + 1
+      Wend
+      ;NPrint spos,kpos
+      If spos=0 Then error {"SPlitpos at pos 0 !"}      : spos = 1
+      If spos>=rulelen Then error {"SPlitpos at the end!"} : spos = 1
+
+
+      ruleStem.s = Left$(postfix,spos)
+      oldRule.s  = Right$(rule,rulelen-spos)
+      newRule.s  = Right$(postfix,FLen(postfix)-spos)
+      ;NPrint "SPlitting ",rule," into ",ruleStem," => ",oldRule," / ",newRule
+
+      ; calculating size of current node
+      nodeOff.l = 0
+      Repeat
+        tlen.l = Peek.b(\dbase+node+nodeOff) & $FF : nodeOff+1
+        If tlen>0 Then nodeOff + (tlen + 4)
+      Until tlen = 0
+      nodeString.s = Peek.s(\dbase+node+nodeOff)
+      expNodeSize.l = nodeOff + FLen(nodeString) + 1
+      \dbaseUsed - expNodeSize
+
+      If FLen(newRule)=0
+        midNodeSize.l = (1+FLen(oldRule)+4) + 1 + (FLen(string)+1)
+        newNodeSize.l = 0
+      Else
+        midNodeSize = (1+FLen(oldRule)+4) + (1+FLen(newRule)+4) + 1 + (1)
+        newNodeSize = 1 + (FLen(string)+1)
+      End If
+
+      If pft_Expand{*pft,newNodeSize+midNodeSize}
+        ; shrink the current node
+        midNode.l = \dbaseAdd
+        newNode.l = midNode + midNodeSize
+
+        node.l    = pftmatch\node
+        nodeOff = pftmatch\nodeOff
+        Poke.b \dbase+node+nodeOff,FLen(ruleStem) : nodeOff + 1
+        Poke.s \dbase+node+nodeOff,ruleStem       : nodeOff + FLen(ruleStem)
+        Poke.l \dbase+node+nodeOff,midNode        : nodeOff + 4
+        offset.l = FLen(oldRule)
+        For n.l=nodeOff To expNodeSize-1-offset
+          Poke.b \dbase+node+n,Peek.b(\dbase+node+n+offset)
+        Next
+        For n.l = expNodeSize-offset To expNodeSize-1
+          Poke.b \dbase+node+n,@"#"
+        Next
+
+        ; create the middle node
+        nodeOff = 0
+        Poke.b \dbase+ midNode+nodeOff,FLen(oldRule) : nodeOff + 1
+        Poke.s \dbase+ midNode+nodeOff,oldRule       : nodeOff + FLen(oldRule)
+        Poke.l \dbase+ midNode+nodeOff,nextNode      : nodeOff + 4
+
+        If FLen(newRule)>0
+          Poke.b \dbase+ midNode+nodeOff,FLen(newRule) : nodeOff + 1
+          Poke.s \dbase+ midNode+nodeOff,newRule       : nodeOff + FLen(newRule)
+          Poke.l \dbase+ midNode+nodeOff,newNode       : nodeOff + 4
+          Poke.b \dbase+ midNode+nodeOff,0             : nodeOff + 1
+          nodeOff = 0
+          Poke.b \dbase+ newNode+nodeOff,0             : nodeOff + 1
+          Poke.s \dbase+ newNode+nodeOff,string        : nodeOff + FLen(string) + 1
+        Else
+          Poke.b \dbase+ midNode+nodeOff,0             : nodeOff+1
+          Poke.s \dbase+ midNode+nodeOff,string        : nodeOff + FLen(string) + 1
+        End If
+
+        \dbaseAdd  + newNodeSize + midNodeSize
+        \dbaseUsed + expNodeSize + newNodeSize + midNodeSize
+        \itemN + 1
+        succ.l = True
+      End If
+
+    Default
+     ; ...
+  End Select
+
+End If
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = pft_Rethink {*pftS.prefixtree,*pftD.prefixtree,node.l}   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pftS.prefixtree    : ???                                                 /
+;/ - *pftD.prefixtree    : ???                                                 /
+;/ - node.l    : ???                                                           /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l pft_Rethink{*pftS.prefixtree,*pftD.prefixtree,node.l}
+NodeOff.l = 0
+oldNode.l    = node
+newNode.l    = *pftD\dbaseAdd
+Repeat
+  tlen.l = Peek.b(*pftS\dbase+oldNode+NodeOff) & $FF : NodeOff+1
+  If tlen>0 Then NodeOff + (tlen + 4)
+Until tlen = 0
+NodeString.s = Peek.s(*pftS\dbase+oldNode+NodeOff)
+NodeSize.l   = NodeOff + FLen(NodeString) + 1
+
+*pftD\dbaseAdd  + NodeSize
+*pftD\dbaseUsed + NodeSize
+CopyMem_ *pftS\dbase + oldNode, *pftD\dbase + newNode,NodeSize
+
+NodeOff.l = 0
+Repeat
+  tlen.l = Peek.b(*pftS\dbase+oldNode+NodeOff) & $FF : NodeOff+1
+
+  If tlen>0
+    oldJump.l = Peek.l(*pftS\dbase+oldNode+NodeOff+tlen)
+    newJump.l = pft_Rethink{*pftS,*pftD,oldJump}
+    Poke.l *pftD\dbase+newNode+NodeOff+tlen,newJump
+    NodeOff + (tlen + 4)
+  End If
+Until tlen = 0
+*pftD\itemN = *pftS\itemN
+Function Return newNode
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = pft_Optimize {*pft.prefixtree}                           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pft.prefixtree    : ???                                                  /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l pft_Optimize{*pft.prefixtree}
+If *pft=#NULL Then Function Return #NULL
+*pftT.prefixtree = pft_Create{}
+If *pftT=#NULL Then Function Return #NULL
+If *pft\dbase=#NULL Then Function Return *pftT
+If pft_Expand{*pftT,*pft\dbaseUsed}
+  *pftT\dbaseRoot = pft_Rethink{*pft,*pftT,*pft\dbaseRoot}
+  Function Return *pftT
+Else
+  pft_Free{*pftT}
+End If
+Function Return #NULL
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = pft_FindItem {*pft.prefixtree,key.s}                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pt.prefixtree    : ???                                                   /
+;/ - name.s    : ???                                                           /
+;/ - *pft.prefixtree    : ???                                                  /
+;/ - key.s    : ???                                                            /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s pft_FindItem{*pft.prefixtree,key.s}
+string.s = ""
+If pft_Match{*pft,key,pftmatch.pftmatch}
+  If pftmatch\state = #PFT_FOUND
+    string.s = Peek.s(\dbase+pftmatch\node+pftmatch\nodeOff)
+  End If
+End If
+Function Return string.s
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: pft_Reset {*pft.prefixtree}                                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pft.prefixtree    : ???                                                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement pft_Reset{*pft.prefixtree}
+*pft\curPos   = -1
+*pft\curDepth = -1
+*pft\foundPos   = -1
+*pft\foundDepth = -1
+da_Unuse{*pft\curPath}
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = pft_GetNextItem {*pft.prefixtree}                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pft.prefixtree    : ???                                                  /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l pft_GetNextItem{*pft.prefixtree}
+succ.l = False
+*pft\foundPos   = -1
+*pft\foundDepth = -1
+
+If *pft\curPos<0 OR *pft\curDepth<0
+  *pp.prefixpointer = da_SetItem{*pft\curPath,0}
+  If *pp Then *pp\offset = *pft\dbaseRoot : *pp\key = #NULL
+  *pft\curDepth = 0
+  *pft\curPos   = 0
+
+      ;/* test if the node has any data */
+      offset.l = *pp\offset
+      While Peek.b(*pft\dbase+offset)
+        keylen.l = Peek.b(*pft\dbase+offset) & $FF
+        offset + 1 + keylen + 4
+      Wend
+      offset+1
+      If Peek.b(*pft\dbase+offset)
+        *pft\foundPos   = offset
+        *pft\foundDepth = *pft\curDepth
+        succ=True
+        *pft\curPos + 1
+      End If
+
+Else
+  If *pft\curPos>=*pft\dbaseUsed Then pft_Reset{*pft} : Function Return False
+End If
+
+*pp.prefixpointer = da_GetItem{*pft\curPath,*pft\curDepth}
+*npp.prefixpointer = #NULL
+
+While succ=False
+  keylen.l    = Peek.b(*pft\dbase+*pp\offset) & $FF
+  If keylen>0 ;/* we got a link ... */
+    key.s = ""
+    For n.l=1 To keylen
+      key.s + Chr$(Peek.b(*pft\dbase+*pp\offset+n))
+    Next
+    jump.l = Peek.l(*pft\dbase+*pp\offset+keylen+1)
+    *pp\offset + 1 + keylen + 4
+    *npp = da_SetItem{*pft\curPath,*pft\curDepth+1}
+    If *npp
+      *pft\curDepth + 1
+      *npp\offset = jump
+      str_Write{&*npp\key,key.s}
+      *pp = *npp
+
+      ;/* test if the node has any data */
+      offset.l = *pp\offset
+      While Peek.b(*pft\dbase+offset)
+        keylen.l = Peek.b(*pft\dbase+offset) & $FF
+        offset + 1 + keylen + 4
+      Wend
+      offset+1
+      If Peek.b(*pft\dbase+offset)
+        *pft\foundPos   = offset
+        *pft\foundDepth = *pft\curDepth
+        succ=True
+        *pft\curPos + 1
+      End If
+    End If
+  Else  ;/* no more links, we have to go back */
+    *pft\curDepth-1
+    If *pft\curDepth>=0 Then *pp = da_GetItem{*pft\curPath,*pft\curDepth} : Else Function Return False
+  End If
+Wend
+Function Return succ
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = pft_PrevItem {*pft.prefixtree}                           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pft.prefixtree    : ???                                                  /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l pft_PrevItem{*pft.prefixtree}
+succ.l = False
+If *pft\curPos>0
+End If
+Function Return succ
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.s = pft_GetKey {*pft.prefixtree}                             /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pft.prefixtree    : ???                                                  /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s pft_GetKey{*pft.prefixtree}
+key.s = ""
+For d.l=0 To *pft\foundDepth
+  *pp.prefixpointer = da_GetItem{*pft\curPath,d}
+  key.s + str_Read{&*pp\key}
+Next
+Function Return key.s
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.s = pft_GetValue {*pft.prefixtree}                           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pft.prefixtree    : ???                                                  /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s pft_GetString{*pft.prefixtree}
+value.s = ""
+If *pft\foundPos>=0
+  value.s = Peek.s(*pft\dbase+*pft\foundPos)
+End If
+Function Return value.s
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = pft_RemItem {*pt.prefixtree,key.s}                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pt.prefixtree    : ???                                                   /
+;/ - name.s    : ???                                                           /
+;/ - key.s    : ???                                                            /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l pft_RemItem{*pft.prefixtree,key.s}
+value.s = pft_FindItem{*pft,key}
+If value
+  pft_AddItem{*pft,key,""}
+  *pft\itemN-1
+End If
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = pft_Read {fid.l}                                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - filename.s    : ???                                                       /
+;/ - fid.l    : ???                                                            /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l pft_Read{fid.l}
+*pft.prefixtree = #NULL
+If file_ReadTag{fid} = @"PFTR"
+  bsize.l = file_GetTagValue{}
+  *pft.prefixtree = pft_Create{}
+  While bsize>0 AND file_EOF{fid}=False
+    bsize-8
+    Select file_ReadTag{fid}
+      Case @"USED" : *pft\dbaseUsed  = file_GetTagValue{}
+      Case @"ROOT" : *pft\dbaseRoot  = file_GetTagValue{}
+      Case @"BLOK" : *pft\dbaseBlock = file_GetTagValue{}
+      Case @"ITEM" : *pft\itemN      = file_GetTagValue{}
+      Case @"DATA" : *pft\dbaseAdd   = file_GetTagValue{}
+        If pft_Expand{*pft,*pft\dbaseAdd }
+          file_ReadMem{fid,*pft\dbase,*pft\dbaseAdd }
+          bsize - *pft\dbaseAdd
+        End If
+      Default
+        ;...
+    End Select
+  Wend
+End If
+Function Return *pft
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = pft_Write {*pft.prefixtree,fid.l}                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pft.prefixtree    : ???                                                  /
+;/ - fid.l    : ???                                                            /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l pft_Write{*pft.prefixtree,fid.l}
+succ.l = False
+If file_WriteChunk{fid,@"PFTR"}
+  succ = file_WriteTag{fid,@"USED",\dbaseUsed}
+  succ & file_WriteTag{fid,@"ROOT",\dbaseRoot}
+  succ & file_WriteTag{fid,@"BLOK",\dbaseBlock}
+  succ & file_WriteTag{fid,@"ITEM",\itemN}
+  succ & file_WriteTag{fid,@"DATA",\dbaseAdd}
+  succ & file_WriteMem{fid,\dbase,\dbaseAdd}
+  file_CloseChunk{fid,@"PFTR"}
+End If
+Function Return succ
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: result.l = pft_Save {*pft.prefixtree,filename.s}                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *pft.prefixtree    : ???                                                  /
+;/ - filename.s    : ???                                                       /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l pft_Save{*pft.prefixtree,filename.s}
+succ.l = False
+fid.l = file_Open{filename,#file_forcewrite}
+If fid>=0
+  succ.l = pft_Write{*pft,fid}
+  file_Close{fid}
+End If
+Function Return succ
+End Function
+
+Function.l pft_SaveASCII {*pft.prefixtree,filename.s}
+fid.l = file_Open{filename,#file_forcewrite}
+If fid<0 Then Function Return False
+pft_Reset{*pft}
+While pft_GetNextItem{*pft}
+   key.s  = pft_GetKey{*pft}
+   dat.s = pft_GetString{*pft}
+   ;file_WriteLine{fid, "{"+key+"}"+Chr$($9)+"{"+dat+"}"};+Chr$($9)+Str$(Vallong("$"+Right$(dat,8)))}
+   file_WriteLine{fid, key+Chr$($9)+dat}
+Wend
+succ.l = True
+file_Close{fid}
+Function Return succ
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = pft_Load {filename.s}                                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - filename.s    : ???                                                       /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l pft_Load{filename.s}
+fid.l = file_Open{filename,#file_read}
+If fid>=0
+  *pft.prefixtree = pft_Read{fid}
+  file_Close{fid}
+End If
+Function Return *pft
+End Function
+
+
+CNIF #__include=0
+*pft.prefixtree = pft_Create{}
+;Stop
+pft_AddItem{*pft,"abc","xx"}
+pft_AddItem{*pft,"abd","yy"}
+pft_AddItem{*pft,"abef","zz"}
+pft_AddItem{*pft,"bef",".."}
+;pft_AddItem{*pft,"Test"    ,"T EH S T"}
+;pft_AddItem{*pft,"Termin"  ,"T E R M IH N"}
+;pft_AddItem{*pft,"Termal"  ,"T E R M AH L"}
+;pft_AddItem{*pft,"Testing" ,"T EH S T I NG"}
+;pft_AddItem{*pft,"Traum"   ,"T R AU M"}
+;pft_AddItem{*pft,"Tee"     ,"T EH"}
+;pft_AddItem{*pft,"Te1"     ,"T E 1"}
+;pft_AddItem{*pft,"Te2"     ,"T E 2"}
+;pft_AddItem{*pft,"Te3"     ,"T E 3"}
+;pft_AddItem{*pft,"Tesla"   ,"T EH S L A"}
+;pft_AddItem{*pft,""        ,"root"}
+pft_Save{*pft,"ram:TestTree.org.ab3"}
+*pft2.prefixtree = pft_Optimize{*pft}
+pft_Save{*pft2,"ram:TestTree.opt.ab3"}
+*pft3.prefixtree = pft_Load{"ram:TestTree.opt.ab3"}
+NPrint "Test     = ",pft_FindItem{*pft2,"Test"}
+NPrint "Termin   = ",pft_FindItem{*pft2,"Termin"}
+NPrint "Termal   = ",pft_FindItem{*pft2,"Termal"}
+NPrint "Testing  = ",pft_FindItem{*pft2,"Testing"}
+NPrint "Terminal*= ",pft_FindItem{*pft2,"Terminal"}
+NPrint "Traum    = ",pft_FindItem{*pft2,"Traum"}
+NPrint "Tee      = ",pft_FindItem{*pft2,"Tee"}
+NPrint "Te*      = ",pft_FindItem{*pft2,"Te"}
+NPrint "Tesla    = ",pft_FindItem{*pft2,"Tesla"}
+NPrint "root     = ",pft_FindItem{*pft3,""}
+NPrint "Longest match \\22Testingos\\22 = ",pft_GetLongestMatch{*pft2,"Testingos"}
+
+pft_Reset{*pft3}
+c.l = 0
+Stop
+While pft_GetNextItem{*pft3}
+  c+1
+  NPrint c," ",pft_GetKey{*pft3}," => ",pft_GetString{*pft3}
+Wend
+
+;pft_Save{*pft,"ram:TestTree.org"}
+pft_Free{*pft2}
+pft_Free{*pft}
+End
+CEND
+

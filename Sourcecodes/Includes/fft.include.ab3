@@ -1,0 +1,1737 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "/Bin"
+; ExeFile         = "FFTDemo"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 522
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 7
+; CursorColumn    = 29
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 20
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 5
+; Max GadgetList  = 5
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 100
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 5
+; Max BlitzFont   = 4
+; Max GTList      = 20
+; Max ChunkyBuffer= 2
+; /XTRA
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Name:  fft.include                                                          /
+;/                                                                             /
+;/ Platforms: Classic, WinUAE, Amithlon, MorphOS, AmigaOS4                     /
+;/                                                                             /
+;/ Date: 18.08.2006                                                            /
+;/                                                                             /
+;/ Author: Thilo Koehler                                                       /
+;/                                                                             /
+;/ Requirements: Amiblitz2.4                                                   /
+;/                                                                             /
+;/ Purpose:                                                                    /
+;/ Provide FFT (Fast Fourier Transformation) related functions to AB2.         /
+;/                                                                             /
+;/ Abstract:                                                                   /
+;/ This FFT algorithm computes the spectrum out of a 32bit integer array       /
+;/ of samples. The result are 32bit float complex values = 64bit/sample.       /
+;/ You have to allocate the buffers on your own.                               /
+;/ There is also the inverse FFT to transform the spectrum back to time doma:: /
+;/ in.                                                                         /
+;/ See example below!                                                          /
+;/                                                                             /
+;/ User Constants: none                                                        /
+;/                                                                             /
+;/ Example:                                                                    /
+;/ . Newtype.complex                                                           /
+;/ . r.f : i.f                                                                 /
+;/ . End Newtype                                                               /
+;/ .                                                                           /
+;/ . Dim Waveform.l(8)                                                         /
+;/ . Dim Spectrum.complex(8)                                                   /
+;/ . Dim Magnitude.f(8)                                                        /
+;/ . Dim Phase.f(8)                                                            /
+;/ . *fft.fftH = fft_Create{3}  ; create our FFT context of order 3 = 8 sam:: /
+;/ ples window                                                                 /
+;/ .                                                                           /
+;/ . ; convert from time space to frequency space                              /
+;/ . fft_Do32m{*fft,&Waveform(0),&Spectrum(0)}                               /
+;/ .                                                                           /
+;/ . fft_SinCos2MagPha{*fft,&Spectrum(0),&Magnitude(0),&Phase(0)}             /
+;/ .                                                                           /
+;/ . ; convert from frequency space to time space                              /
+;/ . ifft_Do32m{*fft,&Spectrum(0),&Waveform(0)}                              /
+;/ .                                                                           /
+;/ . fft_Free{*fft}                                                            /
+;/ . End                                                                       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+#max_fftorder = 31
+#max_fftpoints = 1 LSL #max_fftorder
+
+#fftmode_undefined = -1
+#fftmode_float     = 0
+#fftmode_int       = 1
+#fftmode_int68k    = 2
+
+
+#fft_bitshift   = 12
+#fft_asmshift1  = 8
+#fft_asmshift2  = 4
+#fft_shift     = 1 LSL #fft_bitshift
+#fft_round     = #fft_shift LSR 1
+
+
+
+NEWTYPE.fft_floatTable
+f.f[#max_fftorder]
+End NEWTYPE
+
+NEWTYPE.fft_longTable
+l.l[#max_fftorder]
+End NEWTYPE
+
+NEWTYPE.fft_wordTable
+w.w[#max_fftorder]
+End NEWTYPE
+
+
+CNIF #__include=0
+Syntax 2
+optimize 7
+CEND
+
+NEWTYPE.fftH
+order.l              ; order of fft
+npoints.l            ; number of points of fft
+ptable.l             ; pointer to permutation table
+wtableS.l            ; pointer to window function (shuffled)
+wtableN.l            ; straight window table
+tmp.l                ; temp buffer
+sinT.fft_floatTable  ; pointer to sinus table
+cosT.fft_floatTable
+sinTI.fft_longTable  ; pointer to sinus table
+cosTI.fft_longTable
+mode.l               ; see #fftmode_...
+End NEWTYPE
+
+NEWTYPE.fftCF        ; complex float
+r.f ; real
+i.f ; imaginary
+End NEWTYPE
+
+NEWTYPE.fftCL        ; complex long
+r.l ; real
+i.l ; imaginary
+End NEWTYPE
+
+NEWTYPE.fftS32      ; 32bit stereo sample
+l.l ; right channel
+r.l ; left channel
+End NEWTYPE
+
+NEWTYPE.fftM32      ; 32bit mono sample
+m.l ; middle channel
+End NEWTYPE
+
+
+USEPATH *fftH
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = fft_GetMinOrder{winSizeMs.f,samplerate.f}              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - winSizeMs.f    : ???                                                      /
+;/ - samplerate.f    : ???                                                     /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l fft_GetMinOrder{winSizeMs.f,samplerate.f}
+winSizeSamp.f = winSizeMs * samplerate / 1000
+orderF.f = Log(winSizeSamp)/Log(2.0)
+orderLo.l = Int(orderF)
+orderFrac.f = orderF-orderLo
+If orderFrac>0 Then order.l = orderLo+1 : Else order=orderLo
+Function Return order
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = fft_Order2Points{order.l}                              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - order.l    : ???                                                          /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l fft_Order2Points{order.l}
+Function Return 1 LSL order
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = fft_Freq2Bin{order.l,samplerate.f,frequency.f}         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - order.l    : ???                                                          /
+;/ - samplerate.f    : ???                                                     /
+;/ - frequency.f    : ???                                                      /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l fft_Freq2Bin{order.l,samplerate.f,frequency.f}
+npoints.l = 1 LSL order
+npointsF.f = npoints
+binSizeHz.f = samplerate/npointsF
+binNF.f = frequency/binSizeHz
+binN.l = Int(binNF)
+If binN>npoints/2 Then binN = npoints/2
+If binN<0         Then binN = 0
+Function Return binN
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.f = fft_Bin2Freq{order.l,samplerate.f,binN.l}              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - order.l    : ???                                                          /
+;/ - samplerate.f    : ???                                                     /
+;/ - binN.l    : ???                                                           /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.f     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.f fft_Bin2Freq{order.l,samplerate.f,binN.l}
+npoints.l = 1 LSL order
+npointsF.f = npoints
+binSizeHz.f = samplerate/npointsF
+frequency.l = binSizeHz * binN
+Function Return frequency
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = _fft_MakeSinTable{order.l}                             /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - order.l    : ???                                                          /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _fft_GenerateSinTable{*fftH.fftH}
+arg.f = Pi
+For n.l=0 To \order-1
+  f.f = Sin(arg) * #fft_shift  : \sinTI\l[n] = Int(f+.5)
+  f.f = Cos(arg) * #fft_shift  : \cosTI\l[n] = Int(f+.5)
+  \sinT\f[n]  = Sin(arg)
+  \cosT\f[n]  = Cos(arg)
+  arg/2
+Next
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = _fft_MakePTable{order.l}                               /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - order.l    : ???                                                          /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _fft_GeneratePTable{*fftH.fftH} ; do the dirty stuff (oh my god, I have headache!)
+npoints.l = 1 LSL \order
+ptr.l = AllocMem_(npoints*SizeOf.l,#MEMF_CLEAR)
+If ptr
+  *fftH\ptable = ptr
+  For n.l = npoints-1 To 0 Step -1
+    ibit.l = 0
+    in.l   = 0
+    For bit.l=\order-1 To 0 Step -1
+      mask.l = 1 LSL bit
+      If (n & mask) Then in = in | (1 LSL ibit)
+      ibit+1
+    Next
+    Poke.l ptr + (n*SizeOf.l) , in
+  Next
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: fft_SetRectWindow{*fftH.fftH}                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH    : ???                                                       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement fft_SetRectWindow{*fftH.fftH}
+If *fftH
+  If \wtableN
+    FreeMem_ \wtableN,\npoints*SizeOf.f
+    \wtableN = 0
+  End If
+  If \wtableS
+    FreeMem_ \wtableS,\npoints*SizeOf.f
+    \wtableS = 0
+  End If
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: fft_SetWindow{*fftH.fftH,alpha.f,beta.f}                           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ init a window function. This is used to create the Hamming or Hanning win:: /
+;/ dow.                                                                        /
+;/ The acutal function is:                                                     /
+;/                                                                             /
+;/ For n.l=0 To npoints-1                                                      /
+;/    win(n) = alpha - beta*Cos(2.0 * Pi / (npoints-1) * n)                    /
+;/ Next                                                                        /
+;/                                                                             /
+;/ where npoints is the number of samples, 2^order of the FFT.                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH  : handle to an FFT context                                    /
+;/ - alpha.f     : alpha parameter                                             /
+;/ - beta.f      : bete parameter                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement fft_SetWindow{*fftH.fftH,alpha.f,beta.f}
+If *fftH
+  If \wtableS OR \wtableN Then fft_SetRectWindow{*fftH}
+  If \ptable><0
+    \wtableS = AllocMem_(\npoints*SizeOf.f,#MEMF_ANY)
+    \wtableN = AllocMem_(\npoints*SizeOf.f,#MEMF_ANY)
+    If \wtableN><0 AND \wtableS><0
+      f.f = \npoints
+      temp.f = 2.0 * Pi / (f-1)
+      perptr.l  = \ptable
+      winptrS.l = \wtableS
+      winptrN.l = \wtableN
+      For n.l=0 To \npoints-1
+        f.f = n
+        v.f = alpha - beta*Cos(temp*f)
+        Select \mode
+          Case #fftmode_int
+            vi.l = Int(v*#fft_shift + 0.5)
+            Poke.l winptrS + Peek.l(perptr+n*4)*SizeOf.l, vi
+            Poke.l winptrN + n*SizeOf.l , vi
+
+          Case #fftmode_int68k
+            vi.l = Int(v*#fft_shift + 0.5)
+            Poke.l winptrS + Peek.l(perptr+n*4)*SizeOf.l, vi
+            Poke.l winptrN + n*SizeOf.l , vi
+
+          Default
+            Poke.f winptrS + Peek.l(perptr+n*4)*SizeOf.f, v
+            Poke.f winptrN + n*SizeOf.f , v
+        End Select
+      Next
+    End If
+  End If
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: fft_SetHammingWindow{*fftH.fftH}                                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Init a hamming window for the given FFT context.                            /
+;/ This is used to reduce the leaking effect for analysing a short time wind:: /
+;/ ow of a signal.                                                             /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH    : handle to an FFT context                                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement fft_SetHammingWindow{*fftH.fftH}
+fft_SetWindow{*fftH, 0.54 , 0.46}
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: fft_SetHanningWindow{*fftH.fftH}                                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Init a hanning window for the given FFT context.                            /
+;/ This is used to reduce the leaking effect for analysing a short time wind:: /
+;/ ow of a signal.                                                             /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH    : handle to an FFT context                                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement fft_SetHanningWindow{*fftH.fftH}
+fft_SetWindow{*fftH, 0.5 , 0.5}
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _fft_MergeMono16{*fftH.fftH,buffer_src.l,buffer_dst.l}             /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH    : ???                                                       /
+;/ - buffer_src.l    : ???                                                     /
+;/ - buffer_dst.l    : ???                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _fft_Merge{*fftH.fftH,buffer_src.l,buffer_dst.l,bits.l,useWin.l,bmod.l}
+If *fftH = 0 Then Statement Return
+If buffer_src = 0 Then Statement Return
+If buffer_dst = 0 Then Statement Return
+
+npoints.l  = \npoints
+winptr.l   = \wtableN : If winptr=0 Then useWin=False
+ordershift.l = \order
+
+mode.l = \mode
+If mode=#fftmode_int68k Then mode=#fftmode_int
+
+Select mode
+  Case #fftmode_int
+    Select bits
+      Case 16
+        If useWin
+          For n.l=0 To npoints-1
+            ;Poke.w buffer_dst, (Peek.l(buffer_src) * Peek.l(winptr)) ASR bitshift : winptr + 4 : buffer_dst + bmod : buffer_src + 8
+            v.l = ((Peek.l(buffer_src) ASR ordershift) * Peek.l(winptr)) ASR #fft_bitshift: winptr + 4 : buffer_dst+bmod : buffer_src + 8
+            If v>32767 Then v=32767
+            If v<-32768 Then v=-32768
+            Poke.w buffer_dst,v
+          Next
+        Else
+          For n.l=0 To npoints-1
+            Poke.w buffer_dst + n*bmod  , Peek.l(buffer_src + n*8) ASR ordershift
+          Next
+        End If
+
+      Case 32
+        ;ordershift - #fft_bitshift
+        If useWin
+          For n.l=0 To npoints-1
+;            Poke.l buffer_dst, ((Peek.l(buffer_src) ASR bitshift) * Peek.l(winptr)) : winptr + 4 : buffer_dst+bmod : buffer_src + 8
+            Poke.l buffer_dst, ((Peek.l(buffer_src) ASR ordershift) * Peek.l(winptr)) ASR #fft_bitshift: winptr + 4 : buffer_dst+bmod : buffer_src + 8
+          Next
+        Else
+          For n.l=0 To npoints-1
+            Poke.l buffer_dst + n*bmod  , Peek.l(buffer_src + n*8) ASR ordershift
+          Next
+        End If
+
+    End Select
+
+  Case #fftmode_float
+    ratio.f = 1/npoints
+    Select bits
+      Case 16
+        If useWin
+          For n.l=0 To npoints-1
+            Poke.w buffer_dst + n*bmod  , Peek.f(buffer_src + n*8) * ratio * Peek.f(winptr) : winptr + 4
+          Next
+        Else
+          For n.l=0 To npoints-1
+            Poke.w buffer_dst + n*bmod  , Peek.f(buffer_src + n*8) * ratio
+          Next
+        End If
+
+      Case 32
+        If useWin
+          For n.l=0 To npoints-1
+            Poke.l buffer_dst + n*bmod  , Peek.f(buffer_src + n*8) * ratio * Peek.f(winptr) : winptr + 4
+          Next
+        Else
+          For n.l=0 To npoints-1
+            s.f = Peek.f(buffer_src + n*8) * ratio
+            ;c.f = Peek.f(buffer_src + n*8+4)
+            ;s = Sqr(s*s+c*c)  * ratio
+            If s> 32767 *65536 Then s= 32767 *65536
+            If s<-32767 *65536 Then s=-32767 *65536
+            Poke.l buffer_dst + n*bmod  ,s
+          Next
+        End If
+
+    End Select
+End Select
+End Statement
+
+
+Statement _fft_Permutate{*fftH.fftH,buffer_src.l,buffer_dst.l,bits.l,useWin.l,bmod.l}
+If *fftH = 0 Then Statement Return
+If buffer_src = 0 Then Statement Return
+If buffer_dst = 0 Then Statement Return
+
+npoints.l = \npoints
+winptr.l  = \wtableS : If winptr =0 Then useWin=False
+perptr.l  = \ptable
+
+mode.l = \mode
+If mode=#fftmode_int68k Then mode=#fftmode_int
+
+Select mode
+  Case #fftmode_int
+    Select bits
+      Case 16
+        If useWin
+          For n.l=0 To npoints-1
+            Poke.l buffer_dst, (Peek.w(buffer_src + Peek.l(perptr)*bmod) * Peek.l(winptr)) ASR #fft_bitshift : winptr+4   : buffer_dst+4
+            Poke.l buffer_dst, 0 : perptr + 4 : buffer_dst+4
+          Next
+        Else
+          For n.l=0 To npoints-1
+            Poke.l buffer_dst   +n*8, Peek.w(buffer_src + Peek.l(perptr)*bmod)
+            Poke.l buffer_dst+4 +n*8, 0 : perptr + 4
+          Next
+        End If
+
+      Case 32
+        If useWin
+          For n.l=0 To npoints-1
+            Poke.l buffer_dst, ((Peek.l(buffer_src + Peek.l(perptr)*bmod) ) * Peek.l(winptr)) ASR #fft_bitshift : winptr+4 : buffer_dst+4
+            Poke.l buffer_dst, 0 : perptr + 4 : buffer_dst+4
+          Next
+        Else
+          For n.l=0 To npoints-1
+            Poke.l buffer_dst   +n*8, Peek.l(buffer_src + Peek.l(perptr)*bmod)
+            Poke.l buffer_dst+4 +n*8, 0 : perptr + 4
+          Next
+        End If
+
+      Case 64
+        For n.l=0 To npoints-1
+          src.l = buffer_src + Peek.l(perptr)*bmod
+          Poke.l buffer_dst, Peek.l(src) : buffer_dst+4
+          Poke.l buffer_dst, Peek.l(src+4) : perptr + 4 : buffer_dst+4
+        Next
+      Default
+        ;error {"Unspported fromat!"}
+
+    End Select
+
+  Case #fftmode_float
+    ;ratio.f = 1/npoints
+    Select bits
+      Case 16
+        If useWin
+          For n.l=0 To npoints-1
+            Poke.f buffer_dst   +n*8, Peek.w(buffer_src + Peek.l(perptr)*bmod)   * Peek.f(winptr) : winptr+4
+            Poke.f buffer_dst+4 +n*8, 0 : perptr + 4
+          Next
+        Else
+          For n.l=0 To npoints-1
+            Poke.f buffer_dst   +n*8, Peek.w(buffer_src + Peek.l(perptr)*bmod)
+            Poke.f buffer_dst+4 +n*8, 0 : perptr + 4
+          Next
+        End If
+
+      Case 32
+        If useWin
+          For n.l=0 To npoints-1
+            Poke.f buffer_dst   +n*8, Peek.l(buffer_src + Peek.l(perptr)*bmod)   * Peek.f(winptr) : winptr+4
+            Poke.f buffer_dst+4 +n*8, 0 : perptr + 4
+          Next
+        Else
+          For n.l=0 To npoints-1
+            Poke.f buffer_dst   +n*8, Peek.l(buffer_src + Peek.l(perptr)*bmod)
+            Poke.f buffer_dst+4 +n*8, 0 : perptr + 4
+          Next
+        End If
+
+      Case 33
+
+        If useWin
+          For n.l=0 To npoints-1
+            Poke.f buffer_dst   +n*8, Peek.f(buffer_src + Peek.l(perptr)*bmod)   * Peek.f(winptr) : winptr+4
+            Poke.f buffer_dst+4 +n*8, 0 : perptr + 4
+          Next
+        Else
+          For n.l=0 To npoints-1
+            p.l = (buffer_src + Peek.l(perptr)*bmod)
+            f.f = Peek.f(p)
+            Poke.f buffer_dst   +n*8,f
+            Poke.f buffer_dst+4 +n*8, 0 : perptr + 4
+          Next
+        End If
+
+      Case 64
+        For n.l=0 To npoints-1
+          src.l = buffer_src + Peek.l(perptr)*bmod
+          Poke.l buffer_dst, Peek.l(src) : buffer_dst+4
+          Poke.l buffer_dst, Peek.l(src+4) : perptr + 4 : buffer_dst+4
+        Next
+
+    End Select
+End Select
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _fft{*fftH.fftH,buffer_dst.l,dir.l}                                /
+;/                                                                             /
+;/ Description:/
+;/ * private *                                                                 /
+;/ This is acutally doing the FFT algorithm.                                   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH    : handle to the FFT context                                 /
+;/ - buffer_dst.l  : destination buffer for sin/cos values                     /
+;/ - dir.l         : direction (0=FFT, -1 = inverse FFT)                       /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _fft{*fftH.fftH,buffer_dst.l,direction.l}
+If *fftH = 0 Then Statement Return
+If buffer_dst = 0 Then Statement Return
+
+le_1.l     = 0
+le2.l      = 1
+le8.l      = 4
+le16.l     = 8
+buffer_r.l = buffer_dst
+
+
+DEFTYPE.l i,j,k,npoints_1
+
+npoints_1 = \npoints-1
+
+Select \mode
+  Case #fftmode_float
+    DEFTYPE.f ui,ur,tr,ti
+    RegLoad ui,ur,tr,ti
+    df.f = direction
+    For k = 0 To \order-1
+      le_1 = le2-1
+      le2 LSL 1
+      le8 LSL 1
+      le16 LSL 1
+      ur.f = 1.0
+      ui.f = 0.0
+      wr.f = \cosT\f[k]
+      wi.f = \sinT\f[k] * df
+      For j = 0 To le_1
+        p1r.l = buffer_r + (j LSL 3)
+        p2r.l = p1r+le8
+        For i = j To npoints_1 Step le2
+          x.f =  Peek.f(p2r)
+          y.f =  Peek.f(p2r+4)
+          tr.f = x*ur - y*ui
+          ti.f = x*ui + y*ur
+          x.f = Peek.f(p1r)
+          Poke.f p2r, x-tr
+          Poke.f p1r, x+tr
+          x.f = Peek.f(p1r+4)
+          Poke.f p2r+4, x-ti
+          Poke.f p1r+4, x+ti
+          p1r + le16
+          p2r + le16
+        Next
+        t.f = (ur*wr - ui*wi)
+        ui  = (ur*wi + ui*wr)
+        ur  = t
+      Next
+    Next
+    RegSave
+
+  Case #fftmode_int
+    For k = 0 To \order-1
+      le_1 = le2-1
+      le2 LSL 1
+      le8 LSL 1
+      le16 LSL 1
+      urI.l = #fft_shift
+      uiI.l = 0
+      wrI.l = \cosTI\l[k]
+      wiI.l = \sinTI\l[k] * direction
+      For j = 0 To le_1
+        p1r.l = buffer_r + (j LSL 3)
+        p2r.l = p1r+le8
+        For i = j To npoints_1 Step le2
+          xI.l = Peek.l(p2r)
+          yI.l = Peek.l(p2r+4)
+          trI.l = (xI*urI - yI*uiI) ASR #fft_bitshift
+          tiI.l = (xI*uiI + yI*urI) ASR #fft_bitshift
+          Poke.l p2r  , Peek.l(p1r)   - trI
+          Poke.l p1r  , Peek.l(p1r)   + trI
+          Poke.l p2r+4, Peek.l(p1r+4) - tiI
+          Poke.l p1r+4, Peek.l(p1r+4) + tiI
+          p1r + le16
+          p2r + le16
+        Next
+        tI.l = (urI*wrI - uiI*wiI) ASR #fft_bitshift
+        uiI  = (urI*wiI + uiI*wrI) ASR #fft_bitshift
+        urI  = tI
+      Next
+    Next
+
+  Case #fftmode_int68k
+    ; 68K ASM optimized integer version
+    Poke.l ?afft_npoints,\npoints
+    Poke.l ?afft_le ,0
+    Poke.l ?afft_le2,1
+    Poke.l ?afft_base,buffer_dst
+    For k = 0 To \order-1
+      Poke.l ?afft_wr,\cosTI\l[k]
+      Poke.l ?afft_wi,\sinTI\l[k] * direction
+
+      MOVE.l afft_le2,D0 : MOVE.l D0,afft_le    ; le = le2
+      LSL.l #1,D0        : MOVE.l D0,afft_le2   ; le2 LSL 1
+      LSL.l #2,D0        : MOVE.l D0,afft_le8   ; le8 = le LSL 3
+      LSL.l #1,D0        : MOVE.l D0,afft_le16  ; le16 = le2 LSL 3
+
+      MOVE.l ##fft_shift,d1 ;afft_ur  ; urI = #fft_shift
+      MOVE.l #0,d3;afft_ui          ; uiI = 0
+
+      MOVE.l #0,afft_j
+      MOVE.l afft_le,afft_jc
+     ; move.l
+fft_loop2:  ;For j.l = 0 To le-1
+        MOVE.l afft_base,a1
+        MOVE.l afft_j,D0 : LSL.l #3,D0 : ADDA.l D0,a1 ; Poke.l ?afft_p1, buffer_r + (j LSL 3)
+        MOVE.l a1,a2 : ADDA.l afft_le8,a2  ; Poke.l ?afft_p2, buffer_r + (j LSL 3) +le8
+
+;        For i.l = j To \npoints-1 Step le2
+        MOVE.l afft_j,D6
+        MOVE.l afft_npoints,D5
+        SUB.l d6,d5
+
+fft_loop1:
+
+          MOVE.l (A2),D0   ; trI.l = (Peek.l(p2r) * urI - Peek.l(p2i) * uiI) ASR #fft_bitshift
+          MULS d1,d0
+          MOVE.l 4(A2),D2
+          MULS d3,d2
+          SUB.l D2,D0
+        ASR.l ##fft_asmshift1,d0 ; tr
+        CNIF #fft_asmshift2>0
+        ASR.l ##fft_asmshift2,d0
+        CEND
+ 
+
+
+          MOVE.l (A2),D2 ; tiI.l = (Peek.l(p2r) * uiI + Peek.l(p2i) * urI) ASR #fft_bitshift
+          MULS d3,d2
+          MOVE.l 4(A2),D4
+          MULS d1,d4
+          ADD.l D2,D4
+        ASR.l ##fft_asmshift1,d4 ; ti
+        CNIF #fft_asmshift2>0
+        ASR.l ##fft_asmshift2,d4
+        CEND
+ 
+
+
+          MOVE.l (a1),d2 ; Poke.l p2r, Peek.l(p1r) - trI
+          SUB.l d0,d2
+          MOVE.l d2,(a2)
+
+          MOVE.l 4(a1),d2  ;Poke.l p2i, Peek.l(p1i) - tiI
+          SUB.l d4,d2
+          MOVE.l d2,4(a2)
+
+          ; Poke.l p1r, Peek.l(p1r) + trI
+          ADD.l d0,(a1)
+
+          ; Poke.l p1i, Peek.l(p1i) + tiI
+          ADD.l d4,4(a1)
+
+          ADDA.l afft_le16,A1
+          ADDA.l afft_le16,A2
+
+        SUB.l afft_le2,d5
+        BGT fft_loop1
+        ;Next
+
+        MOVE.l afft_wr,d0
+        MOVE.l afft_wi,d2
+
+        MOVE.l d1,d4       ;  tI.l = ((urI*wrI - uiI*wiI) ASR #fft_bitshift)
+        MULS d0,d1
+
+        MOVE.l d3,d5
+        MULS d2,d5
+        SUB.l d5,d1
+        ASR.l ##fft_asmshift1,d1
+        CNIF #fft_asmshift2>0
+        ASR.l ##fft_asmshift2,d1
+        CEND
+ 
+
+
+        ; uiI  = ((urI*wiI + uiI*wrI) ASR #fft_bitshift)
+        MULS d2,d4
+        MULS d0,d3
+        ADD.l d4,d3
+
+        ASR.l ##fft_asmshift1,d3
+        CNIF #fft_asmshift2>0
+        ASR.l ##fft_asmshift2,d3
+        CEND
+
+      ;Next  ; j=0 to le-1
+      ADD.l #1,afft_j
+      SUB.l #1,afft_jc
+      BGT fft_loop2
+    Next
+
+    Statement Return
+    afft_jc:    Dc.l 0
+    afft_base:  Dc.l 0
+    afft_k:     Dc.l 0
+    afft_order: Dc.l 0
+    afft_j:     Dc.l 0
+    afft_le:    Dc.l 0
+    afft_le2:   Dc.l 0
+    afft_le8:   Dc.l 0
+    afft_le16:  Dc.l 0
+    afft_ur:    Dc.l 0
+    afft_ui:    Dc.l 0
+    afft_wr:    Dc.l 0
+    afft_wi:    Dc.l 0
+    afft_p1:    Dc.l 0
+    afft_p2:    Dc.l 0
+    afft_tr:    Dc.l 0
+    afft_ti:    Dc.l 0
+    afft_npoints: Dc.l 0
+
+
+End Select
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: fft_SinCos2MagPha{*fftH.fftH,buffer_src.l,buffer_magnitude.l,buf:: /
+;/ fer_phase.l,@bmod_m.l,@bmod_p.l}                                            /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Convert sinus/cosinus representation of the spectrum to magnitude/phase r:: /
+;/ epresentation.                                                              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH         : handle to an FFT context                             /
+;/ - buffer_src.l       : pointer to a buffer that holds 2*npoints floats      /
+;/ - buffer_magnitude.l : pointer to a buffer to fill with npoints floats      /
+;/ - buffer_phase.l     : pointer to a buffer to fill with npoints floats      /
+;/ - bmod_m.l    : ???                                                         /
+;/ - bmod_p.l    : ???                                                         /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement fft_SinCos2MagPha{*fftH.fftH,buffer_src.l,buffer_magnitude.l,buffer_phase.l,@bmod_m.l,@bmod_p.l}
+If *fftH
+  If buffer_magnitude><0 AND buffer_phase><0 AND buffer_src><0
+    If bmod_m<0 Then bmod_m=SizeOf.f
+    If bmod_p<0 Then bmod_p=SizeOf.f
+    For n.l=0 To \npoints-1
+      r.f = Peek.f(buffer_src)      ; cos / real
+      i.f = Peek.f(buffer_src+4)    ; sin / imaginary
+      buffer_src+8
+      m.f = Sqr(r*r + i*i)
+
+      Poke.f buffer_magnitude  ,m
+
+      If r>0.0001 OR r<-0.0001
+        p.f = ATan(i/r)
+      Else
+        If (i*r<0) Then p = -Pi/2 : Else p=Pi/2
+      End If
+      If r<0 Then p + Pi
+
+      Poke.f buffer_phase,p
+      buffer_phase+bmod_p
+      buffer_magnitude+bmod_m
+    Next
+  End If
+End If
+End Statement
+
+
+ 
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: fft_SinCos2Power{*fftH.fftH,buffer_src.l,buffer_powerspec.l,@bmo:: /
+;/ d.l}                                                                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Convert sinus/cosinus representation of the spectrum to power spectrum/ph:: /
+;/ ase representation.                                                         /
+;/ The buffer to the phase values can be omitted, because usually you want t:: /
+;/ he power spectrum values                                                    /
+;/ (e.g. to display them in a visual spectrum analyzer), and the computation:: /
+;/  of the phase is quite expensive.                                           /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH        : handle to an FFT context                              /
+;/ - buffer_src.l      : pointer to a buffer that holds 2*npoints floats       /
+;/ - buffer_powerspec.l: pointer to a buffer to fill with npoints floats       /
+;/ - bmod.l            : buffer mod for each power value in bytes              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement fft_SinCos2Power{*fftH.fftH,buffer_src.l,buffer_powerspec.l,@bmod.l}
+If *fftH
+  If buffer_powerspec><0 AND buffer_src><0
+    If bmod<0 Then bmod=SizeOf.f
+    For n.l=0 To \npoints-1
+      s.f = Peek.f(buffer_src)
+      c.f = Peek.f(buffer_src+4)
+      Poke.f buffer_powerspec  ,s*s+c*c
+      buffer_powerspec+bmod
+      buffer_src+8
+    Next
+  End If
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: fft_SinCos2Magnitude{*fftH.fftH,buffer_src.l,buffer_ampspec.l,@b:: /
+;/ mod.l}                                                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH    : ???                                                       /
+;/ - buffer_src.l    : ???                                                     /
+;/ - buffer_powerspec.l    : ???                                               /
+;/ - bmod.l    : ???                                                           /
+;/ - buffer_ampspec.l    : ???                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement fft_SinCos2Magnitude{*fftH.fftH,buffer_src.l,buffer_ampspec.l,@bmod.l}
+If *fftH
+  If buffer_ampspec><0 AND buffer_src><0
+    If bmod<0 Then bmod=SizeOf.f
+    For n.l=0 To \npoints-1
+      s.f = Peek.f(buffer_src)
+      c.f = Peek.f(buffer_src+4)
+      Poke.f buffer_ampspec  ,Sqr(s*s+c*c)
+      buffer_ampspec+bmod
+      buffer_src+8
+    Next
+  End If
+End If
+End Statement
+
+
+
+
+;per.fft.pow.log.per.ifft.npoints
+;per.fft.pow.sqr.sqr.exp.per.ifft
+
+;per.fft.exp.sqr        .per.ifft
+
+Statement ifft_Cepstrum32m{*fftH.fftH,buffer_src.l,buffer_dst.l}
+
+  ;/* cepstrum => spectrum */
+  _fft_Permutate{*fftH,buffer_src+\npoints*4,\tmp,33,False,4}
+;  _fft_Permutate{*fftH,buffer_src+\npoints*4,\tmp,32,False,4}
+;  _fft_Permutate{*fftH,buffer_src,\tmp,32,False,4}
+  For n.l=0 To \npoints-1
+    s.f = Peek.f(\tmp + n*8)
+    c.f = Peek.f(\tmp + n*8+4)
+
+    s / 65536.0
+    c / 65536.0
+
+    If n>1 OR n<\npoints-2
+      s / 32767.0
+      c / 32767.0
+    Else
+      If s>0
+        s = (2.7182818  ^ s)
+      Else
+        s = -(2.7182818  ^ (-s))
+      End If
+      c = 0
+    End If
+
+    Poke.f \tmp + n*8  , s
+    Poke.f \tmp + n*8+4, c
+
+  Next
+  _fft{*fftH,\tmp,1}
+
+
+
+  seed.l = 12311111
+
+  ;/* convert to linear space and fake a phase*/
+  For n.l=0 To \npoints/2;-1
+    s.f = Peek.f(\tmp + n*8)
+    c.f = Peek.f(\tmp + n*8+4)
+
+    mag.f = Sqr(s*s+c*c)
+
+    ; fake a phase
+    seed = seed * 1023 * 7+ 12132137
+    phi.l = seed&32767
+    ph.f = phi
+    ph.f = ((ph / 16384.0) -1.0) * Pi  +Pi
+    phc.f = Cos(ph)
+    phs.f = Sin(ph)
+
+    mag = (2.7182818  ^ mag)
+    mag = Sqr(mag)
+
+    s = mag * phs    * 65536
+    c = mag * phc    * 65536
+
+    Poke.f \tmp + n*8  , s
+    Poke.f \tmp + n*8+4, c
+
+    If n>0
+      Poke.f \tmp + (\npoints-n)*8  , s
+      Poke.f \tmp + (\npoints-n)*8+4, -c
+    End If
+
+  Next
+;/*
+   For n.l=0 To \npoints-1
+     s.f = Peek.f(\tmp + n*8)
+     c.f = Peek.f(\tmp + n*8+4)
+
+     s = Sqr(s*s+c*c) * (-256)
+     c = 0;32768
+
+     Poke.f \tmp+\npoints*8 + n*8  , s
+     Poke.f \tmp+\npoints*8 + n*8+4, c
+   Next
+
+Goto skiptime
+
+  ;/* do inverse fft */
+  _fft_Permutate{*fftH,\tmp,\tmp+\npoints*8,64,False,8}
+  _fft{*fftH,\tmp+\npoints*8,-1}
+
+skiptime:
+  _fft_Merge{*fftH,\tmp+\npoints*8,buffer_dst,32,False,4}
+
+End Statement
+
+
+
+
+Statement fft_Cepstrum32m{*fftH.fftH,buffer_src.l,buffer_cep.l}
+
+  ;/* time domain => frequency domain
+  _fft_Permutate{*fftH,buffer_src,\tmp,32,True,4}
+  _fft{*fftH,\tmp,1}
+
+  ;/* convert spectrum to log pow space */
+  For n.l=0 To \npoints-1
+    s.f = Peek.f(\tmp + n*8)
+    c.f = Peek.f(\tmp + n*8+4)
+
+    po.f = (s*s+c*c)
+    ra.f = Log(po)
+
+    Poke.f \tmp + n*8  , ra
+    Poke.f \tmp + n*8+4, 0
+  Next
+
+  ;/* log pow spectrum => cepstrum */
+  _fft_Permutate{*fftH,\tmp,\tmp+\npoints*8,64,False,8}
+  _fft{*fftH,\tmp+\npoints*8,-1}
+
+  ;/* optional liftering */
+  lift.l = \tmp + \npoints*8
+  x.l = \npoints/2/16*2
+
+  For n.l=0 To \npoints-1
+    s.f = Peek.f(lift + n*8)      / \npoints
+    c.f = Peek.f(lift + n*8+4)    / \npoints
+    If n>x AND n<\npoints-x Then s=0:c=0
+    po = s
+    If n>1 OR n<\npoints-2 Then po = po * 32767.0 : Else If po>0 Then po = Log(po) : Else If po<0 Then po=-Log(-po)
+
+    p.l =  buffer_cep + \npoints*4 + n*4
+    po*65536.0
+    Poke.f p,po
+    po/65536.0
+
+
+    If po> 32767 Then po= 32767
+    If po<-32767 Then po=-32767
+    po * 65536
+    Poke.l buffer_cep + n*4,Int(po)
+
+  Next
+
+End Statement
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: fft_SinCos2Phase{*fftH.fftH,buffer_src.l,buffer_phase.l,@bmod.l}   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH    : ???                                                       /
+;/ - buffer_src.l    : ???                                                     /
+;/ - buffer_phase.l    : ???                                                   /
+;/ - bmod.l    : ???                                                           /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement fft_SinCos2Phase{*fftH.fftH,buffer_src.l,buffer_phase.l,@bmod.l}
+If *fftH
+  If buffer_phase><0 AND buffer_src><0
+    If bmod<0 Then bmod=SizeOf.f
+    For n.l=0 To \npoints-1
+      r.f = Peek.f(buffer_src)
+      i.f = Peek.f(buffer_src+4)
+      buffer_src+8
+
+      If r>0.0001 OR r<-0.0001
+        p.f = ATan(i/r)
+      Else
+        If (i*r<0) Then p = -Pi/2 : Else p=Pi/2
+      End If
+      If r<0 Then p + Pi
+
+      Poke.f buffer_phase,p
+      buffer_phase+bmod
+    Next
+  End If
+End If
+End Statement
+
+
+      ; slow
+;      tanp.f = Tan(p)
+;      itanp.f =  1/tanp
+;
+;      If tanp>=0 Then sp.f = 1 : Else sp.f = -1
+;
+;      s.f = m * Sqr(1/(1+( tanp* tanp))) ;* sp
+;      c.f = m * Sqr(1/(1+(itanp*itanp))) ;* sp
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: fft_MagPha2SinCos{*fftH.fftH,buffer_magnitude.l,buffer_phase.l,b:: /
+;/ uffer_dst.l,@bmod_m.l,@bmod_p.l}                                            /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Convert magnitude/phase representation of the spectrum to sinus/cosinus.    /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH        : handle to an FFT context                              /
+;/ - buffer_magnitude.l: buffer that holds npoints float magnitude values.     /
+;/ - buffer_phase.l    : buffer that holds npoints float phase values          /
+;/ - buffer_dst.l      : buffer that will be filled with 2*npoints floats      /
+;/ - bmod_m.l    : ???                                                         /
+;/ - bmod_p.l    : ???                                                         /
+;/                                                                             /
+;/ See also:    fft_SinCos2MagPha                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement fft_MagPha2SinCos{*fftH.fftH,buffer_magnitude.l,buffer_phase.l,buffer_dst.l,@bmod_m.l,@bmod_p.l}
+If *fftH
+  If buffer_magnitude><0 AND buffer_dst><0 AND buffer_phase><0
+    If bmod_m<0 Then bmod_m=SizeOf.f
+    If bmod_p<0 Then bmod_p=SizeOf.f
+    For n.l=0 To \npoints/2
+      m.f = Peek.f(buffer_magnitude)  : buffer_magnitude + bmod_m
+      p.f = Peek.f(buffer_phase)      : buffer_phase     + bmod_p
+
+      r.f = Cos(p)*m
+      i.f = Sin(p)*m
+
+      Poke.f buffer_dst+n*8  ,r
+      Poke.f buffer_dst+n*8+4,i
+      If n>0 AND n<\npoints/2
+        n2.l = \npoints-n
+        Poke.f buffer_dst+n2*8  ,r
+        Poke.f buffer_dst+n2*8+4,-i
+      End If
+    Next
+  End If
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: fft_Do32m{*fftH.fftH,buffer_src.l,buffer_dst.l}                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Perform FFT on 32bit integer mono sample array -> 2 x 32 float values (co:: /
+;/ mplex).                                                                     /
+;/ The resulting values represent the sin and cos part of the singal. To con:: /
+;/ vert it to something displayable in a spectral analyzer, use fft_SinCos2M:: /
+;/ agPha or fft_SinCos2PowPha.                                                 /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH      : handle to an FFT context                                /
+;/ - buffer_src.l    : buffer of npoints 32 bit signed integer values          /
+;/ - buffer_dst.l    : buffer of npoints complex values, means 2*npoints 32b:: /
+;/ it floats                                                                   /
+;/                                                                             /
+;/ See also:    fft_Do32s, ifft_Do32m                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement fft_Do32m{*fftH.fftH,buffer_src.l,buffer_dst.l}
+_fft_Permutate{*fftH,buffer_src,buffer_dst,32,-1,4}
+_fft{*fftH,buffer_dst,1}
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: fft_Do16m{*fftH.fftH,buffer_src.l,buffer_dst.l}                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH    : ???                                                       /
+;/ - buffer_src.l    : ???                                                     /
+;/ - buffer_dst.l    : ???                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement fft_Do16m{*fftH.fftH,buffer_src.l,buffer_dst.l}
+_fft_Permutate{*fftH.fftH,buffer_src,buffer_dst,16,-1,2}
+_fft{*fftH,buffer_dst,1}
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: fft_Do32s{*fftH.fftH,buffer_src.l,buffer_dst_l.l,buffer_dst_r.l}   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Perform FFT on 32bit integer stereo sample array -> 4 x 32 float values (:: /
+;/ complex).                                                                   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH    : handle to an FFT context                                  /
+;/ - buffer_src.l  : buffer of 2*npoints 32 bit signed integer values          /
+;/ - buffer_dst_l.l: buffer of npoints complex values, means 2*npoints 32bit:: /
+;/ floats to hold the left channel                                             /
+;/ - buffer_dst_r.l: buffer of npoints complex values, means 2*npoints 32bit:: /
+;/ floats to hold the right channel                                            /
+;/                                                                             /
+;/ See also:    fft_Do32m, ifft_Do32s                                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement fft_Do32s{*fftH.fftH,buffer_src.l,buffer_dst_l.l,buffer_dst_r.l}
+_fft_Permutate{*fftH,buffer_src+0,buffer_dst_l,32,-1,8}
+_fft_Permutate{*fftH,buffer_src+4,buffer_dst_r,32,-1,8}
+_fft{*fftH,buffer_dst_l,1}
+_fft{*fftH,buffer_dst_r,1}
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: ifft_Do32m{*fftH.fftH,buffer_src.l,buffer_dst.l}                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Perform inverse FFT on sinus/cosinus representation to 32 bit integers.     /
+;/ Convert from frequency to time domain (spectrum to waveform).               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH    : handle to an FFT context                                  /
+;/ - buffer_src.l  : buffer that holds 2*npoints floats                        /
+;/ - buffer_dst.l  : buffer that will be filled with npoints 32bit integers    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ifft_Do32m{*fftH.fftH,buffer_src.l,buffer_dst.l,useWin.l}
+_fft_Permutate{*fftH,buffer_src,\tmp,64,False,8}
+_fft{*fftH,\tmp,-1}
+_fft_Merge{*fftH,\tmp,buffer_dst,32,useWin,4}
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: ifft_Do16m{*fftH.fftH,buffer_src.l,buffer_dst.l}                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH    : ???                                                       /
+;/ - buffer_src.l    : ???                                                     /
+;/ - buffer_dst.l    : ???                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ifft_Do16m{*fftH.fftH,buffer_src.l,buffer_dst.l,useWin.l}
+_fft_Permutate{*fftH,buffer_src,\tmp,64,False,8}
+_fft{*fftH,\tmp,-1}
+_fft_Merge{*fftH,\tmp,buffer_dst,16,useWin,2}
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: ifft_Do32s{*fftH.fftH,buffer_src_l.l,buffer_src_r.l,buffer_dst.l}  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Perform inverse FFT on sinus/cosinus representation to 32bit integers.      /
+;/ Convert from frequency to time domain (spectrum to waveform).               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH     : handle to an FFT context                                 /
+;/ - buffer_src_l.l : buffer that holds 2*npoints floats, representing the s:: /
+;/ in/cos spectrum of the left channel                                         /
+;/ - buffer_src_r.l : buffer that holds 2*npoints floats, representing the s:: /
+;/ in/cos spectrum of the right channel                                        /
+;/ - buffer_dst.l   : buffer that will be filled with 2*npoints 32bit intege:: /
+;/ r values, representing the waveform                                         /
+;/ @                                                                           /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement ifft_Do32s{*fftH.fftH,buffer_src_l.l,buffer_src_r.l,buffer_dst.l,useWin.l}
+_fft_Permutate{*fftH,buffer_src_l,\tmp,64,False,8}
+_fft{*fftH,\tmp,-1}
+_fft_Merge{*fftH,\tmp,buffer_dst+0,32,useWin,8}
+_fft_Permutate{*fftH,buffer_src_r,\tmp,64,False,8}
+_fft{*fftH,\tmp,-1}
+_fft_Merge{*fftH,\tmp,buffer_dst+4,32,useWin,8}
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: fft_Free{*fftH.fftH}                                               /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Free all data associated with the FFT handle                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *fftH.fftH    : handle to an FFT context                                  /
+;/                                                                             /
+;/ See also:    fft_Create                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement fft_Free{*fftH.fftH}
+If \ptable   Then FreeMem_ \ptable  ,\npoints*SizeOf.l    : \ptable   = 0
+If \wtableN  Then FreeMem_ \wtableN ,\npoints*SizeOf.f    : \wtableN   = 0
+If \wtableS  Then FreeMem_ \wtableS ,\npoints*SizeOf.f    : \wtableS  = 0
+If \tmp      Then FreeMem_ \tmp     ,\npoints*8           : \tmp      = 0
+\order    = 0
+\npoints  = 0
+\ptable   = 0
+End Statement
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = fft_Create{order.l}                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Create an FFT context and return the handle that is used for all functions. /
+;/ Order can be anything from 1 to 26.                                         /
+;/ Note: an FFT window of order 26 would nearly need 2GB of memory.            /
+;/ For audio applications, you use orders in the range of 6-13.                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - order.l    : order of your FFT window (number of samples = 2^order)       /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : handle to an FFT context, or 0 if it failed                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+
+Function.l fft_Create{order.l,@mode.l}
+If mode=#fftmode_undefined Then mode=#fftmode_float
+*fftH.fftH = AllocMem_(SizeOf.fftH,#MEMF_CLEAR)
+If *fftH
+  \mode     = mode
+  \order    = order
+  \npoints  = 1 LSL order
+  _fft_GeneratePTable{*fftH}
+  \wtableN  = 0
+  \wtableS  = 0
+  _fft_GenerateSinTable{*fftH}
+  \tmp      = AllocMem_(\npoints*8*2,#MEMF_ANY)
+  If \ptable=0 Then fft_Free{*fftH} : *fftH = 0
+End If
+Function Return *fftH
+End Function
+
+
+
+CNIF #__include=0
+; Example:
+#fft_order    = 2                 ; log2 size of our fft
+#fft_npoints  = 1 LSL #fft_order  ; size in samples of our fft
+
+;Goto skip_correctnesstest
+
+Dim td.fftS32(#fft_npoints+2)    ; our time domain (= 32bit mono samples)
+Dim fdL.fftCF(#fft_npoints*2+2)  ; our frequency domain (= float complex numbers)
+Dim fdR.fftCF(#fft_npoints*2+2)
+Dim fdMP.fftCF(#fft_npoints+2)
+
+Dim fdLi.fftCL(#fft_npoints*2+2)  ; our frequency domain (= float complex numbers)
+Dim fdRi.fftCL(#fft_npoints*2+2)
+
+
+td(0)\l =  100    ; some Test data
+td(0)\r =  100
+td(1)\l =  200
+td(1)\r =  200
+td(2)\l =  300
+td(2)\r =  300
+td(3)\l =  0
+td(3)\r =  0
+td(4)\l =  0
+td(4)\r =  0
+td(5)\l =  0
+td(5)\r =  0
+td(6)\l =  0
+td(6)\r =  0
+
+
+td(#fft_npoints)\l = -2,-2
+fdL(#fft_npoints)\r = -2,-2
+fdR(#fft_npoints)\r = -2,-2
+
+; 1,2,1,0 -> 4,  -2i,0,   2i       ; Test values
+; 1,2,3,0 -> 6,-2-2i,2,-2+2i
+
+NPrint "FFT algorithm test (float): "
+Format "+#####0.0"
+*fft.fftH = fft_Create{#fft_order,#fftmode_float}  ; create our FFT context
+If *fft=0
+NPrint "Unable to create FFT."
+End
+End If
+
+NPrint "Permutation Table:"                  ; show us the permutation table
+For n.l = 0 To #fft_npoints-1
+NPrint n," => ",Peek.l(*fft\ptable+n*4)
+Next
+
+NPrint "FFT:"                             ; lets go and do FFT!
+;fft_SetHanningWindow{*fft}
+fft_Do32s{*fft,&td(0),&fdL(0),&fdR(0)}
+For n.l = 0 To #fft_npoints-1
+ NPrint "left : ",td(n)\l," o--o ",fdL(n)\r," ",fdL(n)\i,"i"
+ NPrint "right: ",td(n)\r," o--o ",fdR(n)\r," ",fdR(n)\i,"i"
+Next
+If td(#fft_npoints)\r><-2  Then NPrint "td\r trashed !",td(#fft_npoints)\r
+If fdL(#fft_npoints)\r><-2 Then NPrint "fdR\r trashed !",fdL(#fft_npoints)\r
+If fdR(#fft_npoints)\r><-2 Then NPrint "fdL\r trashed !",fdR(#fft_npoints)\r
+
+NPrint "IFFT: "                           ; transform back to check the correctness
+ifft_Do32s{*fft,&fdL(0),&fdR(0),&td(0),False}
+For n.l = 0 To #fft_npoints-1
+ NPrint "left : ",td(n)\l," o--o ",fdL(n)\r," ",fdL(n)\i,"i"
+ NPrint "right: ",td(n)\r," o--o ",fdR(n)\r," ",fdR(n)\i,"i"
+Next
+
+If td(#fft_npoints)\r><-2  Then NPrint "td\r trashed !",td(#fft_npoints)\r
+If fdL(#fft_npoints)\r><-2 Then NPrint "fdR\r trashed !",fdL(#fft_npoints)\r
+If fdR(#fft_npoints)\r><-2 Then NPrint "fdL\r trashed !",fdR(#fft_npoints)\r
+Goto skipmagphatest
+fft_Do32s{*fft,&td(0),&fdL(0),&fdR(0)}
+
+NPrint "Baseline..."
+For n.l = 0 To #fft_npoints-1
+ NPrint fdL(n)\r," ",fdL(n)\i,"i <=> ",fdR(n)\r," ",fdR(n)\i,"i"
+Next
+
+fft_SinCos2MagPha{*fft,&fdL(0),&fdMP(0)\r,&fdMP(0)\i,8,8}
+NPrint "After SinCos2MagPha convert..."
+For n.l = 0 To #fft_npoints-1
+  NPrint "magpha ",fdMP(n)\r," ... ",fdMP(n)\i
+Next
+
+fft_MagPha2SinCos{*fft,&fdMP(0)\r,&fdMP(0)\i,&fdL(0),8,8}
+
+;ifft_DoStereo{*fft,&fdL(0),&fdR(0),&td(0)}
+
+NPrint "After MagPha2SinCos backconv ..."
+For n.l = 0 To #fft_npoints-1
+ NPrint fdL(n)\r," ",fdL(n)\i,"i <=> ",fdR(n)\r," ",fdR(n)\i,"i"
+Next
+
+
+
+NPrint "IFFT: "                           ; transform back to check the correctness
+ifft_Do32s{*fft,&fdL(0),&fdR(0),&td(0),True}
+For n.l = 0 To #fft_npoints-1
+ NPrint "left : ",td(n)\l," o--o ",fdL(n)\r," ",fdL(n)\i,"i"
+ NPrint "right: ",td(n)\r," o--o ",fdR(n)\r," ",fdR(n)\i,"i"
+Next
+
+If td(#fft_npoints)\r><-2  Then NPrint "td\r trashed !",td(#fft_npoints)\r
+If fdL(#fft_npoints)\r><-2 Then NPrint "fdR\r trashed !",fdL(#fft_npoints)\r
+If fdR(#fft_npoints)\r><-2 Then NPrint "fdL\r trashed !",fdR(#fft_npoints)\r
+
+
+
+skipmagphatest:
+fft_Free{*fft}
+
+
+
+NPrint "FFT algorithm test (Integer):"
+Format "+#####0.0"
+*fft.fftH = fft_Create{#fft_order,#fftmode_int}  ; create our FFT context
+If *fft=0 Then NPrint "Unable to create FFT." : End
+td(0)\l =  100    ; some Test data
+td(0)\r =  100
+td(1)\l =  200
+td(1)\r =  200
+td(2)\l =  300
+td(2)\r =  300
+td(3)\l =  0
+td(3)\r =  0
+td(4)\l =  0
+td(4)\r =  0
+td(5)\l =  0
+td(5)\r =  0
+td(6)\l =  0
+td(6)\r =  0
+
+td(#fft_npoints)\l = -2,-2
+fdL(#fft_npoints)\r = -2,-2
+fdR(#fft_npoints)\r = -2,-2
+
+ 
+
+NPrint "FFT (int):"                             ; lets go and do FFT!
+;fft_SetHanningWindow{*fft}
+fft_Do32s{*fft,&td(0),&fdLi(0),&fdRi(0)}
+For n.l = 0 To #fft_npoints-1
+ NPrint "left : ",td(n)\l," o--o ",fdLi(n)\r," ",fdLi(n)\i,"i"
+ NPrint "right: ",td(n)\r," o--o ",fdRi(n)\r," ",fdRi(n)\i,"i"
+Next
+NPrint "IFFT: "                           ; transform back to check the correctness
+ifft_Do32s{*fft,&fdLi(0),&fdRi(0),&td(0),True}
+For n.l = 0 To #fft_npoints-1
+ NPrint "left : ",td(n)\l," o--o ",fdLi(n)\r," ",fdLi(n)\i,"i"
+ NPrint "right: ",td(n)\r," o--o ",fdRi(n)\r," ",fdRi(n)\i,"i"
+Next
+If td(#fft_npoints)\r><-2  Then NPrint "td\r trashed !",td(#fft_npoints)\r
+If fdL(#fft_npoints)\r><-2 Then NPrint "fdR\r trashed !",fdL(#fft_npoints)\r
+If fdR(#fft_npoints)\r><-2 Then NPrint "fdL\r trashed !",fdR(#fft_npoints)\r
+
+
+
+fft_Free{*fft}
+
+
+
+NPrint "FFT algorithm test (Integer 68K ASM):"
+Format "+#####0.0"
+*fft.fftH = fft_Create{#fft_order,#fftmode_int68k}  ; create our FFT context
+If *fft=0 Then NPrint "Unable to create FFT." : End
+td(0)\l =  100    ; some Test data
+td(0)\r =  100
+td(1)\l =  200
+td(1)\r =  200
+td(2)\l =  300
+td(2)\r =  300
+td(3)\l =  0
+td(3)\r =  0
+td(4)\l =  0
+td(4)\r =  0
+td(5)\l =  0
+td(5)\r =  0
+td(6)\l =  0
+td(6)\r =  0
+
+td(#fft_npoints)\l = -2,-2
+fdL(#fft_npoints)\r = -2,-2
+fdR(#fft_npoints)\r = -2,-2
+
+
+
+NPrint "FFT (int):"                             ; lets go and do FFT!
+;fft_SetHanningWindow{*fft}
+fft_Do32s{*fft,&td(0),&fdLi(0),&fdRi(0)}
+For n.l = 0 To #fft_npoints-1
+ NPrint "left : ",td(n)\l," o--o ",fdLi(n)\r," ",fdLi(n)\i,"i"
+ NPrint "right: ",td(n)\r," o--o ",fdRi(n)\r," ",fdRi(n)\i,"i"
+Next
+NPrint "IFFT: "                           ; transform back to check the correctness
+ifft_Do32s{*fft,&fdLi(0),&fdRi(0),&td(0),True}
+For n.l = 0 To #fft_npoints-1
+ NPrint "left : ",td(n)\l," o--o ",fdLi(n)\r," ",fdLi(n)\i,"i"
+ NPrint "right: ",td(n)\r," o--o ",fdRi(n)\r," ",fdRi(n)\i,"i"
+Next
+If td(#fft_npoints)\r><-2  Then NPrint "td\r trashed !",td(#fft_npoints)\r
+If fdL(#fft_npoints)\r><-2 Then NPrint "fdR\r trashed !",fdL(#fft_npoints)\r
+If fdR(#fft_npoints)\r><-2 Then NPrint "fdL\r trashed !",fdR(#fft_npoints)\r
+
+ 
+
+
+
+;Format ""
+skip_correctnesstest:
+XINCLUDE "eclock.include.ab3"
+#ffttestsize = 12
+z.l  = AllocMem((1 LSL #ffttestsize)*SizeOf.l*2,0)
+f1.l = AllocMem((1 LSL #ffttestsize)*SizeOf.f*2*2,0)
+f2.l = AllocMem((1 LSL #ffttestsize)*SizeOf.f*2*2,0)
+
+
+ffth.l = fft_Create{#ffttestsize,#fftmode_float}
+fft_SetHanningWindow{ffth}
+samples.l = 0
+NPrint "Speed test for FFT + iFFT: (float)"
+eclock_Start{1000}
+For n.l=0 To 100
+  For x.l=0 To (1 LSL #ffttestsize)-1:Poke.l z+x*8,x:  Poke.l z+x*8+4,x:Next
+  fft_Do32s{ffth,z,f1,f2}
+  ifft_Do32s{ffth,f1,f2,z,True}
+  samples + (1 LSL #ffttestsize)
+Next
+time.l = eclock_Stop{}
+rtf.f = (samples*10/2/441) / time
+Format ""
+NPrint "time needed ",time,"ms for ",samples," samples, => ",rtf,"x speed @44100Hz/stereo, RTF=",1/rtf
+
+
+ffth.l = fft_Create{#ffttestsize,#fftmode_int}
+fft_SetHanningWindow{ffth}
+samples.l = 0
+NPrint "Speed test for FFT + iFFT: (integer)"
+eclock_Start{1000}
+For n.l=0 To 100
+  For x.l=0 To (1 LSL #ffttestsize)-1:Poke.l z+x*8,x:  Poke.l z+x*8+4,x:Next
+  fft_Do32s{ffth,z,f1,f2}
+  ifft_Do32s{ffth,f1,f2,z,True}
+  samples + (1 LSL #ffttestsize)
+Next
+time.l = eclock_Stop{}
+rtf.f = (samples*10/2/441) / time
+Format ""
+NPrint "time needed ",time,"ms for ",samples," samples, => ",rtf,"x speed @44100Hz/stereo, RTF=",1/rtf
+fft_Free{ffth}
+
+
+ffth.l = fft_Create{#ffttestsize,#fftmode_int68k}
+fft_SetHanningWindow{ffth}
+samples.l = 0
+NPrint "Speed test for FFT + iFFT: (integer handoptimized 68K ASM)"
+eclock_Start{1000}
+For n.l=0 To 100
+  For x.l=0 To (1 LSL #ffttestsize)-1:Poke.l z+x*8,x:  Poke.l z+x*8+4,x:Next
+  fft_Do32s{ffth,z,f1,f2}
+  ifft_Do32s{ffth,f1,f2,z,True}
+  samples + (1 LSL #ffttestsize)
+Next
+time.l = eclock_Stop{}
+rtf.f = (samples*10/2/441) / time
+Format ""
+NPrint "time needed ",time,"ms for ",samples," samples, => ",rtf,"x speed @44100Hz/stereo, RTF=",1/rtf
+fft_Free{ffth}
+
+ 
+
+fft_Free{ffth}
+
+End
+CEND
+
+
+
+
+

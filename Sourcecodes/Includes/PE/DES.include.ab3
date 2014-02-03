@@ -1,0 +1,931 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = ""
+; ExeFile         = ""
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 0
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 4
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 7
+; CursorColumn    = 9
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 5
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 5
+; Max GadgetList  = 5
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 20
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 5
+; Max BlitzFont   = 4
+; Max GTList      = 20
+; Max ChunkyBuffer= 2
+; /XTRA
+; (C) Harm ten Napel 2003
+; PBasic program DES3.BAS  Version 2.10.
+; Sample DES3 (Triple DES) Power Basic program.
+
+; DES is basically a monoalphabetic substitution cipher using a 64 bit
+; character. It has 19 distinct stages. The decryption can be done with
+; the same password, the stages must Then be carried out in reverse order.
+;
+; DES3 Expands upon the initial DES program by implementing a
+; Triple DES Encryption Scheme C = Ek3(Dk2(Ek1(P)))
+
+; E is a DES encryption round
+; D is a DES decryption round
+; P is the plaintext
+; C is the ciphertext
+
+; We also do Outer CBC with a random seed (IV) that is prepended To the output stream.
+optimize 4
+
+#DES_OK         = 0
+#DES_PASSERROR  = 1
+#DES_CONSTRAINT = 2
+#DES_ERROR      = 3
+
+
+; in diesem Typ werden die bis zu drei Schluessel sowie der Initialisierungvektor als bytestream abgelegt
+NEWTYPE.DES
+  key1.s
+  key2.s
+  key3.s
+  iv.s
+End NEWTYPE
+
+; dieser Typ dient als Wrapper, um Dims als Parameter an Funktionen uebergeben zu koennen
+NEWTYPE.wrapper
+  item.w[64 + 1]
+End NEWTYPE
+
+
+
+Macro letbe ; {`1,`2,`3} ; target.w() , source.w(), LAST.w
+  For mz.w = 1 To `3
+    `1 = `2
+  Next mz
+End Macro
+
+Macro init ;{`1,`2)
+  For i.w = 1 To `2
+    Read `1
+  Next i
+End Macro
+
+
+; Dimension array For the S-Boxes:
+Dim sboxes.w(8,64)
+Restore sboxesl
+For i.w = 1 To 8
+  For j.w = 1 To 64
+    Read sboxes(i, j)
+  Next j
+Next i
+
+; Dimension for weak-key checking
+Dim weakkeys.w(5,9)
+Restore weakkeys
+For i = 1 To 4
+  For j = 1 To 8
+    Read weakkeys(i,j)
+  Next j
+Next i
+
+Dim semiweakkeys.w(12,8)
+Restore semiweakkeys
+For i = 1 To 12
+  For j = 1 To 8
+    Read semiweakkeys(i,j)
+  Next j
+Next i
+
+; Start initialization:
+Restore InitialTrl
+Dim InitialTr.w(64)
+!init{InitialTr(i),64}
+
+Restore FinalTrl
+Dim FinalTr.w(64)
+!init{FinalTr(i),64}
+
+Restore swappyl
+Dim swappy.w(64)
+!init{swappy(i),64}
+
+Restore KeyTr1l
+Dim KeyTr1.w(56)
+!init{KeyTr1(i),56}
+
+Restore KeyTr2l
+Dim KeyTr2.w(48)
+!init{KeyTr2(i),48}
+
+Restore etrl
+Dim etr.w(48)
+!init{etr(i),48}
+
+Restore ptrl
+Dim ptr.w(32)
+!init{ptr(i),32}
+
+Restore rotsl
+Dim rots.w(16)
+!init{rots(i),16}
+
+Dim plaintext.w(64) ;AS SHARED INTEGER
+Dim ciphertext.w(64); AS SHARED INTEGER
+
+Dim XR.w( 56)             ;Used in mrotate[r|l]() procedure.
+
+Dim EF.w(64)             ;Three 64 bit vectors Used in
+Dim ikeyf.w(64)          ;procedure f().
+Dim yf.w(64)
+
+Dim IVSEED.w(64)         ;64 Bit vector For IV
+
+Dim tempstore.w(64)
+
+Dim ades.w(64)           ;Three 64 bit vectors For
+Dim bdes.w(64)           ;temporary storage in main
+Dim xdes.w(64)           ;subs (de)desalg().
+
+Dim XT.w(64)             ;temporary storage in transpose()
+
+Dim P2A.w(64)            ;64 bit vector For password 1.
+Dim P2B.w(64)            ;64 bit vector For password 2.
+Dim P2C.w(64)            ;64 bit vector For password 3.
+
+Dim xored.w(64)          ;store xored output results
+
+SHARED sboxes(),InitialTr(),FinalTr(),swappy(),KeyTr1(),KeyTr2(),etr()
+SHARED ptr(),rots(),XR(),EF(),ikeyf(),yf(),IVSEED(),tempstore()
+SHARED ades(),bdes(),xdes(),XT(),P2A(),P2B(),P2C(),weakkeys(),semiweakkeys()
+SHARED plaintext(),ciphertext(),xored()
+
+DEFTYPE.DES DES
+
+Function.s btos{*mbits.wrapper}
+  a$ = "" : v.w = 0
+  For i.w = 1 To 8
+    w.w = 0
+    For j.w = 1 To 8
+      ;(2 ^ (8 - j))
+      w = w + *mbits\item[(i-1)*8 + j] * (1 LSL (8 - j))
+    Next j
+    a$ = a$ + Chr$(w)
+  Next i
+  Function Return a$
+End Statement
+
+Statement  transpose{*datax.wrapper,*T.wrapper,n.w}
+  !letbe{XT(mz), *datax\item[mz], 64}
+  For i.w = 1 To n
+   *datax\item[i] = XT( *T\item[i] )
+  Next i
+End Statement
+
+Statement  mrotatel{*keyr.wrapper}     ;1 bit left Rotate On two 28 bit units.
+  !letbe{XR(mz), *keyr\item[mz], 56}
+  For i.w = 1 To 55
+    XR(i) = XR(i + 1)
+  Next i
+  XR(28) = *keyr\item[1]: XR(56) = *keyr\item[29]
+  !letbe{*keyr\item[mz], XR(mz), 56}
+End Statement
+
+Statement  mrotater{*keyr.wrapper}     ;1 bit right Rotate On two 28 bit units.
+  !letbe{XR(mz), *keyr\item[mz], 56}
+  For ir.w = 56 To 2 Step -1
+    XR(ir) = XR(ir - 1)
+  Next ir
+  XR(1) = *keyr\item[28]: XR(29) = *keyr\item[56]
+  !letbe{*keyr\item[mz], XR(mz), 56}
+End Statement
+
+
+Statement fe{i.w, *a.wrapper, *x.wrapper, p.w}
+  h.w = i.w
+  !letbe{EF(mz), *a\item[mz], 64}
+  transpose{&EF(0), &etr(0), 48}                ;Expand e To 48 bits.
+
+  Select p
+  Case 1
+    For j.w = 1 To rots(h.w)                    ;Rotate password 1 OR 2 left
+     mrotatel{&P2A(0)}                            ;according To rots().
+    Next j
+    !letbe{ikeyf(mz), P2A(mz), 64}: transpose{&ikeyf(0), &KeyTr2(0), 48}
+  Case 2
+    For j.w = 1 To rots(h.w)                    ;Rotate password 1 OR 2 left
+     mrotatel{&P2B(0)}                             ;according To rots().
+    Next j
+    !letbe{ikeyf(mz), P2B(mz), 64}: transpose{&ikeyf(0), &KeyTr2(0), 48}
+  Case 3
+    For j.w = 1 To rots(h.w)                    ;Rotate password 1 OR 2 left
+     mrotatel{&P2C(0)}                             ;according To rots().
+    Next j
+    !letbe{ikeyf(mz), P2C(mz), 64}: transpose{&ikeyf(0), &KeyTr2(0), 48}
+  Default
+    End
+  End Select
+
+  For j.w = 1 To 48
+    yf(j) = (EF(j) + ikeyf(j.w)) MOD 2
+  Next j
+
+  For k.w = 1 To 8
+    k6.w = 6 * k: k4.w = 4 * k
+    r.w = (32 * yf(k6 - 5))
+    r   + (16 * yf(k6))
+    r   + ( 8 * yf(k6 - 4))
+    r   + ( 4 * yf(k6 - 3))
+    r   + ( 2 * yf(k6 - 2))
+    r   +       yf(k6 - 1) + 1
+    *x\item[k4 - 3] = (sboxes(k, r) / 8) MOD 2
+    *x\item[k4 - 2] = (sboxes(k, r) / 4) MOD 2
+    *x\item[k4 - 1] = (sboxes(k, r) / 2) MOD 2
+    *x\item[k4    ] =  sboxes(k, r) MOD 2
+  Next k
+  transpose{&*x\item[0], &ptr(0), 32}
+End Statement
+
+Statement fd{i.w, *a.wrapper, *x.wrapper, p.w}
+  h.w = i.w
+  !letbe{EF(mz), *a\item[mz], 64}
+  transpose{&EF(0), &etr(0), 48}                 ;Expand e To 48 mbits.
+  ;!letbe ikeyf(), P2(), 64
+  ;transpose ikeyf(), KeyTr2(), 48
+
+  ;FOR j.w = 1 To rots(h.w)                    ;Note that rotation is For
+  ; mrotate P2()                              ;use in Next Step.
+  ;NEXT j.w                                   ;Total rots where 28 in DES.BAS,
+
+  Select p
+  Case 1
+    !letbe{ikeyf(mz), P2A(mz), 64}: transpose{&ikeyf(0), &KeyTr2(0), 48}
+    For j.w = 1 To rots(h)                    ;Rotate password 1 OR 2 left
+      mrotater{&P2A(0)}                             ;according To rots().
+    Next j
+  Case 2
+    !letbe{ikeyf(mz), P2B(mz), 64}: transpose{&ikeyf(0), &KeyTr2(0), 48}
+    For j.w = 1 To rots(h)                    ;Rotate password 1 OR 2 left
+      mrotater{&P2B(0)}                             ;according To rots().
+    Next j
+  Case 3
+    !letbe{ikeyf(mz), P2C(mz), 64}: transpose{&ikeyf(0), &KeyTr2(0), 48}
+    For j.w = 1 To rots(h)                    ;Rotate password 1 OR 2 left
+      mrotater{&P2C(0)}                             ;according To rots().
+    Next j
+  Default
+    End
+  End Select
+                                          ;here we proceed backwards.
+  For j.w = 1 To 48
+    yf(j) = (EF(j) + ikeyf(j)) MOD 2
+  Next j
+
+  For k.w = 1 To 8
+    k6.w = 6 * k: k4.w = 4 * k
+    r.w = (32 * yf(k6 - 5))
+    r   + (16 * yf(k6))
+    r   + ( 8 * yf(k6 - 4))
+    r   + ( 4 * yf(k6 - 3))
+    r   + ( 2 * yf(k6 - 2))
+    r   +       yf(k6 - 1) + 1
+    *x\item[k4 - 3] = (sboxes(k, r) / 8) MOD 2
+    *x\item[k4 - 2] = (sboxes(k, r) / 4) MOD 2
+    *x\item[k4 - 1] = (sboxes(k, r) / 2) MOD 2
+    *x\item[k4]     =  sboxes(k, r) MOD 2
+  Next k
+  transpose{&*x\item[0], &ptr(0), 32}
+End Statement
+
+
+
+Statement  desalg{p.w}
+  ; temp$ = ""
+  ; stob a$, plaintext()                    ;Convert input To array.
+  ; !letbe ades(), plaintext(), 64           ;Copy plaintext To ades().
+  transpose{&ades(0), &InitialTr(0), 64}      ;Initial transposition.
+
+  For i.w = 1 To 16                         ;Here come the 16 iterations.
+    !letbe{bdes(mz), ades(mz), 64}               ;ades() contains current ciphertext.
+    For j.w = 1 To 32
+      ades(j) = bdes(j + 32)            ;Current left taken from old right.
+    Next j
+    fe{i, &ades(0), &xdes(0), p}            ;Compute xdes()=f(r[i.w-1],k[i.w])
+    For j.w = 1 To 32                       ;( see f() ).
+      ades(j + 32) = (bdes(j) + xdes(j)) MOD 2
+    Next j
+  Next i
+  transpose{&ades(0), &swappy(0),  64}         ;Swap left AND right halves.
+  transpose{&ades(0), &FinalTr(0), 64}         ;Final transposition.
+  ; !letbe ciphertext(), ades(), 64
+  ; temp$ = btos{ciphertext()}                ;Convert output To string.
+  ; desalg$ = temp$
+End Statement
+
+
+Statement dedesalg{p.w}
+  ; temp$ = ""
+  ; stob a$, ciphertext()
+  ; !letbe ades(), ciphertext(), 64
+   transpose{&ades(0), &InitialTr(0), 64}       ;This is reverse of FinalTr().
+   transpose{&ades(0), &swappy(0), 64}          ;Swap left AND right halves.
+   For i.w = 16 To 1 Step -1
+    !letbe{bdes(mz), ades(mz), 64}
+    fd{i, &bdes(0), &xdes(0), p}                 ;Compute xdes()=f(l[i],k[i])
+    For j.w = 1 To 32
+     ades(j) = (bdes(j + 32) + xdes(j)) MOD 2
+    Next j
+    For j.w = 33 To 64
+     ades(j) = bdes(j - 32)              ;Current right taken from old left.
+    Next j
+   Next i
+   transpose{&ades(0), &FinalTr(0), 64}         ;Final transposition.
+  ; !letbe plaintext(), ades(), 64
+  ; btos plaintext(), temp$                 ;Convert output To string.
+  ; dedesalg$ = temp$
+End Statement
+
+Function.s MYBIN{n.w}
+;  LOCAL ST$,p.w
+  p.w = n.w
+  _st$= ""
+  For i.w = 1 To 8
+    If (p MOD 2)
+      _st$ = "1" + _st$
+    Else
+      _st$ = "0" + _st$
+    End If
+    p = p / 2
+  Next i
+  Function Return _st$
+End Function
+
+
+ 
+
+Statement  stob{a$, *mbits.wrapper}
+  For i.w = 1 To 8
+   b$ = MYBIN{Asc(Mid$(a$, i.w, 1))}
+   For j.w = 1 To 8
+   *mbits\item[((i - 1) * 8) + j] = Asc(Mid$(b$, j, 1)) - 48
+   Next j
+  Next i
+End Statement
+
+
+Statement  xtob{a$, *mbits.wrapper}
+;  deftype.s X$,NIBBLE$
+  For i.w = 1 To 16
+    X$ = Mid$(a$,i,1)
+    Select X$
+    Case "0"
+      NIBBLE$ = "0000"
+    Case "1"
+      NIBBLE$ = "0001"
+    Case "2"
+      NIBBLE$ = "0010"
+    Case "3"
+      NIBBLE$ = "0011"
+    Case "4"
+      NIBBLE$ = "0100"
+    Case "5"
+      NIBBLE$ = "0101"
+    Case "6"
+      NIBBLE$ = "0110"
+    Case "7"
+      NIBBLE$ = "0111"
+    Case "8"
+      NIBBLE$ = "1000"
+    Case "9"
+      NIBBLE$ = "1001"
+    Case "A"
+      NIBBLE$ = "1010"
+    Case "B"
+      NIBBLE$ = "1011"
+    Case "C"
+      NIBBLE$ = "1100"
+    Case "D"
+      NIBBLE$ = "1101"
+    Case "E"
+      NIBBLE$ = "1110"
+    Case "F"
+      NIBBLE$ = "1111"
+    Default
+      Print "Not a HEX String."
+      End
+    End Select
+    For j.w = 1 To 4
+        *mbits\item[((i - 1) * 4) + j] = Asc(Mid$(NIBBLE$, j, 1)) - 48
+    Next j
+  Next i
+End Statement
+ 
+
+Statement myxor{*op1.wrapper, *op2.wrapper}
+  For i.w = 1 To 64
+   ades(i) = (*op1\item[i] + *op2\item[i]) MOD 2
+  Next i
+End Statement
+
+Statement myxord{*op1.wrapper, *op2.wrapper}
+  For i.w = 1 To 64
+   xored(i) = (*op1\item[i] + *op2\item[i]) MOD 2
+  Next i
+End Statement
+
+Function.s DES3{a$}
+  stob{a$, &tempstore(0)}
+  myxor{&IVSEED(0), &tempstore(0)}
+  ;!letbe ades(i), xored(i),64
+  desalg{1}
+  dedesalg{2}
+  desalg{3}
+  !letbe{IVSEED(mz), ades(mz) , 64}      ;new IV is old ciphertext
+  temp$ = btos{&ades(0)}
+  Function Return temp$
+End Function
+
+Function.s DEDES3{a$}
+  stob{a$, &ades(0)}
+  !letbe{ciphertext(mz), ades(mz), 64}     ;save current ciphertext
+  dedesalg{3}
+  desalg{2}
+  dedesalg{1}
+  myxord{&IVSEED(0), &ades(0)}
+  !letbe{IVSEED(mz), ciphertext(mz), 64}   ;new IV is old ciphertext
+  temp$ = btos{&xored(0)}
+  Function Return temp$
+End Function
+
+
+Function.s RNDIV{l.w}
+  rndthing$ = ""
+  For i.w = 1 To l
+   rndthing$ = rndthing$ + Chr$(Rnd(255))
+  Next i
+  Function Return rndthing$
+End Function
+ 
+
+
+Function.s Bin2HexStr{s$}
+  For i.w=1 To Len(s$)
+    r$ = r$ + Right$(Hex$(Asc(Mid$(s$,i,1))),2) + " "
+  Next
+  Function Return r$
+End Function
+
+
+Statement DES_SetKeys{_IV$,P1$,P2$,P3$}
+SHARED DES
+
+  ; fuellen der Datenstruktur
+  DES\key1 = StrChg(P1$," ","")
+  DES\key2 = StrChg(P2$," ","")
+  DES\key3 = StrChg(P3$," ","")
+  DES\iv   = StrChg(_IV$," ","")
+
+  ;uncomment password wipeout For now
+  If Len(DES\key1) = 16
+    DES\key1 = UCase$(DES\key1)        ; HEX strings are Case insensitive
+    xtob{DES\key1, &P2A(0)}          ; Use New xtob To expand
+    DES\key1 = btos{&P2A(0)}
+  Else
+    DES\key1 = Left$(DES\key1, 8)
+    stob{DES\key1, &P2A(0)}
+  EndIf
+
+  If Len(DES\key2) = 16
+    DES\key2 = UCase$(DES\key2)        ; HEX strings are Case insensitive
+    xtob{DES\key2, &P2B(0)}           ; Use New xtob To expand
+    DES\key2 = btos{&P2B(0)}
+  Else
+    DES\key2 = Left$(DES\key2, 8)
+    stob{DES\key2, &P2B(0)}
+  EndIf
+
+  If Len(DES\key3) = 16
+    DES\key3 = UCase$(DES\key3)        ; HEX strings are Case insensitive
+    xtob{DES\key3, &P2C(0)}           ; Use New xtob To expand
+    DES\key3 = btos{&P2C(0)}
+  Else
+    DES\key3 = Left$(DES\key3, 8)
+    stob{DES\key3, &P2C(0)}
+  EndIf
+
+  If Len(DES\iv) = 16
+    DES\iv = UCase$(DES\iv)            ; HEX strings are Case insensitive
+    xtob{DES\iv, &IVSEED(0)}          ; Use New xtob To expand
+    DES\iv = btos{&IVSEED(0)}          ;write back To DES\iv as 8 byte string
+  Else
+    DES\iv = Left$(DES\iv, 8)
+    stob{DES\iv, &IVSEED(0)}
+  EndIf
+End Statement
+
+
+
+Function.b DES_Check_Weakness{}
+SHARED DES
+  ; check for weakkeys
+  DEFTYPE.s cPW
+  For i.w = 1 To 4
+    For j.w = 1 To 8
+      cPW + Chr$( weakkeys.w(i.w,k.w) )
+    Next j
+    If (cPW = DES\key1) OR (cPW = DES\key2) OR (cPW = DES\key3) Then Function Return False
+  Next i
+  ; check for semi-weakkeys
+  For i = 1 To 12
+    For j = 1 To 8
+      cPW + Chr$(semiweakkeys.w(i,k))
+    Next j
+    If (cPW = DES\key1) OR (cPW = DES\key2) OR (cPW = DES\key3) Then Function Return False
+  Next i
+
+  Function Return True
+End Function
+
+Function.l DES_Encrypt{quelldatei$,zieldatei$}
+    bplain$ = "honitos     "
+    If OpenFile(1,quelldatei$)
+      lof1.l = Lof(1)
+      DeleteFile_ zieldatei$
+      If OpenFile(2,zieldatei$)
+        CNIF @#USE_WIZARD<>0
+          win_use.l = Used Window
+          WZ_ShowMessage{"Verschlüsselung läuft...",1}
+        CEND
+
+        ;Mix up keys AND reduce To 56 bits.
+        transpose{ &P2A(0), &KeyTr1(0), 56}
+        transpose{ &P2B(0), &KeyTr1(0), 56}
+        transpose{ &P2C(0), &KeyTr1(0), 56}
+
+        ;Create a random string 12 chars, misuse rndiv$
+        ;anything$ = RNDIV{12}
+        ;anything$ = StrChg(anything$,"#",".")
+        ;Definition of header, see also comment below.
+        ;Sourcefile Length AND name encoded in three 8 bit blocks into encoded File,
+        ;avoid known plaintext game by adding some random characters.
+        ;header$ = "#" + Str$(lof1.l)
+        ;header$ = "D3S" + Left$(anything$, 8 - Len(header$)) + header$
+        ;header$ + Right$(anything$, 12 - Len(bplain$)) + "#" + bplain$
+        ;!cout{header$}
+
+        ; Verschluesseln des Headers
+        ;cheader$ = DES3{Left$(header$,8)}
+        ;cheader$ + DES3{Mid$(header$,9,8)}
+        ;header$ + DES3{Right$(header$,8)}
+
+        ; Schreiben des Headers in die Zieldatei,
+        ; derzeit grundsaetzlich 24 bytes, d.h. 3 Bloecke
+        ;WriteMem 2,&cheader$,Len(cheader$)
+
+        ;WZPrint #ARGS_STATUS,"Progress :   0%"
+        ;Here the main encryption / decryption starts, dividing
+        ;the input File in 8 character blocks
+        ;and encrypting / decrypting them one by one.
+        blocks.l = lof1 / 8
+        inblock$ = SPACE$(8)
+        For n1.l = 1 To blocks
+          ReadMem 1,&inblock$,8
+          outblock$ = DES3{inblock$}
+          WriteMem 2,&outblock$,Len(outblock$)
+
+          CNIF @#USE_WIZARD<>0
+            !WZ_Update_Gauge{n1,blocks}
+          CEND
+        Next n1
+
+        CNIF @#USE_WIZARD<>0
+          WZ_ShowMessage{"Schließe Verschlüsselung ab"}
+        CEND
+
+        ; der letzte Block ...
+        rest.w = lof1 MOD 8
+;        !cout{"lof1 : ",lof1}
+;        !cout{"loc1 : ",Loc(1)}
+;        !cout{"rest : ",rest}
+        ; falls es hier noch restbytes gibt, werden die auf 8 bytes gepadded
+        If rest > 0
+          outblock$ = ""
+          ReadMem 1,&inblock$,rest
+          inblock$ = Left$(inblock$,rest)
+          ; hier wird auf die naechsten 8bytes gepadded ...
+          padbytes.w = 8 - rest
+        Else
+          padbytes = 8
+        EndIf
+
+        If padbytes < 0 Then Request "","Internal Error in DES_Encrypt() !","Ok"
+        If padbytes > 0
+          If padbytes > 1
+            padder$ =  StrClone(Chr$(0),padbytes-1)+ Chr$(padbytes)
+          Else
+            padder$ = Chr$(padbytes)
+          EndIf
+          inblock$ = inblock$ + padder$
+        EndIf
+
+        ; ... und verschluesselt
+        outblock$ = DES3{inblock$}
+        WriteMem 2,&outblock$,Len(outblock$)
+
+;        !cout{"gepaddete Bytes: ",padbytes}
+        CloseFile 1
+        CloseFile 2
+        status.l = #DES_OK
+      Else
+        dummy.l = RTEZRequest("DES_Encrypt()","Konnte Tempordr-Datei nicht anlegen.","Ok")
+        status.l = #DES_ERROR
+      EndIf
+    Else
+      dummy.l = RTEZRequest("DES_Encrypt()","Konnte Quelldaten nicht vorhanden.","Ok")
+      status.l = #DES_ERROR
+    EndIf
+
+    CNIF @#USE_WIZARD<>0
+      WZ_HideMessage{}
+      Use Window win_use
+    CEND
+    Function Return status
+End Function
+
+Function.b DES_Decrypt{quelldatei$,zieldatei$}
+  bplain$ ="honitos      "
+  If OpenFile(1,quelldatei$)
+
+    CNIF @#USE_WIZARD<>0
+      win_use.l = Used Window
+      WZ_ShowMessage{"Entschlüsselung läuft..."}
+    CEND
+
+    ;Mix up keys AND reduce To 56 bits.
+    transpose{ &P2A(0), &KeyTr1(0), 56}
+    transpose{ &P2B(0), &KeyTr1(0), 56}
+    transpose{ &P2C(0), &KeyTr1(0), 56}
+
+    ; Lese den Header aus und entschluessele ihn
+    ;cheader$ = SPACE$(24)
+    ;ReadMem 1,&cheader$,24
+    ;header$ = DEDES3{Left$(cheader$, 8)}
+    ;header$ = header$ + DEDES3{Mid$(cheader$, 9, 8)}
+    ;header$ = header$ + DEDES3{Right$(cheader$, 8)}
+
+    ;If NOT (Left$(header$, 3) = "D3S")
+;      stat$ = "Password error: " + cipherf$ + " is not a legitimate DES3 file."
+;      WZPrint #ARGS_STATUS,&stat$
+    ;  Function Return #DES_PASSERROR
+    ;EndIf
+
+    lof1.l = Lof(1)
+    ;pl.w = Instr(header$, "#")
+    ;le$ = Mid$(header$, pl + 1, (11 - pl))
+    ;lf.l = Val(le$)
+    ;ev1.l = lf + 24    ;take header into account
+    ;If (ev1 MOD 8) Then ev1 = ev1 + 8 - (ev1 MOD 8)
+    ;rescue.w = False
+
+;    If (ev1 <> lof1)
+;      message$ = "Warnung: Datenunterschiede gefunden:" +Chr$(10) + Chr$(10)
+;      message$ + "          Ursprungsdatei : " + oldquelldatei$  + Chr$(10)
+;      message$ + "      Originaldateildnge : " + Str$( lf)   + " bytes" + Chr$(10)
+;      message$ + "      Eingangsdateildnge : " + Str$( lof1) + " bytes" + Chr$(10)
+;      message$ + " erw. Eingangsdateildnge : " + Str$( ev1)  + " bytes" + Chr$(10) + Chr$(10)
+;      message$ + "Trotzdem entschl|sseln ?"
+;      If NOT RTEZRequest("",message$,"Ja|Nein") Then Statement Return
+;    EndIf
+
+    DeleteFile_ zieldatei$
+    If OpenFile(2,zieldatei$)
+      ;Here the main decryption starts, dividing
+      ;the input File in 8 character blocks
+      ;and decrypting them one by one.
+
+      ; header has already been parsed
+      blocks.l = (Lof(1) / 8) ; - 3
+
+      ; forget the last Block because this may be padded
+      bigblocks.l = (blocks - 1) / 32
+
+      inblock$ = SPACE$(8)
+      For m.l = 1 To blocks - 1
+        ReadMem 1,&inblock$,8
+        outblock$ = DEDES3{inblock$}
+        WriteMem 2,&outblock$,Len(outblock$)
+
+        CNIF @#USE_WIZARD<>0
+          !WZ_Update_Gauge{m,blocks}
+        CEND
+      Next
+
+      CNIF @#USE_WIZARD<>0
+        WZ_ShowMessage{"Schließe Entschlüsselung ab..."}
+      CEND
+
+      ; last Block
+      rest.l = Lof(1) - Loc(1)
+;      !cout{"laenge letzter Block: ",rest}
+      inblock$ = SPACE$(rest)
+      ReadMem 1, &inblock$,rest
+      outblock$ = DEDES3{inblock$}
+
+      ; wegnehmen eventueller Padbytes
+      padBytes.w = Asc(Right$(outblock$,1))
+      If padBytes < 8
+;        !cout{"gefundene Padbytes: ",padBytes}
+        outblock$ = Left$(outblock$,8-padBytes)
+        WriteMem 2,&outblock$,Len(outblock$)
+      EndIf
+      CloseFile 1
+      CloseFile 2
+      status.l = #DES_OK
+    Else
+      status.l = #DES_ERROR
+    EndIf
+  Else
+    status.l = #DES_ERROR
+  EndIf
+
+  CNIF @#USE_WIZARD<>0
+    WZ_HideMessage{}
+    Use Window win_use
+  CEND
+  Function Return status
+End Function
+
+; Standard values To initialize the tables: -----------------------------
+
+InitialTrl:
+Data.w 58,50,42,34,26,18,10,02,60,52,44,36,28,20,12,04
+Data.w 62,54,46,38,30,22,14,06,64,56,48,40,32,24,16,08
+Data.w 57,49,41,33,25,17,09,01,59,51,43,35,27,19,11,03
+Data.w 61,53,45,37,29,21,13,05,63,55,47,39,31,23,15,07
+
+FinalTrl:
+Data.w 40,08,48,16,56,24,64,32,39,07,47,15,55,23,63,31
+Data.w 38,06,46,14,54,22,62,30,37,05,45,13,53,21,61,29
+Data.w 36,04,44,12,52,20,60,28,35,03,43,11,51,19,59,27
+Data.w 34,02,42,10,50,18,58,26,33,01,41,09,49,17,57,25
+
+swappyl:
+Data.w 33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48
+Data.w 49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64
+Data.w 01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16
+Data.w 17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32
+
+KeyTr1l:
+Data.w 57,49,41,33,25,17,09,01,58,50,42,34,26,18,10,02
+Data.w 59,51,43,35,27,19,11,03,60,52,44,36
+Data.w 63,55,47,39,31,23,15,07,62,54,46,38,30,22,14,06
+Data.w 61,53,45,37,29,21,13,05,28,20,12,04
+
+KeyTr2l:
+Data.w 14,17,11,24,01,05,03,28,15,06,21,10,23,19,12,04,26,08,16,07,27,20,13,02
+Data.w 41,52,31,37,47,55,30,40,51,45,33,48,44,49,39,56,34,53,46,42,50,36,29,32
+
+etrl:
+Data.w 32,01,02,03,04,05,04,05,06,07,08,09,08,09,10,11,12,13,12,13,14,15,16,17
+Data.w 16,17,18,19,20,21,20,21,22,23,24,25,24,25,26,27,28,29,28,29,30,31,32,01
+
+ptrl:
+Data.w 16,07,20,21,29,12,28,17,01,15,23,26,05,18,31,10
+Data.w 02,08,24,14,32,27,03,09,19,13,30,06,22,11,04,25
+
+sboxesl:
+Data.w 14,04,13,01,02,15,11,08,03,10,06,12,05,09,00,07
+Data.w 00,15,07,04,14,02,13,01,10,06,12,11,09,05,03,08
+Data.w 04,01,14,08,13,06,02,11,15,12,09,07,03,10,05,00
+Data.w 15,12,08,02,04,09,01,07,05,11,03,14,10,00,06,13
+
+Data.w 15,01,08,14,06,11,03,04,09,07,02,13,12,00,05,10
+Data.w 03,13,04,07,15,02,08,14,12,00,01,10,06,09,11,05
+Data.w 00,14,07,11,10,04,13,01,05,08,12,06,09,03,02,15
+Data.w 13,08,10,01,03,15,04,02,11,06,07,12,00,05,14,09
+
+Data.w 10,00,09,14,06,03,15,05,01,13,12,07,11,04,02,08
+Data.w 13,07,00,09,03,04,06,10,02,08,05,14,12,11,15,01
+Data.w 13,06,04,09,08,15,03,00,11,01,02,12,05,10,14,07
+Data.w 01,10,13,00,06,09,08,07,04,15,14,03,11,05,02,12
+
+Data.w 07,13,14,03,00,06,09,10,01,02,08,05,11,12,04,15
+Data.w 13,08,11,05,06,15,00,03,04,07,02,12,01,10,14,09
+Data.w 10,06,09,00,12,11,07,13,15,01,03,14,05,02,08,04
+Data.w 03,15,00,06,10,01,13,08,09,04,05,11,12,07,02,14
+
+Data.w 02,12,04,01,07,10,11,06,08,05,03,15,13,00,14,09
+Data.w 14,11,02,12,04,07,13,01,05,00,15,10,03,09,08,06
+Data.w 04,02,01,11,10,13,07,08,15,09,12,05,06,03,00,14
+Data.w 11,08,12,07,01,14,02,13,06,15,00,09,10,04,05,03
+
+Data.w 12,01,10,15,09,02,06,08,00,13,03,04,14,07,05,11
+Data.w 10,15,04,02,07,12,09,05,06,01,13,14,00,11,03,08
+Data.w 09,14,15,05,02,08,12,03,07,00,04,10,01,13,11,06
+Data.w 04,03,02,12,09,05,15,10,11,14,01,07,06,00,08,13
+
+Data.w 04,11,02,14,15,00,08,13,03,12,09,07,05,10,06,01
+Data.w 13,00,11,07,04,09,01,10,14,03,05,12,02,15,08,06
+Data.w 01,04,11,13,12,03,07,14,10,15,06,08,00,05,09,02
+Data.w 06,11,13,08,01,04,10,07,09,05,00,15,14,02,03,12
+
+Data.w 13,02,08,04,06,15,11,01,10,09,03,14,05,00,12,07
+Data.w 01,15,13,08,10,03,07,04,12,05,06,11,00,14,09,02
+Data.w 07,11,04,01,09,12,14,02,00,06,10,13,15,03,05,08
+Data.w 02,01,14,07,04,10,08,13,15,12,09,00,03,05,06,11
+
+rotsl:
+Data.w 1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1        ;The sum of these is 28 so
+                                              ;the password is restored
+                                              ;automatically after 16 steps.
+
+weakkeys:
+Data.w $01,$01,$01,$01,$01,$01,$01,$01
+Data.w $FE,$FE,$FE,$FE,$FE,$FE,$FE,$FE
+Data.w $1F,$1F,$1F,$1F,$1F,$1F,$1F,$1F
+Data.w $E0,$E0,$E0,$E0,$E0,$E0,$E0,$E0
+
+semiweakkeys:
+Data.w $01,$FE,$01,$FE,$01,$FE,$01,$FE
+Data.w $FE,$01,$FE,$01,$FE,$01,$FE,$01
+Data.w $1F,$E0,$1F,$E0,$0E,$F1,$0E,$F1
+Data.w $E0,$1F,$E0,$1F,$F1,$0E,$F1,$0E
+Data.w $01,$E0,$01,$E0,$01,$F1,$01,$F1
+Data.w $E0,$01,$E0,$01,$F1,$01,$F1,$01
+Data.w $1F,$FE,$1F,$FE,$0E,$FE,$0E,$FE
+Data.w $FE,$1F,$FE,$1F,$FE,$0E,$FE,$0E
+Data.w $01,$1F,$01,$1F,$01,$0E,$01,$0E
+Data.w $1F,$01,$1F,$01,$0E,$01,$0E,$01
+Data.w $E0,$FE,$E0,$FE,$F1,$FE,$F1,$FE
+Data.w $FE,$E0,$FE,$E0,$FE,$F1,$FE,$F1
+ 
+CNIF #__include = 0
+  If OpenFile(1,"ram:input")
+    FileOutput 1
+    Print "1234567890ABCDEF"
+    CloseFile 1
+    DefaultOutput
+  EndIf
+  DES_SetKeys{"00000000","11111111","22222222","11111111"}
+  DES_Encrypt{"RAM:input","ram:output"}
+  DES_SetKeys{"00000000","11111111","22222222","11111111"}
+  DES_Decrypt{"ram:output","ram:ergebnis"}
+CEND

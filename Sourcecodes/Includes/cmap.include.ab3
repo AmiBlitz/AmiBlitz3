@@ -1,0 +1,935 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "/Bin"
+; ExeFile         = "ColmapDemo"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 80
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 7
+; CursorColumn    = 9
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 30
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 5
+; Max GadgetList  = 5
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 5
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 5
+; Max BlitzFont   = 4
+; Max GTList      = 5
+; Max ChunkyBuffer= 2
+; /XTRA
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Name: colmap.include                                                        /
+;/                                                                             /
+;/ Platforms: Classic, WinUAE, Amithlon, MorphOS, AmigaOS4                     /
+;/                                                                             /
+;/ Date: 24/05/2007                                                            /
+;/                                                                             /
+;/ Author: <unknown>                                                           /
+;/                                                                             /
+;/ Requirements:  Amiblitz3                                                    /
+;/                                                                             /
+;/ Purpose:                                                                    /
+;/ ColorMap handling for color indexed screens.
+;/                                                                             /
+;/ Abstract:                                                                   /
+;/ * no abstract available *                                                   /
+;/                                                                             /
+;/ User Constants:                                                             /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Syntax 2
+CNIF #__include=0
+optimize 7
+CEND
+
+XINCLUDE "error.include.ab3"
+XINCLUDE "file.include.ab3"
+XINCLUDE "v43+.definitions.ab3"
+
+.CMAP_CONSTANTS
+#cmap_lut_size = 1 LSL 15
+#cmap_lutfast_size = 1 LSL 9
+#cmap_history_size = 1 LSL 15
+
+#cmaptype_RGB8       = 1 ; color reduction to x<=8 bit like from 24to 16
+#cmaptype_custom     = 2 ; fixed palette, e.g. from a file or from screen
+#cmaptype_customfast = 3
+#cmaptype_bw         = 4 ; black&white palette
+#cmaptype_grayscale  = 5 ; grayscale palette
+
+NEWTYPE.cmapitem
+R.l
+G.l
+B.l
+End NEWTYPE
+
+NEWTYPE.cmap
+; history
+historyP.l
+history_cols.l
+
+; mapping table 16BIT RGB => LUT8
+mapP.l
+map_isupdated.l
+lutsize.l
+
+; color map
+cmap.cmapitem[256]
+lock.l[256]
+pens_used.l
+cmapdepth.l
+cmaptype.l
+
+; screen
+*scr.Screen
+End NEWTYPE
+
+NEWTYPE.historyitem
+count.f ; occurence of this color  (history)
+R.f  ; avg Red
+G.f
+B.f
+End NEWTYPE
+
+NEWTYPE.mapitem
+pen.l
+End NEWTYPE
+
+ 
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = cmap_InitHistory {}                                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l cmap_InitHistory{*cmap.cmap}
+If *cmap=0 Then Function Return False
+If *cmap\historyP Then Function Return True
+*cmap\historyP = AllocVec_(SizeOf.historyitem*#cmap_history_size,#MEMF_CLEAR)
+If *cmap\historyP Then succ.l=True:Else succ=False : error {"\\__THIS_FUNCTION: Unable to init colormap history table !"}
+*cmap\history_cols = -1
+Function Return succ
+End Function
+
+
+Function.l cmap_InitMapTable {*cmap.cmap,lutsize.l}
+If *cmap=0 Then Function Return False
+If *cmap\mapP><0 AND *cmap\lutsize=lutsize Then Function Return True
+If *cmap\mapP Then FreeVec_ *cmap\mapP
+*cmap\mapP = AllocVec_(SizeOf.mapitem*lutsize,#MEMF_CLEAR)
+*cmap\lutsize = lutsize
+If *cmap\mapP Then succ.l=True:Else succ=False : error {"\\__THIS_FUNCTION: Unable to init colormap mapping table !"}
+*cmap\map_isupdated = False
+Function Return succ
+End Function
+
+
+Statement cmap_LockScreenPens{*cmap.cmap}
+If *cmap=0 Then Statement Return
+*scr.Screen = *cmap\scr
+If *scr
+  For pen.l=0 To *cmap\pens_used-1
+    If ObtainPen_ (*scr\ViewPort\ColorMap,pen,0,0,0,#PEN_NO_SETCOLOR)>=0
+      *cmap\lock[pen]+1
+    End If
+  Next
+End If
+End Statement
+
+
+Statement cmap_ReleaseScreenPens{*cmap.cmap}
+If *cmap=0 Then Statement Return
+*scr.Screen = *cmap\scr
+If *scr
+  For pen.l=0 To *cmap\pens_used-1
+    While *cmap\lock[pen]>0
+      ReleasePen_ *scr\ViewPort\ColorMap,pen
+      *cmap\lock[pen]-1
+    Wend
+  Next
+End If
+End Statement
+
+
+Statement cmap_SetFastMode{*cmap.cmap}
+If *cmap=0 Then Statement Return
+If *cmap\cmaptype = #cmaptype_custom Then *cmap\cmaptype = #cmaptype_customfast : *cmap\map_isupdated = False
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cmap_Free {}                                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * private *                                                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement cmap_Free {*cmap.cmap}
+If *cmap=0 Then Statement Return
+cmap_ReleaseScreenPens{*cmap}
+If *cmap\historyP Then FreeVec_ *cmap\historyP : *cmap\historyP = 0
+If *cmap\mapP     Then FreeVec_ *cmap\mapP     : *cmap\mapP     = 0
+
+*cmap\lutsize       = 0
+*cmap\history_cols  = -1
+*cmap\map_isupdated = False
+*cmap\pens_used     = 0
+
+FreeVec_ *cmap  : *cmap = 0
+End Statement
+
+
+Function.l cmap_Init{}
+*cmap.cmap = AllocVec_(SizeOf.cmap,#MEMF_CLEAR)
+If *cmap
+  *cmap\pens_used  = 256
+  *cmap\cmapdepth  = 8
+  *cmap\cmaptype   = #cmaptype_custom
+  *cmap\lutsize    = 0
+Else
+  error {"\\__THIS_FUNCTION: Unable to allocate color map !"}
+End If
+Function Return *cmap
+End Function
+ 
+
+Statement cmap_UpdateMapTable{*cmap.cmap}
+
+If *cmap\map_isupdated=False   ; generic algorithm to create a mapping table
+  Select *cmap\cmaptype
+    Case #cmaptype_RGB8
+      ; we dont need a map table...
+
+    Case #cmaptype_bw ;
+      ; we dont need a map table...
+
+    Case #cmaptype_grayscale
+      ; we dont need a map table...
+
+    Case #cmaptype_customfast
+      If cmap_InitMapTable{*cmap,#cmap_lutfast_size} = False Then Statement Return
+      lastpen.l = 0
+      For ind.l=0 To #cmap_lutfast_size-1
+        *map.mapitem = *cmap\mapP + SizeOf.mapitem * ind
+        R.l = (ind & %000000000000111) LSL 5
+        G.l = (ind & %000000000111000) LSL 2
+        B.l = (ind & %000000111000000) LSR 1
+        *map\pen = lastpen  ; i guess the last color will do it for the next as well
+        diffR.l = (R-*cmap\cmap[lastpen]\R) : If diffR<0 Then diffR=-diffR
+        diffG.l = (G-*cmap\cmap[lastpen]\G) : If diffG<0 Then diffG=-diffG
+        diffB.l = (B-*cmap\cmap[lastpen]\B) : If diffB<0 Then diffB=-diffB
+        mdiff.l = diffR+diffG+diffB
+
+        For pen.l=0 To *cmap\pens_used-1
+          diff.l = (R-*cmap\cmap[pen]\R) : If diff<0 Then diff=-diff
+          If diff<mdiff
+            diffG.l = (G-*cmap\cmap[pen]\G) : If diffG<0 Then diff-diffG:Else diff+diffG
+            If diff<mdiff
+              diffB.l = (B-*cmap\cmap[pen]\B) : If diffB<0 Then diff-diffB:Else diff+diffB
+              If diff<mdiff
+                mdiff = diff
+                lastpen=pen
+              End If
+            End If
+          End If
+        Next
+        *map\pen = lastpen
+      Next
+
+    Case #cmaptype_custom
+      If cmap_InitMapTable{*cmap,#cmap_lut_size} = False Then Statement Return
+      lastpen.l = 0
+      For ind.l=0 To #cmap_lut_size-1
+        *map.mapitem = *cmap\mapP + SizeOf.mapitem * ind
+        R.l = ( ind & %11111                   ) LSL 3
+        G.l = ((ind & %1111100000) LSR 5       ) LSL 3
+        B.l = ((ind & %111110000000000) LSR 10 ) LSL 3
+        *map\pen = lastpen  ; i guess the last color will do it for the next as well
+        diffR.l = (R-*cmap\cmap[lastpen]\R) : If diffR<0 Then diffR=-diffR
+        diffG.l = (G-*cmap\cmap[lastpen]\G) : If diffG<0 Then diffG=-diffG
+        diffB.l = (B-*cmap\cmap[lastpen]\B) : If diffB<0 Then diffB=-diffB
+        mdiff.l = diffR+diffG+diffB
+
+        For pen.l=0 To *cmap\pens_used-1
+          diff.l = (R-*cmap\cmap[pen]\R) : If diff<0 Then diff=-diff
+          If diff<mdiff
+            diffG.l = (G-*cmap\cmap[pen]\G) : If diffG<0 Then diff-diffG:Else diff+diffG
+            If diff<mdiff
+              diffB.l = (B-*cmap\cmap[pen]\B) : If diffB<0 Then diff-diffB:Else diff+diffB
+              If diff<mdiff
+                mdiff = diff
+                lastpen=pen
+              End If
+            End If
+          End If
+        Next
+        *map\pen = lastpen
+      Next
+    Default
+      error{"\\__THIS_FUNCTION: Unsupported mapping type!"}
+  End Select
+  *cmap\map_isupdated=True
+End If
+End Statement
+
+
+Function.l cmap_CreateGrayScale{@numcolors.l}
+*cmap.cmap = cmap_Init{}
+If *cmap=0 Then Function Return 0
+If numcolors<2 Then numcolors=256
+*cmap\pens_used = numcolors
+
+For pen.l=0 To *cmap\pens_used-1
+  *cmap\cmap[pen]\R = pen * 255/(*cmap\pens_used-1)
+  *cmap\cmap[pen]\G = pen * 255/(*cmap\pens_used-1)
+  *cmap\cmap[pen]\B = pen * 255/(*cmap\pens_used-1)
+Next
+*cmap\cmaptype = #cmaptype_grayscale
+Function Return *cmap
+End Function
+
+
+Function.l cmap_CreateBlackWhite{}
+*cmap.cmap = cmap_Init{}
+If *cmap=0 Then Function Return 0
+*cmap\pens_used = 2
+
+*cmap\cmap[0]\R = 0
+*cmap\cmap[0]\G = 0
+*cmap\cmap[0]\B = 0
+*cmap\cmap[1]\R = 255
+*cmap\cmap[1]\G = 255
+*cmap\cmap[1]\B = 255
+
+*cmap\cmaptype = #cmaptype_bw
+Function Return *cmap
+End Function
+
+
+Function.l cmap_CreateRGB8{@numcolors.l}
+*cmap.cmap = cmap_Init{}
+If *cmap=0 Then Function Return 0
+If numcolors<2 Then numcolors=256
+*cmap\pens_used = numcolors
+
+For pen.l=0 To *cmap\pens_used-1
+  *cmap\cmap[pen]\R = ((pen & %00000111) LSL 5 ) * 255 / %11100000
+  *cmap\cmap[pen]\G = ((pen & %00111000) LSL 2 ) * 255 / %11100000
+  *cmap\cmap[pen]\B = ((pen & %11000000)       ) * 255 / %11000000
+Next
+*cmap\cmaptype = #cmaptype_RGB8
+Function Return *cmap
+End Function
+
+
+Function.l cmap_UpdateFromHistory{*cmap.cmap,@numcolors.l}
+If *cmap=0 Then Function Return 0
+If cmap_InitHistory{*cmap}=False Then Function Return False
+If numcolors<2 Then numcolors = 256
+succ.l = True
+For pen.l=0 To numcolors-1
+  maxcount.l = 0
+  maxind.l   = 0
+  maxscore.f = 0
+  For ind.l=0 To #cmap_history_size-1
+    *history.historyitem = *cmap\historyP + SizeOf.historyitem * ind
+
+    If *history\count>0
+      mindist.f = 256000000
+      For tpen.l=0 To pen-1
+        dR.l = (*history\R / *history\count) - *cmap\cmap[tpen]\R
+        dG.l = (*history\G / *history\count) - *cmap\cmap[tpen]\G
+        dB.l = (*history\B / *history\count) - *cmap\cmap[tpen]\B
+
+        dist.f = (dR*dR + dG*dG + dB*dB)
+        If dist<mindist Then mindist=dist
+      Next
+
+      score.f = mindist * Sqr(*history\count)
+
+      If score>maxscore
+        maxcount = *history\count
+        maxscore = score
+        maxind   = ind
+      End If
+    End If
+
+  Next
+  *history.historyitem = *cmap\historyP + SizeOf.historyitem * maxind
+  If *history\count
+    R.l = (*history\R / *history\count)
+    G.l = (*history\G / *history\count)
+    B.l = (*history\B / *history\count)
+    *cmap\cmap[pen]\R = R, G, B
+    *history\count=0
+  Else
+    pen = numcolors
+  End If
+Next
+*cmap\cmaptype = #cmaptype_custom
+*cmap\pens_used = numcolors
+Function Return succ
+End Function
+
+
+Statement cmap_SetRGB{*cmap.cmap,pen.l,ARGB.l}
+If *cmap
+  *cmap\cmap[pen]\R = (ARGB LSR 16) & $FF
+  *cmap\cmap[pen]\G = (ARGB LSR  8) & $FF
+  *cmap\cmap[pen]\B = (ARGB       ) & $FF
+  *cmap\map_isupdated = False
+End If
+End Statement
+
+
+Function.l cmap_GetRGB{*cmap.cmap,pen.l}
+ARGB.l = 0
+If *cmap
+  If pen>=0 AND pen<256
+    ARGB.l = *cmap\cmap[pen]\R LSL 16 | *cmap\cmap[pen]\G LSL 8 | *cmap\cmap[pen]\B
+  End If
+End If
+Function Return ARGB
+End Function
+ 
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cmap_AddToHistory {ARGBPtr.l,xs.l,ys.l,bpr.l}                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Add an image to the history, to be able to calculate a good set of pens f:: /
+;/ or remapping.                                                               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - ARGBPtr.l : ???                                                        /
+;/ - xs.l      : ???                                                             /
+;/ - ys.l      : ???                                                             /
+;/ - bpr.l     : ???                                                            /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement cmap_AddPixelArrayToHistory{*cmap.cmap,ARGBPtr.l,xs.l,ys.l,bpr.l}
+If cmap_InitHistory{*cmap}=False Then Statement Return
+If ARGBPtr
+  ; add ARGB bitmap to history
+  For y.l = 0 To ys-1
+    ptr.l = ARGBPtr + y*bpr
+    For x.l = 0 To xs-1
+      R.l = Peek.b(ptr+3) & $FF
+      G.l = Peek.b(ptr+2) & $FF
+      B.l = Peek.b(ptr+1) & $FF
+      R5.l = R LSR 3
+      G5.l = G LSR 3
+      B5.l = B LSR 3
+      ind.l = R5 | (G5 LSL 5) | (B5 LSL 10)
+      *history.historyitem = *cmap\historyP + SizeOf.historyitem * ind
+      *history\count + 1
+      *history\R + R
+      *history\G + G
+      *history\B + B
+      ptr+4
+    Next
+  Next
+  *cmap\history_cols = -1
+End If
+End Statement
+
+
+Function.l cmap_GetNumColorsInHistory{*cmap.cmap}
+If *cmap=0 Then Function Return 0
+If *cmap\historyP=0 Then Function Return 0
+If *cmap\history_cols<0
+  cols.l = 0
+  For ind.l=0 To #cmap_history_size-1
+    *history.historyitem = *cmap\historyP + SizeOf.historyitem * ind
+    If *history\count>0 Then cols+1
+  Next
+  *cmap\history_cols = cols
+End If
+Function Return *cmap\history_cols
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = cmap_Write {fid.l}                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Write the colormap to an IFF-ILBM file as CMAP chunk imto an already open:: /
+;/  file.                                                                      /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fid.l    : file handle returned by file_open (file.include)               /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l cmap_Write {*cmap.cmap,fid.l}
+succ.l = False
+If *cmap
+  succ = file_WriteChunk{fid,@"CMAP"}
+  For pen.l=0 To *cmap\pens_used-1
+    CReg.ColorRegister\red   = *cmap\cmap[pen]\R
+    CReg.ColorRegister\green = *cmap\cmap[pen]\G
+    CReg.ColorRegister\blue  = *cmap\cmap[pen]\B
+    succ & file_WriteMem{fid,CReg,3}
+    If succ=False Then pen=*cmap\pens_used
+  Next
+  file_CloseChunk{fid,@"CMAP"}
+Else
+  error {"\\__THIS_FUNCTION: no color map created!"}
+End If
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = cmap_Save {filename.s,@force.l}                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Save a colormap to a file as IFF-ILBM CMAP chunk.                           /
+;/ The colormap can be read by most Amiga paint programs.                      /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - filename.s    : file name                                                 /
+;/ - force.l    : -1 = overwrite, 0 = ask                                      /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l cmap_Save {*cmap.cmap,filename.s,@force.l}
+succ.l = False
+If *cmap
+  If force
+    fid.l = file_Open{filename.s,#file_forcewrite}
+  Else
+    fid.l = file_Open{filename.s,#file_write}
+  End If
+  If fid>=0
+    succ = file_WriteChunk{fid,@"FORM"}
+    succ = file_WriteLong{fid,@"ILBM"}
+    succ = cmap_Write {*cmap,fid}
+    file_CloseChunk{fid,@"FORM"}
+    file_Close{fid}
+  End If
+Else
+  error {"\\__THIS_FUNCTION: no color map created!"}
+End If
+Function Return succ
+End Function
+
+
+Function.l cmap_LoadViaDT{filename.s,@imgnum.l}
+*cmap.cmap = cmap_Init{}
+If *cmap=0 Then Function Return 0
+If imgnum<0 Then imgnum=0
+succ.l=False
+*DTPic._Object = NewDTObjectA_ (&filename.s,Tags(#PDTA_DestMode, #PMODE_V43, #DTA_SourceType, #DTST_FILE, #DTA_GroupID, #GID_PICTURE, #PDTA_Remap, False))
+If *DTPic
+  If GetDTAttrsA_ (*DTPic,Tags(#PDTA_ColorRegisters,&colMap.l,#PDTA_NumColors,&numcols.l))
+    If colMap
+      For pen.l=0 To numcols-1
+        *CReg.ColorRegister = colMap + 3*pen
+        *cmap\cmap[pen]\R = *CReg\red   & $FF
+        *cmap\cmap[pen]\G = *CReg\green & $FF
+        *cmap\cmap[pen]\B = *CReg\blue  & $FF
+      Next
+      *cmap\pens_used     = numcols
+      *cmap\cmaptype      = #cmaptype_custom
+      *cmap\map_isupdated = False
+      succ.l = True
+    End If
+  End If
+  DisposeDTObject_ (*DTPic)
+End If
+If succ=False Then cmap_Free{*cmap} : *cmap=0
+Function Return *cmap
+End Function
+
+
+Function.l cmap_LoadViaCMAP{filename.s}
+*cmap.cmap = cmap_Init{}
+If *cmap=0 Then Function Return 0
+succ.l = False
+
+; try to read IFF
+fid.l = file_Open{filename.s,#file_read}
+If fid>=0
+  csize.l = file_GetChunk {fid,@"CMAP",12,-1,-1,False}
+  If csize>0
+    numcols.l = csize/3
+  Else
+    numcols.l = 0
+  End If
+
+  If numcols>0
+    If numcols>256 Then numcols=256
+    For pen.l=0 To numcols-1
+      file_ReadMem{fid,CReg.ColorRegister,3}
+      *cmap\cmap[pen]\R = CReg\red
+      *cmap\cmap[pen]\G = CReg\green
+      *cmap\cmap[pen]\B = CReg\blue
+    Next
+    succ=True
+    *cmap\pens_used = numcols
+    *cmap\cmaptype = #cmaptype_custom
+    *cmap\map_isupdated = False
+  End If
+  file_Close{fid}
+End If
+
+If succ=False AND *cmap Then cmap_Free{*cmap} : *cmap=0
+Function Return *cmap
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cmap_Load {filename.s}                                            /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Load a colormap from an IFF-ILBM file as a colormap for remapping.          /
+;/ NOTE: This loads actually the CMAP chunk.                                   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - filename.s    : file name of the IFF-ILBM file that contains the color :: /
+;/ map                                                                         /
+;/                                                                             /
+;/ See also:    cmap_GrabFromScreen                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l cmap_Load {filename.s}
+*cmap.cmap = 0
+
+If *cmap=0 ; load by trying to find a CMAP chunk
+*cmap.cmap = cmap_LoadViaCMAP{filename}
+End If
+
+If *cmap=0 ; load by using Datatypes
+  *cmap = cmap_LoadViaDT{filename.s}
+End If
+
+If *cmap=0
+  error {"\\__THIS_FUNCTION: File "+dos_FilePart{filename}+" does not contain color map information!"}
+End If
+Function Return *cmap
+End Function
+
+
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cmap_Grab {@*friendlyscreen.Screen}                               /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Create a colormap out of the screens palette.                               /
+;/ Optionally, a screen other than the used screen can be specified by its p:: /
+;/ ointer.                                                                     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *friendlyscreen.Screen    : pointer to a screen                           /
+;/                                                                             /
+;/ See also:    image_cmap_fromfile, image_cmap_toscreen                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l cmap_GrabFromScreen {@*scr.Screen}
+*cmap.cmap = cmap_Init{}
+If *cmap=0 Then Function Return 0
+If *scr=-1 Then *scr = Peek.l(Addr Screen (Used Screen))
+If *scr><0
+  *rp.RastPort    = *scr\RastPort
+  *bmap.BitMap    = *rp\BitMap
+  *vp.ViewPort    = *scr\ViewPort
+  *cm.ColorMap    = *vp\ColorMap
+  scr_depth.l     = GetBitMapAttr_(*bmap,#BMA_DEPTH)
+  If scr_depth=0 Then scr_depth=24
+
+  maxcols.l = 1 LSL scr_depth
+  If maxcols>256 Then maxcols=256
+  If maxcols<  2 Then maxcols=2
+  For pen.l=0 To maxcols-1
+    DEFTYPE.cmapitem col
+    GetRGB32_ *cm,pen,1,col
+    *cmap\cmap[pen]\R = col\R LSR 24
+    *cmap\cmap[pen]\G = col\G LSR 24
+    *cmap\cmap[pen]\B = col\B LSR 24
+  Next
+  *cmap\pens_used     = maxcols
+  *cmap\cmaptype      = #cmaptype_custom
+  *cmap\scr           = *scr
+  *cmap\map_isupdated = False
+End If
+Function Return *cmap
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cmap_Use {@*friendlyscreen.Screen}                                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Use the colormap as the new screens palette.                                /
+;/ If no screen pointer is given, the used screen is used.                     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - *friendlyscreen.Screen    : pointer to a screen.                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement cmap_PutToScreen {*cmap.cmap,@*scr.Screen}
+If *cmap=0 Then Statement Return
+If *scr=-1 Then *scr = Peek.l(Addr Screen (Used Screen))
+If *scr><0
+  *rp.RastPort   = *scr\RastPort
+  *bmap.BitMap   = *rp\BitMap
+  *vp.ViewPort   = *scr\ViewPort
+  *cm.ColorMap   = *vp\ColorMap
+  scr_depth.l    = GetBitMapAttr_(*bmap,#BMA_DEPTH)
+  If scr_depth=0 Then scr_depth=24
+
+  maxcols.l = 1 LSL scr_depth
+  If maxcols>*cmap\pens_used  Then maxcols=*cmap\pens_used
+  If maxcols<  2 Then maxcols=2
+  For pen.l=0 To maxcols-1
+    R.l = *cmap\cmap[pen]\R LSL 24
+    G.l = *cmap\cmap[pen]\G LSL 24
+    B.l = *cmap\cmap[pen]\B LSL 24
+    SetRGB32_ *vp,pen,R,G,B
+  Next
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: cmap_Remap {ARGBPtr.l,xs.l,ys.l,bpr.l,penArray8.l,bpr8.l,dither:: /
+;/ mode.l}                                                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Remap the image accordings the colmap.                                      /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - penArray8.l  : LUT8 pixelarray that holds the resulting image        /
+;/ - dithering.l  : use dithering                                                     /
+;/ - ARGBPtr.l    : pointer to ARGB pixelarray                                                        /
+;/ - xs.l         : width                                                             /
+;/ - ys.l         : height                                                             /
+;/ - bpr.l        : bytes per row of the ARGB pixelarray                                                           /
+;/ - bpr8.l       : bytes per row of the LUT8 pixelarray                                                           /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement cmap_RemapPixelArray {*cmap.cmap,ARGBPtr.l,xs.l,ys.l,bpr.l,penArray8.l,bpr8.l,@dithering.l}
+If *cmap=False Then Statement Return
+If *cmap\historyP=False Then cmap_InitHistory {*cmap}
+If *cmap\historyP=False Then Statement Return
+
+Select *cmap\cmaptype
+  Case #cmaptype_grayscale
+    For y.l = 0 To ys-1
+      ptr.l  = ARGBPtr   + y*bpr
+      ptr8.l = penArray8 + y*bpr8
+      For x.l = 0 To xs-1
+        R.l = PeekUB(ptr+1)
+        G.l = PeekUB(ptr+2)
+        B.l = PeekUB(ptr+3)
+        C.l = (R + G + B) / 3
+        Poke.b ptr8,C
+        ptr8+1
+        ptr +4
+      Next
+    Next
+
+  Case #cmaptype_bw
+    For y.l = 0 To ys-1
+      ptr.l  = ARGBPtr   + y*bpr
+      ptr8.l = penArray8 + y*bpr8
+      For x.l = 0 To xs-1
+        R.l = PeekUB(ptr+1)
+        G.l = PeekUB(ptr+2)
+        B.l = PeekUB(ptr+3)
+        C.l = (R + G + B)
+        If C>384
+          Poke.b ptr8,1 ; white
+        Else
+          Poke.b ptr8,0 ; black
+        End If
+        ptr8+1
+        ptr +4
+      Next
+    Next
+
+  Case #cmaptype_customfast
+    cmap_UpdateMapTable{*cmap}
+    For y.l = 0 To ys-1
+      ptr.l  = ARGBPtr   + y*bpr
+      ptr8.l = penArray8 + y*bpr8
+      For x.l = 0 To xs-1
+        ind.l = ((Peek.b(ptr+1)&%11100000) LSR 5) | ((Peek.b(ptr+2)&%11100000) LSR 2) | ((Peek.b(ptr+3)&%11100000) LSL 1)
+        *map.mapitem = *cmap\mapP + SizeOf.mapitem * ind
+        Poke.b ptr8,*map\pen
+        ptr8+1
+        ptr +4
+      Next
+    Next
+
+  Case #cmaptype_custom
+    cmap_UpdateMapTable{*cmap}
+    Select dithering
+      Case 0;#image_dithermode_none
+        For y.l = 0 To ys-1
+          ptr.l  = ARGBPtr   + y*bpr
+          ptr8.l = penArray8 + y*bpr8
+          For x.l = 0 To xs-1
+;            R.l = PeekUB(ptr+1)
+;            G.l = PeekUB(ptr+2)
+;            B.l = PeekUB(ptr+3)
+;            R5.l = (R+4) LSR 3
+;            G5.l = (G+4) LSR 3
+;            B5.l = (B+4) LSR 3
+;            If R5>31 Then R5=31
+;            If G5>31 Then G5=31
+;            If B5>31 Then B5=31
+;            ind.l = R5 | (G5 LSL 5) | (B5 LSL 10)
+            ind.l = ((Peek.b(ptr+1)&%11111000) LSR 3) | ((Peek.b(ptr+2)&%11111000) LSL 2) | ((Peek.b(ptr+3)&%11111000) LSL 7)
+            *map.mapitem = *cmap\mapP + SizeOf.mapitem * ind
+            Poke.b ptr8,*map\pen
+            ptr8+1
+            ptr +4
+          Next
+        Next
+
+      Default
+        errR.l=0 : errG.l=0 : errB.l=0
+        For y.l = 0 To ys-1
+          ptr.l  = ARGBPtr   + y*bpr
+          ptr8.l = penArray8 + y*bpr8
+
+          For x.l = 0 To xs-1
+            R.l = PeekUB(ptr+1)
+            G.l = PeekUB(ptr+2)
+            B.l = PeekUB(ptr+3)
+
+            ;R5.l = (R+4+errR) ASR 3
+            ;G5.l = (G+4+errG) ASR 3
+            ;B5.l = (B+4+errB) ASR 3
+
+            R5.l = (R+errR) ASR 3
+            G5.l = (G+errG) ASR 3
+            B5.l = (B+errB) ASR 3
+
+
+            If R5<0 Then R5=0
+            If G5<0 Then G5=0
+            If B5<0 Then B5=0
+
+            If R5>31 Then R5=31
+            If G5>31 Then G5=31
+            If B5>31 Then B5=31
+
+            ind.l = R5 | (G5 LSL 5) | (B5 LSL 10)
+            *map.mapitem = *cmap\mapP + SizeOf.mapitem * ind
+            Poke.b ptr8,*map\pen
+
+            errR.l + (R - *cmap\cmap[*map\pen]\R) ;ASR 1
+            errG.l + (G - *cmap\cmap[*map\pen]\G) ;ASR 1
+            errB.l + (B - *cmap\cmap[*map\pen]\B) ;ASR 1
+
+            errR = (errR) ASR 1
+            errG = (errG) ASR 1
+            errB = (errB) ASR 1
+
+            ptr8+1
+            ptr +4
+          Next
+        Next
+
+    End Select
+End Select
+End Statement
+
+
+
+
+
+CNIF #__include=0
+*cmap.cmap  = cmap_Load{"cache:testbild.iff"}
+*cmap1.cmap = cmap_LoadViaCMAP{"cache:testbild.iff"}
+*cmap2.cmap = cmap_LoadViaDT{"cache:testbild.iff"}
+
+cmap_Save{*cmap ,"cache:testbild_load.col"}
+cmap_Save{*cmap1,"cache:testbild_CMAP.col"}
+cmap_Save{*cmap2,"cache:testbild_datatype.col"}
+
+cmap_Free{*cmap}
+cmap_Free{*cmap1}
+cmap_Free{*cmap2}
+End
+CEND
+

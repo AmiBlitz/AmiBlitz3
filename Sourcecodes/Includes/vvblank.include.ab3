@@ -1,0 +1,386 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "Ram Disk:"
+; ExeFile         = "VVBlankDemo"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 100000
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 0
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 0
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 7
+; CursorColumn    = 28
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 5
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 5
+; Max GadgetList  = 100
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 200
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 100
+; Max Anim        = 100
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 5
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 100
+; Max BlitzFont   = 4
+; Max GTList      = 100
+; Max ChunkyBuffer= 2
+; /XTRA
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Name: vvblank.include                                                       /
+;/                                                                             /
+;/ Platforms: Classic, WinUAE, Amithlon, MorphOS, AmigaOS4                     /
+;/                                                                             /
+;/ Date: 30/12/2006                                                            /
+;/                                                                             /
+;/ Author: Thilo Koehler                                                       /
+;/                                                                             /
+;/ Requirements:  Amiblitz2.4                                                  /
+;/                                                                             /
+;/ Purpose:                                                                    /
+;/ This include replaces the vwait command with a "virtual vertical blank" t:: /
+;/ hat is configurable in frequency (e.g. 100Hz). Main purpose is to time gr:: /
+;/ aphical output for games that should run on graphicscards.                  /
+;/                                                                             /
+;/ Abstract:                                                                   /
+;/ The simpliest way to use it is to replace VWait with vvblank_Wait. But yo:: /
+;/ u have more control over the "vblank".                                      /
+;/                                                                             /
+;/ User Constants:                                                             /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+CNIF #__include=0
+Syntax 2
+CEND
+
+XINCLUDE "error.include.ab3"
+
+NEWTYPE.vvblankdat
+is_open.w
+msgport.l
+msg.l
+timer_base.l
+quantum.l
+efreq.l
+timeindex_hi.l
+timeindex_lo.l
+sigflag.l
+hz.f
+End NEWTYPE
+
+
+DEFTYPE.vvblankdat vvblankdat
+USEPATH vvblankdat
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: vvblank_Free {}                                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Free all resources associated with the vvblank.include.                     /
+;/ NOTE: This function is autoexit, so you do not have to call this by your :: /
+;/ own.                                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement vvblank_Free {}
+SHARED vvblankdat
+If \timer_base Then CloseDevice_ \msg       :\timer_base = False
+If \msg        Then DeleteIORequest_ \msg   :\msg        = False
+If \msgport    Then DeleteMsgPort_ \msgport :\msgport    = False
+\is_open = False
+End Statement
+!autoexit{vvblank_Free}
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: vvblank_ResetSync {}                                                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Tell vvblank_wait_sync where to start counting the ticks.                   /
+;/                                                                             /
+;/ See also:    vvblank_WaitSync                                               /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement vvblank_ResetSync {}
+SHARED vvblankdat
+If \is_open
+  GetReg a0,&\timeindex_hi    ;ReadEClock()
+  GetReg d0,\timer_base
+  MOVE.l a6,-(a7)
+  MOVE.l d0,a6
+  JSR -60(a6)
+  MOVE.l (a7)+,a6
+  MOVE.l d0,-4(a0)
+  q.d = \efreq
+  q.d / \hz
+  \quantum = Int(q+.5)
+Else
+  error {"vvblank_resetSync: Tried to set vvblank while closed !"}
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l = vvblank_Init {@hz.f}                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Init the vvblank and optionally set the desired frequency. A reasonable r:: /
+;/ ange is 25 to 200, default is 50Hz                                          /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - hz.f    : Hz of vvblank timer                                             /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : -1 if everything went well, 0 otherwise                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l vvblank_Init {@hz.f}
+SHARED vvblankdat
+succ.l = False
+If hz=-1 Then hz=50
+vvblank_Free {}
+\msgport = CreateMsgPort_()
+If  \msgport
+  \msg = CreateIORequest_(\msgport,SizeOf.timerequest)
+  If \msg
+    If OpenDevice_ ("timer.device",#UNIT_WAITECLOCK,\msg,0) = False
+      *TimerIO.timerequest = \msg
+      *TimerIO\tr_node\io_Command = #TR_ADDREQUEST
+      succ = True
+      \is_open    = True
+      *mp.MsgPort = \msgport
+      \sigflag    = 1 LSL *mp\mp_SigBit
+      \timer_base = *TimerIO\tr_node\io_Device
+      \hz         = hz
+      vvblank_ResetSync {}
+    Else
+      error {"vvblank_init: Unable to open timer.device !"}
+    End If
+  Else
+    error {"vvblank_init:  Failed to create timerequest !"}
+  End If
+Else
+  error {"vvblank_init:  Failed to create msgport !"}
+End If
+If succ = False Then vvblank_Free {}
+Function Return succ
+End Function
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  succ.l = vvblank_SetFreq {hz.f}                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Sets the desired frequency. A reasonable range is 25 to 200, default is 5:: /
+;/ 0Hz                                                                         /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - hz.f    : Hz of vvblank timer                                             /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - succ.l     : -1 if everything went well, 0 otherwise                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l vvblank_SetFreq {hz.f}
+SHARED vvblankdat
+succ.l = False
+If hz<1 Then hz=1
+;If hz>200 Then hz=200
+If \is_open
+  \hz         = hz
+  vvblank_ResetSync {}
+  succ=True
+Else
+  succ = vvblank_Init{hz}
+End If
+Function Return succ
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: vvblank_Wait {@vcycles.l}                                           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Operates exactly like the VWait command. It waits for the next VBlank tick. /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - vcycles.l : Number of VBlanks to wait, normaly this should be 1           /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement vvblank_Wait {@vcycles.l}
+SHARED vvblankdat
+If \is_open=False Then succ.l = vvblank_Init{50}
+If vcycles<1 Then vcycles=1
+If \is_open
+  GetReg a0,&\timeindex_hi    ;ReadEClock()
+  GetReg d0,\timer_base
+  MOVE.l a6,-(a7)
+  MOVE.l d0,a6
+  JSR -60(a6)
+  MOVE.l (a7)+,a6
+
+  *TimerIO.timerequest = \msg
+  If (\timeindex_lo & $7FFFFFFF)<(*TimerIO\tr_time\tv_micro & $7FFFFFFF)
+    \timeindex_lo = *TimerIO\tr_time\tv_micro
+    \timeindex_hi = *TimerIO\tr_time\tv_secs
+    DoIO_ \msg
+  End If
+  GetReg a0,&\timeindex_lo
+  GetReg d0,vcycles
+  MOVE.l -12(a0),d1 ; d1 = \quantum
+  MULS.l d1,d0
+  MOVE.l -4(a0),d1
+  CLR.l d2
+  ADD.l d0,(a0)
+  ADDX.l d2,d1
+  MOVE.l d1,-4(a0)
+
+  *TimerIO\tr_time\tv_micro = \timeindex_lo
+  *TimerIO\tr_time\tv_secs  = \timeindex_hi
+End If
+End Statement
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: vvblank_WaitSync {@vcycles.l}                                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Like vvblank_Wait, but it counts the vblank ticks. If you missed one tick:: /
+;/  (because your program was to slow) this function will return immediately:: /
+;/  until you are in sync again.                                               /
+;/ To tell this function when to start you have to call vvblank_ResetSync ju:: /
+;/ st before your main loop. Be careful with this function, because if your :: /
+;/ program hangs for a while, it will rush very fast till it is in sync again. /
+;/ I recommend to use vvlbank_wait, as is has the best behavior in most situ:: /
+;/ ations.                                                                     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - vcycles.l    : vblank cycles to wait                                      /
+;/                                                                             /
+;/ Bugs:        This function has a small bug when wrapping the 32bit it is :: /
+;/ a bit too fast for one frame. But this is not serious.                      /
+;/                                                                             /
+;/ See also:    vvblank_ResetSync                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement vvblank_WaitSync {@vcycles.l}
+SHARED vvblankdat
+If \is_open=False Then succ.l = vvblank_SetFreq{50}
+If vcycles.l<1 Then vcycles=1
+If \is_open
+  GetReg a0,&\timeindex_lo
+  GetReg d0,vcycles
+  MOVE.l -12(a0),d1 ; d1 = \quantum
+  MULS.l d1,d0
+  ADD.l d0,(a0)
+  BCC vvblank_nooverflow
+  ADD.l #1,-4(a0)
+  vvblank_nooverflow:
+  *TimerIO.timerequest = \msg
+  *TimerIO\tr_time\tv_secs  = \timeindex_hi
+  *TimerIO\tr_time\tv_micro = \timeindex_lo
+  DoIO_ \msg
+End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: _vvblank_Send {@vcycles.l}                                          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Experimental only.                                                          /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - vcycles.l : Number of VBlanks to wait, normaly this should be 1           /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement _vvblank_Send {@vcycles.l}
+SHARED vvblankdat
+If \is_open=False Then succ.l = vvblank_SetFreq{50}
+If vcycles.l<1 Then vcycles=1
+If \is_open
+  GetReg a0,&\timeindex_hi    ;ReadEClock()
+  GetReg d0,\timer_base
+  MOVE.l a6,-(a7)
+  MOVE.l d0,a6
+  JSR -60(a6)
+  MOVE.l (a7)+,a6
+  *TimerIO.timerequest = \msg
+  If \timeindex_lo<*TimerIO\tr_time\tv_micro
+    \timeindex_lo = \timeindex_lo - (\timeindex_lo MOD \quantum) + (\quantum * vcycles)
+    *TimerIO\tr_time\tv_secs  = \timeindex_hi
+    *TimerIO\tr_time\tv_micro = \timeindex_lo
+    SendIO_ \msg
+  End If
+  *TimerIO\tr_time\tv_micro = \timeindex_lo + \quantum
+End If
+End Statement
+
+CNIF #__include=0
+; Example:
+hz.f = 200
+If vvblank_Init {hz}
+  NPrint "Eclock freq is: ",\efreq
+  NPrint "Quantum is :",\quantum
+  For n.l = 0 To 20
+    vvblank_Wait{hz}
+    NPrint 20-n," secs left ..."
+  Next
+  NPrint "Done !"
+  vvblank_Free{}
+End If
+End
+CEND

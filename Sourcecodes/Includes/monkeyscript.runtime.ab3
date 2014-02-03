@@ -1,0 +1,1629 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "WORKBENCH:Programme/Monkeyscript"
+; ExeFile         = "msRun"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 114
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 7
+; CursorColumn    = 9
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 5
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 50
+; Max GadgetList  = 5
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 50
+; Max Anim        = 100
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 10
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 5
+; Max BlitzFont   = 4
+; Max GTList      = 50
+; Max ChunkyBuffer= 2
+; /XTRA
+
+optimize 7
+Syntax 2
+
+CNIF #__include=0
+!version{"MonkeyScript Runtime \\__DATE_GER (c) Thilo Koehler"}
+CEND
+
+XINCLUDE "error.include.ab3"
+XINCLUDE "dos.include.ab3"
+XINCLUDE "file.include.ab3"
+XINCLUDE "monkeyscript.defs.ab5"
+XINCLUDE "eclock.include.ab3"
+XINCLUDE "prefixtree.include.ab3"
+
+#MSST_INVALID   = 0
+#MSST_RUNNING   = 1
+#MSST_SUSPENDED = 2
+#MSST_KILLED    = 3
+
+#msRuntime_INCLUDED = 1
+
+#MSEV_NONE    = 0
+#MSEV_BREATH  = 1
+#MSEV_EXTERN  = 2
+
+NEWTYPE.msRuntime  ; Runtime Base
+date.DateStamp
+*globals.prefixtree
+reschedule.l
+frameDone.l
+eventID.l
+externFunc.s
+externArgs.s
+externResult.s[16] ; max 16 levels of depth in one argument
+externCount.l
+End NEWTYPE
+
+NEWTYPE.msScript   ; Runtime script
+name.s          ; name of the script
+*bin.msBinary
+borrowed.l
+codeP.l         ; pointer to binary code
+pc.l            ; program counter
+wc.l            ; wait counter
+varbase_l.l     ; pointer to variables
+varbase_f.l     ; pointer to variables
+varbase_b.l     ; pointer to variables
+varbase_s.l     ; pointer to variables
+varbase_p.l     ; pointer to variables
+status.l
+*caller.msScript
+End NEWTYPE
+
+NEWTYPE.vp   ; Virtual Processor
+rl.l         ; Result Registers
+rf.f
+rb.l
+*rp.b
+rs.s
+*script.msScript
+End NEWTYPE
+
+Dim List msScript.msScript(0) ; Scripts
+
+SHARED msRuntime.msRuntime
+USEPATH msRuntime
+
+
+Function.l msr_Init{}
+succ.l = True
+If \globals=0
+  \globals = pft_Create{4096}
+  If \globals=0 Then succ=False
+End If
+Function Return succ
+End Function
+
+
+; Runtime Fehlermeldung
+Statement msr_Error{text.s,@*script.msScript}
+SHARED script()
+a.s = "*** RUNTIME ERROR "
+If *script><-1 AND *script><0
+  a.s + "("+*script\name+")"
+  *script\status = #MSST_KILLED
+End If
+a.s + ": "+text.s
+error{a.s}
+End Statement
+
+
+; find a script
+USEPATH msScript()
+Function.l msr_FindScript{name.s,@status.l}
+SHARED msScript()
+ResetList msScript()
+name.s = LCase$(name.s)
+While NextItem(msScript())
+  If \name = name.s
+    If msScript()\status=status OR status=-1 Then Function Return msScript()
+  End If
+Wend
+Function Return 0
+End Function
+
+
+; exit running script
+Statement msr_KillScript{*script.msScript}
+SHARED msScript()
+\status = #MSST_KILLED
+If \caller
+  If \caller\status = #MSST_SUSPENDED
+    \caller\status = #MSST_RUNNING
+    msRuntime\reschedule = True
+  End If
+End If
+End Statement
+
+
+Statement msr_FreeScript{*script.msScript}
+SHARED msScript()
+msr_KillScript{*script.msScript}
+ResetList msScript()
+While NextItem(msScript())
+  If (msScript() = *script)
+    If \varbase_l Then FreeVec_ \varbase_l : \varbase_l = 0
+    If \varbase_f Then FreeVec_ \varbase_f : \varbase_f = 0
+    If \varbase_b Then FreeVec_ \varbase_b : \varbase_b = 0
+    If \varbase_s
+      For n.l=0 To \bin\numLocals_s-1 ; free all strings
+        str_Free{\varbase_s+n*4}
+      Next
+      FreeVec_ \varbase_s  : \varbase_s = 0
+    End If
+    If \varbase_p Then FreeVec_ \varbase_p : \varbase_p = 0
+    If \borrowed=False
+      If \bin Then FreeVec_ \bin
+    End If
+    \bin   = 0
+    \codeP = 0
+    KillItem msScript()
+  Else
+    If msScript()\caller = *script
+      msScript()\caller = 0
+    End If
+  End If
+Wend
+End Statement
+
+Function.l msr_RunBinary{*bin.msBinary,name.s,*caller.msScript,args.s,@codeborrowed.l}
+SHARED msScript()
+If *bin=0 Then Function Return 0
+If *bin\MSVB><@"MSVB" Then Function Return 0
+If *bin\CODE><@"CODE" OR *bin\INFO><@"INFO" Then Function Return 0
+succ.l = False
+
+If AddItem(msScript())
+  If name="" Then name=Hex$(*bin)
+  \name         = LCase$(name.s)
+  \bin          = *bin
+  \borrowed     = codeborrowed
+  \codeP        = &\bin\CODE + 8
+  \pc           = \codeP
+  \wc           = 0
+  \status       = #MSST_RUNNING
+  \caller       = *caller
+  If \bin\numLocals_l>0 Then \varbase_l = AllocVec_(\bin\numLocals_l*4,#MEMF_CLEAR) : Else \varbase_l = 0
+  If \bin\numLocals_f>0 Then \varbase_f = AllocVec_(\bin\numLocals_f*4,#MEMF_CLEAR) : Else \varbase_f = 0
+  If \bin\numLocals_b>0 Then \varbase_b = AllocVec_(\bin\numLocals_b*1,#MEMF_CLEAR) : Else \varbase_b = 0
+  If \bin\numLocals_s>0 Then \varbase_s = AllocVec_(\bin\numLocals_s*4,#MEMF_CLEAR) : Else \varbase_s = 0
+  If \bin\numLocals_p>0 Then \varbase_p = AllocVec_(\bin\numLocals_p*4,#MEMF_CLEAR) : Else \varbase_p = 0
+
+  succ=True
+  If \bin\numLocals_l>0 AND \varbase_l=0 Then succ=False
+  If \bin\numLocals_f>0 AND \varbase_f=0 Then succ=False
+  If \bin\numLocals_b>0 AND \varbase_b=0 Then succ=False
+  If \bin\numLocals_s>0 AND \varbase_s=0 Then succ=False
+  If \bin\numLocals_p>0 AND \varbase_p=0 Then succ=False
+  If succ
+    If \varbase_s Then str_WritePtr{\varbase_s,&args} ; first string var is arguments
+    msRuntime\reschedule = True
+  Else
+    msr_FreeScript{msScript()}
+    msr_Error{"Not enough memory to init script!"}
+  End If
+Else
+  msr_Error{"Internal: Unable to init script!"}
+End If
+Function Return succ
+End Function
+
+
+
+; call a script
+Function.l msr_RunFile{filename.s,name.s,*caller.msScript,args.s}
+succ.l = False
+If dos_Exist{filename} = False Then filename = dos_SetExt{filename,"msb"}
+*binP.msBinary = ms_LoadBinary{filename}
+If *binP
+  succ.l = msr_RunBinary{*binP,name.s,*caller,args.s,False}
+  If succ=False
+    msr_Error{"Unable to init script!"}
+  End If
+;Else
+ ; msr_Error{"Unable to run \\22"+filename+"\\22!"}
+End If
+Function Return succ
+End Function
+
+Function.l msr_GetEvent{}
+Function Return msRuntime\eventID
+End Function
+
+Function.s msr_GetExternFunc{}
+Function Return msRuntime\externFunc
+End Function
+
+Function.s msr_GetExternArgs{}
+Function Return msRuntime\externArgs
+End Function
+
+
+; exit all scripts
+Statement msr_Flush{}
+SHARED msScript()
+ResetList msScript()
+While NextItem(msScript())
+  msr_FreeScript{msScript()}
+  ResetList msScript()
+Wend
+End Statement
+
+
+Statement msr_Free{}
+msr_Flush{}
+If msRuntime\globals Then pft_Free{msRuntime\globals} : msRuntime\globals=0
+End Statement
+!autoexit{msr_Free}
+
+
+; JIT: Berechne Wert eines Arguments
+Statement msr_GetArg{}
+SHARED vp.vp,msScript()
+USEPATH vp\script
+stat.l = Peek.b(\pc)
+Select stat
+  Case @"v" ; set local variable
+    typ.l   = Peek.b(\pc+1)
+    var.l   = Peek.l(\pc+2)
+    \pc + 6
+    msr_GetArg{}
+    Select typ
+      Case @"l" : Poke.l \varbase_l+var, vp\rl
+      Case @"f" : Poke.f \varbase_f+var, vp\rf
+      Case @"b" : Poke.w \varbase_b+var, vp\rb
+      Case @"s" : str_Write{\varbase_s+var, vp\rs}
+      Case @"p" : Poke.l \varbase_p+var, vp\rp
+      ;Default
+      ;  msr_Error{"Unknown vartype found in script!",vp\script}
+    End Select
+
+  Case @"g" ; set global variable
+    typ.l  = Peek.b(\pc+1)
+    name.s = Peek.s(\pc+2)
+    \pc+2+FLen(name)+1
+    msr_GetArg{}
+    Select typ
+      Case @"l" : pft_AddItem{msRuntime\globals,name,Hex$(vp\rl)}
+      Case @"f" : pft_AddItem{msRuntime\globals,name,Hex$(Peek.l(&vp\rf))}
+      Case @"b" : If vp\rb Then pft_AddItem{msRuntime\globals,name,"1"}:Else pft_AddItem{msRuntime\globals,name,"0"}
+      Case @"s" : pft_AddItem{msRuntime\globals,name,vp\rs}
+      ;Default
+      ;  msr_Error{"Unknown vartype found in script!",vp\script}
+    End Select
+
+  Case @"a" ; set local array
+    typ.l   = Peek.b(\pc+1)
+    var.l   = Peek.l(\pc+2)
+    \pc + 6
+    msr_GetArg{} : i.l = vp\rl
+    If (i<0) Then msr_Error{"Negative array index!",vp\script}
+    msr_GetArg{}
+    Select typ
+      Case @"l" : var+i*4 : If var<vp\script\bin\numLocals_l*4 Then Poke.l \varbase_l+var, vp\rl : Else msr_Error{"Array index out of range!",vp\script}
+      Case @"f" : var+i*4 : If var<vp\script\bin\numLocals_f*4 Then Poke.f \varbase_f+var, vp\rf : Else msr_Error{"Array index out of range!",vp\script}
+      Case @"b" : var+i   : If var<vp\script\bin\numLocals_b   Then Poke.b \varbase_b+var, vp\rb : Else msr_Error{"Array index out of range!",vp\script}
+      Case @"s" : var+i*4 : If var<vp\script\bin\numLocals_s*4 Then str_Write{\varbase_s+var, vp\rs}: Else msr_Error{"Array index out of range!",vp\script}
+      Case @"p" : var+i*4 : If var<vp\script\bin\numLocals_p*4 Then Poke.l \varbase_p+var, vp\rp : Else msr_Error{"Array index out of range!",vp\script}
+      ;Default
+      ;  msr_Error{"Unknown vartype found in script!",vp\script}
+    End Select
+
+  Case @"z" ; set global array
+    typ.l  = Peek.b(\pc+1)
+    name.s = Peek.s(\pc+2)
+    \pc+2+FLen(name)+1
+    ntyp.l = Peek.b(\pc+1)
+    msr_GetArg{}
+    Select ntyp
+      Case @"l"
+        name + "\" + Str$(vp\rl)
+      Case @"s"
+        name + "\" + vp\rs
+      Case @"b"
+        If vp\rb Then name + "\1" : Else name + "\0"
+      Case @"f"
+        name + "\" + Str$(vp\rf)
+    End Select
+    msr_GetArg{}
+    Select typ
+      Case @"l" : pft_AddItem{msRuntime\globals,name,Hex$(vp\rl)}
+      Case @"f" : pft_AddItem{msRuntime\globals,name,Hex$(Peek.l(&vp\rf))}
+      Case @"b" : If vp\rb Then pft_AddItem{msRuntime\globals,name,"1"}:Else pft_AddItem{msRuntime\globals,name,"0"}
+      Case @"s" : pft_AddItem{msRuntime\globals,name,vp\rs}
+      ;Default
+      ;  msr_Error{"Unknown vartype found in script!",vp\script}
+    End Select
+
+  Case @"V" ; get local variable
+    typ.l   = Peek.b(\pc+1)
+    var.l   = Peek.l(\pc+2)
+    Select typ
+      Case @"l" : vp\rl = Peek.l(\varbase_l+var)
+      Case @"f" : vp\rf = Peek.f(\varbase_f+var)
+      Case @"b" : vp\rb = Peek.b(\varbase_b+var)
+      Case @"s" : vp\rs = str_Read{\varbase_s+var}
+      Case @"p" : vp\rp = Peek.l(\varbase_p+var)
+      ;Default
+      ;  msr_Error{"Unknown vartype found in script!",vp\script}
+     End Select
+     \pc + 6
+
+  Case @"G" ; get global variable
+    typ.l   = Peek.b(\pc+1)
+    name.s = Peek.s(\pc+2)
+    \pc+2 +FLen(name)+1
+    s.s = pft_FindItem{msRuntime\globals,name}
+    Select typ
+      Case @"l" : vp\rl = Vallong("$"+s)
+      Case @"f" : i.l = Vallong("$"+s) : vp\rf = Peek.f(&i)
+      Case @"b" : vp\rb = Vallong(s) : If vp\rb Then vp\rb=True
+      Case @"s" : vp\rs = s
+      Case @"p" : vp\rp = Vallong("$"+s)
+      ;Default
+      ;  msr_Error{"Unknown vartype found in script!",vp\script}
+     End Select
+
+  Case @"A" ; get local array
+    typ.l   = Peek.b(\pc+1)
+    var.l   = Peek.l(\pc+2)
+    \pc + 6
+    msr_GetArg{} : i.l = vp\rl
+    If (i<0) Then msr_Error{"Negative array index!",vp\script}
+    Select typ
+      Case @"l" : var+i*4 : If var<vp\script\bin\numLocals_l*4 Then vp\rl = Peek.l(\varbase_l+var)  : Else msr_Error{"Array index out of range!",vp\script}
+      Case @"f" : var+i*4 : If var<vp\script\bin\numLocals_f*4 Then vp\rf = Peek.f(\varbase_f+var)  : Else msr_Error{"Array index out of range!",vp\script}
+      Case @"b" : var+i   : If var<vp\script\bin\numLocals_b   Then vp\rb = Peek.b(\varbase_b+var)  : Else msr_Error{"Array index out of range!",vp\script}
+      Case @"s" : var+i*4 : If var<vp\script\bin\numLocals_s*4 Then vp\rs = str_Read{\varbase_s+var}: Else msr_Error{"Array index out of range!",vp\script}
+      Case @"p" : var+i*4 : If var<vp\script\bin\numLocals_p*4 Then vp\rp = Peek.l(\varbase_p+var)  : Else msr_Error{"Array index out of range!",vp\script}
+      ;Default
+      ;  msr_Error{"Unknown vartype found in script!",vp\script}
+    End Select
+
+  Case @"Z" ; get global array
+    typ.l   = Peek.b(\pc+1)
+    name.s = Peek.s(\pc+2)
+    \pc+2+FLen(name)+1
+    ntyp.l = Peek.b(\pc+1)
+    msr_GetArg{}
+    Select ntyp
+      Case @"l"
+        name + "\" + Str$(vp\rl)
+      Case @"s"
+        name + "\" + vp\rs
+      Case @"b"
+        If vp\rb Then name + "\1" : Else name + "\0"
+      Case @"f"
+        name + "\" + Str$(vp\rf)
+    End Select
+
+    s.s = pft_FindItem{msRuntime\globals,name}
+    Select typ
+      Case @"l" : vp\rl = Vallong("$"+s)
+      Case @"f" : i.l = Vallong("$"+s) : vp\rf = Peek.f(&i)
+      Case @"b" : vp\rb = Vallong(s) : If vp\rb Then vp\rb=True : Else vp\rb=False
+      Case @"s" : vp\rs = s
+      Case @"p" : vp\rp = Vallong("$"+s)
+      ;Default
+      ;  msr_Error{"Unknown vartype found in script!",vp\script}
+    End Select
+
+  Case @"C" ; get constant
+    typ.l = Peek.b(\pc+1)
+    Select typ
+      Case @"l" : vp\rl = Peek.l(\pc+2) : \pc + 6
+      Case @"f" : vp\rf = Peek.f(\pc+2) : \pc + 6
+      Case @"b" : vp\rb = Peek.b(\pc+2) : \pc + 3
+      Case @"s" : vp\rs = Peek.s(\pc+2) : \pc + FLen(vp\rs) + 3
+      Case @"p" : vp\rp = Peek.l(\pc+2) : \pc + 6
+      ;Default
+      ;  msr_Error{"Unknown constant type found in script!",vp\script}
+     End Select
+
+  Case @"F" ; evaluate function
+    typ.l   = Peek.b(\pc+1)
+    func.l  = Peek.w(\pc+2)
+    \pc + 4
+    Select func
+      Case #msfunc_let
+        msr_GetArg{} ; this is doing both, get pointer and get value
+      Case #msfunc_eq
+        ntyp.l = Peek.b(\pc+1)
+        Select ntyp
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{} : m.l = vp\rl
+            If n=m Then vp\rb = True:Else vp\rb = False
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{} : d.f = vp\rf
+            If c=d Then vp\rb = True:Else vp\rb = False
+          Case @"b"
+            msr_GetArg{} : a.l = vp\rb
+            msr_GetArg{} : b.l = vp\rb
+            If a=b Then vp\rb = True:Else vp\rb = False
+          Case @"s"
+            msr_GetArg{} : s.s = vp\rs
+            msr_GetArg{}
+            If UCase$(s.s)=UCase$(vp\rs) Then vp\rb = True:Else vp\rb = False
+        End Select
+
+      Case #msfunc_gt
+        ntyp.l = Peek.b(\pc+1)
+        Select ntyp
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{} : m.l = vp\rl
+            If n>m Then vp\rb = True:Else vp\rb = False
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{} : d.f = vp\rf
+            If c>d Then vp\rb = True:Else vp\rb = False
+          Case @"s"
+            msr_GetArg{} : s.s = vp\rs
+            msr_GetArg{}
+            If s.s>vp\rs Then vp\rb = True:Else vp\rb = False
+        End Select
+
+      Case #msfunc_lt
+        ntyp.l = Peek.b(\pc+1)
+        Select ntyp
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{} : m.l = vp\rl
+            If n<m Then vp\rb = True:Else vp\rb = False
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{} : d.f = vp\rf
+            If c<d Then vp\rb = True:Else vp\rb = False
+          Case @"s"
+            msr_GetArg{} : s.s = vp\rs
+            msr_GetArg{}
+            If s.s<vp\rs Then vp\rb = True:Else vp\rb = False
+        End Select
+
+      Case #msfunc_ge
+        ntyp.l = Peek.b(\pc+1)
+        Select ntyp
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{} : m.l = vp\rl
+            If n>=m Then vp\rb = True:Else vp\rb = False
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{} : d.f = vp\rf
+            If c>=d Then vp\rb = True:Else vp\rb = False
+          Case @"s"
+            msr_GetArg{} : s.s = vp\rs
+            msr_GetArg{}
+            If s.s>=vp\rs Then vp\rb = True:Else vp\rb = False
+        End Select
+
+      Case #msfunc_le
+        ntyp.l = Peek.b(\pc+1)
+        Select ntyp
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{} : m.l = vp\rl
+            If n<=m Then vp\rb = True:Else vp\rb = False
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{} : d.f = vp\rf
+            If c<=d Then vp\rb = True:Else vp\rb = False
+          Case @"s"
+            msr_GetArg{} : s.s = vp\rs
+            msr_GetArg{}
+            If s.s<=vp\rs Then vp\rb = True:Else vp\rb = False
+        End Select
+
+      Case #msfunc_ne
+        ntyp.l = Peek.b(\pc+1)
+        Select ntyp
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{} : m.l = vp\rl
+            If n><m Then vp\rb = True:Else vp\rb = False
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{} : d.f = vp\rf
+            If c><d Then vp\rb = True:Else vp\rb = False
+          Case @"b"
+            msr_GetArg{} : a.l = vp\rb
+            msr_GetArg{} : b.l = vp\rb
+            If a><b Then vp\rb = True:Else vp\rb = False
+          Case @"s"
+            msr_GetArg{} : s.s = vp\rs
+            msr_GetArg{}
+            If s.s><vp\rs Then vp\rb = True:Else vp\rb = False
+        End Select
+
+      Case #msfunc_add
+        Select typ
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{}
+            vp\rl + n
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{}
+            vp\rf + c
+          Case @"s"
+            msr_GetArg{} : s.s = vp\rs
+            msr_GetArg{}
+            vp\rs = s.s + vp\rs
+          Case @"b"
+            msr_GetArg{} : a.l = vp\rb
+            msr_GetArg{} : b.l = vp\rb
+            If (a=b) Then vp\rb=False:Else vp\rb=True
+        End Select
+
+      Case #msfunc_log
+        Select typ
+          Case @"f"
+            msr_GetArg{} : vp\rf = Log(vp\rf)
+        End Select
+
+      Case #msfunc_ln
+        Select typ
+          Case @"f"
+            msr_GetArg{} : vp\rf = Log(vp\rf) / Log(2.71)
+        End Select
+ 
+      Case #msfunc_ld
+        Select typ
+          Case @"f"
+            msr_GetArg{} : vp\rf = Log(vp\rf) / Log(2)
+        End Select
+
+      Case #msfunc_exp
+        Select typ
+          Case @"f"
+            msr_GetArg{} : vp\rf = Exp(vp\rf)
+        End Select
+ 
+      Case #msfunc_pow
+        Select typ
+          Case @"l"
+            msr_GetArg{} : n = vp\rl
+            msr_GetArg{} : m = vp\rl
+            vp\rl = n^m
+          Case @"f"
+            msr_GetArg{} : c = vp\rf
+            msr_GetArg{} : d = vp\rf
+            vp\rf = c^d
+        End Select
+ 
+      Case #msfunc_sqr
+        Select typ
+          Case @"l"
+            msr_GetArg{} : vp\rl = Sqr(vp\rl)
+          Case @"f"
+            msr_GetArg{} : vp\rf = Sqr(vp\rf)
+        End Select
+
+      Case #msfunc_sin  : msr_GetArg{} : vp\rf = Sin(vp\rf)
+      Case #msfunc_cos  : msr_GetArg{} : vp\rf = Cos(vp\rf)
+      Case #msfunc_tan  : msr_GetArg{} : vp\rf = Tan(vp\rf)
+      Case #msfunc_asin : msr_GetArg{} : vp\rf = ASin(vp\rf)
+      Case #msfunc_acos : msr_GetArg{} : vp\rf = ACos(vp\rf)
+      Case #msfunc_atan : msr_GetArg{} : vp\rf = ATan(vp\rf)
+
+      Case #msfunc_min
+        Select typ
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{}
+            If n<vp\rl Then vp\rl=n
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{}
+            If c<vp\rf Then vp\rf=c
+          Case @"s"
+            msr_GetArg{} : s.s = vp\rs
+            msr_GetArg{}
+            If s.s<vp\rs Then vp\rs=s
+        End Select
+
+      Case #msfunc_max
+        Select typ
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{}
+            If n>vp\rl Then vp\rl=n
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{}
+            If c>vp\rf Then vp\rf=c
+          Case @"s"
+            msr_GetArg{} : s.s = vp\rs
+            msr_GetArg{}
+            If s.s>vp\rs Then vp\rs=s
+        End Select
+
+      Case #msfunc_limit
+        Select typ
+          Case @"l"
+            msr_GetArg{} : a.l = vp\rl
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{} : m.l = vp\rl
+            If a>m Then a=m
+            If a<n Then a=n
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{} : d.f = vp\rf
+            msr_GetArg{} : e.f = vp\rf
+            If c>e Then c=e
+            If c<d Then c=d
+        End Select
+ 
+      Case #msfunc_wrap
+        Select typ
+          Case @"l"
+            msr_GetArg{} : a.l = vp\rl
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{} : m.l = vp\rl
+            a = ( (a-n) MOD (m-n) ) + n
+            vp\rl = a
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{} : d.f = vp\rf
+            msr_GetArg{} : e.f = vp\rf
+            f.f = e-d
+            While c>e:c-f:Wend
+            While c<d:c+f:Wend
+            vp\rf = c
+        End Select
+
+      Case #msfunc_xor
+        Select typ
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{}
+            vp\rl = Xor(n,vp\rl)
+          Case @"b"
+            msr_GetArg{} : a.l = vp\rb
+            msr_GetArg{} : b.l = vp\rb
+            If (a=b) Then vp\rb=False:Else vp\rb=True
+        End Select
+
+      Case #msfunc_sub
+        Select typ
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{}
+            vp\rl = n-vp\rl
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{}
+            vp\rf = c-vp\rf
+        End Select
+
+      Case #msfunc_mul
+        Select typ
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{}
+            vp\rl * n
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{}
+            vp\rf * c
+        End Select
+
+      Case #msfunc_mod
+        Select typ
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{} : m.l = vp\rl
+            vp\rl = n MOD m
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{} : d.f = vp\rf
+            If d>0
+              While c>d:c-d:Wend
+              While c<0:c+d:Wend
+            End If
+        End Select
+
+      Case #msfunc_div
+        Select typ
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{} : m.l = vp\rl
+            If m><0 Then vp\rl = n/m : Else vp\rl = 0
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{} : d.f = vp\rf
+            If d><0 Then vp\rf = c/d : Else vp\rf = 0
+        End Select
+
+      Case #msfunc_neg
+        Select typ
+          Case @"l"
+            msr_GetArg{}
+            vp\rl = -vp\rl
+          Case @"f"
+            msr_GetArg{}
+            vp\rf = -vp\rf
+          Case @"b"
+            msr_GetArg{}
+            If vp\rb Then vp\rb=False:Else vp\rb=True
+        End Select
+
+      Case #msfunc_not
+        Select typ
+          Case @"l"
+            msr_GetArg{}
+            vp\rl = NOT(vp\rl)
+          Case @"b"
+            msr_GetArg{}
+            If vp\rb Then vp\rb=False:Else vp\rb=True
+        End Select
+
+      Case #msfunc_rnd
+        Select typ
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{} : m.l = vp\rl
+            vp\rl = RRnd(n,m)
+          Case @"f"
+            msr_GetArg{} : c.f = vp\rf
+            msr_GetArg{} : d.f = vp\rf
+            vp\rf = RRnd(c,d)
+        End Select
+
+      Case #msfunc_and
+        Select typ
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{} : m.l = vp\rl
+            vp\rl = n & m
+          Case @"b"
+            msr_GetArg{} : a.l = vp\rb
+            msr_GetArg{} : b.l = vp\rb
+            vp\rb = a AND b
+        End Select
+
+      Case #msfunc_or
+        Select typ
+          Case @"l"
+            msr_GetArg{} : n.l = vp\rl
+            msr_GetArg{} : m.l = vp\rl
+            vp\rl = n | m
+          Case @"b"
+            msr_GetArg{} : a.l = vp\rb
+            msr_GetArg{} : b.l = vp\rb
+            vp\rb = a OR b
+        End Select
+
+      Case #msfunc_left
+         msr_GetArg{} : s.s = vp\rs
+         msr_GetArg{} : n.l = vp\rl
+         vp\rs = Left$(s,n)
+
+      Case #msfunc_right
+         msr_GetArg{} : s.s = vp\rs
+         msr_GetArg{} : n.l = vp\rl
+         vp\rs = Right$(s,n)
+
+      Case #msfunc_mid
+         msr_GetArg{} : s.s = vp\rs
+         msr_GetArg{} : n.l = vp\rl
+         msr_GetArg{} : m.l = vp\rl
+         vp\rs = Mid$(s.s,n.l,m.l)
+
+      Case #msfunc_replace
+        msr_GetArg{} : s.s = vp\rs
+        msr_GetArg{} : t.s = vp\rs
+        msr_GetArg{}
+        vp\rs = Replace$(s,t,vp\rs)
+
+      Case #msfunc_instr
+        msr_GetArg{} : s.s = vp\rs
+        msr_GetArg{} : t.s = vp\rs
+        msr_GetArg{} : n.l = vp\rl
+        vp\rl = Instr(s,t,n)
+
+      Case #msfunc_len
+        msr_GetArg{}
+        vp\rl = FLen(vp\rs)
+
+      Case #msfunc_numargs
+        msr_GetArg{}
+        quoted.l = False
+        m.l = 0
+        gotcontent.l = False
+        For n.l=0 To FLen(vp\rs)-1
+          a.l = Peek.b(&vp\rs+n)&$FF
+          If quoted=False
+            If a<=32 AND gotcontent Then m+1 : gotcontent=False
+            If a>32 Then gotcontent=True
+          End If
+          If a=$22 Then quoted=1-quoted
+        Next
+        vp\rl=m
+
+      Case #msfunc_croparg
+        msr_GetArg{} : s.s = vp\rs
+        msr_GetArg{} : m.l = vp\rl
+        n.l = 0
+        While n<FLen(s)-1 AND m>=0
+          a.l = Peek.b(&s+n)&$FF : n+1
+          If quoted=False
+            If a<=32 AND gotcontent Then m-1 : gotcontent=False
+            If a>32
+              gotcontent=True
+              If a><$22 AND m=0 Then vp\rs + Chr$(a)
+            End If
+          Else
+            If a><$22 AND m=0 Then vp\rs + Chr$(a)
+          End If
+          If a=$22 Then quoted=1-quoted
+        Wend
+
+      Case #msfunc_str
+        ntyp.l = Peek.b(\pc+1)
+        Select ntyp
+          Case @"l"
+            msr_GetArg{}
+            vp\rs = Str$(vp\rl)
+          Case @"f"
+            msr_GetArg{}
+            vp\rs = Str$(vp\rf)
+          Case @"b"
+            msr_GetArg{}
+            If vp\rb Then vp\rs = "True":Else vp\rs="False"
+          Case @"s"
+            msr_GetArg{}
+        End Select
+
+      Case #msfunc_val
+        Select typ
+          Case @"l"
+            msr_GetArg{} : s.s = vp\rs
+            vp\rl = Vallong(s.s)
+          Case @"f"
+            msr_GetArg{} : s.s = vp\rs
+            vp\rf = Val(s.s)
+        End Select
+
+      Case #msfunc_xtype
+        ntyp.l = Peek.b(\pc+1)
+        Select ntyp        ; Argument typ
+          Case @"l"
+            Select typ
+              Case @"l" : msr_GetArg{}
+              Case @"s" : msr_GetArg{} : vp\rs = Str$(vp\rl)
+              Case @"f" : msr_GetArg{} : vp\rf = vp\rl
+              Case @"b" : msr_GetArg{} : vp\rb = (vp\rl><0)
+            End Select
+          Case @"f"
+            Select typ
+              Case @"f" : msr_GetArg{}
+              Case @"s" : msr_GetArg{} : vp\rs = Str$(vp\rf)
+              Case @"l" : msr_GetArg{} : vp\rl = Int(vp\rf)
+              Case @"b" : msr_GetArg{} : vp\rb = (vp\rf><0)
+            End Select
+          Case @"b"
+            Select typ
+              Case @"b" : msr_GetArg{}
+              Case @"s" : msr_GetArg{} : If vp\rb Then vp\rs = "True":Else vp\rs="False"
+              Case @"l" : msr_GetArg{} : vp\rl = vp\rb
+              Case @"f" : msr_GetArg{} : vp\rf = vp\rb
+            End Select
+          Case @"s"
+            Select typ
+              Case @"s" : msr_GetArg{}
+              Case @"f" : msr_GetArg{} : vp\rf = Val(vp\rs)
+              Case @"l" : msr_GetArg{} : vp\rl = Vallong(vp\rs)
+              Case @"b" : msr_GetArg{}
+                Select LCase$(vp\rs)
+                  Case "true" : vp\rb = True
+                  Case "false": vp\rb = False
+                  Case "on"   : vp\rb = True
+                  Case "off"  : vp\rb = False
+                  Default
+                    vp\rb = Vallong(vp\rs)
+                End Select
+            End Select
+        End Select
+
+      Case #msfunc_abs
+        Select typ
+          Case @"l"
+            msr_GetArg{}
+            If vp\rl<0 Then vp\rl=-vp\rl
+          Case @"f"
+            msr_GetArg{}
+            vp\rf = Abs(vp\rf)
+        End Select
+
+      Case #msfunc_int
+        msr_GetArg{} : vp\rl = Int(vp\rf)
+
+      Case #msfunc_float
+        msr_GetArg{} : vp\rf = vp\rl
+
+      Case #msfunc_sgn
+        Select typ
+          Case @"l"
+            msr_GetArg{}
+            vp\rl = Sgn(vp\rl)
+          Case @"f"
+            msr_GetArg{}
+            vp\rf = Sgn(vp\rf)
+        End Select
+
+      Case #msfunc_isrunning
+         msr_GetArg{}
+         vp\rb = False
+         If msr_FindScript{vp\rs}
+           vp\rb = True
+         End If
+
+      Case #msfunc_eclock
+        msr_GetArg{} : n.l = vp\rl : If n<1 Then n=1000
+        vp\rl = eclock_Read{n}
+
+      Case #msfunc_timestamp
+        DateStamp_ &msRuntime\date
+        vp\rs   = Mkl$(msRuntime\date\ds_Days)+Mkl$(msRuntime\date\ds_Minute)+Mkl$(msRuntime\date\ds_Tick)
+
+      Case #msfunc_msecs
+        msr_GetArg{}
+        If FLen(vp\rs)<12
+          DateStamp_ &msRuntime\date
+        Else
+          CopyMem_ &vp\rs,&msRuntime\date,SizeOf.DateStamp
+        End If
+        vp\rl = (msRuntime\date\ds_Tick MOD 50) * 1000 / 50
+
+      Case #msfunc_secs
+        msr_GetArg{}
+        If FLen(vp\rs)<12
+          DateStamp_ &msRuntime\date
+        Else
+          CopyMem_ &vp\rs,&msRuntime\date,SizeOf.DateStamp
+        End If
+        vp\rl = msRuntime\date\ds_Tick / 50
+
+      Case #msfunc_mins
+        msr_GetArg{}
+        If FLen(vp\rs)<12
+          DateStamp_ &msRuntime\date
+        Else
+          CopyMem_ &vp\rs,&msRuntime\date,SizeOf.DateStamp
+        End If
+        vp\rl = msRuntime\date\ds_Minute MOD 60
+
+      Case #msfunc_hours
+        msr_GetArg{}
+        If FLen(vp\rs)<12
+          DateStamp_ &msRuntime\date
+        Else
+          CopyMem_ &vp\rs,&msRuntime\date,SizeOf.DateStamp
+        End If
+        vp\rl = msRuntime\date\ds_Minute / 60
+
+      Case #msfunc_day
+        msr_GetArg{}
+        If FLen(vp\rs)<12
+          DateStamp_ &msRuntime\date
+        Else
+          CopyMem_ &vp\rs,&msRuntime\date,SizeOf.DateStamp
+        End If
+        vp\rl = Val(Left$(Date$(msRuntime\date\ds_Days),2))
+
+      Case #msfunc_month
+        msr_GetArg{}
+        If FLen(vp\rs)<12
+          DateStamp_ &msRuntime\date
+        Else
+          CopyMem_ &vp\rs,&msRuntime\date,SizeOf.DateStamp
+        End If
+        vp\rl = Val(Mid$(Date$(msRuntime\date\ds_Days),3,2))
+
+      Case #msfunc_year
+        msr_GetArg{}
+        If FLen(vp\rs)<12
+          DateStamp_ &msRuntime\date
+        Else
+          CopyMem_ &vp\rs,&msRuntime\date,SizeOf.DateStamp
+        End If
+        vp\rl = Val(Right$(Date$(msRuntime\date\ds_Days),4))
+
+      Case #msfunc_date
+        msr_GetArg{}
+        If FLen(vp\rs)<12
+          DateStamp_ &msRuntime\date
+        Else
+          CopyMem_ &vp\rs,&msRuntime\date,SizeOf.DateStamp
+        End If
+        vp\rs = Date$(msRuntime\date\ds_Days)
+
+      Case #msfunc_inc
+        vp\rl+1
+
+      Case #msfunc_call
+        msr_GetArg{} : name.s = vp\rs
+        msr_GetArg{} : args.s = vp\rs
+        msr_GetArg{} : n.l    = vp\rb
+        If n
+          If msr_RunFile{name,name,vp\script,args}
+            vp\script\status = #MSST_SUSPENDED
+          Else
+            msr_Error{"Unable to run script \\22"+name+"\\22!"}
+          End If
+        Else
+          msr_RunFile{name,name,0,args}
+        End If
+        msRuntime\reschedule = True
+
+      Case #msfunc_exit
+        msr_GetArg{} ; result
+        msr_KillScript{vp\script}
+
+      Case #msfunc_kill
+        msr_GetArg{} : name.s = vp\rs
+        ResetList msScript()
+        While NextItem(msScript())
+          If msScript()><vp\script
+            If msScript()\name=name Then msr_KillScript{msScript()}
+          End If
+        Wend
+
+      Case #msfunc_wait
+        msr_GetArg{} : n = vp\rl : If n<=0 Then n=1
+        msr_GetArg{} : name = vp\rs
+        If name=""
+          vp\script\wc = n
+        Else
+          ResetList msScript()
+          While NextItem(msScript())
+            If msScript()><vp\script
+              If msScript()\name=name Then msScript()\wc = n
+            End If
+          Wend
+        End If
+
+      Case #msfunc_activate
+        msr_GetArg{} : name = vp\rs
+        If name
+          ResetList msScript()
+          While NextItem(msScript())
+            If msScript()><vp\script
+              If msScript()\name=name
+                msScript()\wc=0
+              End If
+            End If
+          Wend
+          msRuntime\reschedule = True
+        End If
+
+      Case #msfunc_alert
+        msr_GetArg{}
+        message{vp\rs}
+
+      Case #msfunc_print
+        ntyp.l = Peek.b(\pc+1)
+        Select ntyp
+          Case @"l"
+            msr_GetArg{}
+            s.s = Str$(vp\rl)
+          Case @"f"
+            msr_GetArg{}
+            s.s = Str$(vp\rf)
+          Case @"b"
+            msr_GetArg{}
+            If vp\rb Then s.s = "True":Else s.s="False"
+          Case @"s"
+            msr_GetArg{} : s.s = vp\rs
+        End Select
+        Print s.s
+
+      Case #msfunc_nprint
+        ntyp.l = Peek.b(\pc+1)
+        Select ntyp
+          Case @"l"
+            msr_GetArg{}
+            s.s = Str$(vp\rl)
+          Case @"f"
+            msr_GetArg{}
+            s.s = Str$(vp\rf)
+          Case @"b"
+            msr_GetArg{}
+            If vp\rb Then s.s = "True":Else s.s="False"
+          Case @"s"
+            msr_GetArg{} : s.s = vp\rs
+        End Select
+        NPrint s.s
+
+      Case #msfunc_extern
+        msr_GetArg{} : msRuntime\externFunc  = vp\rs
+        msr_GetArg{} : msRuntime\externArgs  = vp\rs
+        msr_GetArg{} : msRuntime\externCount = vp\rl
+        If msRuntime\externCount<  0 Then msRuntime\externCount=0
+        If msRuntime\externCount>=16 Then msRuntime\externCount=15
+        msRuntime\eventID = #MSEV_EXTERN
+
+      Case #msfunc_getexres
+        msr_GetArg{} : n.l = vp\rl
+        If n<0 Then n=0
+        If n>=16 Then n=15
+        vp\rs = msRuntime\externResult[n]
+
+      Default
+        msr_Error{"Unknown function! (id="+Right$(Hex$(func),4)+")",vp\script}
+    End Select
+
+End Select
+End Statement
+
+
+Statement msr_EvalOneStep{}
+SHARED vp
+USEPATH vp\script
+If Peek.b(\pc)=@"/" ; we have a valid statement
+  stat.l = Peek.b(\pc+1)
+  Select stat
+;    Case @"V" ; set local variable
+;      typ.l   = Peek.b(\pc+2)
+;      var.l   = Peek.l(\pc+3)
+;      \pc + 7
+;      msr_GetArg{}
+;      Select typ
+;        Case @"l" : Poke.l \varbase_l+var, vp\rl
+;        Case @"f" : Poke.f \varbase_f+var, vp\rf
+;        Case @"b" : Poke.w \varbase_b+var, vp\rb
+;        Case @"s" : str_Write{\varbase_s+var, vp\rs}
+;        Case @"p" : Poke.l \varbase_p+var, vp\rp
+;        ;Default
+;        ;  msr_Error{"Unknown vartype found in script!",vp\script}
+;      End Select
+;
+;    Case @"G" ; set global variable
+;      typ.l  = Peek.b(\pc+2)
+;      name.s = Peek.s(\pc+3)
+;      \pc+3+FLen(name)+1
+;      msr_GetArg{}
+;      Select typ
+;        Case @"l" : pft_AddItem{msRuntime\globals,name,Hex$(vp\rl)}
+;        Case @"f" : pft_AddItem{msRuntime\globals,name,Hex$(Peek.l(&vp\rf))}
+;        Case @"b" : If vp\rb Then pft_AddItem{msRuntime\globals,name,"1"}:Else pft_AddItem{msRuntime\globals,name,"0"}
+;        Case @"s" : pft_AddItem{msRuntime\globals,name,vp\rs}
+;        ;Default
+;        ;  msr_Error{"Unknown vartype found in script!",vp\script}
+;      End Select
+;
+;    Case @"A" ; set local array
+;      typ.l   = Peek.b(\pc+2)
+;      var.l   = Peek.l(\pc+3)
+;      \pc + 7
+;      msr_GetArg{} : i.l = vp\rl
+;      If (i<0) Then msr_Error{"Negative array index!",vp\script}
+;      msr_GetArg{}
+;      Select typ
+;        Case @"l" : var+i*4 : If var<vp\script\bin\numLocals_l*4 Then Poke.l \varbase_l+var, vp\rl : Else msr_Error{"Array index out of range!",vp\script}
+;        Case @"f" : var+i*4 : If var<vp\script\bin\numLocals_f*4 Then Poke.f \varbase_f+var, vp\rf : Else msr_Error{"Array index out of range!",vp\script}
+;        Case @"b" : var+i   : If var<vp\script\bin\numLocals_b   Then Poke.b \varbase_b+var, vp\rb : Else msr_Error{"Array index out of range!",vp\script}
+;        Case @"s" : var+i*4 : If var<vp\script\bin\numLocals_s*4 Then str_Write{\varbase_s+var, vp\rs}: Else msr_Error{"Array index out of range!",vp\script}
+;        Case @"p" : var+i*4 : If var<vp\script\bin\numLocals_p*4 Then Poke.l \varbase_p+var, vp\rp : Else msr_Error{"Array index out of range!",vp\script}
+;        ;Default
+;        ;  msr_Error{"Unknown vartype found in script!",vp\script}
+;      End Select
+;
+;    Case @"Z" ; set global array
+;      typ.l  = Peek.b(\pc+2)
+;      name.s = Peek.s(\pc+3)
+;      \pc+3+FLen(name)+1
+;      ntyp.l = Peek.b(\pc+1)
+;      msr_GetArg{}
+;      Select ntyp
+;        Case @"l"
+;          name + "\" + Str$(vp\rl)
+;        Case @"s"
+;          name + "\" + vp\rs
+;        Case @"b"
+;          If vp\rb Then name + "\1" : Else name + "\0"
+;        Case @"f"
+;          name + "\" + Str$(vp\rf)
+;      End Select
+;      msr_GetArg{}
+;      Select typ
+;        Case @"l" : pft_AddItem{msRuntime\globals,name,Hex$(vp\rl)}
+;        Case @"f" : pft_AddItem{msRuntime\globals,name,Hex$(Peek.l(&vp\rf))}
+;        Case @"b" : If vp\rb Then pft_AddItem{msRuntime\globals,name,"1"}:Else pft_AddItem{msRuntime\globals,name,"0"}
+;        Case @"s" : pft_AddItem{msRuntime\globals,name,vp\rs}
+;        ;Default
+;        ;  msr_Error{"Unknown vartype found in script!",vp\script}
+;      End Select
+
+    Case @"F" ; evaluate function
+      \pc+1 : msr_GetArg{}  ; we dont care about the result of an statement
+
+    Case @"B" ; conditional branch
+      newpc.l = Peek.l(\pc+2) + \codeP
+      \pc + 6
+      msr_GetArg{}
+      If vp\rb=False Then \pc = newpc
+      If \pc-\codeP>=\bin\csizeCODE OR \pc<\codeP
+        msr_Error{"Invalid branch!",vp\script}
+        msr_KillScript{vp\script}
+      End If
+
+    Default
+      msr_Error{"Unkown statement in script!",vp\script}
+  End Select
+Else
+  msr_Error{"Command prelude not found in script! PC:0x"+Hex$(\pc)+" offset:"+Str$(\pc-\codeP)+" data:"+Mkl$(Peek.l(\pc))+Mkl$(Peek.l(\pc+4))+Mkl$(Peek.l(\pc+8))+Mkl$(Peek.l(\pc+12)),vp\script}
+  msr_KillScript{vp\script}
+End If
+End Statement
+
+; Compute all scripts until the frame is done or interupt by custom func appears
+Function.l msr_Do{}
+SHARED msScript(),vp.vp
+USEPATH msScript()
+msRuntime\eventID=#MSEV_NONE
+
+If msRuntime\frameDone
+  ResetList msScript()           ; remove the killed scripts
+  While NextItem(msScript())
+    If \status=#MSST_KILLED
+      msr_FreeScript{msScript()}
+      ResetList msScript()
+    End If
+  Wend
+ 
+  ResetList msScript()           ; dont keep them waiting...
+  While NextItem(msScript())
+    If \status=#MSST_RUNNING
+      If \wc>0 Then \wc-1
+    End If
+  Wend
+
+  msRuntime\frameDone=False
+End If
+
+Format "" ; important for conversion
+Repeat
+  msRuntime\reschedule = False
+
+  ResetList msScript()
+  While NextItem(msScript())
+    vp\script = msScript()
+    While \status=#MSST_RUNNING AND \wc=0 AND msRuntime\eventID=#MSEV_NONE
+      msr_EvalOneStep{}
+    Wend
+  Wend
+Until msRuntime\reschedule=False
+
+If msRuntime\eventID=#MSEV_NONE Then msRuntime\frameDone=True
+
+Function Return msRuntime\eventID
+End Function
+
+Statement msr_SetExternResult{result.s}
+msRuntime\externResult[msRuntime\externCount] = result
+End Statement
+
+
+; Speichere laufendes Script
+Function.l msr_WriteScript{fid.l,*script.msScript}
+succ.l = file_WriteChunk{fid,@"SCPT"}
+If succ Then succ.l = file_WriteMem{fid,*script\bin,*script\bin\csizeMSVB+8}
+If succ
+  pc.l = *script\pc-*script\codeP
+  succ & file_WriteTag{fid,@"SCID",*script} ; used as ID
+  succ & file_WriteTagString{fid,@"NAM$",*script\name}
+  succ & file_WriteTag{fid,@"PC__",pc}
+  succ & file_WriteTag{fid,@"WC__",*script\wc}
+  succ & file_WriteTag{fid,@"STAT",*script\status}
+  succ & file_WriteTag{fid,@"CAID",*script\caller}
+End If
+
+If *script\bin\numLocals_l>0
+  If succ Then succ = file_WriteChunk{fid,@"VARL"}
+  If succ Then succ = file_WriteMem{fid,*script\varbase_l,*script\bin\numLocals_l*4}
+  If succ Then file_CloseChunk{fid,@"VARL"}
+End If
+
+If *script\bin\numLocals_f>0
+  If succ Then succ = file_WriteChunk{fid,@"VARF"}
+  If succ Then succ = file_WriteMem{fid,*script\varbase_f,*script\bin\numLocals_f*4}
+  If succ Then file_CloseChunk{fid,@"VARF"}
+End If
+
+If *script\bin\numLocals_b>0
+  If succ Then succ = file_WriteChunk{fid,@"VARB"}
+  If succ Then succ = file_WriteMem{fid,*script\varbase_b,*script\bin\numLocals_b*1}
+  If succ Then file_CloseChunk{fid,@"VARB"}
+End If
+
+If *script\bin\numLocals_p>0
+  If succ Then succ = file_WriteChunk{fid,@"VARP"}
+  If succ Then succ = file_WriteMem{fid,*script\varbase_p,*script\bin\numLocals_p*4}
+  If succ Then file_CloseChunk{fid,@"VARP"}
+End If
+
+If *script\bin\numLocals_s>0
+  If succ Then succ = file_WriteChunk{fid,@"VARS"}
+  n.l = 0
+  While succ=True AND n<*script\bin\numLocals_s
+    succ = file_WriteString{fid,str_Read{*script\varbase_s+n*4}}
+  Wend
+  If succ Then file_CloseChunk{fid,@"VARS"}
+End If
+file_CloseChunk{fid,@"SCPT"}
+
+Function Return succ
+End Function
+
+
+;; Lade laufende Scripte
+;Function.l load_script{dos.l,blength.l}
+;SHARED script(),global:USEPATH script(sindex)
+;succ.l = True
+;
+;succ & file_ReadMem{dos,&sindex.l,4}
+;If sindex>=0 AND sindex<#max_scripts
+;  name.s = file_ReadString{dos}
+;  succ & file_ReadMem{dos,&pc.l,4}
+;  succ.l = False
+;  *cscript.cacheitem_script = cache_getobj{name.s,#objtyp_script}
+;;  If *cscript
+;    \baseptr = AllocMem_ (*cscript\blength,0)
+;    If \baseptr
+;      succ.l = True
+;      CopyMem_ &*cscript\code,\baseptr,*cscript\blength
+;      \blength      = *cscript\blength
+;      \pc           = \baseptr   + pc
+;      \is_used      = True
+;      \name         = LCase$(name.s)
+;      \waitcounter  = 0
+;      \flag_running = True ; False
+;      \flag_exit    = False
+;      \flag_wait    = False
+;      \wakeupscript = -1
+;      msengine\rescan = True
+;      succ & file_ReadMem{dos,&script(sindex)\waitcounter,4}
+;      succ & file_ReadMem{dos,&script(sindex)\flag_exit,2}
+;      succ & file_ReadMem{dos,&script(sindex)\flag_wait,4}
+;      succ & file_ReadMem{dos,&script(sindex)\flag_running,2}
+;      succ & file_ReadMem{dos,&script(sindex)\wakeupscript,4}
+;;      succ & skip_reserved{dos,16}
+;      If sindex>msengine\numscripts Then msengine\numscripts=sindex
+;    Else
+;      msr_Error{"Not enough memory for script !"}
+;    End If
+;  End If
+;Else
+;  succ=False
+;End If
+;
+;
+;seekpos.l = file_GetSeekPos{dos}
+;If file_FindChunk{dos,@"LO_L",seekpos,blength} AND succ
+;  succ.l = file_ReadMem{dos,&header.l,4}
+;  succ.l = file_ReadMem{dos,&maxlength.l,4}
+;  If header=@"LO_L"
+;    rlength.l = Min(maxlength,#max_locals*4)
+;    If file_ReadMem{dos,&script(sindex)\l[0],rlength} Then succ=True:Else succ=False
+;  Else
+;    error{"Chunk lost !!!"}
+;  End If
+;Else
+;  succ=False
+;End If
+
+;If file_FindChunk{dos,@"LO_F",seekpos,blength} AND succ
+;  succ.l = file_ReadMem{dos,&header,4}
+;  succ.l = file_ReadMem{dos,&maxlength.l,4}
+;  If header=@"LO_F"
+;    rlength.l = Min(maxlength,#max_locals*4)
+;    If file_ReadMem{dos,&script(sindex)\f[0],rlength} Then succ=True:Else succ=False
+;  Else
+;    error{"Chunk lost !!!"}
+;  End If
+;Else
+;  succ=False
+;End If
+;
+;If file_FindChunk{dos,@"LO_B",seekpos,blength} AND succ
+;  succ.l = file_ReadMem{dos,&header,4}
+;  succ.l = file_ReadMem{dos,&maxlength.l,4}
+;  If header=@"LO_B"
+;    rlength.l = Min(maxlength,#max_locals*4)
+;    If file_ReadMem{dos,&script(sindex)\b[0],rlength} Then succ=True:Else succ=False
+;  Else
+;    error{"Chunk lost !!!"}
+;  End If
+;Else
+;  succ=False
+;End If
+;
+;If file_FindChunk{dos,@"LO_S",seekpos,blength} AND succ
+;  succ.l = file_ReadMem{dos,&header,4}
+;  succ.l = file_ReadMem{dos,&maxlength.l,4}
+;  If header=@"LO_S"
+;    n.l=0
+;    While n.l < #max_locals AND maxlength>0
+;      script(sindex)\s[n] = file_ReadString{dos}
+;      maxlength - 4 - Peek.l(&script(sindex)\s[n]-4)
+;      n+1
+;    Wend
+;  Else
+;    error{"Chunk lost !!!"}
+;  End If
+;Else
+;  succ=False
+;End If
+;If succ=False Then error{"Unable to load script !"}
+;Function Return succ
+;End Function
+
+
+; write the current interpreter image to an open file
+Function.l msr_WriteSnapShot{fid.l}
+SHARED msScript()
+succ.l=True
+succ = file_WriteChunk{fid,@"MSIM"}
+If succ AND msRuntime\globals
+  succ = file_WriteChunk{fid,@"VARG"}
+  succ = pft_Write{msRuntime\globals,fid}
+  file_CloseChunk{fid,@"VARG"}
+End If
+
+ResetList msScript()
+While NextItem(msScript()) AND succ=True
+  succ = msr_WriteScript{fid,msScript()}
+Wend
+
+file_CloseChunk{fid,@"MSIM"}
+Function Return succ
+End Function
+
+
+; save the current interpreter image to a file
+Function.l msr_SaveSnapShot{filename.s}
+succ.l = False
+fid.l = file_Open{filename.s,#file_write}
+If fid>=0
+  succ = msr_WriteSnapShot{fid}
+End If
+Function Return succ
+End Function
+ 
+
+
+;; Lade kompletten Spielstand
+;Statement game_load{filename.s}
+;SHARED global,location,script(),objlist(),gfxlist(),inventory,tuidat(),gb_l(),gb_f(),gb_b(),gb_s()
+;dos.l = file_Open{filename.s,"svg",#file_read}
+;If dos>=0
+;  If file_ReadMem{dos,&header.l,4}
+;    If header=@"MSSG"
+;      succ.l = True
+;      seekpos.l = file_GetSeekPos{dos}
+;      tlength.l = file_GetLength{dos} - 4
+;      script_flush{}
+;      While tlength>0 AND file_EOF{dos}=False AND succ=True
+;        succ.l = False
+;        If file_Seek{dos,seekpos}
+;          If file_ReadMem{dos,&head.l,4}
+;            If file_ReadMem{dos,&chunklength.l,4}
+;              Select head
+;                Case @"GLOB"
+;                  succ = load_global{dos,chunklength}
+;                Case @"SCPT"
+;                  succ = load_script{dos,chunklength}
+;                Case @"FINI"
+;                  succ = True
+;                  tlength = 0
+;                Default
+;                   error{"Unknown chunk found - <"+Mkl$(head)+"> !"}
+;                   succ = True
+;
+;              End Select
+;              seekpos + chunklength + 8
+;              tlength - chunklength - 8
+;            End If
+;          End If
+;        End If
+;      Wend
+;
+;      If succ=False Then error{"Some errors occured - there might be some errors!"}
+;    Else
+;      error{"File is not a Monkeyscript savegame !"}
+;    End If
+;  Else
+;    error{"Unable to load header !"}
+;  End If
+;  file_Close{dos}
+;End If
+;End Statement
+
+CNIF #__include=0
+
+; Befehle:
+; /F funcID.w  arg1, arg2 ... statement
+; /V varID.l   arg            write variable
+; /G varID.l   arg            write global
+; /B offset.l  arg            conditional branch
+
+
+; Argumente
+; Gx varID.l Global Variable
+; Vx varID.l Local Variable
+; Cx data.x  Constant
+; Fx funcID.w arg1, arg2 ... Operator
+ 
+
+End
+CEND
+
+
+
+
+
+

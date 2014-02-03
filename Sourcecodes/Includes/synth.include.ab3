@@ -1,0 +1,3417 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "ram:"
+; ExeFile         = "createw.exe"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 100000
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 1124
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8192
+; RuntimeDebug    = 1
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 0
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 7
+; CursorColumn    = 26
+; LabelSearch     = "synth_c"
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 100
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 100
+; Max GadgetList  = 100
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 200
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 100
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 1
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 10
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 100
+; Max BlitzFont   = 1
+; Max GTList      = 100
+; Max ChunkyBuffer= 2
+; /XTRA
+CNIF #__include=0
+Syntax 2
+optimize 7
+CEND
+
+XINCLUDE "useful.include.ab3"
+XINCLUDE "synth.definitions.ab3"
+
+
+
+;______________________________________________
+
+; Filter Types
+#FILTER_FORMANTA =  5 ; internet, doesnt work
+#FILTER_FORMANTB =  6 ; from HD-Rec EQ
+#FILTER_FORMANTC =  7 ; found on javascript tts
+#FILTER_FORMANTD =  8 ; snack
+
+NEWTYPE.synth_T
+quality.l
+seed.l
+End NEWTYPE
+
+Macro denorm
+0.0001
+End Macro
+
+SHARED synthGlobal.synth_T
+; Lookup Tables
+Dim SinTable.w  ($8000)
+Dim TanTable.w  ($8000)
+Dim RecTable.w ($8000)
+Dim TriTable.w  ($8000)
+Dim NoiseTable.w($8000)
+Dim SawTable.w  ($8000)
+Dim ISawTable.w ($8000)
+Dim DCTable.w ($8000)
+
+SHARED SinTable(),SawTable(),RecTable(),TriTable(),NoiseTable()
+SHARED ISawTable()
+SHARED TanTable(),DCTable()
+
+seed.l = 1234567
+
+Function.synth_T synth_Init{}
+  Function Return synthGlobal;
+End Function
+
+
+Statement synth_Deinit{*synth.synth_T}
+End Statement
+
+Function.l synth_GetSizeOfSample{*synth.synth_T}
+  Function Return SizeOf.w
+End Function
+
+
+Function.l synth_GetAttr{*synth.synth_T,attr.l,*valueP.l}
+
+  Select attr
+    Case #SYNTHA_BytesPerSample : Poke.l *valueP, synth_GetSizeOfSample{*synth}
+    Case #SYNTHA_Format         : Poke.l *valueP, #FORMAT_Int16
+    Case #SYNTHA_Quality        : Poke.l *valueP, *synth\quality
+    Case #SYNTHA_SizeOf         : Poke.l *valueP, SizeOf.synth_T
+    Case #SYNTHA_SinTable       : Poke.l *valueP, &SinTable(0)
+    Case #SYNTHA_SawTable       : Poke.l *valueP, &SawTable(0)
+    Case #SYNTHA_TriTable       : Poke.l *valueP, &TriTable(0)
+    Case #SYNTHA_RecTable       : Poke.l *valueP, &RecTable(0)
+    Case #SYNTHA_NoiseTable     : Poke.l *valueP, &NoiseTable(0)
+    Case #SYNTHA_TanTable       : Poke.l *valueP, &TanTable(0)
+    Case #SYNTHA_DCTable        : Poke.l *valueP, &DCTable(0)
+    Default
+      Function Return 0
+  End Select
+
+  Function Return 1
+
+End Function
+
+
+Function.l synth_SetAttr{*synth.synth_T,attr.l,value.l}
+
+  Select attr
+    Case #SYNTHA_Quality  : *synth\quality = value
+    Default
+      Function Return 0
+  End Select
+
+  Function Return 1
+
+End Function
+
+
+
+Statement synth_ConvertSampleFormat{*outP.w,*inP.w,sampleN.l,form.l}
+
+  Select form
+    Case #FORMAT_Int8
+      For n.l=0 To sampleN-1
+        samplew.w = Peek.w(*inP+n*SizeOf.w) ASR 8
+        Poke.b *outP+n*SizeOf.b,samplew
+      Next
+
+    Case #FORMAT_Int16
+      If *inP<>*outP CopyMem_ *inP,*outP,sampleN*SizeOf.w
+
+    Case #FORMAT_Int24
+      If *outP=*inP
+        For n.l=sampleN-1 To 0 Step -1
+          samplel.l = Peek.w(*inP+n*SizeOf.w) ASL 8
+          Poke.l *outP+n*SizeOf.l,samplel
+        Next
+      Else
+        For n.l=0 To sampleN-1
+          samplel.l = Peek.w(*inP+n*SizeOf.w) ASL 8
+          Poke.l *outP+n*SizeOf.l,samplel
+        Next
+      End If
+
+    Case #FORMAT_Float32
+      For n.l=0 To sampleN-1
+        samplef.f = Peek.w(*inP+n*SizeOf.w) / 32768.0
+        Poke.f *outP+n*SizeOf.f,samplef
+      Next
+
+  End Select
+
+End Statement
+
+
+; Oscillator
+NEWTYPE.osc_T
+
+  ; settings
+  wave.l          ; OSC_...
+  modtype.l        ; MOD_...
+  frequency.f      ; Hz
+  startphase.f     ; [0...2pi]
+  samplerate.f   ; Hz
+  gain.f           ; 0...1.0
+  moddepth.f
+
+  *tableP.w        ; table
+  *funcP.l         ; hook
+
+  ; state
+  iphase.l         ; for integer rendering
+  iphase2.l        ; some need 2
+  iphaseinc.l      ; phase increment
+  igain.l          ; 0...256
+  imoddepth.l
+
+End NEWTYPE
+
+; Filter
+NEWTYPE.filter_T
+
+  ; settings
+  type_.l
+  samplerate.f
+  frequency.f
+  resonance.f
+
+  *funcP.l
+
+  ; coefficients
+  a.f[4]
+  b.f[4]
+
+  ; state
+  x.f[4]
+  y.f[4]
+
+  reserved.l[64]
+  
+End NEWTYPE
+
+; Envelope
+NEWTYPE.env_T
+
+  ; settings
+  duration.f[#ENV_Max]
+  level.f[#ENV_Max]
+
+  ;state
+  state.l
+  offset.f
+  rlevel.f
+  ir.f
+  r.f
+
+End NEWTYPE
+
+
+#DELAYL_MASK = $1FFF
+#DELAYL_SIZE = $2000
+
+#DELAYN_MASK  = $FFF
+#DELAYN_SIZE  = $1000
+
+#DELAYS_MASK = $3FF
+#DELAYS_SIZE = $400
+
+NEWTYPE.string_T
+
+  ; delay
+  ring_buffer.f[#DELAYN_SIZE] ; should be enough for 10Hz@44kHz
+
+  frequency.f
+  samplerate.f
+  detune.f
+
+  ; loop filter
+  dispersion.filter_T
+  fdelay.filter_T
+  highpass.filter_T
+  lowpass.filter_T
+
+  ; delay line
+  feedback.f
+  pass.f
+  pickpos.f  ; position of picking
+
+  ;stiffness.f
+
+  ; state
+;  dither.l
+
+  ring_read_a.f
+  ring_read_b.f
+  ring_read.l
+  ring_write.l
+  ring_pick.l
+;  ring_err.f
+  ring_delta.f
+
+End NEWTYPE
+
+NEWTYPE.tapdelay_T
+
+  ; delay
+  ring_buffer.f[#DELAYN_SIZE] ; should be enough for 10Hz@44kHz
+
+  frequency.f
+  samplerate.f
+
+  ; delay line
+  feedback.f
+  wetmix.f
+  detune.f
+
+  ring_write.l
+  ring_delta.f
+  
+  tap_factor.f[4]
+  tap_gain.f[4]
+
+End NEWTYPE
+
+
+NEWTYPE.flute_T
+
+  ; delay
+  ring1_buffer.f[#DELAYN_SIZE] ; should be enough for 10Hz@44kHz
+  ring2_buffer.f[#DELAYN_SIZE] ; should be enough for 10Hz@44kHz
+
+  frequency.f
+  samplerate.f
+  jetharmonic.f
+  boreharmonic.f
+  gain.f
+  detune.f
+
+  ; filter
+  hidamp.f
+  lodamp.f
+  jetfeedback.f
+  borefeedback.f
+  ph.f
+  pl.f
+
+  ; state
+  outl.f
+  outh.f
+
+  ring1_read_a.f
+  ring1_read_b.f
+  ring1_read.l
+
+  ring2_read_a.f
+  ring2_read_b.f
+  ring2_read.l
+
+  ring1_write.l
+  ring2_write.l
+
+End NEWTYPE
+
+NEWTYPE.delayline_T
+  frequency.f  ; frequency in Hz
+  dmout.f      ; output gain
+  dmin.f       ; input gain
+  dmf.f[4]     ; feedback gain
+  r.f          ; read a
+  ir.f         ; read b
+
+  ; state
+  douth.f
+  doutl.f
+  ring_buffer.f[#DELAYS_SIZE]
+  ring_read.l
+
+End NEWTYPE
+
+
+NEWTYPE.delaymatrix_T
+
+  ; delay
+  delay.delayline_T[4]
+
+  samplerate.f
+  gain.f
+
+  ; filter
+  hidamp.f  ; Hz
+  lodamp.f  ; Hz
+  ph.f
+  pl.f
+
+  ring_write.l
+
+  a.f
+  b.f
+  c.f
+
+End NEWTYPE
+
+NEWTYPE.ensemble_T
+
+  ring_buffer.f[#DELAYL_SIZE]
+  ring_pick.f[8]
+  ring_pickD.f[8]
+  ring_write.l
+
+  samplerate.f
+  mix.f
+  feedback.f
+
+  detune.f
+  shift.f
+
+  flipcount.f
+  count.l
+
+End NEWTYPE
+
+
+Function.l synth_GetEnvAttr{*env.env_T,attr.l,*valueP.l}
+
+  Select attr
+    Case #ENVA_SizeOf  : Poke.l *valueP, SizeOf.env_T
+    Case #ENVA_State   : Poke.l *valueP, *env\state
+    Case #ENVA_Offset  : Poke.f *valueP, *env\offset
+    Case #ENVA_Level   : Poke.f *valueP, *env\rlevel
+    Default
+      Function Return 0
+  End Select
+
+  Function Return 1
+
+End Function
+
+
+Function.l synth_SetEnvAttr{*env.env_T,attr.l,value.l}
+
+  Select attr
+    Case #ENVA_State  : *env\state  = value
+    Case #ENVA_Offset : *env\offset = Peek.f(&value)
+    Case #ENVA_Level  : *env\rlevel = Peek.f(&value)
+    Default
+      Function Return 0
+  End Select
+
+  Function Return 1
+
+End Function
+
+Function.l synth_GetFilterAttr{*filt.filter_T, attr.l, *valueP.l}
+
+  Select(attr) 
+    Case #FA_SizeOf    :     Poke.l *valueP, SizeOf.filter_T;   break;
+    Case #FA_Type      :     Poke.l *valueP, *filt\type_;       break;
+    Case #FA_Samplerate:     Poke.f *valueP, *filt\samplerate; break;
+    Case #FA_Frequency :     Poke.f *valueP, *filt\frequency;  break;
+    Case #FA_Resonance :     Poke.f *valueP, *filt\resonance;  break;
+;    Case #FA_Detune    :     Poke.f *valueP, *filt\detune;     break;
+    Case #FA_A0        :     Poke.f *valueP, *filt\a[0];       break;
+    Case #FA_A1        :     Poke.f *valueP, *filt\a[1];       break;
+    Case #FA_A2        :     Poke.f *valueP, *filt\a[2];       break;
+    Case #FA_A3        :     Poke.f *valueP, *filt\a[3];       break;
+    Case #FA_B0        :     Poke.f *valueP, *filt\b[0];       break;
+    Case #FA_B1        :     Poke.f *valueP, *filt\b[1];       break;
+    Case #FA_B2        :     Poke.f *valueP, *filt\b[2];       break;
+    Case #FA_B3        :     Poke.f *valueP, *filt\b[3];       break;
+    Default:
+      Function Return 0
+  End Select
+  
+  Function Return 1
+  
+End Function
+
+Function.l synth_SetFilterAttr{*filt.filter_T, attr.l, value.l}
+
+  Select(attr) 
+    Case #FA_SizeOf    : Function Return 0;
+    Case #FA_Type      : Function Return 0;
+    Case #FA_Samplerate: *filt\samplerate = Peek.f(&value); if (filt\update) filt\update(filter); break;
+    Case #FA_Frequency : *filt\frequency  = Peek.f(&value); if (filt\update) filt\update(filter); break;
+    Case #FA_Resonance : *filt\resonance  = Peek.f(&value); if (filt\update) filt\update(filter); break;
+;    Case #FA_Detune    : *filt\detune     = Peek.f(&value); if (filt\update) filt\update(filter); break;
+    Case #FA_A0        : *filt\a[0]       = Peek.f(&value); break;
+    Case #FA_A1        : *filt\a[1]       = Peek.f(&value); break;
+    Case #FA_A2        : *filt\a[2]       = Peek.f(&value); break;
+    Case #FA_A3        : *filt\a[3]       = Peek.f(&value); break;
+    Case #FA_B0        : *filt\b[0]       = Peek.f(&value); break;
+    Case #FA_B1        : *filt\b[1]       = Peek.f(&value); break;
+    Case #FA_B2        : *filt\b[2]       = Peek.f(&value); break;
+    Case #FA_B3        : *filt\b[3]       = Peek.f(&value); break;
+    Default:
+      Function Return 0;
+  End Select
+  
+  Function Return 1;
+
+End Function
+
+
+Statement synth_InitEnsemble{*ensemble.ensemble_T,samplerate.f,mix.f,detune.f,shift.f,feedback.f}
+
+  *ensemble\samplerate  = samplerate
+  *ensemble\mix           = mix
+  *ensemble\ring_write    = 0
+  detune / 12.0 / 100.0
+  *ensemble\detune        = detune
+  shift = shift * samplerate / 1000.0
+  If shift> #DELAYL_SIZE/4 Then shift = #DELAYL_SIZE/4
+  *ensemble\shift         = shift
+  *ensemble\feedback      = feedback
+
+  delayStep.f   = 2^detune
+  pickUp.f      = delayStep
+  pickDown.f    = 2-(delayStep)
+  *ensemble\flipcount     = (#DELAYL_SIZE - 3*shift) / delayStep
+  *ensemble\ring_pickD[0] = pickUp
+  *ensemble\ring_pickD[1] = pickDown
+  *ensemble\ring_pickD[2] = pickUp/2
+  *ensemble\ring_pickD[3] = pickDown/2
+  *ensemble\ring_pick[0]  = -shift*1
+  *ensemble\ring_pick[1]  = -shift*2
+  *ensemble\ring_pick[2]  = -shift*3
+  *ensemble\ring_pick[3]  = -shift*4
+  *ensemble\ring_write    = 0
+  *ensemble\count         = 0
+
+  For n.l=0 To #DELAYL_SIZE-1 : *ensemble\ring_buffer[n]=0 : Next
+
+End Statement
+
+
+Statement synth_RenderEnsemble{*ensemble.ensemble_T, *outP.w,*inP.w,sampleN.l}
+
+  ringBase.l    = &*ensemble\ring_buffer[0]
+  ringW.l       = *ensemble\ring_write & #DELAYL_MASK
+
+  pick0.f       = *ensemble\ring_pick[0]
+  pick1.f       = *ensemble\ring_pick[1]
+  pick2.f       = *ensemble\ring_pick[2]
+  pick3.f       = *ensemble\ring_pick[3]
+
+  pickD0.f      = *ensemble\ring_pickD[0]
+  pickD1.f      = *ensemble\ring_pickD[1]
+  pickD2.f      = *ensemble\ring_pickD[2]
+  pickD3.f      = *ensemble\ring_pickD[3]
+
+  feedback.f    = *ensemble\feedback
+  mix.f         = *ensemble\mix
+  count.l       = *ensemble\count
+
+  For n.l=0 To sampleN-1
+
+    count=count-1
+    If count<=0 Then count = Int(*ensemble\flipcount) : pickDx.f=pickD0 : pickD0=pickD1 : pickD1=pickDx
+
+    ; read input
+    in.f = Peek.w(*inP)  : *inP + SizeOf.w
+
+    ; read delay
+    echo.f = 0
+    pick0.f + pickD0
+    pickI.l = Int(pick0)
+    r.f = pick0 - pickI
+    pickI & #DELAYL_MASK
+
+    echo + Peek.f(ringBase + pickI*SizeOf.f) * (1-r) : pickI = (pickI + 1) & #DELAYL_MASK
+    echo + Peek.f(ringBase + pickI*SizeOf.f) * r
+
+    pick1.f + pickD1
+    pickI.l = Int(pick1)
+    r.f = pick1 - pickI
+    pickI & #DELAYL_MASK
+    echo + Peek.f(ringBase + pickI*SizeOf.f) * (1-r) : pickI = (pickI + 1) & #DELAYL_MASK
+    echo + Peek.f(ringBase + pickI*SizeOf.f) * r
+
+    signal.f = echo * mix + in
+
+    ; write delay
+    Poke.f ringBase + ringW*SizeOf.f , in : ringW = (ringW + 1) & #DELAYL_MASK
+
+    ; output
+    If signal> 32767 Then signal= 32767
+    If signal<-32768 Then signal=-32768
+    Poke.w *outP,signal : *outP + SizeOf.w
+
+  Next
+  *ensemble\count         = count
+  *ensemble\ring_pick[0]  = pick0
+  *ensemble\ring_pick[1]  = pick1
+  *ensemble\ring_pick[2]  = pick2
+  *ensemble\ring_pick[3]  = pick3
+  *ensemble\ring_pickD[0] = pickD0
+  *ensemble\ring_pickD[1] = pickD1
+  *ensemble\ring_pickD[2] = pickD2
+  *ensemble\ring_pickD[3] = pickD3
+  *ensemble\ring_write    = ringW
+
+End Statement
+
+
+
+
+; calculate lookup tables
+For n.l=0 To 32767
+  SinTable(n) = -(Sin(n*2.0*Pi / 32768.0) * 32767)
+  If n<16384 Then TanTable(n) = -ATan((16384-n)/128.0)*20861.0 : Else TanTable(n) = ATan((n-16384)/128)*20861.0
+  If n<16384 Then RecTable(n) = -32767 : Else RecTable(n)=32767
+
+  DCTable(n) = 32767
+  NoiseTable(n) = (seed LSR 16) : seed = (seed+907633515) * 196314165
+
+  If n<8192
+    TriTable(n) = n*4
+  Else
+    If n<16384 + 8192
+      TriTable(n) = 32767 - (n-8192)*4
+    Else
+      TriTable(n) = n*4 -32768-32768
+    EndIf
+  End If
+  TriTable(n) = -TriTable(n)
+
+  SawTable(n) = (n-16384)*2
+  ISawTable(n) = -SawTable(n)-2
+
+  ;NPrint "#",n," Saw=",ISawTable(n)," Sin=",SinTable(n)," Sqr=",RectTable(n)," Tri=",TriTable(n)," Noise=",NoiseTable(n), " ATan=",TanTable(n)
+Next
+
+; generate an FM modulated signal
+_synth_osc_ExtFM:
+Statement FAST _synth_osc_ExtFM{*outP.w, sampleN.l, *osc.osc_T, *modulatorP.w}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d2,*osc\iphaseinc
+  GetReg d3,*osc\igain
+  GetReg a0,*outP
+  GetReg a1,*modulatorP
+  GetReg a2,*osc\tableP +16384*SizeOf.w
+
+  fm_loop:
+    ADD.l d2,d1            ; proceed in wave phase
+    CLR.l d3
+    MOVE.w (a1)+,d4 : SWAP.w d4  ; get modulator value
+    ADD.l d4,d1            ; and add it to the phase
+    MOVE.l d1,d4
+    SWAP.w d4
+    AND.w #$FFFE,d4        ; make it multiple of 2
+    MOVE.w $0(a2,d4),d5
+    MULS.w d3,d5
+    ASR.l #8,d5
+    MOVE.w d5,(a0)+ ; out = table[in]
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT fm_loop
+
+  fm_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_ExtFM,{Null,0,Null,Null}}
+
+
+; generate an FM modulated signal
+_synth_osc_SelfFM:
+Statement FAST _synth_osc_SelfFM{*outP.w, sampleN.l, *osc.osc_T}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d2,*osc\iphaseinc
+  GetReg d3,*osc\igain
+  GetReg d6,*osc\imoddepth
+  GetReg a0,*outP
+  GetReg a2,*osc\tableP +16384*SizeOf.w
+
+  sfm_loop:
+    ADD.l d2,d1            ; proceed in wave phase
+    MOVE.l d1,d4
+    SWAP.w d4
+    AND.w #$FFFE,d4        ; make it multiple of 2
+    MOVE.w $0(a2,d4),d5
+    MULS.w d3,d5
+    ASR.l #8,d5
+    MOVE.w d5,(a0)+ ; out = table[in]
+
+    MULS.w d6,d5
+    LSL.l #8,d5
+    ADD.l d5,d1            ; and add it to the phase
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT sfm_loop
+
+  sfm_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_SelfFM,{Null,0,Null}}
+
+
+; generate an PM modulated signal
+_synth_osc_ExtPM:
+Statement FAST _synth_osc_ExtPM{*outP.w, sampleN.l, *osc.osc_T, *modulatorP.w}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d2,*osc\iphaseinc
+  GetReg d3,*osc\igain
+  GetReg d6,*osc\imoddepth*256*256
+  GetReg a0,*outP
+  GetReg a1,*modulatorP
+  GetReg a2,*osc\tableP +16384*SizeOf.w
+
+  epm_loop:
+    ADD.l d2,d1            ; proceed in wave phase
+    MOVE.w (a1)+,d4        ; get modulator value
+    MULS.w d6,d4
+    ;ASL.l #8,d4
+    ADD.l d1,d4            ; and add it to the phase
+    SWAP.w d4
+    AND.w #$FFFE,d4        ; make it multiple of 2
+    MOVE.w $0(a2,d4),d5    ; table[in]
+    MULS.w d3,d5           ; * gain
+    ASR.l #8,d5
+    MOVE.w d5,(a0)+        ; out
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT epm_loop
+
+  epm_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_ExtPM,{Null,0,Null,Null}}
+
+
+_synth_osc_SelfExtPM:
+Statement FAST _synth_osc_SelfExtPM{*outP.w, sampleN.l, *osc.osc_T, *modulatorP.w}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d2,*osc\iphaseinc
+  GetReg d3,*osc\igain
+  GetReg d5,*osc\iphase2
+  GetReg d6,*osc\imoddepth*256*256
+  GetReg a0,*outP
+  GetReg a1,*modulatorP
+  GetReg a2,*osc\tableP +16384*SizeOf.w
+
+  espm_loop:
+    ADD.l d2,d1            ; proceed in wave phase
+    MOVE.w (a1)+,d4        ; get modulator value
+    MULS.w d6,d4
+    ;ASL.l #8,d4
+    ADD.l d1,d4            ; and add it to the phase
+
+    MULS.w d6,d5           ; the self-mod part...
+    ;ASL.l #8,d5
+    ADD.l d5,d4            ; get modulator value
+
+    SWAP.w d4
+    AND.w #$FFFE,d4        ; make it multiple of 2
+    MOVE.w $0(a2,d4),d5    ; table[in]
+    MULS.w d3,d5           ; * gain
+    ASR.l #8,d5
+    MOVE.w d5,(a0)+        ; out
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT espm_loop
+
+  espm_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_SelfExtPM,{Null,0,Null,Null}}
+
+
+_synth_osc_SelfPM:
+Statement FAST _synth_osc_SelfPM{*outP.w, sampleN.l, *osc.osc_T}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d2,*osc\iphaseinc
+  GetReg d3,*osc\igain
+  GetReg d5,*osc\iphase2
+  GetReg a0,*outP
+  GetReg d6,*osc\imoddepth*256*256
+  GetReg a2,*osc\tableP +16384*SizeOf.w
+
+  spm_loop:
+    ADD.l d2,d1            ; proceed in wave phase
+    MOVE.l d1,d4
+    MULS.w d6,d5
+    ;ASL.l #8,d5
+    ADD.l d5,d4            ; get modulator value
+    SWAP.w d4
+    AND.w #$FFFE,d4        ; make it multiple of 2
+    MOVE.w $0(a2,d4),d5    ; table[in]
+    MULS.w d3,d5           ; * gain
+    ASR.l #8,d5
+    MOVE.w d5,(a0)+        ; out
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT spm_loop
+
+  spm_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+  PutReg d5,*osc\iphase2
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_SelfPM,{Null,0,Null}}
+
+
+; ring modulate (=multiply) two 16bit audio buffers
+synth_RenderAM:
+Statement FAST synth_RenderAM{*outP.w,*carrierP.w,*modulatorP.w,sampleN.l,depth_.f}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg a0,*outP
+  GetReg a1,*carrierP
+  GetReg a2,*modulatorP
+  GetReg d3,depth_*256
+
+  ringmod_loop:
+    MOVE.w (a1)+,d1
+    MOVE.w (a2)+,d2
+    MULS.w d3,d2
+    ASR.l #8,d2
+    ASR.l #1,d2
+    ADD.l #16384,d2
+    MULS.w d2,d1
+    SWAP.w d1
+    MOVE.w d1,(a0)+        ; out = in1 * in2
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT ringmod_loop
+
+End Statement
+!_MakeGlobalFuncPointer{synth_RenderAM,{Null,Null,Null,0,0.0}}
+
+
+; generate primitve wave
+_synth_osc_LookupTable:
+Statement FAST _synth_osc_LookupTable{*outP.w, sampleN.l, *osc.osc_T}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d2,*osc\iphaseinc
+  GetReg d3,*osc\igain
+  GetReg a0,*outP
+  GetReg a1,*osc\tableP +16384*SizeOf.w
+
+  osc_loop:
+    ADD.l d2,d1            ; proceed in wave phase
+    MOVE.l d1,d4           ; copy lower 16bit to sample to buffer
+    SWAP.w d4
+    AND.w #$FFFE,d4        ; make it multiple of 2
+    MOVE.w $0(a1,d4),d5
+    MULS.w d3,d5
+    ASR.l #8,d5
+    MOVE.w d5,(a0)+        ;  out = table[in]
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT osc_loop
+
+  osc_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_LookupTable,{Null,0,Null}}
+
+
+; generate saw tooth wave
+_synth_osc_Saw:
+Statement FAST _synth_osc_Saw{*outP.w, sampleN.l, *osc.osc_T}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d2,*osc\iphaseinc
+  GetReg d3,*osc\igain
+  GetReg a0,*outP
+
+  saw_loop:
+    ADD.l d2,d1            ; proceed in wave phase
+    MOVE.l d1,d4
+    SWAP.w d4
+    MULS.w d3,d4
+    ASR.l #8,d4
+    MOVE.w d4,(a0)+        ; copy lower 16bit to sample to buffer
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT saw_loop
+
+  saw_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_Saw,{Null,0,Null}}
+
+
+_synth_osc_SawAA:
+Statement FAST _synth_osc_SawAA{*outP.w, sampleN.l, *osc.osc_T}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d2,*osc\iphaseinc
+  GetReg d3,*osc\igain
+  GetReg a0,*outP
+
+  MOVE.l d2,d7 : ASR.l #1,d7
+
+  qsaw_loop:
+    MOVE.l d1,d4           ; v1 = phase
+    ADD.l d2,d1            ; phase + ifrequency
+    BVS qsaw_wrap          ; wrap? => wrap!
+
+    ADD.l d7,d4
+    SWAP.w d4
+    MULS.w d3,d4
+    ASR.l #8,d4
+    MOVE.w d4,(a0)+        ; copy lower 16bit to sample to buffer
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT qsaw_loop
+  BRA qsaw_exit
+
+  qsaw_wrap:               ; ((ifrequency-d)*(v1+max)/2 + d*(min+v2)/2)/ifrequency
+    MOVE.l d3,-(a7)
+                                  ; d4 = v1
+    MOVE.l d1,d3                  ; d3 = v2
+    SWAP.w d3   : ASR.w #1,d3     ; /2
+    SWAP.w d4   : ASR.w #1,d4     ; /2
+
+    ADD.w  #$3FFF,d4              ; v1+max
+    ADD.w #-$4000,d3              ; v2+min
+
+    MOVE.l d1,d5                  ; d5=phase
+    SWAP.w d5
+    ADD.w #$7FFF,d5
+
+    MULS.w d5,d3                  ; d*(v2+min)/2
+
+    MOVE.l d2,d6                  ; ifrequency...
+    SWAP.w d6                     ; => 15bit
+    SUB.w d5,d6                   ; ifrequency-d
+
+    MULS.w d6,d4                  ; (ifrequency-d)*(v1+max)/2
+
+    ADD.l d3,d4                   ; ... + ...
+
+    ADD.w d6,d5                   ; =ifrequency
+    EXT.l d5
+
+    DIVS.w d5,d4                  ; / ifrequency
+    MOVE.l (a7)+,d3
+    MULS.w d3,d4                  ; * gain
+    ASR.l #8,d4
+
+    MOVE.w d4,(a0)+        ; copy lower 16bit to sample to buffer
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT qsaw_loop
+
+
+  qsaw_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_SawAA,{Null,0,Null}}
+
+
+_synth_osc_Impuls:
+Statement FAST _synth_osc_Impuls{*outP.w, sampleN.l, *osc.osc_T}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d2,*osc\iphaseinc
+  GetReg d3,*osc\igain
+  GetReg a0,*outP
+
+  MULS.w #255,d3
+
+  imp_loop:
+    ADD.l d2,d1            ; phase + ifrequency
+    BVS imp_wrap          ; wrap? => wrap!
+    MOVE.w #0,(a0)+        ; copy lower 16bit to sample to buffer
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT imp_loop
+  BRA imp_exit
+
+  imp_wrap:           ; ((ifrequency-d)*(v1+max)/2 + d*(min+v2)/2)/ifrequency
+    MOVE.w d3,(a0)+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT imp_loop
+
+  imp_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_Impuls,{Null,0,Null}}
+
+
+
+_synth_osc_DC:
+Statement FAST _synth_osc_DC{*outP.w, sampleN.l, *osc.osc_T}
+
+  GetReg d0,sampleN        ; load registers
+  ;GetReg d1,*osc\iphase
+  ;GetReg d2,*osc\iphaseinc
+  GetReg d3,*osc\igain*127
+  GetReg a0,*outP
+
+  ;MULS.w #255,d3
+
+  dc_loop:
+    MOVE.w d3,(a0)+        ; copy lower 16bit to sample to buffer
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT dc_loop
+
+  dc_exit:
+  ;PutReg d1,*osc\iphase     ; store the phase
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_DC,{Null,0,Null}}
+
+
+; generate square wave
+_synth_osc_Rect:
+Statement FAST _synth_osc_Rect{*outP.w, sampleN.l, *osc.osc_T}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d2,*osc\iphaseinc
+  GetReg d3,-*osc\igain
+  GetReg d4,*osc\igain
+
+  GetReg a0,*outP
+
+  MULS.w 255,d3
+  MULS.w 255,d4
+
+  square_loop:
+    ADD.l d2,d1            ; proceed in wave phase
+    BGT square_hi
+
+  square_lo:
+    MOVE.w d3,(a0)+   ; set min value
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT square_loop
+
+  BRA square_exit
+
+  square_hi:
+    MOVE.w d4,(a0)+    ; set max value
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT square_loop
+
+  square_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_Rect,{Null,0,Null}}
+
+
+; generate triangle wave
+_synth_osc_DirectTri_dep:
+Statement FAST _synth_osc_DirectTri_dep{*outP.w, sampleN.l, *osc.osc_T}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d2,*osc\iphaseinc
+  GetReg d3,*osc\igain
+
+  GetReg a0,*outP
+
+  triangle_loop:
+    ADD.l d2,d1            ; proceed in wave phase
+    SWAP.w d1
+    MOVE.w d1,d3
+    SWAP.w d1              ; copy sample to temp buffer
+    TST.l d1
+    BGT triangle_hi
+
+    triangle_lo:
+    NEG.w d3
+    LSL #1,d3
+    ADD.w #32767,d3
+    MOVE.w d3,(a0)+
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT triangle_loop
+
+  BRA triangle_exit
+
+    triangle_hi:
+    LSL #1,d3
+    ADD.w #-32767,d3
+    MOVE.w d3,(a0)+
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT triangle_loop
+
+  triangle_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+
+End Statement
+
+
+; generate white noise
+_synth_osc_Noise:
+Statement FAST _synth_osc_Noise{*outP.w, sampleN.l, *osc.osc_T}
+
+  GetReg d0,sampleN       ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d2,196314165      ; magic number 1
+  GetReg d3,*osc\igain
+  GetReg a0,*outP
+
+  noise_loop:
+    ADD.w #907633515,d1    ; magic number 2
+    MULS.w d2,d1
+    MOVE.l d1,d4
+    SWAP.w d4
+    MULS.w d3,d4
+    ASR.l #8,d4
+    MOVE.w d4,(a0)+        ; out = rand()
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT noise_loop
+
+  noise_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_Noise,{Null,0,Null}}
+
+
+; generate tuned noise wave
+_synth_osc_NoiseTuned:
+Statement FAST _synth_osc_NoiseTuned{*outP.w, sampleN.l, *osc.osc_T}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d1,*osc\iphase    ; phase
+  GetReg d2,*osc\iphaseinc ; freq
+  GetReg d3,*osc\igain     ; gain
+  GetReg a0,*outP
+  GetReg d5,*osc\iphase2   ; seed
+  
+  MOVE.l d5,d4
+  SWAP.w d4
+  MULS.w d3,d4
+  ASR.l #8,d4
+
+  noisetuned_loop:
+    ADD.l d2,d1            ; proceed in wave phase    
+    BCS noisetuned_update    
+    MOVE.w d4,(a0)+        ; copy lower 16bit to sample to buffer
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT noisetuned_loop
+  BRA noisetuned_exit
+  
+  noisetuned_update:
+    ADD.l #907633515,d5    ; magic number 2
+    MULS.w #196314165,d5
+    MOVE.l d5,d4
+    SWAP.w d4
+    MULS.w d3,d4
+    ASR.l #8,d4
+    MOVE.w d4,(a0)+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT noisetuned_loop
+  
+  noisetuned_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+  PutReg d5,*osc\iphase2    ; store the seed
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_NoiseTuned,{Null,0,Null}}
+
+
+_synth_osc_NoisePink:
+Statement FAST _synth_osc_NoisePink{*outP.w, sampleN.l, *osc.osc_T}
+
+  GetReg d0,sampleN / 1       ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d5,*osc\iphase2
+  GetReg d2,196314165      ; magic number 1
+  GetReg d3,*osc\igain/2
+  GetReg a0,*outP
+
+  noise_looppink:
+    ADD.w #907633515,d1    ; magic number 2
+    MULS.w d2,d1
+    MOVE.l d1,d4
+    SWAP.w d4
+    MULS.w d3,d4
+    ASR.l #8,d4
+    ADD.l d4,d5
+    MULS.w #100,d5 : DIVS.w #128,d5
+    MOVE.w d5,(a0)+        ; out = rand()
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT noise_looppink
+
+  noisepink_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+  PutReg d5,*osc\iphase2     ; store the phase
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_NoisePink,{Null,0,Null}}
+
+
+_synth_osc_Noise2x:
+Statement FAST _synth_osc_Noise2x{*outP.w, sampleN.l, *osc.osc_T}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d1,*osc\iphase
+  GetReg d2,*osc\iphase2
+  GetReg a0,*outP
+
+  noise2_loop:
+    MOVE.l d1,d4   ; gx1 = gx1 XOR gx2
+    AND.l d2,d4
+    OR.l d2,d1
+    SUB.l d4,d1
+    
+    SWAP.w d2    
+    MOVE.w d2,(a0)+        ; out = rand()
+    SWAP.w d2
+    
+    ADD.l d1,d2
+    
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT noise2_loop
+
+  noise2_exit:
+  PutReg d1,*osc\iphase     ; store the phase
+  PutReg d2,*osc\iphase2    ; store the phase
+  
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_Noise2x,{Null,0,Null}}
+
+_synth_osc_Noise2:
+Statement FAST _synth_osc_Noise2{*outP.w, sampleN.l, *osc.osc_T}
+
+  seed.l = *osc\iphase
+
+  For n.l=0 To sampleN-1
+    seed.l = seed * 196314165 + 907633515
+    f1.f = seed
+    seed.l = seed * 196314165 + 907633515
+    f2.f = seed
+    seed.l = seed * 196314165 + 907633515
+    r.f = seed
+    r = r / 32768 / 32768 / 4 * 2 * Pi
+
+    f.f = Sqr(f1*f1 + f2*f2)  / 32768 / 2 / Sqr(2)
+    f = Sin(r) * f
+
+    Poke.w *outP,Int(f) : *outP+SizeOf.w
+  Next
+
+  *osc\iphase = seed    ; store the phase
+
+End Statement
+!_MakeGlobalFuncPointer{_synth_osc_Noise2,{Null,0,Null}}
+
+
+_synth_filter_LP2:
+Function.l FAST _synth_filter_LP2{*outP.w, *inP.w, sampleN.l, *filt.filter_T}
+
+  pos.f   = *filt\x[0]
+  speed.f = *filt\y[0]
+  c.f     = *filt\a[0]
+  r.f     = *filt\b[0]
+
+  For n.l=0 To sampleN-1
+    in.f = (Peek.w(*inP) - pos) * c
+    speed = speed * r + in
+    pos + speed
+    If pos>32767 Then pos=32767
+    If pos<-32767 Then pos=-32767
+    Poke.w *outP,pos
+    *outP+SizeOf.w
+    *inP +SizeOf.w
+  Next
+
+  *filt\x[0] = pos
+  *filt\y[0] = speed
+
+  Function Return sampleN
+
+End Function
+!_MakeGlobalFuncPointer{_synth_filter_LP2,{Null,Null,0,Null}}
+
+
+
+
+_synth_filter_FormantA:
+Function.l FAST _synth_filter_FormantA{*outP.w, *inP.w, sampleN.l, *filt.filter_T}
+
+  y1.f     = *filt\y[1]
+  y2.f     = *filt\y[2]
+  p.f      = *filt\b[0]
+  q.f      = *filt\b[1]
+
+  For n.l=0 To sampleN-1
+    x0.f = Peek.w(*inP) + !denorm
+
+    y0.f = x0 - p*y1 - q*y2
+    y2 = y1 : y1 = y0
+    out.f=y0 *0.1
+
+    If out> 32767 Then out= 32767
+    If out<-32767 Then out=-32767
+    Poke.w *outP,out
+    *outP+SizeOf.w
+    *inP +SizeOf.w
+  Next
+
+  *filt\y[1] = y1
+  *filt\y[2] = y2
+
+  Function Return sampleN
+
+End Function
+!_MakeGlobalFuncPointer{_synth_filter_FormantA,{Null,Null,0,Null}}
+
+
+_synth_filter_FormantD:
+Function.l FAST _synth_filter_FormantD{*outP.w, *inP.w, sampleN.l, *filt.filter_T}
+
+  y1.f     = *filt\y[1]
+  y2.f     = *filt\y[2]
+
+  b0.f      = *filt\b[0]
+  a1.f      = *filt\b[1]
+  a2.f      = *filt\b[2]
+
+  For n.l=0 To sampleN-1
+    x0.f = Peek.w(*inP)
+
+    y0.f = b0*x0 + a1*y1 + a2*y2
+    y2 = y1
+    y1 = y0
+
+    If y0> 32767 Then y0= 32767
+    If y0<-32767 Then y0=-32767
+    Poke.w *outP,y0
+    *outP+SizeOf.w
+    *inP +SizeOf.w
+  Next
+
+  *filt\y[1] = y1
+  *filt\y[2] = y2
+
+  Function Return sampleN
+
+End Function
+!_MakeGlobalFuncPointer{_synth_filter_FormantD,{Null,Null,0,Null}}
+
+
+_synth_filter_FormantC:
+Function.l FAST _synth_filter_FormantC{*outP.w, *inP.w, sampleN.l, *filt.filter_T}
+
+  y0.f = *filt\y[0]
+  y1.f = *filt\y[1]
+  y2.f = *filt\y[2]
+
+  q.f = *filt\b[0]
+  f.f = *filt\b[1]
+
+  gain.f = 0.001
+
+  For n.l=0 To sampleN-1
+    x0.f = Peek.w(*inP)*gain
+
+    y0.f = x0 + 2.0*Cos(2.0*Pi*f)*y1*q - y2*q*q
+    y2 = y1
+    y1 = y0
+    ;y0 = t;y0 * 0.75 + t * gain
+    out.f=y0 ;* 100
+    If out> 32767 Then out= 32767
+    If out<-32767 Then out=-32767
+    Poke.w *outP,out
+    *outP+SizeOf.w
+    *inP +SizeOf.w
+  Next
+
+  *filt\y[0] = y0
+  *filt\y[1] = y1
+  *filt\y[2] = y2
+
+  Function Return sampleN
+
+End Function
+!_MakeGlobalFuncPointer{_synth_filter_FormantC,{Null,Null,0,Null}}
+
+
+_synth_filter_FormantB:
+Function.l FAST _synth_filter_FormantB{*outP.w, *inP.w, sampleN.l, *filt.filter_T}
+
+  y1.f = *filt\y[0]
+  y2.f = *filt\y[1]
+  x1.f = *filt\x[0]
+  x2.f = *filt\x[1]
+
+  a0.f = *filt\a[0]
+  a1.f = *filt\a[1]
+  a2.f = *filt\a[2]
+  b0.f = *filt\b[0]
+  b1.f = *filt\b[1]
+  b2.f = *filt\b[2]
+
+  For n.l=0 To sampleN-1
+    x0.f = Peek.w(*inP)
+
+    ;!dsp_macmv   { low_`1x2 ,  low_`1x1  ,  low_`1x2 ,  low_b2  }          ; low band
+    out.f = x2*b2 : x2 = x1
+
+    ;!dsp_macmv   { low_`1x1 ,  in`1      ,  low_`1x1 ,  low_b1  }
+    out + x1*b1 : x1 = x0
+
+    ;!dsp_macmv_na{ in`1     ,  low_b0   }
+    out + x0*b0
+
+    ;!dsp_macmv   { low_`1y2 ,  low_`1y1  ,  low_`1y2 ,  low_a2  }
+    out + y2*a2 : y2 = y1
+
+    ;!dsp_macmv_na{ low_`1y1 ,  low_a1   }
+    out + y1*a1 : y1 = out
+
+    ;!dsp_accum   { low_`1y1 }
+    out.f = out -x0
+
+    If out> 32767 Then out= 32767
+    If out<-32767 Then out=-32767
+    Poke.w *outP,out
+    *outP+SizeOf.w
+    *inP +SizeOf.w
+  Next
+
+  *filt\y[0] = y1
+  *filt\y[1] = y2
+  *filt\x[0] = x1
+  *filt\x[1] = x2
+
+  Function Return sampleN
+
+End Function
+!_MakeGlobalFuncPointer{_synth_filter_FormantB,{Null,Null,0,Null}}
+
+
+_synth_filter_BW2:
+Function.l FAST _synth_filter_BW2{*outP.w, *inP.w, sampleN.l, *filt.filter_T}
+
+  x1.f     = *filt\x[0]
+  x2.f     = *filt\x[1]
+  y1.f     = *filt\y[0]
+  y2.f     = *filt\y[1]
+  a0.f     = *filt\a[0]
+  a1.f     = *filt\a[1]
+  a2.f     = *filt\a[2]
+  b1.f     = *filt\b[0]
+  b2.f     = *filt\b[1]
+
+  For n.l=0 To sampleN-1
+    x0.f = Peek.w(*inP)
+    y0.f = a0*x0 + a1*x1 + a2*x2 - b1*y1 - b2*y2
+
+    x2=x1
+    x1=x0
+    y2=y1
+    y1=y0
+    
+    out.f=y0
+
+    If out> 32767 Then out= 32767
+    If out<-32767 Then out=-32767
+    Poke.w *outP,out
+    *outP+SizeOf.w
+    *inP +SizeOf.w
+  Next
+
+  *filt\x[0] = x1
+  *filt\x[1] = x2
+  *filt\y[0] = y1
+  *filt\y[1] = y2
+
+  Function Return sampleN
+End Function
+!_MakeGlobalFuncPointer{_synth_filter_BW2,{Null,Null,0,Null}}
+
+
+
+
+_synth_filter_IIR3: ; 3 pole / 3 zero IIR
+Function.l FAST _synth_filter_IIR3{*outP.w, *inP.w, sampleN.l, *filt.filter_T}
+
+  a0.f     = *filt\a[0]
+  a1.f     = *filt\a[1]
+  a2.f     = *filt\a[2]
+  a3.f     = *filt\a[3]
+  b0.f     = *filt\b[0]
+  b1.f     = *filt\b[1]
+  b2.f     = *filt\b[2]
+  b3.f     = *filt\b[3]
+
+  y1.f     = *filt\y[1]
+  y2.f     = *filt\y[2]
+  y3.f     = *filt\y[3]
+  x1.f     = *filt\x[1]
+  x2.f     = *filt\x[2]
+  x3.f     = *filt\x[3]
+
+  For n.l=0 To sampleN-1
+    x0.f  = Peek.w(*inP) + !denorm
+    y0.f = a0 * (b0*x0 + b1*x1 + b2*x2 + b3*x3 - a1*y1 - a2*y2 - a3*y3)
+    y3=y2 : y2=y1 : y1=y0
+    x3=x2 : x2=x1 : x1=x0
+    If y0> 32767 Then y0= 32767
+    If y0<-32767 Then y0=-32767
+    Poke.w *outP,Int(y0+.5)
+    *inP +SizeOf.w
+    *outP+SizeOf.w
+  Next
+
+  *filt\y[1] = y1
+  *filt\y[2] = y2
+  *filt\y[3] = y3
+  *filt\x[1] = x1
+  *filt\x[2] = x2
+  *filt\x[3] = x3
+  Function Return sampleN
+
+End Function
+!_MakeGlobalFuncPointer{_synth_filter_IIR3,{Null,Null,0,Null}}
+
+
+_synth_filter_IIR2: ; 2 pole / 2 zero IIR
+Function.l FAST _synth_filter_IIR2{*outP.w, *inP.w, sampleN.l, *filt.filter_T}
+
+  a0.f     = *filt\a[0]
+  a1.f     = *filt\a[1]
+  a2.f     = *filt\a[2]
+  b0.f     = *filt\b[0]
+  b1.f     = *filt\b[1]
+  b2.f     = *filt\b[2]
+
+  y1.f     = *filt\y[1]
+  y2.f     = *filt\y[2]
+  x1.f     = *filt\x[1]
+  x2.f     = *filt\x[2]
+
+  For n.l=0 To sampleN-1
+    x0.f  = Peek.w(*inP) + !denorm
+    y0.f = a0 * (b0*x0 + b1*x1 + b2*x2 - a1*y1 - a2*y2)
+    y2=y1 : y1=y0
+    x2=x1 : x1=x0
+    If y0> 32767 Then y0= 32767
+    If y0<-32767 Then y0=-32767
+    Poke.w *outP,Int(y0+.5)
+    *inP +SizeOf.w
+    *outP+SizeOf.w
+  Next
+
+  *filt\y[1] = y1
+  *filt\y[2] = y2
+  *filt\x[1] = x1
+  *filt\x[2] = x2
+  Function Return sampleN
+
+End Function
+!_MakeGlobalFuncPointer{_synth_filter_IIR2,{Null,Null,0,Null}}
+
+
+_synth_filter_IIR1: ; 1 pole / 1 zero IIR
+Function.l FAST _synth_filter_IIR1{*outP.w, *inP.w, sampleN.l, *filt.filter_T}
+
+  a0.f     = *filt\a[0]
+  a1.f     = *filt\a[1]
+  b0.f     = *filt\b[0]
+  b1.f     = *filt\b[1]
+
+  y1.f     = *filt\y[1]
+  x1.f     = *filt\x[1]
+
+  For n.l=0 To sampleN-1
+    x0.f  = Peek.w(*inP) + !denorm
+    y0.f = a0 * (b0*x0 + b1*x1 - a1*y1)
+    y1=y0
+    x1=x0
+    If y0> 32767 Then y0= 32767
+    If y0<-32767 Then y0=-32767
+    Poke.w *outP,y0
+    *inP +SizeOf.w
+    *outP+SizeOf.w
+  Next
+
+  *filt\y[1] = y1
+  *filt\x[1] = x1
+  Function Return sampleN
+
+End Function
+!_MakeGlobalFuncPointer{_synth_filter_IIR1,{Null,Null,0,Null}}
+
+
+_synth_filter_MoogLP:
+Function.l FAST _synth_filter_MoogLP{*outP.w, *inP.w, sampleN.l, *filt.filter_T}
+  ; 24db
+  p.f     = *filt\a[0]
+  k.f     = *filt\a[1]
+  r.f     = *filt\a[2]
+
+  oldx.f  = *filt\x[0]
+  y1.f    = *filt\y[0]
+  y2.f    = *filt\y[1]
+  y3.f    = *filt\y[2]
+  y4.f    = *filt\y[3]
+  oldy1.f = *filt\y[0]
+  oldy2.f = *filt\y[1]
+  oldy3.f = *filt\y[2]
+  _kd.f   = 0.000001
+  
+  For n.l=0 To sampleN-1
+    x.f  = Peek.w(*inP)/32768.0 - r*y4
+    y1 = x *p + oldx *p - k*y1
+    y2 = y1*p + oldy1*p - k*y2
+    y3 = y2*p + oldy2*p - k*y3
+    y4 = y3*p + oldy3*p - k*y4
+    y4 = y4 - ((y4*y4*y4)/4.0)  ; was 6.0
+    oldx = x
+    oldy1 = y1+_kd
+    oldy2 = y2+_kd
+    oldy3 = y3+_kd
+    out.f = y4 *32768.0
+    If out> 32767 Then out= 32767
+    If out<-32767 Then out=-32767
+    Poke.w *outP,out
+    *inP+SizeOf.w
+    *outP+SizeOf.w
+  Next
+  
+  *filt\x[0] = x
+  *filt\y[0] = y1
+  *filt\y[1] = y2
+  *filt\y[2] = y3
+  *filt\y[3] = y4
+  
+  Function Return sampleN
+End Function
+!_MakeGlobalFuncPointer{_synth_filter_MoogLP,{Null,Null,0,Null}}
+
+
+_synth_filter_HPx:
+Function.l FAST _synth_filter_HPx{*outP.w, *inP.w, sampleN.l, *filt.filter_T}
+
+  prev.l = *filt\x[0]
+
+  For n.l=0 To sampleN-1
+    this.l = Peek.w(*inP)
+    out.l = (this - prev) ASR 1
+    prev.l = this
+    ;If out>32767 Then out=32767
+    ;If out<-32767 Then out=-32767
+    Poke.w *outP,out
+    *outP+SizeOf.w
+    *inP +SizeOf.w
+  Next
+
+  *filt\x[0] = prev
+
+  Function Return sampleN
+End Function
+!_MakeGlobalFuncPointer{_synth_filter_HPx,{Null,Null,0,Null}}
+
+
+; mix two 16bit audio buffers
+Statement FAST synth_RenderMix_dep{*outP.w,*in1P.w,*in2P.w,sampleN.l}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg a0,*outP
+  GetReg a1,*in1P
+  GetReg a2,*in2P
+
+  mix_loop_dep:
+    MOVE.w (a1)+,d1
+    MOVE.w (a2)+,d2
+    ADD.w d1,d2
+    MOVE.w d2,(a0)+        ; out = in1 + in2
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT mix_loop_dep
+
+End Statement
+
+
+; mix two 16bit audio buffers
+Statement FAST synth_RenderMix{*outP.w,*in1P.w,*in2P.w,sampleN.l,gain_a.f,gain_b.f}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg a0,*outP
+  GetReg a1,*in1P
+  GetReg a2,*in2P
+  GetReg d3,gain_a*256.0
+  GetReg d4,gain_b*256.0
+
+  mix_loop:
+    MOVE.w (a1)+,d1
+    MOVE.w (a2)+,d2
+    MULS.w d3,d1
+    MULS.w d4,d2
+    ADD.l d1,d2
+    ASR.l #8,d2
+    MOVE.w d2,(a0)+        ; out = in1 + in2
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT mix_loop
+
+End Statement
+
+
+Statement FAST synth_RenderStereoAmp{*outP.l,*in1P.w,sampleN.l,gain.f,pan.f}
+
+  igainl.l = (pan+1) * gain * 256.0
+  igainr.l = (1-pan) * gain * 256.0
+  If igainl<0 Then igainl=0
+  If igainr<0 Then igainr=0
+
+  If igainl>256 Then igainl=256
+  If igainr>256 Then igainr=256
+
+
+  GetReg d0,sampleN        ; load registers
+  GetReg a0,*outP
+  GetReg a1,*in1P
+  GetReg d1, igainl
+  GetReg d2, igainr
+
+  amp32s_loop:
+    MOVE.w (a1)+,d3
+    MOVE.w d3,d4
+    MULS.w d1,d3
+    MULS.w d2,d4
+    ASR.l #8,d3
+    ASR.l #8,d4
+
+    ADD.w d3,(a0)+        ; out = in1 + in2
+    ADD.w d4,(a0)+        ; out = in1 + in2
+    ;MOVE.l -1000,(a0)+
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT amp32s_loop
+
+End Statement
+
+
+; scale a 16bit audio buffer with gain (256 = normal level)
+Statement FAST synth_RenderScale{*outP.w, *inP.w, sampleN.l, gain.f, offset.f}
+
+  ioffset.l = offset * 32767
+  igain.l  = gain    * 256
+
+  GetReg d0,sampleN        ; load registers
+  GetReg a0,*outP
+  GetReg a1,*inP
+  GetReg d1,igain
+  GetReg d2,ioffset
+
+  scale_loop:
+    MOVE.w (a1)+,d3
+    MULS.w d1,d3
+    ASR.l #8,d3
+    ADD.l d2,d3
+    MOVE.w d3,(a0)+        ; out = in * gain + offset
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT scale_loop
+
+End Statement
+
+
+
+Statement synth_UpdateFilter {*filt.filter_T,detune.f}
+
+  frequency.f = *filt\frequency * 2.0^(detune)
+  If frequency*2>*filt\samplerate Then frequency=*filt\samplerate/2
+
+  Select *filt\type_
+    Case #FILTER_HPx:
+     
+    Case #FILTER_LP2:
+      If frequency*4>*filt\samplerate Then frequency=*filt\samplerate/4
+
+      t.f =  frequency / *filt\samplerate
+      ;If t>0.15   Then t=0.15
+      ;If t<0.0001 Then t=0.0001
+      c.f      = (1-Cos(Pi*t)) * 16.0
+      r.f      = (*filt\resonance)^(12000.0/*filt\samplerate)
+      ;If c<*vc\minfreq_f Then c = *vc\minfreq_f
+      *filt\a[0] = c
+      *filt\b[0] = r
+      
+    Case #FILTER_MOOGLP:
+      f.f  = 2.0 * frequency / *filt\samplerate
+      p.f  = f*(1.8-0.8*f)
+      k.f  = p+p-1.0
+      t.f  = (1.0-p)*1.386249
+      t2.f = 12.0+t*t
+      r.f  = *filt\resonance*(t2+6.0*t)/(t2-6.0*t)
+      *filt\a[0] = p
+      *filt\a[1] = k
+      *filt\a[2] = r
+      
+    Case #FILTER_BWLP:
+      If frequency*4>*filt\samplerate Then frequency=*filt\samplerate/4
+
+      c.f = 1.0 / Tan(Pi * frequency/*filt\samplerate)
+      r.f = (1-*filt\resonance) * Sqr(2.0)
+
+      a1.f = 1.0 / ( 1.0 + r * c + c * c);
+      a2.f = 2* a1;
+      a3.f = a1;
+      b1.f = 2.0 * ( 1.0 - c*c) * a1;
+      b2.f = ( 1.0 - r * c + c * c) * a1;
+      
+      *filt\b[0] = a1
+      *filt\b[1] = a2
+      *filt\b[2] = a3
+      *filt\a[0] =  1
+      *filt\a[1] = b1
+      *filt\a[2] = b2
+
+    Case #FILTER_BWHP:
+      If frequency*4>*filt\samplerate Then frequency=*filt\samplerate/4
+
+      c.f = Tan(Pi * frequency / *filt\samplerate);
+      r.f = (1-*filt\resonance) * Sqr(2.0)
+      
+      a1.f = 1.0 / ( 1.0 + r * c + c * c);
+      a2.f = -2*a1;
+      a3.f = a1;
+      b1.f = 2.0 * ( c*c - 1.0) * a1;
+      b2.f = ( 1.0 - r * c + c * c) * a1;
+      
+      *filt\b[0] = a1
+      *filt\b[1] = a2
+      *filt\b[2] = a3
+      *filt\a[0] =  1
+      *filt\a[1] = b1
+      *filt\a[2] = b2
+
+    Case #FILTER_FORMANTA:
+      bandwidth.f = *filt\resonance * frequency
+      p.f = -2.0 * Exp (-Pi * bandwidth / *filt\samplerate) * Cos (2*Pi* frequency / *filt\samplerate)
+      q.f = Exp (-2.0*Pi* bandwidth / *filt\samplerate)
+
+      *filt\b[0] = p
+      *filt\b[1] = q
+
+     Case #FILTER_FORMANTB ; taken from HD-Recs EQ
+       If frequency*4>*filt\samplerate Then frequency=*filt\samplerate/4
+
+       TMP.f   = 10;10^(eqgain/400)
+       omega.f = 6.2831853*(frequency/*filt\samplerate)
+       sn.f    = Sin(omega)
+       cs.f    = Cos(omega)
+       alpha.f = sn*HSin(0.3465735*((*filt\resonance*30+1)/10)*omega/sn)
+       dumm.f  = 1
+       a0.f    = (1 + (alpha/TMP))
+       scal.f  = dumm*a0
+       *filt\b[0]      = (1 + (alpha*TMP))/scal
+       *filt\b[1]      = (-2*cs)/scal;
+       *filt\b[2]      = (1 - (alpha*TMP))/scal
+       *filt\a[0]      = 1
+       *filt\a[1]      = (-2*cs)/(scal*-1)
+       *filt\a[2]      = (1 - (alpha/TMP))/(scal*-1)
+
+    Case #FILTER_FORMANTC
+      *filt\b[0] = 1.0 - *filt\resonance*30 * (Pi * 10 / *filt\samplerate); q
+      *filt\b[1] = frequency/*filt\samplerate                             ; freq
+
+    Case #FILTER_FORMANTD  ; taken from Snack
+      bandwidth.f = (1-*filt\resonance) * frequency
+      f.f = 1.0*frequency/*filt\samplerate
+      bw.f = 1.0*bandwidth/*filt\samplerate
+      tmp.f = Exp(-Pi*bw)
+      c.f = -tmp*tmp
+      b.f = 2.0*tmp*Cos(2*Pi*f)
+      a.f = 1.0 - b - c
+      *filt\b[0]      = a
+      *filt\b[1]      = b
+      *filt\b[2]      = c
+
+    Case #FILTER_THIRAN3  ; taken from Standford paper
+      fdelay.f = *filt\samplerate / frequency
+      idelay.l = Int(fdelay+.5-3)
+      d.f      = fdelay - idelay
+      If d<0.1 Then d=0.1
+
+      *filt\b[0] = 1
+      *filt\b[1] = 0
+      *filt\b[2] = 0
+      *filt\b[3] = 0
+
+      *filt\a[0] = 1
+      *filt\a[1] = 3.0 * (3.0-d)/(1.0+d)
+      *filt\a[2] = 3.0 * (3.0-d)/(1.0+d) * (2.0-d)/(2.0+d)
+      *filt\a[3] =       (3.0-d)/(1.0+d) * (2.0-d)/(2.0+d) * (1.0-d)/(3.0+d)
+
+    Case #FILTER_THIRAN2
+      fdelay.f = *filt\samplerate / frequency
+      idelay.l = Int(fdelay+.5-2)
+      d.f      = fdelay - idelay 
+      If d<0.1 Then d=0.1
+
+      *filt\b[0] = 1
+      *filt\b[1] = 0
+      *filt\b[2] = 0
+      *filt\b[3] = 0
+
+      *filt\a[0] = 1
+      *filt\a[1] = 2 * (2-d)/(1+d)
+      *filt\a[2] =     (1-d)/(1+d) * (2-d)/(2+d)
+      *filt\a[3] = 0
+
+    Case #FILTER_THIRAN1
+      fdelay.f = *filt\samplerate / frequency
+      idelay.l = Int(fdelay+.5-1)
+      d.f      = fdelay - idelay
+      If d<0.1 Then d=0.1
+
+      *filt\b[0] = 1
+      *filt\b[1] = 0
+      *filt\b[2] = 0
+      *filt\b[3] = 0
+
+      *filt\a[0] = 1
+      *filt\a[1] = (1-d)/(1+d)
+      *filt\a[2] = 0
+      *filt\a[3] = 0
+
+    Case #FILTER_ALLPASS2
+      ;function [b,a] = allpass(order, Fc, Fs, Q)
+      ;% Returns allpass filter coefficients.
+      ;% Currently only 1st and 2nd orders are supported.
+      ;%
+      ;% Usage: [b,a] = ALLPASS(N, FC, FS, Q);
+      ;%
+      ;%        N is the order of the allpass
+      ;%        FC is the frequency a the 90deg phase shift point
+      ;%        FS is the sampling rate
+      ;%        Q is quality factor describing the slope of phase shift
+      ;%
+      ;% Author: sparafucile17 01/07/2004
+      ;%Bilinear transform
+      g.f = Tan(Pi*(frequency/*filt\samplerate))
+      Q.f = *filt\resonance+.001
+      d.f  = 1/Q
+      K.f  = 1/(1 + d*g + g^2)
+      *filt\b[0] = (1 - g*d + g^2) * K
+      *filt\b[1] = 2 * (g^2 - 1) * K
+      *filt\b[2] = 1
+      *filt\b[3] = 0
+      *filt\a[0] = 1
+      *filt\a[1] = *filt\b[1]
+      *filt\a[2] = *filt\b[0]
+      *filt\a[3] = 0
+
+    Case #FILTER_ALLPASS1
+      g.f = Tan(Pi*(frequency/*filt\samplerate))
+      *filt\b[0] = (g-1)/(g+1)
+      *filt\b[1] = 1
+      *filt\b[2] = 0
+      *filt\b[3] = 0
+      *filt\a[0] = 1
+      *filt\a[1] = *filt\b[0]
+      *filt\a[2] = 0
+      *filt\a[3] = 0
+
+    Case #FILTER_HP1
+      ;f.f = 2*Pi*frequency/*filt\samplerate
+
+      *filt\a[0] = 1.0
+      ;*filt\a[1] = (2-Cos(f)) - Sqr((2-Cos(f))^2 - 1) ;with x = 2*Pi*cutoff/samplerate
+      *filt\a[1] = 0-((1 - 2*frequency/*filt\samplerate)^2) ;coefficient approximation
+      If *filt\a[1]>-0.000001 Then *filt\a[1]=0
+      *filt\b[0] = 0-*filt\a[1]
+      *filt\b[1] = 0
+      ;y0.f = x0 (1- b0)  - a1*y1
+
+    Case #FILTER_LP1
+      ;f.f = 2*Pi*frequency/*filt\samplerate
+
+      *filt\a[0] = 1.0
+      f.f = 2.0*Pi*frequency/*filt\samplerate
+      ;*filt\a[1] = (2.0-Cos(f)) - Sqr((2.0-Cos(f))^2.0 - 1.0) ;with x = 2*Pi*cutoff/samplerate
+      *filt\a[1] = 0-((1 - 2*frequency/*filt\samplerate)^2) ;coefficient approximation
+      If *filt\a[1]>-0.001 Then *filt\a[1]=-0.001
+      If *filt\a[1]<-1.000 Then *filt\a[1]=-1.000
+      *filt\b[0] = 1.0 + *filt\a[1]
+      *filt\b[1] = 0
+      ;If *filt\frequency = 256 Then error{"Coefficients: b0="+Str$(*filt\b[0])+" / a1="+Str$(*filt\a[1])}
+
+  End Select
+
+End Statement
+
+
+Statement synth_ResetFilter{*filt.filter_T}
+
+  *filt\x[0] = 0
+  *filt\x[1] = 0
+  *filt\x[2] = 0
+  *filt\x[3] = 0
+  
+  *filt\y[0] = 0
+  *filt\y[1] = 0
+  *filt\y[2] = 0
+  *filt\y[3] = 0
+
+End Statement
+
+
+Statement synth_InitFilter{*filt.filter_T,type_.l,samplerate.f,frequency.f,resonance.f}
+
+  *filt\samplerate = samplerate
+  *filt\resonance    = resonance
+  *filt\frequency    = frequency
+  *filt\type_        = type_
+
+  Select *filt\type_
+    Case #FILTER_LP2      : *filt\funcP = *_synth_filter_LP2
+    Case #FILTER_HPx      : *filt\funcP = *_synth_filter_HPx
+    Case #FILTER_MOOGLP   : *filt\funcP = *_synth_filter_MoogLP
+    Case #FILTER_BWLP     : *filt\funcP = *_synth_filter_IIR2 ; BW2
+    Case #FILTER_BWHP     : *filt\funcP = *_synth_filter_IIR2 ; BW2
+    Case #FILTER_FORMANTA : *filt\funcP = *_synth_filter_FormantA
+    Case #FILTER_FORMANTB : *filt\funcP = *_synth_filter_FormantB
+    Case #FILTER_FORMANTC : *filt\funcP = *_synth_filter_FormantC
+    Case #FILTER_FORMANTD : *filt\funcP = *_synth_filter_FormantD
+    Case #FILTER_THIRAN3  : *filt\funcP = *_synth_filter_IIR3
+    Case #FILTER_THIRAN2  : *filt\funcP = *_synth_filter_IIR2
+    Case #FILTER_THIRAN1  : *filt\funcP = *_synth_filter_IIR1
+    Case #FILTER_ALLPASS2 : *filt\funcP = *_synth_filter_IIR2
+    Case #FILTER_ALLPASS1 : *filt\funcP = *_synth_filter_IIR1
+    Case #FILTER_LP1      : *filt\funcP = *_synth_filter_IIR1
+    Case #FILTER_HP1      : *filt\funcP = *_synth_filter_IIR1
+    Default               : *filt\funcP = Null
+  End Select
+
+  synth_UpdateFilter{*filt,0}
+  synth_ResetFilter{*filt}
+
+End Statement
+
+
+Statement synth_RenderDither{*outP.w, *inP.w, sampleN.l, bits.l, mode.l}
+
+  errmask.l = (1 LSL (16-bits))-1
+  sigmask.l = $FFFFFFFF-errmask
+  avgerr.l = errmask LSR 1
+
+  Select mode
+    Case #DITHER_Err
+      err.l = 0
+
+      For n.l=0 To sampleN-1
+        s.l = Peek.w(*inP)
+        sq.l = (s+err) & sigmask
+        If sq> 32767 Then sq= 32767
+        If sq<-32767 Then sq=-32767
+        Poke.w *outP,sq
+        err + (s-sq)/2
+
+        *outP+SizeOf.w
+        *inP +SizeOf.w
+      Next
+
+    Default: ; DITHER_None
+      For n.l=0 To sampleN-1
+        s.l = Peek.w(*inP)
+        sq.l = (s+avgerr) & sigmask
+        Poke.w *outP,sq
+        *outP+SizeOf.w
+        *inP +SizeOf.w
+      Next
+
+  End Select
+
+End Statement
+
+
+Statement synth_RenderOsc{*osc.osc_T, *outP.w, *modulator.w, sampleN.l}
+
+  !_CallFuncPointer{*osc\funcP, result.l, *outP, sampleN, *osc, *modulator}
+
+End Statement
+
+
+Function.l synth_GetOscAttr{*osc.osc_T,attr.l,*valueP.l}
+
+  Select attr
+    Case #OSCA_SizeOf    : Poke.l *valueP, SizeOf.osc_T
+    Case #OSCA_NextValue :
+      synth_RenderOsc{*osc,*osc,&out_w.w,1}
+      Poke.f *valueP, out_w / 32768.0
+    Default
+      Function Return 0
+  End Select
+
+  Function Return 1
+
+End Function
+
+
+Function.l synth_SetOscAttr{*osc.osc_T,attr.l,value.l}
+
+  Select attr
+    Case #OSCA_Wave   : *osc\wave  = value
+    Default
+      Function Return 0
+  End Select
+
+  Function Return 1
+
+End Function
+
+Statement synth_RenderFilter{*filt.filter_T, *outP.w, *inP.w, sampleN.l}
+
+  !_CallFuncPointer{*filt\funcP, result.l, *outP, *inP, sampleN, *filt}
+
+End Statement
+
+
+Statement synth_UpdateDelayMatrix{*dm.delaymatrix_T,detune1.f,detune2.f,detune3.f,detune4.f}
+
+  Dim delta.f(4)
+  delta(0) = *dm\samplerate/(*dm\delay[0]\frequency * 2^(detune1) )
+  delta(1) = *dm\samplerate/(*dm\delay[1]\frequency * 2^(detune2) )
+  delta(2) = *dm\samplerate/(*dm\delay[2]\frequency * 2^(detune3) )
+  delta(3) = *dm\samplerate/(*dm\delay[3]\frequency * 2^(detune4) )
+
+  For num.l=0 To 3
+    *dm\delay[num]\ring_read = (*dm\ring_write-Int(delta(num))-1) & #DELAYS_MASK
+    fracd.f = (delta(num)-Int(delta(num)))
+    *dm\delay[num]\r  = fracd
+    *dm\delay[num]\ir = (1.0-fracd)
+  Next
+
+End Statement
+
+
+Statement synth_UpdateString{*string.string_T,detune.f}
+
+   delta.f = *string\samplerate/(*string\frequency * 2^(detune))
+
+   idelta.l = Int(delta+.5-2)
+   If idelta<1 Then idelta=1
+
+   *string\ring_delta = delta
+   *string\ring_read = (*string\ring_write-idelta) & #DELAYN_MASK
+   fracd.f = (delta-Int(delta))
+   *string\ring_read_a = fracd
+   *string\ring_read_b = (1.0-fracd)
+
+   pick.f = *string\pickpos*delta
+   *string\ring_pick   = (*string\ring_write-Int(pick)-1) & #DELAYN_MASK
+
+   synth_UpdateFilter{*string\fdelay,detune}
+
+End Statement
+
+Statement synth_UpdateTapdelay{*tapdelay.tapdelay_T,detune.f}
+
+   delta.f = *tapdelay\samplerate/(*tapdelay\frequency * 2^(detune))
+   *tapdelay\ring_delta = delta
+
+End Statement
+
+Function.l synth_GetTapDelayAttr{*tapdelay.tapdelay_T, attr.l, *valueP.l}
+
+  Select(attr) 
+    Case #TDA_SizeOf     : Poke.l *valueP, SizeOf.tapdelay_T;      break;
+    Case #TDA_Samplerate : Poke.f *valueP, *tapdelay\samplerate;    break;
+    Case #TDA_WetMix     : Poke.f *valueP, *tapdelay\wetmix;        break;
+    Case #TDA_Frequency  : Poke.f *valueP, *tapdelay\frequency;     break;
+    Case #TDA_Feedback   : Poke.f *valueP, *tapdelay\feedback;      break;
+    Case #TDA_TapGain1   : Poke.f *valueP, *tapdelay\tap_gain[0];   break;
+    Case #TDA_TapGain2   : Poke.f *valueP, *tapdelay\tap_gain[1];   break;
+    Case #TDA_TapGain3   : Poke.f *valueP, *tapdelay\tap_gain[2];   break;
+    Case #TDA_TapGain4   : Poke.f *valueP, *tapdelay\tap_gain[3];   break;
+    Case #TDA_TapFactor1 : Poke.f *valueP, *tapdelay\tap_factor[0]; break;
+    Case #TDA_TapFactor2 : Poke.f *valueP, *tapdelay\tap_factor[1]; break;
+    Case #TDA_TapFactor3 : Poke.f *valueP, *tapdelay\tap_factor[2]; break;
+    Case #TDA_TapFactor4 : Poke.f *valueP, *tapdelay\tap_factor[3]; break;
+    Default:
+      Function Return 0;
+  End Select
+  
+  Function Return 1;
+  
+End Function
+
+
+Function.l synth_SetTapDelayAttr{*tapdelay.tapdelay_T, attr.l, value.l}
+
+  Select(attr) 
+    Case #TDA_SizeOf     : Function Return 0;
+    Case #TDA_Samplerate : *tapdelay\samplerate    = Peek.f(&value); synth_UpdateTapDelay(tapdelay, *tapdelay\detune); break;
+    Case #TDA_WetMix     : *tapdelay\wetmix        = Peek.f(&value); break;
+    Case #TDA_Frequency  : *tapdelay\frequency     = Peek.f(&value); synth_UpdateTapDelay(tapdelay, *tapdelay\detune); break;
+    Case #TDA_Feedback   : *tapdelay\feedback      = Peek.f(&value); break;
+    Case #TDA_TapGain1   : *tapdelay\tap_gain[0]   = Peek.f(&value); break;
+    Case #TDA_TapGain2   : *tapdelay\tap_gain[1]   = Peek.f(&value); break;
+    Case #TDA_TapGain3   : *tapdelay\tap_gain[2]   = Peek.f(&value); break;
+    Case #TDA_TapGain4   : *tapdelay\tap_gain[3]   = Peek.f(&value); break;
+    Case #TDA_TapFactor1 : *tapdelay\tap_factor[0] = Peek.f(&value); break;
+    Case #TDA_TapFactor2 : *tapdelay\tap_factor[1] = Peek.f(&value); break;
+    Case #TDA_TapFactor3 : *tapdelay\tap_factor[2] = Peek.f(&value); break;
+    Case #TDA_TapFactor4 : *tapdelay\tap_factor[3] = Peek.f(&value); break;
+    Default:
+      Function Return 0;
+  End Select
+  
+  Function Return 1;
+  
+End Function
+
+Statement synth_UpdateTapDelay{*tapdelay.tapdelay_T, detune.f}
+End Statement
+
+Function.l synth_SetFilterAttrF{*filt.filter_T, attr.l, value.f}
+  Function Return synth_SetFilterAttr{*filt, attr, Peek.l(&value)}
+End Function
+ 
+Function.l synth_SetStringAttrF{*string.string_T, attr.l, value.f}
+  ;Function Return synth_SetStringAttr{*string, attr, Peek.l(&value)}
+End Function
+
+Statement synth_UpdateFlute{*flute.flute_T,detune.f}
+
+   delta.f = *flute\samplerate/(*flute\frequency * 2^(detune) * *flute\boreharmonic/2)
+   *flute\ring1_read = (*flute\ring1_write-Int(delta)-1) & #DELAYN_MASK
+   fracd.f = (delta-Int(delta))
+
+   If fracd<0.1 Then fracd=0.1
+   If fracd>0.9 Then fracd=0.9
+
+   *flute\ring1_read_a = fracd
+   *flute\ring1_read_b = (1.0-fracd)
+
+   delta2.f = *flute\samplerate/(*flute\frequency * 2^(detune) * *flute\jetharmonic/2)
+   *flute\ring2_read = (*flute\ring2_write-Int(delta2)-1) & #DELAYN_MASK
+   fracd.f = (delta2-Int(delta2))
+   *flute\ring2_read_a = fracd
+   *flute\ring2_read_b =( 1.0-fracd)
+
+End Statement
+
+
+Function.l synth_GetFluteAttr{*flute.flute_T, attr.l, *valueP.l}
+
+  Select(attr) 
+    Case #FLA_SizeOf       : Poke.l *valueP, SizeOf.flute_T;       break;
+    Case #FLA_Samplerate   : Poke.f *valueP, *flute\samplerate;     break;
+    Case #FLA_Frequency    : Poke.f *valueP, *flute\frequency;      break;
+    Case #FLA_Detune       : Poke.f *valueP, *flute\detune;         break;
+    Case #FLA_Gain         : Poke.f *valueP, *flute\gain;           break;
+    Case #FLA_JetFeedback  : Poke.f *valueP, *flute\jetfeedback;   break;
+    Case #FLA_BoreFeedback : Poke.f *valueP, *flute\borefeedback;  break;
+    Case #FLA_JetHarmonic  : Poke.f *valueP, *flute\jetharmonic;   break;
+    Case #FLA_BoreHarmonic : Poke.f *valueP, *flute\boreharmonic;  break;
+    Case #FLA_LowPassFreq  : Poke.f *valueP, *flute\hidamp;   break;
+    Case #FLA_HighPassFreq : Poke.f *valueP, *flute\lodamp;  break;
+    ;Case #FLA_Stiffness    : Poke.f *valueP, *flute\stiffness;      break;
+    ;Case #FLA_StiffFreq    : Poke.f *valueP, *flute\stiff_freq;     break;
+    Default:
+      Function Return 0;
+  End Select
+  Function Return 1;
+End Function
+
+Function.l synth_SetFluteAttr{*flute.flute_T, attr.l, value.l}
+
+  Select(attr) 
+    Case #FLA_SizeOf       : Function Return 0;
+    Case #FLA_Samplerate   : *flute\samplerate    = Peek.f(&value): synth_UpdateFlute{*flute, *flute\detune}; break;
+    Case #FLA_Frequency    : *flute\frequency     = Peek.f(&value): synth_UpdateFlute{*flute, *flute\detune}; break;
+    Case #FLA_Detune       : *flute\detune        = Peek.f(&value): synth_UpdateFlute{*flute, *flute\detune}; break;
+    Case #FLA_Gain         : *flute\gain          = Peek.f(&value); break;
+    Case #FLA_JetFeedback  : *flute\jetfeedback  = Peek.f(&value); break;
+    Case #FLA_BoreFeedback : *flute\borefeedback = Peek.f(&value); break;
+    Case #FLA_JetHarmonic  : *flute\jetharmonic  = Peek.f(&value); break;
+    Case #FLA_BoreHarmonic : *flute\boreharmonic = Peek.f(&value); break;
+    Case #FLA_LowPassFreq  : *flute\hidamp  = Peek.f(&value); break;
+    Case #FLA_HighPassFreq : *flute\lodamp = Peek.f(&value); break;
+    ;Case #FLA_Stiffness    : *flute\stiffness     = Peek.f(&value); break;
+    ;Case #FLA_StiffFreq    : *flute\stiff_freq    = Peek.f(&value); break;
+    Default:
+      Function Return 0;
+  End Select
+  Function Return 1;
+End Function
+
+Function.l synth_SetFluteAttrF{*flute.flute_T, attr.l, value.f}
+  Function Return synth_SetFluteAttr{*flute, attr, Peek.l(&value)}
+End Function
+
+Function.l synth_SetOscAttrF{*osc.osc_T, attr.l, value.f}
+  Function Return synth_SetOscAttr{*osc, attr, Peek.l(&value)}
+End Function
+
+Function.l synth_SetEnvAttrF{*env.env_T, attr.l, value.f}
+  Function Return synth_SetEnvAttr{*env, attr, Peek.l(&value)}
+End Function
+
+Function.l synth_SetTapDelayAttrF{*tapdelay.tapdelay_T, attr.l, value.f}
+  Function Return synth_SetTapDelayAttr{*tapdelay, attr, Peek.l(&value)}
+End Function
+
+Function.l synth_SetDelayMatrixAttrF{*dm.delaymatrix_T, attr.l, value.f}
+  ;Function Return synth_SetDelayMatrixAttr{*dm, attr, Peek.l(&value)}
+End Function
+
+Function.l synth_SetEnsembleAttrF{*ensemble.ensemble_T, attr.l, value.f}
+  ;Function Return synth_SetEnsembleAttr{*ensemble, attr, Peek.l(&value)}
+End Function
+
+
+Statement synth_SetDelayMatrix{*dm.delaymatrix_T,num.l,frequency.f,dmout.f,dmin.f,dmf1.f,dmf2.f,dmf3.f,dmf4.f}
+
+   *dm\delay[num]\frequency   = frequency
+   *dm\delay[num]\dmout       = dmout
+   *dm\delay[num]\dmin        = dmin
+   *dm\delay[num]\dmf[0]      = dmf1
+   *dm\delay[num]\dmf[1]      = dmf2
+   *dm\delay[num]\dmf[2]      = dmf3
+   *dm\delay[num]\dmf[3]      = dmf4
+
+End Statement
+
+
+Statement synth_InitDelayMatrix{*dm.delaymatrix_T,samplerate.f,frequency.f,hidamp.f,lodamp.f,gain.f}
+
+   *dm\samplerate = samplerate
+   *dm\hidamp       = hidamp
+   *dm\lodamp       = lodamp
+   *dm\gain         = gain
+   *dm\ring_write   = 0
+   *dm\a            = 0
+   *dm\b            = 0
+   *dm\c            = 1.0
+
+   If hidamp<20000 AND hidamp<samplerate/2
+     f.f = 2*Pi*hidamp/samplerate
+     *dm\pl = (2-Cos(f)) - Sqr((2-Cos(f))^2 - 1) ;with x = 2*Pi*cutoff/samplerate
+   Else
+     *dm\pl = 0
+   End If
+
+   If lodamp>0
+     f.f = 2*Pi*lodamp/samplerate
+     *dm\ph = (2-Cos(f)) - Sqr((2-Cos(f))^2 - 1) ;with x = 2*Pi*cutoff/samplerate
+   Else
+     *dm\ph = 1
+   End If
+
+   For num.l=0 To 3
+     *dm\delay[num]\doutl = 0
+     *dm\delay[num]\douth = 0
+     *dm\delay[num]\ring_read = 0
+     For n.l=0 To $400-1
+       *dm\delay[num]\ring_buffer[n]=0
+     Next
+   Next
+
+   synth_SetDelayMatrix{*dm,0,frequency*1,1.0,1.0,0,0,0,0}
+   synth_SetDelayMatrix{*dm,1,frequency*2,1.0,1.0,0,0,0,0}
+   synth_SetDelayMatrix{*dm,2,frequency*3,1.0,1.0,0,0,0,0}
+   synth_SetDelayMatrix{*dm,3,frequency*4,1.0,1.0,0,0,0,0}
+   synth_UpdateDelayMatrix{*dm,0,0,0,0}
+
+End Statement
+
+
+Statement synth_InitFlute{*flute.flute_T,frequency.f,samplerate.f,jetfeedback.f,jetharm.f,borefeedback.f,boreharm.f,hidamp.f,lodamp.f,gain.f}
+
+   *flute\samplerate = samplerate
+   *flute\frequency    = frequency
+   *flute\hidamp       = hidamp
+   *flute\lodamp       = lodamp
+   *flute\jetfeedback    = jetfeedback
+   *flute\borefeedback   = borefeedback
+   *flute\gain         = gain
+
+   If jetharm<1 Then jetharm=1
+   If boreharm<1 Then boreharm=1
+
+   *flute\jetharmonic  = jetharm
+   *flute\boreharmonic = boreharm
+
+   If hidamp<20000 AND hidamp<samplerate/2
+     f.f = 2*Pi*hidamp/samplerate
+     *flute\pl = (2-Cos(f)) - Sqr((2-Cos(f))^2 - 1) ;with x = 2*Pi*cutoff/samplerate
+   Else
+     *flute\pl = 0
+   End If
+
+   If lodamp>0
+     f.f = 2*Pi*lodamp/samplerate
+     *flute\ph = (2-Cos(f)) - Sqr((2-Cos(f))^2 - 1) ;with x = 2*Pi*cutoff/samplerate
+   Else
+     *flute\ph = 1
+   End If
+
+   For n.l=0 To #DELAYN_SIZE-1 : *flute\ring2_buffer[n]=0 : *flute\ring1_buffer[n]=0 : Next
+
+   synth_UpdateFlute{*flute,0}
+
+End Statement
+
+
+Statement synth_InitString{*string.string_T,samplerate.f,frequency.f,hidamp.f,lodamp.f,feedback.f,pass.f,stiffness.f,stiffharm.f,pickpos.f}
+
+   *string\samplerate = samplerate
+   *string\frequency    = frequency
+   If (feedback<0) Then af.f=-feedback:Else af=feedback
+   *string\feedback     = (af^0.1)
+   If (feedback<0) Then *string\feedback = -*string\feedback
+   *string\pass         = pass
+   *string\pickpos      = pickpos
+
+   For n.l=0 To #DELAYN_SIZE-1 : *string\ring_buffer[n]=0 : Next
+
+   synth_InitFilter{&*string\dispersion,#FILTER_ALLPASS2, stiffharm*frequency,stiffness,samplerate}
+   synth_InitFilter{&*string\fdelay    ,#FILTER_THIRAN2 ,   frequency,0.0,samplerate}
+   synth_InitFilter{&*string\highpass  ,#FILTER_LP1     ,      lodamp,0.0,samplerate}
+   synth_InitFilter{&*string\lowpass   ,#FILTER_LP1     ,      hidamp,0.0,samplerate}
+
+   synth_UpdateString{*string,0}
+
+End Statement
+
+Statement synth_InitTapDelay{*tapdelay.tapdelay_T,samplerate.f,frequency.f,feedback.f,pass.f}
+
+   *tapdelay\samplerate = samplerate
+   *tapdelay\frequency    = frequency
+   If (feedback<0) Then af.f=-feedback:Else af=feedback
+   *tapdelay\feedback     = (af^0.1)
+   If (feedback<0) Then *tapdelay\feedback = -*tapdelay\feedback
+   *tapdelay\wetmix    = pass
+
+   *tapdelay\tap_factor[0] = 2
+   *tapdelay\tap_factor[1] = 3
+   *tapdelay\tap_factor[2] = 5
+   *tapdelay\tap_factor[3] = 7
+   *tapdelay\tap_gain[0] = -1
+   *tapdelay\tap_gain[1] = 1
+   *tapdelay\tap_gain[2] = 1
+   *tapdelay\tap_gain[3] = 1
+
+   For n.l=0 To #DELAYN_SIZE-1 : *tapdelay\ring_buffer[n]=0 : Next
+
+   synth_UpdateTapdelay{*tapdelay,0}
+
+End Statement
+
+#DELAY_INT=2
+
+Statement synth_RenderString{*string.string_T,*outP.w,*inP.w,sampleN.l}
+
+  ringBase.l = &*string\ring_buffer[0]
+  ringP.l    = *string\ring_pick
+  ringW.l    = *string\ring_write & #DELAYN_MASK
+  ringR.l    = *string\ring_read  & #DELAYN_MASK
+  ringa.f    = *string\ring_read_a
+  ringb.f    = *string\ring_read_b
+
+  hp_y1.f    = *string\highpass\y[1]
+  hp_b0.f    = *string\highpass\b[0]
+  hp_a1.f    = *string\highpass\a[1]
+
+  lp_y1.f    = *string\lowpass\y[1]
+  lp_b0.f    = *string\lowpass\b[0]
+  lp_a1.f    = *string\lowpass\a[1]
+
+  disp_a1.f  = *string\dispersion\a[1]
+  disp_a2.f  = *string\dispersion\a[2]
+  disp_b0.f  = *string\dispersion\b[0]
+  disp_b1.f  = *string\dispersion\b[1]
+  disp_b2.f  = *string\dispersion\b[2]
+  disp_x1.f  = *string\dispersion\x[1]
+  disp_x2.f  = *string\dispersion\x[2]
+  disp_y1.f  = *string\dispersion\y[1]
+  disp_y2.f  = *string\dispersion\y[2]
+
+  fd_a0.f  = *string\fdelay\a[0]
+  fd_a1.f  = *string\fdelay\a[1]
+  fd_a2.f  = *string\fdelay\a[2]
+  fd_b0.f  = *string\fdelay\b[0]
+  fd_b1.f  = *string\fdelay\b[1]
+  fd_b2.f  = *string\fdelay\b[2]
+  fd_x1.f  = *string\fdelay\x[1]
+  fd_x2.f  = *string\fdelay\x[2]
+  fd_y1.f  = *string\fdelay\y[1]
+  fd_y2.f  = *string\fdelay\y[2]
+
+  feedback.f    = *string\feedback
+  pass.f        = *string\pass
+;  err.f         = *string\ring_err
+;  sampleshift.l = *string\dither
+
+  ;delta.f = *string\frequency/*string\samplerate * 2*Pi *2.2
+
+  ;If err<-10 Then sampleshift.l=0
+  ;If err> 10 Then sampleshift=1
+
+  For n.l=0 To sampleN-1
+
+    ; read input
+    in.f = Peek.w(*inP) + !denorm    : *inP + SizeOf.w
+    Poke.f ringBase + ringP*SizeOf.f, Peek.f(ringBase + ringP*SizeOf.f) + in : ringP = (ringP + 1) & #DELAYN_MASK
+
+    ; read delay
+    CNIF #DELAY_INT=0
+      da.f = Peek.f(ringBase + ringR*SizeOf.f) : ringR = (ringR + 1) & #DELAYN_MASK
+      db.f = Peek.f(ringBase + ringR*SizeOf.f) : echo.f = da*ringa + db*ringb
+    CEND
+    CNIF #DELAY_INT=1
+      If sampleshift=0
+        echo.f = Peek.f(ringBase + ringR*SizeOf.f) : ringR = (ringR + 1) & #DELAYN_MASK
+        err+ringb
+      Else
+        ringR = (ringR + 1) & #DELAYN_MASK : echo.f = Peek.f(ringBase + ringR*SizeOf.f)
+        err-1;//ringa
+      End If
+    CEND
+    CNIF #DELAY_INT=2
+      echo.f = Peek.f(ringBase + ringR*SizeOf.f) : ringR = (ringR + 1) & #DELAYN_MASK
+    CEND
+
+    ; random sign for feedback
+    ;If (sampleshift & $80F) Then echo=echo-echo/2
+    ;sampleshift * 196314165 + 907633515
+
+    ;If feedback=0
+    ;  signal.f =  in
+    ;Else
+      signal.f = echo * feedback + in
+    ;End If
+
+    ; ring mod
+    ;back = back*Sin(err)*amount + back : err = err + delta : If err>2*Pi Then err=err-2*Pi
+
+    ; low pass
+    lp_y1 = lp_b0*signal - lp_a1*lp_y1
+    signal = lp_y1
+
+    ; high pass
+    hp_y1 = hp_b0*signal - hp_a1*hp_y1
+    signal = signal - hp_y1
+
+    ; dispersion filter
+    ;disp_y0.f =  disp_b0*(signal+!denorm) + disp_b1*disp_x1 + disp_b2*disp_x2 - disp_a1*disp_y1 - disp_a2*disp_y2
+    ;disp_y2 = disp_y1 : disp_y1 = disp_y0
+    ;disp_x2 = disp_x1 : disp_x1 = signal
+    ;signal  = disp_y0
+
+    ; fdelay filter
+    ; 2nd order thiran filter  
+    fd_x0.f = signal
+    fd_y0.f = fd_x2 + fd_x1*fd_a1 + fd_x0*fd_a2 - fd_y1*fd_a1 - fd_y2*fd_a2
+    fd_y2 = fd_y1 : fd_y1 = fd_y0
+    fd_x2 = fd_x1 : fd_x1 = fd_x0
+    signal = fd_y0
+
+    ; write delay
+    Poke.f ringBase + ringW*SizeOf.f , signal : ringW = (ringW + 1) & #DELAYN_MASK
+
+    ; output
+    out.f = signal + in * pass
+    If out> 32767 Then out= 32767
+    If out<-32768 Then out=-32768
+    Poke.w *outP,out : *outP + SizeOf.w
+
+  Next
+
+  *string\ring_read   = ringR
+  *string\ring_write  = ringW
+  *string\ring_pick   = ringP
+  *string\lowpass\y[1]  = lp_y1
+  *string\highpass\y[1] = hp_y1
+;  *string\ring_err    = err
+;  *string\dither      = sampleshift
+
+  *string\dispersion\x[1] = disp_x1
+  *string\dispersion\x[2] = disp_x2
+  *string\dispersion\y[1] = disp_y1
+  *string\dispersion\y[2] = disp_y2
+
+  *string\fdelay\x[1] = fd_x1
+  *string\fdelay\x[2] = fd_x2
+  *string\fdelay\y[1] = fd_y1
+  *string\fdelay\y[2] = fd_y2
+
+End Statement
+
+Macro denorm2
+0.1 
+End Macro
+
+Statement synth_RenderTapDelay{*tapdelay.tapdelay_T, *outP.w,*inP.w,sampleN.l}
+
+  ringBase.l = &*tapdelay\ring_buffer[0]
+  ringW.l    = *tapdelay\ring_write & #DELAYN_MASK
+  R1.l       = Int((*tapdelay\ring_delta/*tapdelay\tap_factor[0])+.5) 
+  R2.l       = Int((*tapdelay\ring_delta/*tapdelay\tap_factor[1])+.5) 
+  R3.l       = Int((*tapdelay\ring_delta/*tapdelay\tap_factor[2])+.5) 
+  R4.l       = Int((*tapdelay\ring_delta/*tapdelay\tap_factor[3])+.5) 
+
+  feedback.f    = *tapdelay\feedback*0.25
+  pass.f        = *tapdelay\wetmix
+  
+  If R4<4 Then R4=4
+  If R3<3 Then R3=3
+  If R2<2 Then R2=2
+  If R1<1 Then R1=1
+
+  f1.l       = *tapdelay\tap_gain[0] 
+  f2.l       = *tapdelay\tap_gain[1] 
+  f3.l       = *tapdelay\tap_gain[2] 
+  f4.l       = *tapdelay\tap_gain[3] 
+
+
+  For n.l=0 To sampleN-1
+
+    ; read input
+    in.f = Peek.w(*inP)     : *inP + SizeOf.w
+
+    echo.f = 0;!denorm
+    echo.f + Peek.f(ringBase + ( (ringW-R1) & #DELAYN_MASK)*SizeOf.f)*f1
+    echo.f + Peek.f(ringBase + ( (ringW-R2) & #DELAYN_MASK)*SizeOf.f)*f2
+    echo.f + Peek.f(ringBase + ( (ringW-R3) & #DELAYN_MASK)*SizeOf.f)*f3
+    echo.f + Peek.f(ringBase + ( (ringW-R4) & #DELAYN_MASK)*SizeOf.f)*f3
+
+    ; output
+    out.f = in + echo * pass
+    If out> 32767 Then out= 32767
+    If out<-32768 Then out=-32768    
+    Poke.w *outP,out : *outP + SizeOf.w
+    
+    ;If feedback>0
+      signal.f = echo * feedback + in + !denorm
+    ;Else
+    ;  signal.f = in
+    ;End If
+
+    ; write delay
+    Poke.f ringBase + ringW*SizeOf.f , signal : ringW = (ringW + 1) & #DELAYN_MASK
+
+  Next
+
+  *tapdelay\ring_write  = ringW
+
+End Statement
+
+
+
+Statement synth_RenderDelayMatrix{*dm.delaymatrix_T, *outP.w,*inP.w,sampleN.l}
+
+  ringW.l     = *dm\ring_write
+
+  ring1P.l    = &*dm\delay[0]\ring_buffer[0]
+  ring1R.l    = *dm\delay[0]\ring_read
+  ring1a.f    = *dm\delay[0]\r
+  ring1b.f    = *dm\delay[0]\ir
+
+  ring2P.l    = &*dm\delay[1]\ring_buffer[0]
+  ring2R.l    = *dm\delay[1]\ring_read
+  ring2a.f    = *dm\delay[1]\r
+  ring2b.f    = *dm\delay[1]\ir
+
+  ring3P.l    = &*dm\delay[2]\ring_buffer[0]
+  ring3R.l    = *dm\delay[2]\ring_read
+  ring3a.f    = *dm\delay[2]\r
+  ring3b.f    = *dm\delay[2]\ir
+
+  ring4P.l    = &*dm\delay[3]\ring_buffer[0]
+  ring4R.l    = *dm\delay[3]\ring_read
+  ring4a.f    = *dm\delay[3]\r
+  ring4b.f    = *dm\delay[3]\ir
+
+  dout1h.f    = *dm\delay[0]\douth
+  dout1l.f    = *dm\delay[0]\doutl
+
+  dout2h.f    = *dm\delay[1]\douth
+  dout2l.f    = *dm\delay[1]\doutl
+
+  dout3h.f    = *dm\delay[2]\douth
+  dout3l.f    = *dm\delay[2]\doutl
+
+  dout4h.f    = *dm\delay[3]\douth
+  dout4l.f    = *dm\delay[3]\doutl
+
+  dmf11.f     = *dm\delay[0]\dmf[0]
+  dmf21.f     = *dm\delay[0]\dmf[1]
+  dmf31.f     = *dm\delay[0]\dmf[2]
+  dmf41.f     = *dm\delay[0]\dmf[3]
+
+  dmf12.f     = *dm\delay[1]\dmf[0]
+  dmf22.f     = *dm\delay[1]\dmf[1]
+  dmf32.f     = *dm\delay[1]\dmf[2]
+  dmf42.f     = *dm\delay[1]\dmf[3]
+
+  dmf13.f     = *dm\delay[2]\dmf[0]
+  dmf23.f     = *dm\delay[2]\dmf[1]
+  dmf33.f     = *dm\delay[2]\dmf[2]
+  dmf43.f     = *dm\delay[2]\dmf[3]
+
+  dmf14.f     = *dm\delay[3]\dmf[0]
+  dmf24.f     = *dm\delay[3]\dmf[1]
+  dmf34.f     = *dm\delay[3]\dmf[2]
+  dmf44.f     = *dm\delay[3]\dmf[3]
+
+  dmout1.f    = *dm\delay[0]\dmout
+  dmout2.f    = *dm\delay[1]\dmout
+  dmout3.f    = *dm\delay[2]\dmout
+  dmout4.f    = *dm\delay[3]\dmout
+
+  dmin1.f     = *dm\delay[0]\dmin
+  dmin2.f     = *dm\delay[1]\dmin
+  dmin3.f     = *dm\delay[2]\dmin
+  dmin4.f     = *dm\delay[3]\dmin
+
+  ph.f        = *dm\ph : If ph<0.0000001 Then ph=0
+  pl.f        = *dm\pl : If pl<0.0000001 Then pl=0
+  ipl.f       = 1.0-pl : If ipl<0.0000001 Then ipl=0
+  iph.f       = 1.0-ph : If iph<0.0000001 Then iph=0
+
+  a.f         = *dm\a
+  b.f         = *dm\b
+  c.f         = *dm\c
+
+  gain.f      = *dm\gain * 32767
+
+  For n.l=0 To sampleN-1
+
+    ; read delay #1
+    da.f = Peek.f(ring1P + ring1R*SizeOf.f) : ring1R = (ring1R + 1) & #DELAYS_MASK
+    db.f = Peek.f(ring1P + ring1R*SizeOf.f) : dout1.f = da*ring1a + db*ring1b
+
+    ; read delay #2
+    da.f = Peek.f(ring2P + ring2R*SizeOf.f) : ring2R = (ring2R + 1) & #DELAYS_MASK
+    db.f = Peek.f(ring2P + ring2R*SizeOf.f) : dout2.f = da*ring2a + db*ring2b
+
+    ; read delay #3
+    da.f = Peek.f(ring3P + ring3R*SizeOf.f) : ring3R = (ring3R + 1) & #DELAYS_MASK
+    db.f = Peek.f(ring3P + ring3R*SizeOf.f) : dout3.f = da*ring3a + db*ring3b
+
+    ; read delay #4
+    da.f = Peek.f(ring4P + ring4R*SizeOf.f) : ring4R = (ring4R + 1) & #DELAYS_MASK
+    db.f = Peek.f(ring4P + ring4R*SizeOf.f) : dout4.f = da*ring4a + db*ring4b
+
+    ; read input
+    in.f = Peek.w(*inP) / 32768.0 +!denorm  : *inP + SizeOf.w
+
+    ; bandpass for delay output
+    dout1l = (ipl)*dout1 + pl*dout1l : dout1h = (iph)*dout1l + ph*dout1h : dout1 = (dout1l-dout1h)
+    dout2l = (ipl)*dout2 + pl*dout2l : dout2h = (iph)*dout2l + ph*dout2h : dout2 = (dout2l-dout2h)
+    dout3l = (ipl)*dout3 + pl*dout3l : dout3h = (iph)*dout3l + ph*dout3h : dout3 = (dout3l-dout3h)
+    dout4l = (ipl)*dout4 + pl*dout4l : dout4h = (iph)*dout4l + ph*dout4h : dout4 = (dout4l-dout4h)
+
+    ; apply non-linearity
+    dout1 = a*dout1*dout1*dout1 + b*dout1*dout1 + c*dout1
+    dout2 = a*dout2*dout2*dout2 + b*dout2*dout2 + c*dout2
+    dout3 = a*dout3*dout3*dout3 + b*dout3*dout3 + c*dout3
+    dout4 = a*dout4*dout4*dout4 + b*dout4*dout4 + c*dout4
+
+    ; calculate output
+    out.f = dout1*dmout1 + dout2*dmout2 + dout3*dmout3 + dout4*dmout4
+    out   = out*gain
+
+    ; calculate feedback
+    din1.f = dout1*dmf11 + dout2*dmf21 + dout3*dmf31 + dout4*dmf41 + in*dmin1
+    din2.f = dout1*dmf12 + dout2*dmf22 + dout3*dmf32 + dout4*dmf42 + in*dmin2
+    din3.f = dout1*dmf13 + dout2*dmf23 + dout3*dmf33 + dout4*dmf43 + in*dmin3
+    din4.f = dout1*dmf14 + dout2*dmf24 + dout3*dmf34 + dout4*dmf44 + in*dmin4
+
+    ; write feedback
+    Poke.f ring1P + ringW*SizeOf.f ,din1
+    Poke.f ring2P + ringW*SizeOf.f ,din2
+    Poke.f ring3P + ringW*SizeOf.f ,din3
+    Poke.f ring4P + ringW*SizeOf.f ,din4
+    ringW = (ringW + 1) & #DELAYS_MASK
+
+    ; write output
+    If out> 32767 Then out= 32767
+    If out<-32767 Then out=-32767
+    Poke.w *outP,out : *outP + SizeOf.w
+
+  Next
+
+  *dm\ring_write = ringW
+  *dm\delay[0]\ring_read = ring1R
+  *dm\delay[1]\ring_read = ring2R
+  *dm\delay[2]\ring_read = ring3R
+  *dm\delay[3]\ring_read = ring4R
+
+  *dm\delay[0]\douth     = dout1h
+  *dm\delay[0]\doutl     = dout1l
+
+  *dm\delay[1]\douth     = dout2h
+  *dm\delay[1]\doutl     = dout2l
+
+  *dm\delay[2]\douth     = dout3h
+  *dm\delay[2]\doutl     = dout3l
+
+  *dm\delay[3]\douth     = dout4h
+  *dm\delay[3]\doutl     = dout4l
+
+End Statement
+
+Statement synth_RenderFlute{*flute.flute_T, *outP.w,*inP.w,sampleN.l}
+
+  ring1P.l    = &*flute\ring1_buffer[0]
+  ring1W.l    = *flute\ring1_write
+  ring1R.l    = *flute\ring1_read
+  ring1a.f    = *flute\ring1_read_a
+  ring1b.f    = *flute\ring1_read_b
+
+  ring2P.l    = &*flute\ring2_buffer[0]
+  ring2W.l    = *flute\ring2_write
+  ring2R.l    = *flute\ring2_read
+  ring2a.f    = *flute\ring2_read_a
+  ring2b.f    = *flute\ring2_read_b
+
+  sigh.f      = *flute\outh
+  ph.f        = *flute\ph
+  sigl.f      = *flute\outl
+  pl.f        = *flute\pl
+  jetfeedback.f  = *flute\jetfeedback
+  borefeedback.f = *flute\borefeedback
+  gain.f      = *flute\gain*32767
+
+  For n.l=0 To sampleN-1
+
+    ; read flute 1 Bore
+    da.f = Peek.f(ring1P + ring1R*SizeOf.f)
+    ring1R = (ring1R + 1) & #DELAYN_MASK
+    db.f = Peek.f(ring1P + ring1R*SizeOf.f)
+    bore.f = da*ring1a + db*ring1b  + !denorm
+
+    ; read flute 2 Jet
+    da.f = Peek.f(ring2P + ring2R*SizeOf.f)
+    ring2R = (ring2R + 1) & #DELAYN_MASK
+    db.f = Peek.f(ring2P + ring2R*SizeOf.f)
+    jet.f = da*ring2a + db*ring2b    + !denorm
+    jet = jet-(jet*jet*jet) ; x-x3 - the flute resonse!
+
+
+    ; read input
+    in.f = Peek.w(*inP)   : *inP + SizeOf.w
+    sig.f = in / 16384.0 + bore * jetfeedback
+
+    ; write flute 2 Jet
+    Poke.f ring2P + ring2W*SizeOf.f ,sig : ring2W = (ring2W + 1) & #DELAYN_MASK
+
+    sig.f = jet+bore*borefeedback
+
+    ; filter for flute
+    sigl.f = (1-pl)*sig  + pl*sigl
+    sigh.f = (1-ph)*sigl + ph*sigh
+    sig.f=(sigl-sigh)
+
+    ; write flute 1
+    Poke.f ring1P + ring1W*SizeOf.f ,sigl : ring1W = (ring1W + 1) & #DELAYN_MASK
+
+    out.f = sig*gain
+    If out> 32767 Then out= 32767
+    If out<-32767 Then out=-32767
+    Poke.w *outP,out : *outP + SizeOf.w
+
+  Next
+
+  *flute\ring1_read  = ring1R
+  *flute\ring1_write = ring1W
+  *flute\ring2_read  = ring2R
+  *flute\ring2_write = ring2W
+
+  *flute\outl         = sigl
+  *flute\outh         = sigh
+
+End Statement
+
+
+
+; waveshape 16bit signal given a lookup table
+Statement FAST synth_RenderWaveShape{*tableP.w, *outP.w, *inP.w, sampleN.l, drive.f}
+
+  GetReg d0,sampleN        ; load registers
+  GetReg d2,drive*256
+  GetReg a0,*inP
+  GetReg a1,*outP
+  GetReg a2,*tableP
+
+  ADDA.l #32768,a2         ; seek to the middle of the table (because offset is signed short)
+
+  waveshape_loop:
+    MOVE.w (a0)+,d1        ; get the sample
+    MULS.w d2,d1
+    ASR.l #8,d1
+    AND.w #$FFFE,d1        ; make it multiple of 2
+    MOVE.w $0(a2,d1),(a1)+ ; out = table[in]
+
+  SUB.l #1,d0              ; loop for all sampleN
+  BGT waveshape_loop
+
+End Statement
+
+
+; *osc    : osciallator
+; detune  : detune from basefrequency in musical tones
+Statement FAST synth_UpdateOsc{*osc.osc_T, detune.f, gain.f, moddepth.f}
+
+  *osc\iphaseinc           = Int(65536.0 * 65536.0 / *osc\samplerate * *osc\frequency * 2^(detune))
+  *osc\igain               = 256 * gain * *osc\gain
+  *osc\imoddepth           = 256 * moddepth * *osc\moddepth
+
+End Statement
+
+
+Function.osc_T FAST synth_AllocOsc{n.l}
+
+  *osc.osc_T = AllocMem_(SizeOf.osc_T*n,#MEMF_ANY)
+  Function Return *osc
+
+End Function
+
+Statement FAST synth_FreeOsc{*osc.osc_T}
+
+  FreeMem_ *osc,SizeOf.osc_T
+
+End Statement
+
+
+Statement synth_InitOsc{*osc.osc_T, wave.l, samplerate.f, frequency.f, phase.f, gain.f, modtype.l, moddepth.f}
+
+  *osc\wave         = wave
+  *osc\frequency     = frequency
+  *osc\startphase    = phase
+  *osc\samplerate  = samplerate
+  *osc\gain          = gain
+  *osc\iphase        = Int(65536.0 * 65536.0 * phase / 2.0 / Pi)
+  *osc\iphase2       = 0
+  *osc\modtype       = modtype
+  *osc\moddepth      = moddepth
+
+  !_GetFuncPointer{*osc\funcP,_synth_osc_LookupTable,{Null,0,Null}}
+
+  Select *osc\wave
+    Case #OSC_Saw:      *osc\tableP = &SawTable(0)
+      ;If synthGlobal\quality>=#QUALITY_FAIR
+        !_GetFuncPointer{*osc\funcP,_synth_osc_SawAA,{Null,0,Null}}
+      ;End If
+    Case #OSC_Impuls:      *osc\tableP = &SawTable(0)   : !_GetFuncPointer{*osc\funcP,_synth_osc_Impuls,{Null,0,Null}}
+    Case #OSC_Sin:      *osc\tableP = &SinTable(0)
+    Case #OSC_DC:       *osc\tableP = &SinTable(0)   : !_GetFuncPointer{*osc\funcP,_synth_osc_DC,{Null,0,Null}}
+    Case #OSC_Rect:     *osc\tableP = &RecTable(0)
+    Case #OSC_Tri:      *osc\tableP = &TriTable(0)
+    Case #OSC_WhiteNoise:    *osc\tableP = &NoiseTable(0) : !_GetFuncPointer{*osc\funcP,_synth_osc_Noise,{Null,0,Null}}
+      If phase=0 Then *osc\iphase = synthGlobal\seed : synthGlobal\seed *196314165 + 907633515
+    Case #OSC_PinkNoise:   *osc\tableP = &NoiseTable(0) : !_GetFuncPointer{*osc\funcP,_synth_osc_NoisePink,{Null,0,Null}}
+      If phase=0 Then *osc\iphase = synthGlobal\seed : synthGlobal\seed *196314165 + 907633515
+    Case #OSC_TunedNoise:   *osc\tableP = &NoiseTable(0) : !_GetFuncPointer{*osc\funcP,_synth_osc_NoiseTuned,{Null,0,Null}}
+      If phase=0 Then *osc\iphase = synthGlobal\seed : synthGlobal\seed *196314165 + 907633515
+    Default:            *osc\tableP = &SinTable(0)
+  End Select
+
+
+  Select *osc\modtype
+    Case #MOD_None ; we are ok with the above
+    Case #MOD_ExtFM
+      !_GetFuncPointer{*osc\funcP,_synth_osc_ExtFM,{Null,0,Null,Null}}
+    Case #MOD_ExtPM
+      !_GetFuncPointer{*osc\funcP,_synth_osc_ExtPM,{Null,0,Null,Null}}
+    Case #MOD_SelfFM
+      !_GetFuncPointer{*osc\funcP,_synth_osc_SelfFM,{Null,0,Null}}
+    Case #MOD_SelfPM
+      !_GetFuncPointer{*osc\funcP,_synth_osc_SelfPM,{Null,0,Null}}
+    Case #MOD_SelfExtPM
+      !_GetFuncPointer{*osc\funcP,_synth_osc_SelfExtPM,{Null,0,Null,Null}}
+
+  End Select
+
+  synth_UpdateOsc{*osc, 0, 1, 1}
+
+End Statement
+
+
+Function.f FAST synth_StepEnv_dep{*env.env_T}
+
+  If *env\state=#ENV_End     Then *env\rlevel = *env\level[#ENV_End]
+  If *env\state=#ENV_Sustain Then *env\rlevel = *env\level[#ENV_Sustain]
+  If *env\state=#ENV_Release
+    *env\rlevel = *env\rlevel * *env\ir + *env\level[#ENV_End] * *env\r
+    If Abs(*env\rlevel-*env\level[#ENV_End])<0.0001 Then *env\state=#ENV_End
+  End If
+  If *env\state=#ENV_Attack OR *env\state=#ENV_Decay
+    *env\rlevel = (*env\level[*env\state] * (*env\duration[*env\state]-*env\offset) + *env\level[*env\state+1] * (*env\offset)) / *env\duration[*env\state]
+    *env\offset+1
+    If *env\offset>*env\duration[*env\state]
+      *env\offset = 0
+      If *env\state<#ENV_Sustain
+        *env\state+1
+        If *env\duration[#ENV_Sustain]=0 Then *env\state=#ENV_Release
+      EndIf
+    EndIf
+  End If
+
+  Function Return *env\rlevel
+
+End Function
+
+
+Function.f FAST synth_StepEnv{*env.env_T}
+
+  Select *env\state
+    Case #ENV_End     :  *env\rlevel = *env\level[#ENV_Release]
+    Case #ENV_Sustain :  *env\rlevel = *env\level[#ENV_Sustain]
+    Case #ENV_Release
+      *env\rlevel = *env\rlevel * *env\ir + *env\level[#ENV_Release] * *env\r
+      If Abs(*env\rlevel-*env\level[#ENV_Release])<0.001 Then *env\state=#ENV_End
+    Case #ENV_Attack
+      *env\offset+1
+      If *env\offset>=*env\duration[#ENV_Attack]
+        *env\offset = 0
+        *env\state  = #ENV_Decay
+        *env\rlevel = *env\level[#ENV_Decay]
+      Else
+        *env\rlevel = (*env\level[#ENV_Attack] * (*env\duration[#ENV_Attack]-*env\offset) + *env\level[#ENV_Decay] * (*env\offset)) / *env\duration[#ENV_Attack]
+      EndIf
+
+    Case #ENV_Decay
+      *env\offset+1
+      If *env\offset>=*env\duration[#ENV_Decay]
+        *env\offset = 0
+        *env\state = #ENV_Sustain
+        *env\rlevel = *env\level[#ENV_Sustain]
+        If *env\duration[#ENV_Sustain]=0 Then *env\state=#ENV_Release
+      Else
+        *env\rlevel = (*env\level[#ENV_Decay] * (*env\duration[#ENV_Decay]-*env\offset) + *env\level[#ENV_Sustain] * (*env\offset)) / *env\duration[#ENV_Decay]
+      EndIf
+
+  End Select
+
+  Function Return *env\rlevel
+
+End Function
+
+
+Statement FAST synth_ReleaseEnv{*env.env_T}
+  If *env\duration[#ENV_Sustain]><0 Then *env\state=#ENV_Release
+End Statement
+
+
+Statement FAST synth_InitEnvLevel{*env.env_T, attack.f, decay.f, sustain.f, release.f}
+
+  *env\level[#ENV_Attack  ] = attack          ; 0
+  *env\level[#ENV_Decay   ] = decay           ; 1
+  *env\level[#ENV_Sustain ] = sustain         ; .7
+  *env\level[#ENV_Release ] = release         ; 0
+
+End Statement
+
+
+Statement FAST synth_InitEnvDuration{*env.env_T, attack.f, decay.f, sustain.f, release.f}
+
+  *env\duration[#ENV_Attack  ] = attack  ; ms
+  *env\duration[#ENV_Decay   ] = decay
+  *env\duration[#ENV_Sustain ] = sustain
+  *env\duration[#ENV_Release ] = release
+  *env\ir = Exp(-1.0 / ((release+1)/1.0))
+  *env\r  = 1.0-*env\ir
+
+End Statement
+
+Statement FAST synth_ResetEnv{*env.env_T}
+
+  *env\offset = 0
+  *env\state  = #ENV_Attack
+
+End Statement
+
+
+Statement synth_RenderOscWithEnv{*outP.w, sampleN.l, *osc.osc_T, *filt.filter_T, *ampEnv.env_T, *filtEnv.env_T, *pitchEnv.env_T}
+
+  If *ampEnv   Then synth_ResetEnv{*ampEnv}   : Else gain.f    = 1.0
+  If *filtEnv  Then synth_ResetEnv{*filtEnv}  : Else cutoff.f  = 0
+  If *pitchEnv Then synth_ResetEnv{*pitchEnv} : Else pitch.f   = 0
+
+  If *filt    Then synth_ResetFilter{*filt}
+
+  chunkN.l = (*osc\samplerate+500) / 1000
+  While sampleN>0
+    todoN.l = Min(chunkN,sampleN)
+    If *ampEnv  Then gain   = synth_StepEnv{*ampEnv}
+    If *filtEnv Then cutoff = synth_StepEnv{*filtEnv}
+    If *pitchEnv Then pitch = synth_StepEnv{*pitchEnv}
+
+    synth_UpdateOsc{*osc,pitch,gain,0}
+    synth_RenderOsc{*outP,todoN,*osc,Null}
+
+    If *filt
+      synth_UpdateFilter{*filt,cutoff}
+      synth_RenderFilter{*outP, *outP, todoN, *filt}
+    End If
+
+    sampleN-todoN
+    *outP + todoN*SizeOf.w
+  Wend
+
+End Statement
+
+
+
+CNIF #__include=0
+; Demo =========================================================
+XINCLUDE "ahi.include.ab3"
+Syntax 6
+DEFTYPE.osc_T osc, carrier, modulator
+DEFTYPE.env_T ampEnv, pitchEnv, filtEnv
+DEFTYPE.filter_T filt
+DEFTYPE.string_T delay,string
+DEFTYPE.tapdelay_T tapdelay
+DEFTYPE.flute_T flute
+
+midiNote.l     = 69 ; A-5
+samplerate.l = 44100
+sampleLength.l = samplerate * 4 ; sec audio
+ahi_CreateSound{0,sampleLength*SizeOf.w,samplerate,1,16}
+ahi_CreateSound{1,sampleLength*SizeOf.w,samplerate,1,16}
+ahi_CreateSound{2,sampleLength*SizeOf.w,samplerate,1,16}
+ahi_CreateSound{3,sampleLength*SizeOf.w,samplerate,1,16}
+*bufferP.w     = ahi_GetSoundDataPtr{0}
+*scratch1P.w   = ahi_GetSoundDataPtr{1}
+*scratch2P.w   = ahi_GetSoundDataPtr{2}
+*scratch3P.w   = ahi_GetSoundDataPtr{3}
+*fbuffP.l      = AllocVec_(SizeOf.f*sampleLength,#MEMF_ANY)
+;synth_InitEnsemble{ensemble.ensemble_T,0.5,1.0,2.0,44100}
+
+;synth_InitOsc        {osc,#OSC_Saw,samplerate,0,19*222,1,0,0}
+;synth_RenderOsc{*bufferP,sampleLength,osc,Null}
+;ahi_SaveSound{0,"RAM:saw.wav",@"WAVE"}
+
+;synth_InitOsc        {osc,#OSC_SawAA,samplerate,0,19*222,1,0,0}
+;synth_RenderOsc{*bufferP,sampleLength,osc}
+;ahi_SaveSound{0,"RAM:sawq.wav",@"WAVE"}
+;
+;synth_InitOsc        {osc,#OSC_Impuls,samplerate,0,220,1}
+;synth_RenderOsc{*bufferP,sampleLength,osc}
+;ahi_SaveSound{0,"RAM:imp.wav",@"WAVE"}
+;
+;synth_InitOsc        {osc,#OSC_Sin,samplerate,0,220,1}
+;synth_RenderOsc{*bufferP,sampleLength,osc}
+;ahi_SaveSound{0,"RAM:sin.wav",@"WAVE"}
+;
+;synth_InitOsc        {osc,#OSC_Tri,samplerate,0,220,1}
+;synth_RenderOsc{*bufferP,sampleLength,osc}
+;ahi_SaveSound{0,"RAM:triangle.wav",@"WAVE"}
+;
+;synth_InitOsc        {osc,#OSC_Rect,samplerate,0,220,1}
+;synth_RenderOsc{*bufferP,sampleLength,osc}
+;ahi_SaveSound{0,"RAM:square.wav",@"WAVE"}
+;
+;synth_InitOsc        {osc,#OSC_Noise,samplerate,0,220,1}
+;synth_RenderOsc{*bufferP,sampleLength,osc}
+;ahi_SaveSound{0,"RAM:noise.wav",@"WAVE"}
+;
+;synth_InitOsc        {osc,#OSC_PinkNoise,samplerate,0,220,1}
+;synth_RenderOsc{*bufferP,sampleLength,osc}
+;ahi_SaveSound{0,"RAM:noise2.wav",@"WAVE"}
+;
+;
+;synth_InitOsc        {osc,#OSC_Tri,samplerate,Pi/3,120,1}
+;synth_InitEnvLevel   {ampEnv,100,250,150,150}
+;synth_InitEnvDuration{ampEnv,10,150,400,80}
+;synth_RenderOscWithEnv{*bufferP,sampleLength,osc,Null,ampEnv,Null,Null}
+;ahi_SaveSound{0,"RAM:ampenv.wav",@"WAVE"}
+;
+;synth_InitOsc        {osc,#OSC_Tri,samplerate,Pi/3,120,1}
+;synth_InitEnvLevel   {ampEnv,100,250,150,150}
+;synth_InitEnvDuration{ampEnv,10,150,400,80}
+;synth_InitEnvLevel   {pitchEnv,128,256,128,128}
+;synth_InitEnvDuration{pitchEnv,50,100,1,2400}
+;synth_RenderOscWithEnv{*bufferP,sampleLength,osc,Null,ampEnv,Null,pitchEnv}
+;ahi_SaveSound{0,"RAM:pitchenv.wav",@"WAVE"}
+;
+;synth_InitOsc        {carrier  ,#OSC_Sin,samplerate,Pi/3,220,1}
+;synth_InitOsc        {modulator,#OSC_Sin,samplerate,Pi/2,220*27,1}
+;synth_InitOsc        {osc      ,#OSC_Sin,samplerate,Pi/5,220*5,1}
+;synth_InitEnvLevel   {ampEnv,250,150,0,0}
+;synth_InitEnvDuration{ampEnv,0,700,1000,0}
+;synth_InitEnvLevel   {filtEnv,150,100,0,0}
+;synth_InitEnvDuration{filtEnv,100,250,500,0}
+;synth_InitEnvLevel   {pitchEnv,250,200,100,0}
+;synth_InitEnvDuration{pitchEnv,0,250,800,0}
+;synth_RenderOscWithEnv{*scratch1P,sampleLength,carrier  ,Null,ampEnv  ,Null,Null}
+;synth_RenderOscWithEnv{*scratch2P,sampleLength,modulator,Null,filtEnv ,Null,Null}
+;synth_RenderOscWithEnv{*scratch3P,sampleLength,osc      ,Null,pitchEnv,Null,Null}
+;synth_RenderScale{*scratch2P,*scratch2P,sampleLength,148,128}
+;synth_RenderScale{*scratch3P,*scratch3P,sampleLength,128,128}
+;synth_RenderAM{*bufferP,*scratch1P,*scratch2P,sampleLength}
+;synth_RenderAM{*bufferP,*bufferP,*scratch3P,sampleLength}
+;synth_RenderScale{*bufferP,*bufferP,sampleLength,256*8,0}
+;ahi_SaveSound{0,"RAM:bell.wav",@"WAVE"}
+;synth_RenderDither{*bufferP,*bufferP,sampleLength,8,0}
+;ahi_SaveSound{0,"RAM:bell_d0.wav",@"WAVE"}
+;
+;synth_InitOsc        {carrier  ,#OSC_Tri,samplerate,Pi/3,220,1}
+;synth_InitOsc        {modulator,#OSC_Sin,samplerate,0,4.5,1}
+;synth_InitEnvLevel   {ampEnv,250,250,250,250}
+;synth_InitEnvDuration{ampEnv,0,700,100,1000}
+;synth_InitEnvLevel   {filtEnv,250,250,150,150}
+;synth_InitEnvDuration{filtEnv,100,250,100,1000}
+;synth_RenderOscWithEnv{*scratch1P,sampleLength,carrier  ,Null,ampEnv  ,Null,Null}
+;synth_RenderOscWithEnv{*scratch2P,sampleLength,modulator,Null,filtEnv ,Null,Null}
+;synth_RenderAM{*bufferP,*scratch1P,*scratch2P,sampleLength}
+;ahi_SaveSound{0,"RAM:tremolo.wav",@"WAVE"}
+;;ahi_PlaySound{0} : Delay_ 100
+;
+;
+;synth_InitOsc        {carrier  ,#OSC_Saw,samplerate,0,110.0,1}
+;synth_InitOsc        {modulator,#OSC_Saw,samplerate,0.2,110.1,1}
+;synth_InitEnvLevel   {ampEnv,100,250,150,150}
+;synth_InitEnvDuration{ampEnv,10,150,400,80}
+;synth_RenderOscWithEnv{*scratch1P,sampleLength,carrier  ,Null,ampEnv ,Null,Null}
+;synth_RenderOscWithEnv{*scratch2P,sampleLength,modulator,Null,ampEnv ,Null,Null}
+;synth_RenderScale{*scratch1P,*scratch1P,sampleLength,128,0}
+;synth_RenderScale{*scratch2P,*scratch2P,sampleLength,-128,0}
+;synth_RenderMix{*bufferP,*scratch1P,*scratch2P,sampleLength}
+;ahi_SaveSound{0,"RAM:detune.wav",@"WAVE"}
+;;ahi_PlaySound{0} : Delay_ 100
+;
+;
+;synth_InitOsc        {carrier  ,#OSC_Sin,samplerate,0,55,1}
+;synth_InitOsc        {modulator,#OSC_Sin,samplerate,0.1,55*3,1}
+;synth_InitEnvLevel   {ampEnv,160,80,40,1}
+;synth_InitEnvDuration{ampEnv,40,200,8,1500}
+;
+;synth_RenderOscWithEnv{*scratch1P,sampleLength,modulator,Null,ampEnv ,Null,Null}
+;;synth_RenderScale{*scratch1P,*scratch1P,sampleLength,80,0}
+;;synth_RenderFM{*bufferP,*scratch1P,sampleLength,carrier}
+;ahi_SaveSound{0,"RAM:fm.wav",@"WAVE"}
+;;ahi_PlaySound{0} : Delay_ 200
+;
+;synth_InitOsc        {carrier  ,#OSC_Tri,samplerate,0,55,1}
+;synth_InitOsc        {modulator,#OSC_Sin,samplerate,0.1,55*3,1}
+;synth_InitEnvLevel   {ampEnv,160,80,40,1}
+;synth_InitEnvDuration{ampEnv,40,200,8,1500}
+;
+;synth_RenderOscWithEnv{*scratch1P,sampleLength,modulator,Null,ampEnv ,Null,Null}
+;;synth_RenderScale{*scratch1P,*scratch1P,sampleLength,2280,0}
+;;synth_RenderPM{*bufferP,*scratch1P,sampleLength,carrier}
+;ahi_SaveSound{0,"RAM:pm.wav",@"WAVE"}
+;;ahi_PlaySound{0} : Delay_ 200
+;
+;
+;synth_InitOsc        {osc,#OSC_SawAA,samplerate,Pi/3,55,1}
+;synth_InitFilter     {filt,#FILTER_BTBLP,110.0,.8,samplerate}
+;synth_InitEnvLevel   {ampEnv,100,100,100,100}
+;synth_InitEnvDuration{ampEnv,10,150,2000,80}
+;synth_InitEnvLevel   {filtEnv,30,40,0,0}
+;synth_InitEnvDuration{filtEnv,20,350,1000,2400}
+;synth_RenderOscWithEnv{*bufferP,sampleLength,osc,filt,ampEnv,filtEnv,Null}
+;ahi_SaveSound{0,"RAM:filtenv_btblp.wav",@"WAVE"}
+;
+;
+;synth_InitFilter     {filt,#FILTER_BTBHP,110.0,.8,samplerate}
+;synth_RenderOscWithEnv{*bufferP,sampleLength,osc,filt,ampEnv,filtEnv,Null}
+;ahi_SaveSound{0,"RAM:filtenv_btbhp.wav",@"WAVE"}
+;
+;synth_InitFilter     {filt,#FILTER_MOOG,110.0,.8,samplerate}
+;synth_RenderOscWithEnv{*bufferP,sampleLength,osc,filt,ampEnv,filtEnv,Null}
+;ahi_SaveSound{0,"RAM:filtenv_moog.wav",@"WAVE"}
+;
+;synth_InitFilter     {filt,#FILTER_LP1,110.0,.8,samplerate}
+;synth_RenderOscWithEnv{*bufferP,sampleLength,osc,filt,ampEnv,filtEnv,Null}
+;ahi_SaveSound{0,"RAM:filtenv_lp1.wav",@"WAVE"}
+;
+;synth_InitFilter     {filt,#FILTER_HPx,110.0,.8,samplerate}
+;synth_RenderOscWithEnv{*bufferP,sampleLength,osc,filt,ampEnv,filtEnv,Null}
+;ahi_SaveSound{0,"RAM:filtenv_hpx.wav",@"WAVE"}
+;
+;;ahi_PlaySound{0} : Delay_ 100
+;
+;synth_InitOsc        {osc,#OSC_Noise,samplerate,Pi/3,110,1}
+;synth_InitFilter     {filt,#FILTER_LP1,8000.0,.5,samplerate}
+;synth_InitEnvLevel   {ampEnv,200,105,0,0}
+;synth_InitEnvDuration{ampEnv,20,250,400,80}
+;synth_InitEnvLevel   {filtEnv,200,50,1,1}
+;synth_InitEnvDuration{filtEnv,20,150,10,2400}
+;synth_RenderOscWithEnv{*scratch1P,sampleLength,osc,filt,ampEnv,filtEnv,Null}
+;
+;
+;synth_InitOsc        {osc,#OSC_Noise,samplerate,Pi/2,25,1}
+;synth_InitEnvLevel   {pitchEnv,500,200,100,0}
+;synth_InitEnvDuration{pitchEnv,40,250,800,0}
+;synth_RenderOscWithEnv{*scratch2P,sampleLength,osc,Null,ampEnv,Null,pitchEnv}
+;synth_RenderScale{*scratch1P,*scratch1P,sampleLength,64,0}
+;synth_RenderMix{*bufferP,*scratch1P,*scratch2P,sampleLength}
+;ahi_SaveSound{0,"RAM:snare.wav",@"WAVE"}
+;;ahi_PlaySound{0} : Delay_ 100
+;
+;
+;synth_InitOsc        {osc,#OSC_Saw,samplerate,0,100,1}
+;synth_InitEnvLevel   {pitchEnv,0,2500,0,0}
+;synth_InitEnvDuration{pitchEnv,10000,0,0,0}
+;synth_RenderOscWithEnv{*bufferP,sampleLength,osc,Null,Null,Null,pitchEnv}
+;ahi_SaveSound{0,"RAM:aliasing.wav",@"WAVE"}
+;;ahi_PlaySound{0} : Delay_ 100
+;
+;synth_InitOsc        {osc,#OSC_SawAA,samplerate,0,100,1}
+;synth_InitEnvLevel   {pitchEnv,0,2500,0,0}
+;synth_InitEnvDuration{pitchEnv,10000,0,0,0}
+;synth_RenderOscWithEnv{*bufferP,sampleLength,osc,Null,Null,Null,pitchEnv}
+;ahi_SaveSound{0,"RAM:aliasing_free.wav",@"WAVE"}
+;;ahi_PlaySound{0} : Delay_ 100
+;
+;synth_InitOsc        {osc,#OSC_Noise,samplerate,1,55,1}
+;synth_InitEnvLevel   {ampEnv,30,0,0,0}
+;synth_InitEnvDuration{ampEnv,2,2,2,10}
+;synth_RenderOscWithEnv{*bufferP,sampleLength,osc,Null,ampEnv,Null,Null}
+;
+;synth_InitOsc        {osc,#OSC_Saw,samplerate,.5,51,1}
+;synth_InitEnvLevel   {ampEnv,200,0,0,0}
+;synth_RenderOscWithEnv{*scratch1P,sampleLength,osc,Null,ampEnv,Null,Null}
+;synth_RenderMix{*bufferP,*bufferP,*scratch1P,sampleLength}
+;
+;synth_InitFilter     {filt,#FILTER_MOOG,4700.0,.4,samplerate}
+;synth_RenderFilter    {*bufferP,*bufferP,sampleLength,filt}
+;
+;
+;synth_InitDelay       {delay,55*8,20000,20,1.0,samplerate}
+;synth_RenderDelay     {*bufferP,*bufferP,sampleLength,delay}
+;;synth_RenderWaveShape {*bufferP,*bufferP,sampleLength,&SawTable(0)}
+;ahi_SaveSound{0,"RAM:delay.wav",@"WAVE"}
+;
+;
+;synth_InitOsc        {osc,#OSC_Noise,samplerate,1,55,1}
+;synth_InitEnvLevel   {ampEnv,0,.20,.10,0}
+;synth_InitEnvDuration{ampEnv,50,1000,2000,10}
+;synth_RenderOscWithEnv{*bufferP,sampleLength,osc,Null,ampEnv,Null,Null}
+;
+;
+;synth_InitFilter     {filt,#FILTER_LP1,2400.0,.9,samplerate}
+;synth_RenderFilter    {*bufferP,*bufferP,sampleLength,filt}
+;
+;synth_InitFlute        {flute,samplerate,.0002,55*4,1}
+;synth_RenderFlute      {*bufferP,*bufferP,flute,sampleLength}
+;
+;
+
+;synth_InitOsc          {osc,#OSC_Impuls,samplerate,0,220,0.5,0,0}
+;synth_RenderOsc        {*bufferP,sampleLength,osc,Null}
+;synth_InitOsc          {osc,#OSC_WNOISE,samplerate,0,220,0,0,0}
+;synth_RenderOsc        {*bufferP+1000*SizeOf.w,sampleLength-1000,osc,Null}
+;ahi_SaveSound{0,"RAM:string1.wav",@"WAVE"}
+;synth_InitTapdelay     {tapdelay,220,0.1,0.5,samplerate}
+;synth_InitString       {string,220,10000,10,0.3,0.5,samplerate,0.1,1,0}
+;synth_RenderTapDelay  {*bufferP,*bufferP,sampleLength,tapdelay}
+;synth_RenderString   {*bufferP,*bufferP,sampleLength,string}
+;ahi_SaveSound{0,"RAM:string2.wav",@"WAVE"}
+;ahi_PlaySound{0} : Delay_ 100
+
+;synth_InitOsc          {osc,#OSC_Saw,samplerate,0,220,0.5,0,0}
+;synth_RenderOsc        {*bufferP,sampleLength,osc,Null}
+;synth_InitFilter       {filt,#FILTER_LP1,700.0,.8,samplerate}
+;synth_RenderFilter     {*bufferP,*bufferP,sampleLength,filt}
+;ahi_SaveSound{0,"RAM:string1.wav",@"WAVE"}
+;ahi_PlaySound{0} : Delay_ 100
+
+;synth_InitOsc          {osc,#OSC_Saw,samplerate,0,220,0.5,0,0}
+;synth_RenderOsc        {*bufferP,sampleLength,osc,Null}
+f.f=0
+
+For n.l=0 To sampleLength-1
+  Poke.f *fbuffP+(n*SizeOf.f),f
+  f = f + 0.02
+  If f>1 Then f-2
+Next
+
+
+End
+CEND
+

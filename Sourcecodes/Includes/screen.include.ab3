@@ -1,0 +1,1249 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "/Bin"
+; ExeFile         = "ScreenDemo"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 23
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 7
+; CursorColumn    = 26
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 30
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 5
+; Max GadgetList  = 5
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 5
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 5
+; Max BlitzFont   = 4
+; Max GTList      = 5
+; Max ChunkyBuffer= 2
+; /XTRA
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Name: screen.include                                                        /
+;/                                                                             /
+;/ Platforms: Classic, WinUAE, Amithlon, MorphOS, AmigaOS4                     /
+;/                                                                             /
+;/ Date: 11.08.2006                                                            /
+;/                                                                             /
+;/ Author: Thilo Koehler                                                       /
+;/                                                                             /
+;/ Requirements: Amiblitz2.4, error.include                                    /
+;/                                                                             /
+;/ Purpose:                                                                    /
+;/ Provide OS friendly screen handling functionality for Amiblitz programs.    /
+;/                                                                             /
+;/ Abstract:                                                                   /
+;/ To handle screens looks easy at the frist view, but it tends to be quite :: /
+;/ complicated when if comes to correct palette handling, ASL requesters etc.  /
+;/ This include tries to cover most screen related issues. It works almost a:: /
+;/ lways directly using OS functions, but it fakes a Blitzbasic screen objec:: /
+;/ t at #0, so that you can still use all screen functions that come from Bl:: /
+;/ itzbasic.                                                                   /
+;/                                                                             /
+;/ User Constants:    none                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+CNIF #__include=0
+;WBStartup
+;NoCli
+optimize 5
+Syntax 2
+#use_bbscreen = 0
+CEND
+
+XINCLUDE "error.include.ab3"
+XINCLUDE "asl.include.ab3"
+
+CNIF @#use_bbscreen=0
+#use_bbscreen = 0 ; 1 = use the AB3 ScreenTag() function
+                  ; 0 = use OpenScreenTag_() OS function
+CEND
+
+#asl_scr_width      =  1
+#asl_scr_height     =  2
+#asl_scr_depth      =  4
+#asl_scr_overscan   =  8
+#asl_scr_ascroll    = 16
+
+#scr_mode_wb_use   = -1
+#scr_mode_wb_clone = -2
+#scr_mode_ask      =  0
+#scr_mode_find     = -3
+#scr_mode_invalid  = -4
+
+#scr_sysfont_wb_prop  =  1
+#scr_sysfont_wb_fix   =  0
+#scr_sysfont_wb_off   = -1
+
+
+.SCR_NEWTYPES
+NEWTYPE.screenengine
+  scr_width.l
+  scr_height.l
+  scr_depth.w
+  scr_isopen.w
+  scr_title.s
+  scr_pubname.s
+  scr_titleinit.s
+  scr_id.l
+  scr_overscan.w
+  scr_ascroll.w
+  bias_red.l
+  bias_green.l
+  bias_blue.l
+  *scr.Screen
+  pubscreenlocked.l
+  penarraydummy.l
+  screenPenLock.w[256]
+
+  scr_fontname.s
+  scr_fontta.TextAttr
+  *screenfont.TextFont
+  scr_sysfont.l
+End NEWTYPE
+
+
+.SCR_GLOBALS
+Dim staglist.TagItem(20)
+SHARED screenengine.screenengine
+USEPATH screenengine
+\penarraydummy = -1
+\scr_id = #scr_mode_invalid
+\scr_isopen = False
+\scr_sysfont = #scr_sysfont_wb_off
+
+.SCR_FUNCTIONS
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: screen_SetBias {r.l,g.l,b.l}                                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ All pen allocations go through a "bias" to control the color temperatur.    /
+;/ A bias of 100 means no change.                                              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - r.l    : bias of red                                                      /
+;/ - g.l    : bias of green                                                    /
+;/ - b.l    : bias of blue                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement screen_SetBias {r.l,g.l,b.l}
+  \bias_red = r
+  \bias_green = g
+  \bias_blue = b
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: screen_SetASLMinDims {min_width.l,min_height.l,min_depth.l}         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Set the minimum dimensions of the screen you which to be selectable in th:: /
+;/ e ASL requester.                                                            /
+;/ Screenmodes that can not handle your dimensions will be filtered out from:: /
+;/  the list.                                                                  /
+;/ Hint: To force hi/true color screen modes, depth min_depth to 16.           /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - min_width.l    : screen width                                             /
+;/ - min_height.l    : screen height                                           /
+;/ - min_depth.l    : screen depth                                             /
+;/                                                                             /
+;/ See also:    screen_asl, screen_ASL_setmax                                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement screen_SetASLMinDims {min_width.l,min_height.l,min_depth.l}
+  aslsm_SetMinDims{min_width,min_height,min_depth}
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: screen_SetASLMaxDims {max_width.l,max_height.l,max_depth.l}         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Set the maximum dimensions of the screen you which to be selectable in th:: /
+;/ e ASL requester.                                                            /
+;/ Screenmodes that can not handle your dimensions will be filtered out from:: /
+;/  the list.                                                                  /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - max_width.l    : screen width                                             /
+;/ - max_height.l    : screen height                                           /
+;/ - max_depth.l    : screen depth                                             /
+;/                                                                             /
+;/ See also:    screen_asl, screen_ASL_setmin                                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement screen_SetASLMaxDims {max_width.l,max_height.l,max_depth.l}
+  aslsm_SetMinDims{max_width,max_height,max_depth}
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: screen_SetASLInitialDims {init_id.l,init_width.l,init_height.l,in:: /
+;/ it_depth.l}                                                                 /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Set the initial values of the ASL screen mode requester.                    /
+;/ Note: Usually, you set this to the values of the current screen.            /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - init_id.l    : screen mode id                                             /
+;/ - init_width.l    : screen width                                            /
+;/ - init_height.l    : screen height                                          /
+;/ - init_depth.l    : screen depth                                            /
+;/                                                                             /
+;/ See also:    screen_asl                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement screen_SetASLInitialDims {init_id.l,init_width.l,init_height.l,init_depth.l}
+  aslsm_SetInitialModeID{init_id}
+  aslsm_SetInitialDims{init_width,init_height,init_depth}
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_GetPen {r.l,g.l,b.l}                             /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return a pen number that reflects a similar pen to your specified RGB val:: /
+;/ ues.                                                                        /
+;/ It uses ObtainBestPen() to find a pen. No locked pens will be destroyed. :: /
+;/ This is the best way to get your pen numbers if you plan to draw somethin:: /
+;/ g on a screen like lines, boxes or text.                                    /
+;/ Generally, you should never set pens directly unless you are the exclusiv:: /
+;/ e owner of the screen and you know what you are doing.                      /
+;/ Note: the pen will be locked, so no other process can destroy it. You can:: /
+;/  release it using screen_ReleasePen. Beware that your drawings might get :: /
+;/ trashed then if they are still visible.                                     /
+;/ Note: if you close the screen (or just leave it if it was stolen, e.g. th:: /
+;/ e WB screen), all locked pens will be unlocked automatically.               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - r.l    : 0...255 for red                                                  /
+;/ - g.l    : 0...255 for green                                                /
+;/ - b.l    : 0...255 for blue                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : pen number, ready to use for pen based graphic operations. /
+;/                                                                             /
+;/ See also:    screen_GetPenRGB, screen_SetPen                                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_GetPen {r.l,g.l,b.l}
+  If \scr=0 Then Function Return 1
+  r = r * \bias_red   / 100
+  If r<0 Then r=0
+  If r>255 Then r=255
+
+  g = g * \bias_green / 100
+  If g<0 Then g=0
+  If g>255 Then g=255
+
+  b = b * \bias_blue / 100
+  If b<0 Then b=0
+  If b>255 Then b=255
+
+  r=r LSL 24 ;
+  g=g LSL 24 ; adjust to "32-bit left justified long value"
+  b=b LSL 24 ;
+  *view.ViewPort=\scr\ViewPort
+  *cmap.ColorMap=*view\ColorMap
+  pen.l=ObtainBestPenA_(*cmap,r,g,b,Tags(#OBP_Precision,#PRECISION_IMAGE))
+  If pen>=0 AND pen<=255 Then screenengine\screenPenLock[pen]+1
+  If pen=-1 Then error {"Unable to obtain pen!"}:Function Return 1 ; check for failure
+ Function Return pen
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_GetPenRGB {color.l}                              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Same like screen_GetPen, but specifies the RGB value as one long value.     /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - color.l    : RGB value, e.g. $FF0000 for red                              /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : pen number                                                 /
+;/                                                                             /
+;/ See also:    screen_GetPen                                                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_GetPenRGB {color.l}
+  r.l = ((color & $00ff0000) LSR 16 )
+  g.l = ((color & $0000ff00) LSR 8 )
+  b.l = ((color & $000000ff)  )
+ Function Return screen_GetPen{r,g,b}
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: screen_ReleasePen {pen.l}                                           /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Release a previously locked pen.                                            /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - pen.l    : pen number                                                     /
+;/                                                                             /
+;/ See also:    screen_lockpen, screen_GetPen, screen_SetPen                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement screen_ReleasePen {pen.l}
+  If \scr
+    *view.ViewPort=\scr\ViewPort
+    *cmap.ColorMap=*view\ColorMap
+    If screenengine\screenPenLock[pen]>0
+      ReleasePen_ *cmap,pen
+      screenengine\screenPenLock[pen]-1
+    End If
+  End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: screen_SetPen {n.l,r.l,g.l,b.l}                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Set a pen to the given RGB values and lock it.                              /
+;/ This is not a nice way to get a pen number, but you can be sure that it m:: /
+;/ atches exactly the color you specify. Dont do this on screens you dont ow:: /
+;/ n or that share the palette with other programs. Use screen_GetPen instead. /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - n.l    : pen number                                                       /
+;/ - r.l    : 0...255 red                                                      /
+;/ - g.l    : 0...255 green                                                    /
+;/ - b.l    : 0...2555 blue                                                    /
+;/                                                                             /
+;/ See also:    screen_GetPen, screen_ReleasePen                               /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement screen_SetPen {n.l,r.l,g.l,b.l}
+  If \scr=0 Then Statement Return
+  r = r * \bias_red   / 100
+  If r<0 Then r=0
+  If r>255 Then r=255
+
+  g = g * \bias_green / 100
+  If g<0 Then g=0
+  If g>255 Then g=255
+
+  b = b * \bias_blue / 100
+  If b<0 Then b=0
+  If b>255 Then b=255
+
+  r=r LSL 24 ;
+  g=g LSL 24 ; adjust to "32-bit left justified long value"
+  b=b LSL 24 ;
+  *view.ViewPort=\scr\ViewPort
+  *cmap.ColorMap=*view\ColorMap
+  SetRGB32_*view,n,r,g,b
+  If ObtainPen_ (*cmap,n,r,g,b,#PEN_NO_SETCOLOR) Then screenengine\screenPenLock[n]+1;:Else error{"Setpen failed!"}
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: screen_SetPenRGB {pen.l,color.l}                                    /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Same like screen_SetPen, but with one long value for the color.             /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - pen.l    : pen number                                                     /
+;/ - color.l    : RGB value, e.g. $00FF00 for green                            /
+;/                                                                             /
+;/ See also:    screen_SetPen, screen_GetPen, screen_ReleasePen                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement screen_SetPenRGB {pen.l,color.l}
+  r.l = ((color & $00ff0000) LSR 16 )
+  g.l = ((color & $0000ff00) LSR 8 )
+  b.l = ((color & $000000ff)  )
+  screen_SetPen{pen,r,g,b}
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: screen_ObtainPen {n.l}                                              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Lock a pen on a screen. The pen can not be changed by other processes unl:: /
+;/ ess you unlock it.                                                          /
+;/ Note: If you use screen_GetPen, the pen is automatically locked. Normally:: /
+;/ , there is no need for you to use this function.                            /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - n.l    : pen number to lock.                                              /
+;/                                                                             /
+;/ See also:    screen_ReleasePen                                              /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement screen_ObtainPen {n.l}
+  *view.ViewPort=\scr\ViewPort
+  *cmap.ColorMap=*view\ColorMap
+  If ObtainPen_ (*cmap,n,0,0,0,#PEN_EXCLUSIVE|#PEN_NO_SETCOLOR) Then screenengine\screenPenLock[n]+1
+End Statement
+
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_ASLRequest {title.s,mask.l}                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Open an ASL screen requester and let the user choose a screenmode.          /
+;/ To reduce the number of screenmodes to the ones matching your specs, use :: /
+;/ screen_ASL_setmin, screen_aslsetmax and screen_aslsetinitial.               /
+;/ This is a bit more lowlevel than screen_ask. You have to compose your bit:: /
+;/  mask out of the following values:                                          /
+;/                                                                             /
+;/ #asl_scr_width      =  1 ; ask for width                                    /
+;/ #asl_scr_height     =  2 ; ask for height                                   /
+;/ #asl_scr_depth      =  4 ; ask for depth                                    /
+;/ #asl_scr_overscan   =  8 ; ask for overscan                                 /
+;/ #asl_scr_ascroll    = 16 ; ask for auto scroll                              /
+;/                                                                             /
+;/ After calling the requester, you can read out the screen information by s:: /
+;/ creen_ASL_width, screen_ASL_height, screen_ASL_depth, screen_ASL_id, scre:: /
+;/ en_ASL_autoscroll and screen_ask_overscan.                                  /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - title.s    : title of the ASL requester                                   /
+;/ - mask.l    : bit mask of things you want the ASL requester to ask          /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.w     : -1 if the requester was answered, 0 if aborted             /
+;/                                                                             /
+;/ See also:                                                                   /
+;/ screen_ASL_setmin, screen_aslsetmax, screen_aslsetinitial                   /
+;/ screen_ASL_width, screen_ASL_height, screen_ASL_depth, screen_ASL_id, scr:: /
+;/ een_ASL_autoscroll, screen_ask_overscan                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_ASLRequest {title.s,mask.l}
+  succ.l = False
+  aslsm_SetRequesterTitle{title.s,"",""}
+  If mask&#asl_scr_width    Then doDims.l=True:Else doDims=False
+  If mask&#asl_scr_height   Then doDims=True
+  If mask&#asl_scr_depth    Then doDepth.l=True:Else doDepth=False
+  If mask&#asl_scr_overscan Then doOverscan.l=True:Else doOverscan=False
+  If mask&#asl_scr_ascroll   Then doAutoscroll.l=True:Else doAutoscroll=False
+  If aslsm_Request{doDims,doDepth,doOverscan,doAutoscroll} Then succ=True
+ Function Return succ
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_GetBestModeID {scr_width.l,scr_height.l,scr_de:: /
+;/ pth.l}                                                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the best screenmode ID for the given screen dimensions.              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - scr_width.l    : ???                                                      /
+;/ - scr_height.l    : ???                                                     /
+;/ - scr_depth.l    : ???                                                      /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_GetBestModeID {scr_width.l,scr_height.l,scr_depth.l}
+  modeID.l= BestCModeIDTagList_ (Tags(#CYBRBIDTG_NominalWidth,scr_width,#CYBRBIDTG_NominalHeight,scr_height,#CYBRBIDTG_Depth,scr_depth))
+ Function Return modeID
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.f = screen_GetFPS {@modeid.l}                               /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the fps for the currently open screen.                               /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - modeid.l    : ???                                                         /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.f     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.f screen_GetFPS {@modeid.l}
+  DEFTYPE.DisplayInfo disinfo
+  DEFTYPE.DimensionInfo diminfo
+  DEFTYPE.MonitorInfo moninfo
+
+  If modeid=-1
+    *scr.Screen = \scr
+    If *scr=0 Then *scr = Peek.l(Addr Screen(Used Screen))
+    If *scr
+      modeid.l = GetVPModeID_(*scr\ViewPort)
+    End If
+  End If
+  If modeid><-1
+    mode_ptr.l = FindDisplayInfo_ (modeid)
+    If mode_ptr
+      GetDisplayInfoData_ mode_ptr,&disinfo,SizeOf.DisplayInfo,#DTAG_DISP,modeid
+      GetDisplayInfoData_ mode_ptr,&diminfo,SizeOf.DimensionInfo,#DTAG_DIMS,modeid
+      GetDisplayInfoData_ mode_ptr,&moninfo,SizeOf.MonitorInfo,#DTAG_MNTR,modeid
+      If disinfo\NotAvailable=False
+       pixelclock.d = 1000000000 / disinfo\PixelSpeed
+       pixelclockperline.d = 280 / disinfo\PixelSpeed * moninfo\TotalColorClocks
+       hscan.d = pixelclock / pixelclockperline
+       vscan.d = hscan / moninfo\TotalRows
+       fps.f = vscan
+      End If
+    End If
+  Else
+    fps = 50
+  End If
+ Function Return fps
+End Function
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = screen_GetModeName {@modeid.l}                          /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - modeid.l    : ???                                                         /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s screen_GetModeName {@modeid.l}
+  DEFTYPE.NameInfo naminfo
+  name.s = "unknown"
+  If modeid=-1
+    *scr.Screen = \scr
+    If *scr=0 Then *scr = Peek.l(Addr Screen(Used Screen))
+    If *scr
+      modeid.l = GetVPModeID_(*scr\ViewPort)
+    End If
+  End If
+  If modeid><-1
+    mode_ptr.l = FindDisplayInfo_ (modeid)
+    If mode_ptr
+      count.l = GetDisplayInfoData_ (mode_ptr,&naminfo,SizeOf.NameInfo,#DTAG_NAME,modeid)
+      name.s = Peek.s(&naminfo\Name)
+    End If
+  End If
+ Function Return name
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.w = screen_Check {modeid.l,scr_width.l,scr_height.l,scr_d:: /
+;/ epth.w,scr_overscan.l,scr_ascroll.l}                                        /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Ask for a screen mode via ASL requester to complete your pre-definitions.:: /
+;/  Set the parameters to -1 if you want them to be asked by ASL requester, :: /
+;/ or set them to your pre-defined value.                                      /
+;/ If the screen mode is clear, it will return immediately.                    /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - modeid.l        : desired screen mode, if known                           /
+;/ - scr_width.l     : screen width                                            /
+;/ - scr_height.l    : screen height                                           /
+;/ - scr_depth.w     : screen depth                                            /
+;/ - scr_overscan.l  : screen overscan                                         /
+;/ - scr_ascroll.l   : auto scroll                                             /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.w     : -1 if the screenmode could be determined, 0 if the user :: /
+;/ aborted                                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w screen_Check {modeid.l,scr_width.l,scr_height.l,scr_depth.w,scr_overscan.l,scr_ascroll.l}
+  SHARED aslscr
+  succ.w = False
+  mask.l = 0
+  If scr_width<=0     Then mask|#asl_scr_width  ;: Else aslscr\minw = scr_width  : aslscr\maxw = scr_width
+  If scr_height<=0    Then mask|#asl_scr_height ;: Else aslscr\minh = scr_height : aslscr\maxh = scr_height
+  If scr_depth<=0     Then mask|#asl_scr_depth  ;: Else aslscr\mind = scr_depth  : aslscr\maxd = scr_depth
+  ;If scr_overscan<=0  Then mask|#asl_scr_overscan
+  ;If scr_ascroll>=0   Then mask|#asl_scr_ascroll
+
+  If mask><0 OR modeid<=0
+  ;  *scr.aslscreeninfo = ASLScreenRequest (mask.l)
+  ;  If *scr
+  ;    aslscr\scr_id = *scr\scr_id
+  ;    If scr_width<=0      Then aslscr\scr_width      = *scr\scr_width     : Else aslscr\scr_width      = scr_width
+  ;    If scr_height<=0     Then aslscr\scr_height     = *scr\scr_height    : Else aslscr\scr_height     = scr_height
+  ;    If scr_depth<=0      Then aslscr\scr_depth      = *scr\scr_depth     : Else aslscr\scr_depth      = scr_depth
+  ;    If scr_overscan<=0   Then aslscr\scr_overscan   = *scr\scr_overscan  : Else aslscr\scr_overscan   = scr_overscan
+
+    If screen_ASLRequest {"",mask}
+  ;    aslscr\scr_ascroll = 128
+      succ.w = True
+    End If
+  Else
+    aslsm_SetInitialModeID{modeid}
+    aslsm_SetInitialDims{scr_width,scr_height,scr_depth}
+    aslscreendat\scr_overscan   = scr_overscan
+    aslscreendat\scr_ascroll    = 128
+    succ.w = True
+  End If
+ Function Return succ
+End Function
+
+
+
+Statement screen_ReleaseAllPens{}
+  If \scr_isopen
+    For pen.l = 0 To 255
+      While screenengine\screenPenLock[pen]>0:screen_ReleasePen {pen}:Wend
+      screenengine\screenPenLock[pen]=0
+    Next
+  End If
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: screen_Close {}                                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Close the current screen. It is safe to call this if no screen was opened:: /
+;/  by screen.include.                                                         /
+;/                                                                             /
+;/ See also:    screen_Open                                                    /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement screen_Close {}
+  If \scr_isopen
+    screen_ReleaseAllPens{}
+
+    Select \scr_id
+
+      Case #scr_mode_ask
+        error {"The #scr_mode_ask should be overwritten by the real screenmodeID.\\nSomething went defintely wrong here!"}
+
+      Case #scr_mode_wb_use
+        ;-)  We dont need to close the wb screen
+
+      Case #scr_mode_find
+        ;UnlockPubScreen_ &\scr_title,\scr
+        UnlockPubScreen_ 0,\scr ; we dont need the screen name as argument
+        Poke.l Addr Screen(0),0 ; make AB2 think that the screen is closed
+
+      Case #scr_mode_invalid
+        ; do nothing
+
+      Default ; handle wb clone and custom screen
+        If \scr
+          Repeat
+            timeout.l = 50*5
+            While CloseScreen_ (\scr)=False AND timeout>0:Delay_ 1:timeout-1:Wend
+            If timeout=0
+              tryagain.l = ask{"Unable to close screen!\\nPlease close all windows/apps running on this screen.","try again...|ignore"}
+            Else
+              tryagain.l = False
+            End If
+          Until tryagain=False
+        End If
+        Poke.l Addr Screen(0),0 ; make AB2 think that the screen is closed
+
+    End Select
+    \scr_isopen = False
+    \scr        = 0
+    \scr_id     = #scr_mode_invalid
+
+    If \screenfont                  ; check if we use a screenfont
+      CloseFont_ (\screenfont)      ; yes then close it
+      \screenfont = 0
+    EndIf
+
+  End If
+End Statement
+!autoexit{screen_Close}
+
+
+
+Function.l screen_IsOpen{}
+  Function Return \scr_isopen
+End Function
+
+
+
+Function.l screen_GetPtr{}
+    Function Return \scr
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax: screen_SetPubName {pubname.s}                                       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ If your screen should have a different name as pub name than you specify :: /
+;/ during screen_Open, you can set it with this function BEFORE you open the:: /
+;/  screen.                                                                    /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - pubname.s    : public name of the screen                                  /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement screen_SetPubName {pubname.s}
+  \scr_pubname = pubname.s
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.w = screen_CopyFont {blitzfontID.l}                         /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Clone the screens font and open it as a blitzbasic IntuiFont.               /
+;/ The font is the used font then and will be used by other blitz functions.   /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - blitzfontID.l    : Blitz IntuiFont object number                          /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.w     :  -1 if everything went well, 0 if something went wrong     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w screen_CopyFont {blitzfontID.l}
+  *scr.Screen=Peek.l(Addr Screen(Used Screen))
+  If *scr=0 Then Function Return False
+
+  *scfont.TextAttr=*scr\Font
+  If *scfont=0 Then Function Return False
+
+  ; In AmigaDOS we trust :
+  fheight.b=(*scfont.TextAttr\ta_YSize)
+  fname$=Peek$(*scfont.TextAttr\ta_Name)
+
+  LoadFont blitzfontID,fname$,fheight
+ Function Return True
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:    screen_SetDefaultSysFont {sysfont.l}                             /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Selects one of the system standard fonts specified in preferences. This     /
+;/ overrides the font select by screen_SetDefaultFont{}.It is used by          /
+;/ screen_Open{}.                                                              /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - sysfont.l    : #scr_sysfont_wb_prop  =  1 ;Workbench screen preferred font/
+;/                  #scr_sysfont_wb_fix   =  0 ;old DefaultFont, fixed-width   /
+;/                  #scr_sysfont_wb_off   = -1                                 /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Statement screen_SetDefaultSysFont {sysfont.l}
+
+  If (sysfont < 0) AND (sysfont > 1) Then sysfont = -1
+  \scr_sysfont = sysfont
+End Statement
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_SetDefaultFont {fontname.s,@fonsize.w,::         /
+;/                                            @fontstyle.l,@fontflags.l}       /
+;/                                                                             /
+;/ Description:                                                                /
+;/ set the font that is used by screen_Open{} as default screen font if        /
+;/ screen_SetDefaultSysFont is not set.                                        /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - fontname.s    : Fontname as string                                        /
+;/ - fontsize.w    : Fontsize(hight) as number                                 /
+;/ - fontstyle.l   : Fontstyle (#FSF_BOLD,#FSF_ITALIC,..) default #FS_NORMAL   /
+;/ - fontflags.l   : Fontflags                                                 /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l      :  0 if something went wrong \ the poniter to font.TextFont /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_SetDefaultFont {fontname.s,@fontsize.w,@fontstyle.l,@fontflags.l}
+
+  If fontname=""
+    If \screenfont Then CloseFont_ (\screenfont)
+    \screenfont = 0
+    \scr_fontname = fontname
+    \scr_fontta\ta_YSize = 0
+    \scr_fontta\ta_Style = 0
+    \scr_fontta\ta_Flags = 0
+  Else
+    \scr_fontname = fontname
+
+    \scr_fontta\ta_Name  = &\scr_fontname
+    If fontsize <= 0 Then fontsize  = 6
+    \scr_fontta\ta_YSize = fontsize
+    If fontstyle =-1 Then fontstyle = #FS_NORMAL
+    \scr_fontta\ta_Style = fontstyle
+    If fontflags =-1 Then fontflags = 0
+    \scr_fontta\ta_Flags = fontflags
+
+    \screenfont = OpenDiskFont_ (\scr_fontta)
+  EndIf
+ Function Return \screenfont
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.w = screen_Open {title.s,@modeid.l,@scr_width.l,@scr_heig:: /
+;/ ht.l,@scr_depth.l,@visible.l,@*ta.TextAttr}                                               /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Open a screen according the specified dimensions.                           /
+;/                                                                             /
+;/ There are some "special" screen mode IDs:                                   /
+;/   #scr_mode_wb_use   = -1 ; use the wb screen                               /
+;/   #scr_mode_wb_clone = -2 ; clone the wb screen                             /
+;/   #scr_mode_ask      =  0 ; ask via ASL requester                           /
+;/   #scr_mode_find     = -3 ; find the screen with the given title            /
+;/                                                                             /
+;/ Inputs:                                                                     /
+;/ - title.s    : name of the screen                                           /
+;/ - modeid.l    : screenmode ID or one of the #scr_mode_... constants         /
+;/ - scr_width.l    : screen width                                             /
+;/ - scr_height.l    : screen height                                           /
+;/ - scr_depth.l    : screen depth                                             /
+;/ - visible.l    : set to -1, the screen will pop in front when it is creat:: /
+;/ ed, 0 it will be created in the background until you pop it to front.       /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.w     : -1 if the screen is open, 0 if it failed                   /
+;/                                                                             /
+;/ See also:    screen_Close                                                   /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.w screen_Open {title.s,@modeid.l,@scr_width.l,@scr_height.l,@scr_depth.l,@visible.l} ; -1=WB;-2=cloneWB;0=ASL
+  SHARED staglist(),aslscr
+
+  succ.w = False
+  noerr.w = False
+  screen_Close {}
+
+  If \scr_pubname = "" Then \scr_pubname = title   ; set the screen title as pubscreen title by default
+  \scr_titleinit = title
+  \penarraydummy=-1
+  Select modeid
+
+    Case #scr_mode_wb_use
+      WbToScreen 0
+      \scr = Peek.l(Addr Screen(0))
+      If \scr
+        \scr_id    = #scr_mode_wb_use
+        title.s = "Workbench"
+      End If
+
+    Case #scr_mode_find
+      If title.s><""
+        \scr=LockPubScreen_ (&title)              ; lock the screen so it
+      Else
+        \scr=LockPubScreen_ (0)                     ; default pubscreen
+        title.s="Default"
+      EndIf
+      If \scr Then \pubscreenlocked = True:Else \pubscreenlocked = False
+
+      If \scr=0 ; try to find the blitz way ...
+        succ=FindScreen (0,title)
+        If succ Then \scr = Peek.l(Addr Screen(0))
+      End If
+
+      If \scr=0 ; if nothing helps, get the WB
+        WbToScreen 0
+        \scr = Peek.l(Addr Screen(0))
+        title.s = "Workbench"
+      End If
+
+      If \scr                                              ; did we get it?
+        Poke.l Addr Screen(0),\scr ; fake AB2 screen object
+        \scr_id    = #scr_mode_find
+      End If
+
+    Case #scr_mode_wb_clone
+      \scr_id = #scr_mode_wb_clone
+      n.l = 0
+      If visible=False Then staglist(n)\ti_Tag = #SA_Behind         ,-1  : n+1
+      staglist(n)\ti_Tag = #SA_LikeWorkbench ,-1                       : n+1
+      staglist(n)\ti_Tag = #SA_Title         ,&\scr_titleinit          : n+1
+      staglist(n)\ti_Tag = #SA_PubName       ,&\scr_pubname            : n+1
+    ;  staglist(n)\ti_Tag = #SA_SharePens     ,True                     : n+1
+    ;  staglist(n)\ti_Tag = #SA_Pens          ,&\penarraydummy          : n+1
+      If \scr_sysfont<>-1 Then staglist(n)\ti_Tag = #SA_SysFont      ,\scr_sysfont : n+1
+      If \screenfont<>0   Then staglist(n)\ti_Tag = #SA_Font         ,&\scr_fontta : n+1
+      staglist(n)\ti_Tag = #TAG_DONE         ,0
+
+      CNIF #use_bbscreen
+            ScreenTags 0,\scr_titleinit,&staglist(0)
+            \scr = Peek.l(Addr Screen(0))
+      CELSE
+          \scr = OpenScreenTagList_ (0,&staglist(0))
+          Poke.l Addr Screen(0),\scr ; fake AB2 screen object
+      CEND
+      If \scr Then PubScreenStatus_ \scr,0
+
+    Default
+      WbToScreen 0
+      ShowScreen 0
+      succ.w = screen_Check {modeid.l,scr_width,scr_height,scr_depth,-1,-1}
+      If succ
+        \scr_id = aslsm_GetModeID{}
+        n.l = 0
+        If visible=False Then staglist(n)\ti_Tag = #SA_Behind         ,-1  : n+1
+        staglist(n)\ti_Tag = #SA_Left          ,0                        : n+1
+        staglist(n)\ti_Tag = #SA_Top           ,0                        : n+1
+        staglist(n)\ti_Tag = #SA_Width         ,aslsm_GetWidth{}         : n+1
+        staglist(n)\ti_Tag = #SA_Height        ,aslsm_GetHeight{}        : n+1
+        staglist(n)\ti_Tag = #SA_Depth         ,aslsm_GetDepth{}         : n+1
+        staglist(n)\ti_Tag = #SA_Overscan      ,aslsm_GetOverscan{}      : n+1
+        staglist(n)\ti_Tag = #SA_AutoScroll    ,aslsm_GetAutoscroll{}    : n+1
+        staglist(n)\ti_Tag = #SA_DisplayID     ,aslsm_GetModeID{}        : n+1
+        staglist(n)\ti_Tag = #SA_SharePens     ,True                     : n+1
+        staglist(n)\ti_Tag = #SA_Pens          ,&\penarraydummy          : n+1
+        If \scr_sysfont<>-1 Then staglist(n)\ti_Tag = #SA_SysFont     ,\scr_sysfont : n+1
+        If \screenfont<>0   Then staglist(n)\ti_Tag = #SA_Font        ,&\scr_fontta : n+1
+  ;      staglist(n)\ti_Tag = #SA_FullPalette   ,True                     : n+1
+        staglist(n)\ti_Tag = #SA_Title         ,&\scr_titleinit          : n+1
+  ;      staglist(n)\ti_Tag = #SA_ShowTitle     ,False                    : n+1
+        staglist(n)\ti_Tag = #SA_PubName       ,&\scr_pubname            : n+1
+        staglist(n)\ti_Tag = #TAG_DONE         ,0                        : n+1
+
+        CNIF #use_bbscreen
+              ScreenTags 0,\scr_titleinit,&staglist(0)
+              \scr = Peek.l(Addr Screen(0))
+        CELSE
+              \scr = OpenScreenTagList_ (0,&staglist(0))
+              Poke.l Addr Screen(0),\scr  ; fake AB2 screen object
+        CEND
+        If \scr Then PubScreenStatus_ \scr,0: succ=True: Else succ=False
+      Else
+        noerr=True
+      End If
+
+  End Select
+
+  If \scr
+    \scr_isopen       = True
+    \scr_width        = \scr\Width
+    \scr_height       = \scr\Height
+    \scr_depth        = GetBitMapAttr_(\scr\RastPort\BitMap,#BMA_DEPTH)
+    If \scr_depth<=0 Then \scr_depth=24
+    \bias_red         = 100
+    \bias_green       = 100
+    \bias_blue        = 100
+    \scr_title        = Peek.s(\scr\Title)
+    If visible Then ScreenToFront_ \scr
+    succ.w = True
+    For pen.l = 0 To 255
+      screenengine\screenPenLock[pen]=0
+    Next
+  Else
+    WbToScreen 0
+    If noerr=False Then error {"Unable to open screen!"}
+    succ = False
+  End If
+ Function Return succ.w
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_GetWidth {}                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the width in pixels of the screen.                                   /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : screen width                                               /
+;/                                                                             /
+;/ See also:    screen_height, screen_depth, screen_id                         /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_GetWidth {}
+ Function Return \scr_width
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_GetHeight {}                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the height in pixels of the currently open screen.                   /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : height in pixels                                           /
+;/                                                                             /
+;/ See also:    screen_width, screen_depth, screen_id                          /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_GetHeight {}
+ Function Return \scr_height
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_GetDepth {}                                      /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the color depth of the currently open screen.                        /
+;/ A depth lower or equal to 8 is usually a color indexed screen (1..256 col:: /
+;/ ors).                                                                       /
+;/ A depth of 16 is Hi Color, and 24 is a True Color screen.                   /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : color depth                                                /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_GetDepth {}
+ Function Return \scr_depth
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_GetModeID {}                                     /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the screenmode ID of the currently open screen.                      /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : screenmode ID                                              /
+;/                                                                             /
+;/ See also:    screen_width, screen_height, screen_depth                      /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_GetModeID {}
+ Function Return \scr_id
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_GetASLWidth {}                                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the screen width that was selected by the last call of screen_asl :: /
+;/ or screen_ask.                                                              /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : screen width                                               /
+;/                                                                             /
+;/ See also:    screen_asl                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_GetASLWidth {}
+ Function Return aslsm_GetWidth{}
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_GetASLHeight {}                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the screen height selected by the last call of screen_asl.           /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : screen height                                              /
+;/                                                                             /
+;/ See also:    screen_asl                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_GetASLHeight {}
+ Function Return aslsm_GetHeight{}
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_GetASLDepth {}                                   /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the screen depth (2^depth = number of colours) selected by the las:: /
+;/ t call of screen_asl.                                                       /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : screen depth                                               /
+;/                                                                             /
+;/ See also:    screen_asl                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_GetASLDepth {}
+ Function Return aslsm_GetDepth{}
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_GetASLModeID {}                                  /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the screen mode ID selected by the last call of screen_asl.          /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : screen mode ID                                             /
+;/                                                                             /
+;/ See also:    screen_asl                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_GetASLModeID {}
+ Function Return aslsm_GetModeID{}
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.s = screen_GetASLModeName {}                                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.s     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.s screen_GetASLModeName {}
+ Function Return aslsm_GetModeName{}
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_GetASLOverscan {}                                /
+;/                                                                             /
+;/ Description:                                                                /
+;/ Return the overscan value selected by the last call of screen_asl.          /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : overscan value                                             /
+;/                                                                             /
+;/ See also:    screen_asl                                                     /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_GetASLOverscan {}
+ Function Return aslsm_GetOverscan{}
+End Function
+
+
+;///////////////////////////////////////////////////////////////////////////////
+;/                                                                             /
+;/ Syntax:  result.l = screen_GetASLAutoScroll {}                              /
+;/                                                                             /
+;/ Description:                                                                /
+;/ * no description available *                                                /
+;/                                                                             /
+;/ Result:                                                                     /
+;/ - result.l     : ???                                                        /
+;/                                                                             /
+;///////////////////////////////////////////////////////////////////////////////
+Function.l screen_GetASLAutoScroll {}
+ Function Return aslsm_GetAutoscroll{}
+End Function
+
+
+
+; demo
+CNIF #__include=0
+  ;screen_SetASLMinDims{640,480,8}  ; set minimum screen specs
+  ;screen_SetASLMaxDims{800,600,32} ; set maximum screen specs
+  If screen_Open{"MyScreen",#scr_mode_ask}
+  ;modeid.l = screen_GetBestModeID{640,480,16}
+  ;If screen_Open{"MyScreen",modeid,640,480,16}
+    Use Screen 0
+    Window 0,0,0,320,200,$E,"MyWindow",1,0
+    a.s = "We managed to open the screen, woohoo!\\n\\nOur screenmodeID is 0x."
+    a.s + Hex$(screen_GetModeID{})+",\\nThe name is \\22"+screen_GetModeName{-1}+"\\22,\\nand the dims: "
+    a.s + Str$(screen_GetWidth{})+"x"+Str$(screen_GetHeight{})+"x"
+    a.s + Str$(screen_GetDepth{})+"\\nThe current vblank rate is "
+    a.s + Str$(screen_GetFPS{-1})+"Hz !"
+    message {a.s}
+
+    CloseWindow 0
+    screen_Close{}
+  Else
+    error {"Something went wrong or the user aborted!"}
+  End If
+  End
+CEND
+
