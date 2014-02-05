@@ -3,7 +3,7 @@
 ; 
 ; General Info
 ; -------------------------------------------------------
-; ExePath         = "//AIDE"
+; ExePath         = "/AIDE"
 ; ExeFile         = "AIDE"
 ; CreateIcon      = 0
 ; Residents       = "all.res"
@@ -77,6 +77,17 @@
 ; /XTRA
 optimize 7
 Syntax 2
+
+JMP skipversion
+Dc.b "$VER: "
+version:
+Dc.b "AIDE \\__VER_MAJOR.\\__VER_MINOR (\\__DATE_GER__) Build \\__VER_PATCH.\\__VER_BUILD",0
+Even
+shortversion:
+Dc.b "AIDE \\__VER_MAJOR.\\__VER_MINOR",0
+Even
+skipversion:
+
 ver.s = Peek.s(?shortversion)
 
 XINCLUDE "ab3support.include.ab3"
@@ -206,7 +217,8 @@ NEWTYPE.AIDE_Prefs
   DefIconDevice.s
   EditorCursorStyle.l
   ActiveDocument.s
-
+  FileListPath.s
+  
 End NEWTYPE
 
 
@@ -214,20 +226,21 @@ NEWTYPE.AIDE
 
   ;/* Preferences */
   Prefs.AIDE_Prefs
-  ;FileHistory.s[10]        ; filenames of last 10 files
 
+  ;/* Document Types */
   DocType.AIDE_DocType[#DOCTYPE_MAX]
+  
+  ;/* Open Documents */
   Document.AIDE_Document[#DOCUMENT_MAX]
 
-  FileListPath.s
-
-  ;FavoriteL.AIDE_Favorite[#FAVORITE_MAX]
+  ;/* Database of visited folders */
   *FavoriteT.prefixtree
   FavoriteFileName.s
 
   ;/* Runtime Data */
   Icon.s
   InstallPath.s            ; base path
+  CallDirLock.l
   GuiPath.s
   SysPath.s
   DocTypesPath.s
@@ -465,11 +478,11 @@ Statement AIDE_Init{icon.s,dir.s}
   AIDE\SysPath        = dos_AddPart{AIDE\InstallPath,"System"}
   AIDE\DocTypesPath   = dos_AddPart{AIDE\InstallPath,"Types"}
   AIDE\Quit           = False
-
-  cd.l = Lock_(&AIDE\InstallPath,#ACCESS_READ)
-  If cd
-    oldlock.l = CurrentDir_ (cd)
-    If oldlock Then UnLock_ oldlock
+  AIDE\CallDirLock    = 0
+  
+  installLock.l = Lock_(&AIDE\InstallPath,#ACCESS_READ)
+  If installLock
+    AIDE\CallDirLock = CurrentDir_ (installLock)
   End If
 
   For docX.l=0 To #DOCUMENT_MAX-1
@@ -513,7 +526,7 @@ Statement AIDE_Init{icon.s,dir.s}
 End Statement
 
 progIcon.s  = dos_GetStartIcon{"AIDE"}
-progFile.s  = dos_GetProgFile{""}
+progFile.s  = dos_GetProgFile{"/AIDE/AIDE"}
 progDir.s   = dos_PathPart{progFile} ; dos_GetProgDir{""}
 
 AIDE_Init{progIcon,progDir}
@@ -715,7 +728,7 @@ Statement FileLister_AddFile{*listView.tuiListView,filename.s}
   d.s = dos_GetFileDate{filename}
 
   path.s = dos_PathPart{filename}
-  If path=AIDE\FileListPath Then name.s = dos_FilePart{filename} : Else name = filename
+  If path=AIDE\Prefs\FileListPath Then name.s = dos_FilePart{filename} : Else name = filename
 
   If dos_IsDir{filename}
     flags.l=0
@@ -762,7 +775,7 @@ Statement FileLister_Fill{id.s,path.s,pattern.s}
   ntui_ClearListView{*listView}
   ;ntui_SetAttr{*listView,#TUILVA_TOTALWIDTH,0} ; this is read only attr !!!
   
-  AIDE\FileListPath = ""
+  AIDE\Prefs\FileListPath = ""
   DocType_SetPattern{#DOCTYPE_DEFAULT,pattern}
 
   Select path
@@ -833,7 +846,7 @@ Statement FileLister_Fill{id.s,path.s,pattern.s}
           End If
         ;UnLock_ lock
       ;End If
-      AIDE\FileListPath = path
+      AIDE\Prefs\FileListPath = path
       Repeat
         name.s = dos_ScanDir{path,pattern}
         If name Then FileLister_AddFile{*listView,name}
@@ -841,7 +854,7 @@ Statement FileLister_Fill{id.s,path.s,pattern.s}
 
   End Select
 
-  ntui_SetStringByID{*ntui,!obj_filelist_path   ,AIDE\FileListPath}
+  ntui_SetStringByID{*ntui,!obj_filelist_path   ,AIDE\Prefs\FileListPath}
   ntui_SetStringByID{*ntui,!obj_filelist_pattern,AIDE\DocType[#DOCTYPE_DEFAULT]\Pattern}
 
 End Statement
@@ -920,6 +933,7 @@ End Function
 ; get the document index from current tab
 Function.l Document_FindActive{}
 
+  If *ntui=Null Then Function Return -1
   *source.tuiGroup = Source_FindActive{}
   Function Return Document_FindBySource{*source}
 
@@ -1611,7 +1625,7 @@ Statement Prefs_Write{icon.s}
   dos_SetToolString {"SourceCodeFontName" ,AIDE\Prefs\SourceCodeFontName ,icon}
   dos_SetToolValue  {"SourceCodeFontSize" ,AIDE\Prefs\SourceCodeFontSize ,icon}
   dos_SetToolString {"AppIcon"            ,AIDE\Prefs\AppIcon            ,icon}
-  dos_SetToolString {"FileListPath"       ,AIDE\FileListPath             ,icon}
+  dos_SetToolString {"FileListPath"       ,AIDE\Prefs\FileListPath       ,icon}
   dos_SetToolString {"DefIconFolder"      ,AIDE\Prefs\DefIconFolder      ,icon}
   dos_SetToolString {"DefIconAssign"      ,AIDE\Prefs\DefIconAssign      ,icon}
   dos_SetToolString {"DefIconDevice"      ,AIDE\Prefs\DefIconDevice      ,icon}
@@ -1650,13 +1664,14 @@ Statement Prefs_Write{icon.s}
 End Statement
 
 
-Statement AIDE_Deinit{}
+Statement AIDE_Deinit{exitcode.l}
 
   If *ntui
     ntui_Iconify{*ntui}
-    ;AIDE\FileListPath = ntui_GetStringByID{*ntui,!obj_filelist_path}
+    ;AIDE\Prefs\FileListPath = ntui_GetStringByID{*ntui,!obj_filelist_path}
   End If
-  Prefs_Write{AIDE\Icon}
+  
+  If exitcode = 0 Then Prefs_Write{AIDE\Icon}
 
   For docX.l=0 To #DOCUMENT_MAX-1
     If AIDE\Document[docX]\IsUsed
@@ -1677,6 +1692,9 @@ Statement AIDE_Deinit{}
 
   If AIDE\FavoriteT Then pft_Free{AIDE\FavoriteT} : AIDE\FavoriteT = Null
 
+  installLock.l = CurrentDir_(AIDE\CallDirLock) : AIDE\CallDirLock = 0
+  If installLock Then UnLock_ installLock
+
 End Statement
 
 
@@ -1694,7 +1712,7 @@ Statement Prefs_Read{icon.s}
   AIDE\Prefs\SourceCodeFontName  = dos_GetToolString {"SourceCodeFontName" ,""            ,icon}
   AIDE\Prefs\SourceCodeFontSize  = dos_GetToolValue  {"SourceCodeFontSize" ,-1            ,icon}
   AIDE\Prefs\AppIcon             = dos_GetToolString {"AppIcon"            ,icon          ,icon}
-  AIDE\FileListPath              = dos_GetToolString {"FileListPath"       ,""            ,icon}
+  AIDE\Prefs\FileListPath        = dos_GetToolString {"FileListPath"       ,""            ,icon}
   opendocs.s                     = dos_GetToolString {"OpenDocuments"      ,""            ,icon}
   AIDE\Prefs\ActiveDocument      = dos_GetToolString {"ActiveDocument"     ,""            ,icon}
 
@@ -1759,7 +1777,7 @@ Function.w Window_Main{}
   ;if ntui_ShowWindowByID{*ntui,!win_main}=False
   ;  *win.tuiWindow = ntui_GetWindow{ntui_BuildFromXMLFile{*ntui,dos_AddPart{AIDE\GuiPath,!file_win_main}}}
   ;  If *win  
-      FileLister_Fill{!obj_filelist,AIDE\FileListPath,AIDE\DocType[#DOCTYPE_DEFAULT]\Pattern}
+      FileLister_Fill{!obj_filelist,AIDE\Prefs\FileListPath,AIDE\DocType[#DOCTYPE_DEFAULT]\Pattern}
       ntui_SetAttrByID{*ntui,!obj_main_console,#TUITBA_STYLECB,*_con_StyleCallback}
       ntui_SetValueByID{*ntui,!obj_find_docasesense,AIDE\Prefs\CaseSensitiveSearch}
       ntui_SetValueByID{*ntui,!obj_find_doescape   ,AIDE\Prefs\EscapeSearch}
@@ -1804,6 +1822,7 @@ Statement Window_About{}
 
 End Statement
 
+
 Statement Document_ApplySettings{docX.l}
 
   !If_BadDocX_Then{ Statement Return }
@@ -1816,6 +1835,7 @@ Statement Document_ApplySettings{docX.l}
   End If
 
 End Statement
+
 
 Statement Document_OpenSettings{docX.l}
 
@@ -1834,6 +1854,7 @@ Statement Document_OpenSettings{docX.l}
   ;  If ntui_ShowWindowByID{*ntui,!win_source_settings,docX}=False Then error{"\\__THIS_FUNCTION: Unable to open Settings Window!"}
 
 End Statement
+
 
 Statement Document_EditFunction{docX.l,func.s}
   !If_BadDocX_Then{Statement Return}
@@ -1878,6 +1899,7 @@ Statement Prefs_SetDoctype{doctypeX.l}
   
 End Statement
 
+
 Statement Window_Preferences{}
 
   If ntui_ShowWindowByID{*ntui,!win_preferences}=False
@@ -1904,6 +1926,7 @@ Statement Window_Preferences{}
 
 End Statement
 
+
 Statement AIDE_ApplyPrefs{}
   *win.tuiWindow = ntui_GetWindowByID{*ntui,!win_preferences}
   If *win=Null Then Statement Return
@@ -1917,6 +1940,7 @@ Statement AIDE_ApplyPrefs{}
   debug.s   = ntui_GetStringByID{*win,"obj_prefs_cpp_build"}          : If debug   Then CPP\BuildSourceArgs = debug
   
 End Statement
+
 
 ;/* event handler function */
 Statement AIDE_HandleNotifies{}
@@ -1972,7 +1996,7 @@ Statement AIDE_HandleNotifies{}
       
     Case !ev_filelist_setpattern
       pattern.s = ntui_GetStringByID{*ntui,!obj_filelist_pattern}
-      FileLister_Fill{!obj_filelist,AIDE\FileListPath,pattern}
+      FileLister_Fill{!obj_filelist,AIDE\Prefs\FileListPath,pattern}
 
     Case !ev_filelist_parentpath
       path.s = ntui_GetStringByID{*ntui,!obj_filelist_path}
@@ -1993,7 +2017,7 @@ Statement AIDE_HandleNotifies{}
         selectedX.l = ntui_GetFirstSelectedListItem{*listView}
         selected.s  = ntui_GetListItemText{*listView,selectedX,1}
 
-        path = dos_AddPart{AIDE\FileListPath,selected}
+        path = dos_AddPart{AIDE\Prefs\FileListPath,selected}
 
         If dos_IsFile{path}
           docX.l = Document_Open{path}
@@ -2381,13 +2405,10 @@ CEND
 End Statement
 
 
-
-
 ;/* ============== Main Program ==============
+  exitcode.l = 0
   *ntui = ntui_GetEngine{ntui_BuildFromXMLFile{Null,dos_AddPart{AIDE\GuiPath,!file_win_splash}}}
-  If *ntui = Null Then error{"Unable to init NTUI environment for AIDE!"} : Goto cleanup
-  ;ntui_SetAttr{*ntui,#TUIEA_IMAGEPATH,&AIDE\GuiPath}
-
+  If *ntui = Null Then error{"Unable to init NTUI environment for AIDE!"} : exitcode = -1 : Goto cleanup
 
   ntui_PopUp{*ntui,"",Null}
   ntui_ShowWindowByID{*ntui,!win_splash}
@@ -2405,7 +2426,7 @@ End Statement
 
   ntui_PopUp{*ntui,AIDE\Prefs\PubScreenName,Null}
 
-  If Window_Main{}=False Then Goto cleanup
+  If Window_Main{}=False Then exitcode=-2 : Goto cleanup
 
   docX.l = Document_FindByFilename{AIDE\Prefs\ActiveDocument}
   Document_Show{docX}
@@ -2416,26 +2437,6 @@ End Statement
   Until AIDE\Quit
 
 .cleanup
-  AIDE_Deinit{}
+  AIDE_Deinit{exitcode}
 End
-
-Dc.b "$VER: "
-version:
-Dc.b "AIDE \\__VER_MAJOR.\\__VER_MINOR (\\__DATE_GER__) Build \\__VER_PATCH.\\__VER_BUILD",0
-shortversion:
-Dc.b "AIDE \\__VER_MAJOR.\\__VER_MINOR",0
-
-
-;gui_main:
-;IncBin "aide_main.xml"
-;Dc.b 0
-;gui_about:
-;IncBin "aide_about.xml"
-;Dc.b 0
-;gui_calculator:
-;IncBin "aide_calculator.xml"
-;Dc.b 0
-;gui_preferences:
-;IncBin "aide_preferences.xml"
-;Dc.b 0
 
