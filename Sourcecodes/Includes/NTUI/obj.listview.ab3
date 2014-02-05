@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 764
-; CursorColumn    = 11
-; LabelSearch     = "par"
+; CursorLine      = 1365
+; CursorColumn    = 4
+; LabelSearch     = "cle"
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelPosition   = 0
@@ -154,24 +154,28 @@
 
 NEWTYPE.tuiListCell
 
-addFlags.l                ; additional flags For column
-pixWidth.l                ; real pixel width
-*img.tuiTBImage           ; image, if any
-textLen.l                 ; text length cache
-; text string ...
+  addFlags.l                ; additional flags For column
+  pixWidth.l                ; real pixel width
+  *img.tuiTBImage           ; image, if any
+  textLen.l                 ; text length cache
+  ; text string ...
 
 End NEWTYPE
+
 
 NEWTYPE.tuiListItem
 
-colN.l                    ; number of columns
-*cellA.tuiListCell        ; [...] ; array of cell items
-userData.l                ; user data
-itemID.l                  ; item Id
-addFlags.l                ; additional flags for item
+  colN.l                    ; number of columns
+  *cellA.tuiListCell        ; [...] ; array of cell items
+  cellSize.l                ; size of the cellA in bytes
+  userData.l                ; user data
+  itemID.l                  ; item Id
+  addFlags.l                ; additional flags for item
+  *rawLabel.str
 
 End NEWTYPE
 
+#TUILV_MAXSORTFUNCS = 16
 NEWTYPE.tuiListView
 
   obj.tuiObject             ; tui object header
@@ -227,10 +231,16 @@ NEWTYPE.tuiListView
   onFileListenerClose.tuiNotifyHandler
 
   *fileListener.tuiFileListener
-
+  *memPool.l
+  *sortFunc.tuiFunc[#TUILV_MAXSORTFUNCS]
+  *sortA.l
+  sortN.l
+  
 End NEWTYPE
 
 RunErrsOff ; debugger must be switched off
+
+
 ; return 0 if everything is fine, or error code
 _lv_OnDataCB:
 Function.l _lv_OnDataCB{*fileListener.tuiFileListener,dataP.l,dataLen.l}
@@ -295,6 +305,18 @@ Function.l _lv_OnOpenCB{*fileListener.tuiFileListener}
 
 End Function
 !_MakeGlobalFuncPointer_RunErrsOff{_lv_OnOpenCB,{Null}}
+
+
+_lv_DefaultCellCompareCB:
+Function.l _lv_DefaultCellCompareCB{*cellA.tuiListCell,*cellB.tuiListCell}
+
+  If *cellA\textLen>*cellB\textLen Then Function Return 1
+  If *cellA\textLen<*cellB\textLen Then Function Return -1
+  Function Return 0
+  
+End Function
+!_MakeGlobalFuncPointer_RunErrsOff{_lv_DefaultCellCompareCB,{Null,Null}}
+
 LastRunErrsMode
 
 
@@ -307,6 +329,104 @@ Function.l ntui_SetListViewFileListener{*listView.tuiListView,*filenameP.b}
   Function Return *listView\fileListener><Null
 
 End Function
+
+
+Function.l _ntui_ParseListItem{*listView.tuiListView,*listItem.tuiListItem,*string.str}
+  !_ASSERT{*listView}
+  !_ASSERT{*listView\obj\classID=#TUICLASS_LISTVIEW}
+
+  If *listItem =Null Then Function Return Null
+  *engine.tuiEngine = *listView\obj\engine
+  If *engine=Null Then Function Return Null
+
+  ; parse the label...
+  stringP.l  = str_GetPtr{*string}
+  l.l        = str_Len{*string}
+  i.l        = 0
+  ;If (*listItem\cellA) Then FreeVec_ *listItem\cellA : *listItem\cellA=Null
+
+  baseP.l = _ntui_ObtainTempBuffer{(l+1) * SizeOf.tuiListCell}
+  *listItem\colN = 0
+  labelP.l = baseP
+  *cell.tuiListCell = labelP
+  *cell\textLen  = 0
+  *cell\img      = Null
+  *cell\addFlags = 0
+  *cell\pixWidth = 0
+  labelP + SizeOf.tuiListCell
+
+  While (i<l) ; fill the columns e.g.
+    Select Peek.b(stringP+i)
+      Case @"|"
+        Poke.b labelP,0 : labelP+1
+        If (labelP&1) Then Poke.b labelP,0 : labelP+1
+        *listItem\colN+1 : *cell = labelP  : labelP+SizeOf.tuiListCell
+        *cell\textLen  = 0
+        *cell\img      = Null
+        *cell\addFlags = 0
+        *cell\pixWidth = 0
+      Case @"\"
+        Select  Peek.b(stringP+i+1)
+          Case @"l" : *cell\addFlags|#TUIF_LEFT
+          Case @"r" : *cell\addFlags|#TUIF_RIGHT
+          Case @"b" : *cell\addFlags|#TUIF_BOLD
+          Case @"i" : *cell\addFlags|#TUIF_ITALIC
+          Case @"s" : *cell\addFlags|#TUIF_SMALL
+          Case @"^" : *listView\sortFunc[*listItem\colN] = *_lv_DefaultCellCompareCB
+          Case @"u" : *cell\addFlags|#TUIF_UNDERLINED
+          Case @"f" : *cell\addFlags|#TUIF_FIX
+          Case @"d" : *cell\addFlags|#TUIF_DISABLED
+          Case @"h" : *cell\addFlags|#TUIF_HIGHLIGHT
+          Case @"~" : *cell\addFlags|#TUIF_GONE
+          Case @"|" : Poke.b labelP,@"|" : labelP+1 :       *cell\textLen+1
+          Case @"\" : Poke.b labelP,@"\" : labelP+1 :       *cell\textLen+1
+          Case @"t" : ;just continue with text
+          Case @"p" : ;picture
+          i+2
+          j.l = i
+          While i<l AND Peek.b(stringP+i)><@"|" AND Peek.b(stringP+i)><@"\"
+            i+1
+          Wend
+          imagefile.s = Peeks$(stringP+j,i-j)
+          ;error {"Loadimage: "+imagefile+"!"}
+
+          *cell\img = ntui_CreateTBImage{*engine,imagefile,#TUISIZE_INLINE,#TUISIZE_INLINE}
+          i-2
+        End Select
+        i+1
+
+      Case 0
+        ;Poke.b labelP,0 : labelP+1
+        ;If (labelP&1) Then Poke.b labelP,0 : labelP+1
+        ;*listItem\colN+1
+        i=l
+
+      Default
+        Poke.b labelP,Peek.b(stringP+i) : labelP+1
+        *cell\textLen+1
+
+    End Select
+    i+1
+  Wend
+
+  Poke.b labelP,0 : labelP+1
+  ;If (labelP&1) Then Poke.b labelP,0 : labelP+1
+  *listItem\colN+1
+
+
+  byteSize.l = labelP-baseP
+  If *listItem\cellSize<byteSize OR *listItem\cellA=Null
+    If (*listItem\cellA) Then FreePooled_ *listView\memPool,*listItem\cellA,*listItem\cellSize
+    *listItem\cellA = AllocPooled_(*listView\memPool,byteSize)
+    *listItem\cellSize = byteSize
+  End If
+  *listItem\addFlags = (*listItem\addFlags | #TUIF_DIRTY) - #TUIF_DIRTY
+  If *listItem\cellA Then CopyMem_ baseP,*listItem\cellA,byteSize
+  _ntui_ReleaseTempBuffer{}
+  Function Return *listItem\cellA
+
+End Function
+
 
 
 ;///////////////////////////////////////////////////////////////////////////////
@@ -340,6 +460,10 @@ Statement _ntui_DrawListView{*listView.tuiListView,*rp.RastPort,*rpclip.tuiRect}
   Else
     bgDone = False
   End If
+  
+  If *listView\totalItems<*listView\topItem+*listView\visibleItems
+    ntui_SetAttr{*listView,#TUILVA_TOPITEM,*listView\totalItems-*listView\visibleItems}
+  End If
 
   If *listView\hScroller
     If (*listView\hScroller\obj\flags&#TUIF_ONSCREEN) Then _ntui_Draw{*listView\hScroller,*rp,*rpclip}
@@ -369,296 +493,296 @@ redrawTuiListView:
   maxWidth.l = 0
 
 ; draw the title
-If *listView\title\cellA
+  ;Stop
+  If (*listView\title\addFlags&#TUIF_DIRTY) Then _ntui_ParseListItem{*listView,*listView\title,*listView\title\rawLabel}
+  
+  If *listView\title\cellA
 
-  If (cclip\top<*listView\obj\cbox\top + *listView\titleHeight)
-  *cell.tuiListCell = *listView\title\cellA
+    If (cclip\top<*listView\obj\cbox\top + *listView\titleHeight)
+    *cell.tuiListCell = *listView\title\cellA
 
-  SetAPen_ *rp,*engine\pen[#TUIPEN_SHADOW]
-  Move_ *rp,x1,y1+*listView\titleHeight-2 : Draw_ *rp,x2,y1+*listView\titleHeight-2
-  SetAPen_ *rp,*engine\pen[#TUIPEN_WHITE]
-  Move_ *rp,x1,y1+*listView\titleHeight-1 : Draw_ *rp,x2,y1+*listView\titleHeight-1
+    SetAPen_ *rp,*engine\pen[#TUIPEN_SHADOW]
+    Move_ *rp,x1,y1+*listView\titleHeight-2 : Draw_ *rp,x2,y1+*listView\titleHeight-2
+    SetAPen_ *rp,*engine\pen[#TUIPEN_WHITE]
+    Move_ *rp,x1,y1+*listView\titleHeight-1 : Draw_ *rp,x2,y1+*listView\titleHeight-1
 
-  leftPadding.l = *listView\obj\padding\left
+    leftPadding.l = *listView\obj\padding\left
 
-  For col.l=0 To *listView\title\colN-1
-    flags.l = (*cell\addFlags|((*listView\obj\flags|#TUIF_ACTIVE)-#TUIF_ACTIVE) |*listView\title\addFlags)
-    If (flags&#TUIF_ACTIVE)
-      fgTuiPen.l = #TUIPEN_ACTIVETEXT
-      bgTuiPen.l = #TUIPEN_MARKER
-    Else
-      fgTuiPen.l = #TUIPEN_TEXT
-      bgTuiPen.l = #TUIPEN_HALFSHADOW
-    End If
-
-    If *cell\pixWidth<=0 ; not estimated yet
-      If *cell\textLen>0
-        _ntui_GetTextRect{*engine,(.str)&*cell\textLen,tx.tuiRect,flags,*rp} ; yes, this is correct! (there is no direct string struct)
-        *cell\pixWidth = !tuiRectWidth{tx}
+    For col.l=0 To *listView\title\colN-1
+      flags.l = (*cell\addFlags|((*listView\obj\flags|#TUIF_ACTIVE)-#TUIF_ACTIVE) |*listView\title\addFlags)
+      If (flags&#TUIF_ACTIVE)
+        fgTuiPen.l = #TUIPEN_ACTIVETEXT
+        bgTuiPen.l = #TUIPEN_MARKER
       Else
-        *cell\pixWidth = 0
+        fgTuiPen.l = #TUIPEN_TEXT
+        bgTuiPen.l = #TUIPEN_HALFSHADOW
       End If
-       If *cell\img Then *cell\pixWidth + ntui_GetTBImageWidth{*cell\img}
-       If *cell\pixWidth>0 Then *cell\pixWidth + leftPadding + *listView\cellPadding\right
-    End If
 
-    maxWidth + *cell\pixWidth
+      If *cell\pixWidth<=0 ; not estimated yet
+        If *cell\textLen>0
+          _ntui_GetTextRect{*engine,(.str)&*cell\textLen,tx.tuiRect,flags,*rp} ; yes, this is correct! (there is no direct string struct)
+          *cell\pixWidth = !tuiRectWidth{tx}
+        Else
+          *cell\pixWidth = 0
+        End If
+         If *cell\img Then *cell\pixWidth + ntui_GetTBImageWidth{*cell\img}
+         If *cell\pixWidth>0 Then *cell\pixWidth + leftPadding + *listView\cellPadding\right
+      End If
 
-    ;If *listView\title\colN=1 Then *cell\pixWidth=!tuiRectWidth{*listView\obj\cbox}
-    cx2.l = cx1+*cell\pixWidth-1
-    cy2.l = cy1+*listView\titleHeight-1-2
- ;   If col=*listView\title\colN-1 Then cx2=*listView\obj\pos\x-*listView\offset+*listView\innerSize\x-1
-    ncx2.l = cx2
+      maxWidth + *cell\pixWidth
 
+      ;If *listView\title\colN=1 Then *cell\pixWidth=!tuiRectWidth{*listView\obj\cbox}
+      cx2.l = cx1+*cell\pixWidth-1
+      cy2.l = cy1+*listView\titleHeight-1-2
+   ;   If col=*listView\title\colN-1 Then cx2=*listView\obj\pos\x-*listView\offset+*listView\innerSize\x-1
+      ncx2.l = cx2
 
-    If *engine\fillStyle=1 AND bgTuiPen><#TUIPEN_TRANSPARENT
-      ibox.tuiRect\bottom = cy2
-      ibox\top    = cy1
-      ibox\left   = cx1
-      ibox\right  = cx2
-      _ntui_DrawGradientBox{*engine,*rp,ibox,bgTuiPen,#TUIORIENT_INVHORIZONTAL}
-      bgTuiPen = #TUIPEN_TRANSPARENT
-    End If
+      If *engine\fillStyle=1 AND bgTuiPen><#TUIPEN_TRANSPARENT
+        ibox.tuiRect\bottom = cy2
+        ibox\top    = cy1
+        ibox\left   = cx1
+        ibox\right  = cx2
+        _ntui_DrawGradientBox{*engine,*rp,ibox,bgTuiPen,#TUIORIENT_INVHORIZONTAL}
+        bgTuiPen = #TUIPEN_TRANSPARENT
+      End If
 
+      If *cell\img ; draw the image
+        icx2.l=cx1+ntui_GetTBImageWidth{ *cell\img}-1 + leftPadding
+        ibox.tuiRect\left = cx1,cy1,icx2,cy2
+        cbox.tuiRect\left = cx1+leftPadding,cy1,icx2,cy2
+        ntui_DrawTBImage{*cell\img,*rp,ibox,cbox,0,bgTuiPen}
+        leftPadding=0
+        cx1=icx2+1
+      End If
 
-    If *cell\img ; draw the image
-      icx2.l=cx1+ntui_GetTBImageWidth{ *cell\img}-1 + leftPadding
-      ibox.tuiRect\left = cx1,cy1,icx2,cy2
-      cbox.tuiRect\left = cx1+leftPadding,cy1,icx2,cy2
-      ntui_DrawTBImage{*cell\img,*rp,ibox,cbox,0,bgTuiPen}
-      leftPadding=0
-      cx1=icx2+1
-    End If
+      If *listView\secondSortCol=col
+        If *listView\secondSortDir=0
+          *img.tuiTBImage = *listView\secondSortImgUp
+        Else
+          *img.tuiTBImage = *listView\secondSortImgDown
+        End If
+        icx1.l=cx2-ntui_GetTBImageWidth{ *img}
+        ibox.tuiRect\left = icx1,cy1,cx2,cy2
+        ntui_DrawTBImage{*img,*rp,ibox,ibox,0,bgTuiPen}
+        cx2=icx1-1
+      End If
 
-    If *listView\secondSortCol=col
-      If *listView\secondSortDir=0
-        *img.tuiTBImage = *listView\secondSortImgUp
+      If *listView\primeSortCol=col
+        If *listView\primeSortDir=0
+          *img.tuiTBImage = *listView\primeSortImgUp
+        Else
+          *img.tuiTBImage = *listView\primeSortImgDown
+        End If
+        icx1=cx2-ntui_GetTBImageWidth{ *img}
+        ibox.tuiRect\left = icx1,cy1,cx2,cy2
+        ntui_DrawTBImage{*img,*rp,ibox,ibox,0,bgTuiPen}
+        cx2=icx1-1
+      End If
+
+      ibox.tuiRect\left = cx1,cy1,cx2,cy2
+      !tuiRemBorder{cbox.tuiRect,ibox,*listView\obj\padding}
+      cbox.tuiRect\left = cx1+leftPadding,cy1+*listView\obj\padding\top,cx2- *listView\cellPadding\right,cy2-*listView\cellPadding\bottom
+
+      _ntui_Print{*engine,(.str)&*cell\textLen,ibox,cbox,flags,*rp,fgTuiPen,bgTuiPen}
+
+      If (flags&#TUIF_GONE)=0 AND col<*listView\title\colN-1
+        SetAPen_ *rp,*engine\pen[#TUIPEN_SHADOW]
+        Move_ *rp,ncx2+1,cy1 : Draw_ *rp,ncx2+1,cy2
+        SetAPen_ *rp,*engine\pen[#TUIPEN_HALFSHINE]
+        Move_ *rp,ncx2+2,cy1 : Draw_ *rp,ncx2+2,cy2+1
+        cx1=ncx2+3
+        maxWidth+2
       Else
-        *img.tuiTBImage = *listView\secondSortImgDown
+        cx1=ncx2+1
       End If
-      icx1.l=cx2-ntui_GetTBImageWidth{ *img}
-      ibox.tuiRect\left = icx1,cy1,cx2,cy2
-      ntui_DrawTBImage{*img,*rp,ibox,ibox,0,bgTuiPen}
-      cx2=icx1-1
-    End If
+      nextP.l = *cell + SizeOf.tuiListCell + *cell\textLen +1
+      If nextP&1 Then nextP+1   ; 16bit align pointer
+      *cell = nextP
+      leftPadding = *listView\cellPadding\left
+    Next
 
-    If *listView\primeSortCol=col
-      If *listView\primeSortDir=0
-        *img.tuiTBImage = *listView\primeSortImgUp
+    If cx1<x2
+
+      If *engine\fillStyle=1
+        ibox.tuiRect\bottom = cy2
+        ibox\top    = cy1
+        ibox\left   = cx1
+        ibox\right  = x2
+        _ntui_DrawGradientBox{*engine,*rp,ibox,#TUIPEN_HALFSHADOW,#TUIORIENT_INVHORIZONTAL}
       Else
-        *img.tuiTBImage = *listView\primeSortImgDown
+        If bgTuiPen><#TUIPEN_TRANSPARENT
+          SetAPen_ *rp,*engine\pen[bgTuiPen]
+          RectFill_ *rp,cx1,cy1,x2,cy2
+        End If
       End If
-      icx1=cx2-ntui_GetTBImageWidth{ *img}
-      ibox.tuiRect\left = icx1,cy1,cx2,cy2
-      ntui_DrawTBImage{*img,*rp,ibox,ibox,0,bgTuiPen}
-      cx2=icx1-1
+
     End If
-
-    ibox.tuiRect\left = cx1,cy1,cx2,cy2
-    !tuiRemBorder{cbox.tuiRect,ibox,*listView\obj\padding}
-    cbox.tuiRect\left = cx1+leftPadding,cy1+*listView\obj\padding\top,cx2- *listView\cellPadding\right,cy2-*listView\cellPadding\bottom
-
-    _ntui_Print{*engine,(.str)&*cell\textLen,ibox,cbox,flags,*rp,fgTuiPen,bgTuiPen}
-
-    If (flags&#TUIF_GONE)=0 AND col<*listView\title\colN-1
-      SetAPen_ *rp,*engine\pen[#TUIPEN_SHADOW]
-      Move_ *rp,ncx2+1,cy1 : Draw_ *rp,ncx2+1,cy2
-      SetAPen_ *rp,*engine\pen[#TUIPEN_HALFSHINE]
-      Move_ *rp,ncx2+2,cy1 : Draw_ *rp,ncx2+2,cy2+1
-      cx1=ncx2+3
-      maxWidth+2
-    Else
-      cx1=ncx2+1
+    cy1 = cy2+3
     End If
-    nextP.l = *cell + SizeOf.tuiListCell + *cell\textLen +1
-    If nextP&1 Then nextP+1   ; 16bit align pointer
-    *cell = nextP
-    leftPadding = *listView\cellPadding\left
-  Next
-
-  If cx1<x2
-
-    If *engine\fillStyle=1
-      ibox.tuiRect\bottom = cy2
-      ibox\top    = cy1
-      ibox\left   = cx1
-      ibox\right  = x2
-      _ntui_DrawGradientBox{*engine,*rp,ibox,#TUIPEN_HALFSHADOW,#TUIORIENT_INVHORIZONTAL}
-    Else
-      If bgTuiPen><#TUIPEN_TRANSPARENT
-        SetAPen_ *rp,*engine\pen[bgTuiPen]
-        RectFill_ *rp,cx1,cy1,x2,cy2
-      End If
-    End If
-
-  End If
-  cy1 = cy2+3
-  End If
-End If
-
-
-
-startItem.l = *listView\topItem
-endItem.l   = *listView\visibleItems + startItem
-If endItem>=*listView\totalItems Then endItem=*listView\totalItems-1
-cy1.l = *listView\obj\cbox\top + *listView\titleHeight
-maxX.l = maxWidth
-
-For itemX.l = startItem To endItem
-  cy2.l = cy1+*listView\itemHeight-1
-
-  If (cy2>cclip\top AND cy1<cclip\bottom)
-
-  *titleCell.tuiListCell = *listView\title\cellA
-  *listItem.tuiListItem = *listView\listP + (SizeOf.tuiListItem*itemX)
-  *cell.tuiListCell   = *listItem\cellA
-  cx1.l = *listView\obj\cbox\left - *listView\leftOffset
-  leftPadding.l = *listView\obj\padding\left
-
-  If *titleCell
-    colN.l =  *listView\title\colN
-    If *listItem\colN<colN Then colN = *listItem\colN
-  Else
-    colN=1
   End If
 
-  For col.l=0 To colN-1
-    If *titleCell
-      flags.l = (*cell\addFlags|((*listView\obj\flags|*titleCell\addFlags|#TUIF_ACTIVE)-#TUIF_ACTIVE)|*listItem\addFlags)
-    Else
-      flags.l = (*cell\addFlags|((*listView\obj\flags|#TUIF_ACTIVE)-#TUIF_ACTIVE)|*listItem\addFlags)
-    End If
 
-    If (flags&#TUIF_ACTIVE)
-      fgTuiPen.l = #TUIPEN_ACTIVETEXT
-      bgTuiPen.l = #TUIPEN_HALFMARKER
-    Else
-      If (flags&#TUIF_HIGHLIGHT) Then fgTuiPen.l = #TUIPEN_ACTIVETEXT : Else fgTuiPen.l = #TUIPEN_TEXT
-      bgTuiPen.l = #TUIPEN_HALFHALFSHINE
-    End If
+  startItem.l = *listView\topItem
+  endItem.l   = *listView\visibleItems + startItem
+  If endItem>=*listView\totalItems Then endItem=*listView\totalItems-1
+  cy1.l = *listView\obj\cbox\top + *listView\titleHeight
+  maxX.l = maxWidth
 
+  For itemX.l = startItem To endItem
+    cy2.l = cy1+*listView\itemHeight-1
 
+    If (cy2>=cclip\top AND cy1<=cclip\bottom)
 
-    If itemX=*listView\obj\value Then If (flags&#TUIF_ACTIVE) Then bgTuiPen.l = #TUIPEN_MARKER : Else bgTuiPen=#TUIPEN_HALFSHADOW
+    *titleCell.tuiListCell = *listView\title\cellA
+    If *listView\sortA Then itemY.l = Peek.l(*listView\sortA+itemX*SizeOf.l) : Else itemY = itemX
+    *listItem.tuiListItem = *listView\listP + (SizeOf.tuiListItem*itemY)
+    If (*listItem\addFlags&#TUIF_DIRTY) Then _ntui_ParseListItem{*listView,*listItem,*listItem\rawLabel}
 
-    CNIF #NTUI_DEBUG
-      bgTuiPen.l =  RNDPen{}
-    CEND
-
-
-    If *cell\pixWidth<=0
-      If *cell\textLen>0
-        _ntui_GetTextRect{*engine,(.str)&*cell\textLen,tx.tuiRect,flags,*rp}
-        *cell\pixWidth=!tuiRectWidth{tx}
-      Else
-        *cell\pixWidth
-      End If
-       If *cell\img Then *cell\pixWidth + ntui_GetTBImageWidth{*cell\img}
-       *cell\pixWidth + !tuiBorderWidth{*listView\obj\padding}
-       If *titleCell
-         If *cell\pixWidth>*titleCell\pixWidth Then *titleCell\pixWidth = *cell\pixWidth : rd=True
-       End If
-    End If
-
-    If *titleCell><Null ;AND colN>1
-      cx2.l = cx1+*titleCell\pixWidth-1
-      ;If col=*listView\title\colN Then cx2=x2
-    Else
-      cx2 = cx1+*cell\pixWidth
-    End If
-
-
-    If *cell\img
-      icx2.l=cx1+ntui_GetTBImageWidth{ *cell\img}-1+leftPadding
-      ibox.tuiRect\left = cx1,cy1,icx2,cy2
-      cbox.tuiRect\left = cx1+leftPadding,cy1,icx2,cy2
-      ntui_DrawTBImage{*cell\img,*rp,ibox,ibox,0,bgTuiPen}
-      cx1=icx2+1
-      leftPadding=0
-    End If
-
-    ibox.tuiRect\left = cx1,cy1,cx2,cy2
-    cbox.tuiRect\left = cx1+leftPadding,cy1+*listView\cellPadding\top,cx2-*listView\cellPadding\right,cy2-*listView\cellPadding\bottom
-    _ntui_Print{*engine,(.str)&*cell\textLen,ibox,cbox,flags,*rp,fgTuiPen,bgTuiPen}
-
-    If (flags&#TUIF_GONE)=0 AND col<colN-1
-      SetAPen_ *rp,*engine\pen[#TUIPEN_HALFSHADOW]
-      Move_ *rp,cx2+1,cy1 : Draw_ *rp,cx2+1,cy2
-      SetAPen_ *rp,*engine\pen[#TUIPEN_SHINE]
-      Move_ *rp,cx2+2,cy1 : Draw_ *rp,cx2+2,cy2
-      cx1=cx2+3
-    Else
-      cx1=cx2+1
-    End If
-
-    nextP.l = *cell   + SizeOf.tuiListCell + *cell\textLen +1
-    If nextP&1 Then nextP+1 ; 16bit aligned pointer
-    *cell = nextP
-
-    If *titleCell
-      nextP.l = *titleCell + SizeOf.tuiListCell + *titleCell\textLen +1
-      If nextP&1 Then nextP+1
-      *titleCell = nextP
-    End If
-    leftPadding = *listView\cellPadding\left
-
-  Next
-  If (cx1>maxX) Then maxX=cx1
-  If cx1<x2
-    SetAPen_ *rp,*engine\pen[bgTuiPen]
-    RectFill_ *rp,cx1,cy1,x2,cy2
-  End If
-
-  If itemX=*listView\ankerX
+    *cell.tuiListCell   = *listItem\cellA
+    If *cell
     cx1.l = *listView\obj\cbox\left - *listView\leftOffset
-    cx2.l = cx1 + *listView\totalWidth-1
-    If cx2<*listView\obj\cbox\right Then cx2 = *listView\obj\cbox\right
-    dbox.tuiRect\left = cx1,cy1,cx2,cy2
-    _ntui_DrawDottedBorder{*engine,*rp,dbox,*listItem\addFlags}
-  End If
-  End If
-  cy1 = cy2+1
-Next
+    leftPadding.l = *listView\obj\padding\left
 
-If (maxWidth< maxX-*listView\obj\cbox\left + *listView\leftOffset) maxWidth = maxX-*listView\obj\cbox\left + *listView\leftOffset
-
-If cy1<y2                                              ; clear unused bottom area
-  SetAPen_ *rp,*engine\pen[#TUIPEN_HALFHALFSHINE]
-  RectFill_ *rp,x1,cy1,x2,y2
-End If
-ntui_RemClip{*rp,*oldRegion}
-If rd Then Goto redrawTuiListView   ; redraw, in case layout changed
-
-
-If maxWidth>*listView\totalWidth
-  *listView\totalWidth = maxWidth
-  _ntui_PropagateBind{*listView,#TUIEV_BIND_HTOTAL      ,*listView\totalWidth      ,Null}
-
-  If *listView\visibleWidth<*listView\totalWidth
-    If (*listView\hScroller\obj\flags&#TUIF_ONSCREEN)=0
-      _ntui_Layout{*listView,*rp,Null}
-      ntui_Refresh{*listView,Null}
+    If *titleCell
+      colN.l =  *listView\title\colN
+      If *listItem\colN<colN Then colN = *listItem\colN
+    Else
+      colN=1
     End If
-  Else
-    If (*listView\hScroller\obj\flags&#TUIF_ONSCREEN)
-      _ntui_Layout{*listView,*rp,Null}
-      ntui_Refresh{*listView,Null}
+
+    For col.l=0 To colN-1
+      If *titleCell
+        flags.l = (*cell\addFlags|((*listView\obj\flags|*titleCell\addFlags|#TUIF_ACTIVE)-#TUIF_ACTIVE)|*listItem\addFlags)
+      Else
+        flags.l = (*cell\addFlags|((*listView\obj\flags|#TUIF_ACTIVE)-#TUIF_ACTIVE)|*listItem\addFlags)
+      End If
+
+      If (flags&#TUIF_ACTIVE)
+        fgTuiPen.l = #TUIPEN_ACTIVETEXT
+        bgTuiPen.l = #TUIPEN_HALFMARKER
+      Else
+        If (flags&#TUIF_HIGHLIGHT) Then fgTuiPen.l = #TUIPEN_ACTIVETEXT : Else fgTuiPen.l = #TUIPEN_TEXT
+        bgTuiPen.l = #TUIPEN_HALFHALFSHINE
+      End If
+
+      If itemX=*listView\obj\value Then If (flags&#TUIF_ACTIVE) Then bgTuiPen.l = #TUIPEN_MARKER : Else bgTuiPen=#TUIPEN_HALFSHADOW
+
+      CNIF #NTUI_DEBUG
+        bgTuiPen.l =  RNDPen{}
+      CEND
+
+      If *cell\pixWidth<=0
+        If *cell\textLen>0
+          _ntui_GetTextRect{*engine,(.str)&*cell\textLen,tx.tuiRect,flags,*rp}
+          *cell\pixWidth=!tuiRectWidth{tx}
+        Else
+          *cell\pixWidth
+        End If
+         If *cell\img Then *cell\pixWidth + ntui_GetTBImageWidth{*cell\img}
+         *cell\pixWidth + !tuiBorderWidth{*listView\obj\padding}
+         If *titleCell
+           If *cell\pixWidth>*titleCell\pixWidth Then *titleCell\pixWidth = *cell\pixWidth : rd=True
+         End If
+      End If
+
+      If *titleCell><Null ;AND colN>1
+        cx2.l = cx1+*titleCell\pixWidth-1
+        ;If col=*listView\title\colN Then cx2=x2
+      Else
+        cx2 = cx1+*cell\pixWidth
+      End If
+
+
+      If *cell\img
+        icx2.l=cx1+ntui_GetTBImageWidth{ *cell\img}-1+leftPadding
+        ibox.tuiRect\left = cx1,cy1,icx2,cy2
+        cbox.tuiRect\left = cx1+leftPadding,cy1,icx2,cy2
+        ntui_DrawTBImage{*cell\img,*rp,ibox,ibox,0,bgTuiPen}
+        cx1=icx2+1
+        leftPadding=0
+      End If
+
+      ibox.tuiRect\left = cx1,cy1,cx2,cy2
+      cbox.tuiRect\left = cx1+leftPadding,cy1+*listView\cellPadding\top,cx2-*listView\cellPadding\right,cy2-*listView\cellPadding\bottom
+      _ntui_Print{*engine,(.str)&*cell\textLen,ibox,cbox,flags,*rp,fgTuiPen,bgTuiPen}
+
+      If (flags&#TUIF_GONE)=0 AND col<colN-1
+        SetAPen_ *rp,*engine\pen[#TUIPEN_HALFSHADOW]
+        Move_ *rp,cx2+1,cy1 : Draw_ *rp,cx2+1,cy2
+        SetAPen_ *rp,*engine\pen[#TUIPEN_SHINE]
+        Move_ *rp,cx2+2,cy1 : Draw_ *rp,cx2+2,cy2
+        cx1=cx2+3
+      Else
+        cx1=cx2+1
+      End If
+
+      nextP.l = *cell   + SizeOf.tuiListCell + *cell\textLen +1
+      If nextP&1 Then nextP+1 ; 16bit aligned pointer
+      *cell = nextP
+
+      If *titleCell
+        nextP.l = *titleCell + SizeOf.tuiListCell + *titleCell\textLen +1
+        If nextP&1 Then nextP+1
+        *titleCell = nextP
+      End If
+      leftPadding = *listView\cellPadding\left
+     End If
+    Next
+
+    If (cx1>maxX) Then maxX=cx1
+    If cx1<x2
+      SetAPen_ *rp,*engine\pen[bgTuiPen]
+      RectFill_ *rp,cx1,cy1,x2,cy2
     End If
+
+    If itemX=*listView\ankerX
+      cx1.l = *listView\obj\cbox\left - *listView\leftOffset
+      cx2.l = cx1 + *listView\totalWidth-1
+      If cx2<*listView\obj\cbox\right Then cx2 = *listView\obj\cbox\right
+      dbox.tuiRect\left = cx1,cy1,cx2,cy2
+      _ntui_DrawDottedBorder{*engine,*rp,dbox,*listItem\addFlags}
+    End If
+    End If
+    cy1 = cy2+1
+  Next
+
+  If (maxWidth< maxX-*listView\obj\cbox\left + *listView\leftOffset) maxWidth = maxX-*listView\obj\cbox\left + *listView\leftOffset
+
+  If cy1<y2                                              ; clear unused bottom area
+    SetAPen_ *rp,*engine\pen[#TUIPEN_HALFHALFSHINE]
+    RectFill_ *rp,x1,cy1,x2,y2
+  End If
+  ntui_RemClip{*rp,*oldRegion}
+  If rd Then Goto redrawTuiListView   ; redraw, in case layout changed
+
+
+  If maxWidth>*listView\totalWidth
+    *listView\totalWidth = maxWidth
+    _ntui_PropagateBind{*listView,#TUIEV_BIND_HTOTAL      ,*listView\totalWidth      ,Null}
+
+    If *listView\visibleWidth<*listView\totalWidth
+      If (*listView\hScroller\obj\flags&#TUIF_ONSCREEN)=0
+        _ntui_Layout{*listView,*rp,Null}
+        ntui_Refresh{*listView,Null}
+      End If
+    Else
+      If (*listView\hScroller\obj\flags&#TUIF_ONSCREEN)
+        _ntui_Layout{*listView,*rp,Null}
+        ntui_Refresh{*listView,Null}
+      End If
+    End If
+
+
+    ;*listView\visibleWidth = !tuiRectWidth{*listView\obj\cbox}
+    ;_ntui_PropagateBind{*listView,#TUIEV_BIND_HVISIBLE    ,*listView\visibleWidth    ,null}
   End If
 
 
-  ;*listView\visibleWidth = !tuiRectWidth{*listView\obj\cbox}
-  ;_ntui_PropagateBind{*listView,#TUIEV_BIND_HVISIBLE    ,*listView\visibleWidth    ,null}
-End If
-
-
-
-
-;If (*listView\totalWidth-*listView\leftOffset < *listView\visibleWidth)
-;   *listView\leftOffset = *listView\totalWidth - *listView\visibleWidth
-;   If *listView\leftOffset<0 Then *listView\leftOffset=0
-;   _ntui_PropagateBind{*listView,#TUIEV_BIND_HVALUE     ,*listView\leftOffset          ,null}
-;End If
+  ;If (*listView\totalWidth-*listView\leftOffset < *listView\visibleWidth)
+  ;   *listView\leftOffset = *listView\totalWidth - *listView\visibleWidth
+  ;   If *listView\leftOffset<0 Then *listView\leftOffset=0
+  ;   _ntui_PropagateBind{*listView,#TUIEV_BIND_HVALUE     ,*listView\leftOffset          ,null}
+  ;End If
 
 End Statement
 !_MakeGlobalFuncPointer{_ntui_DrawListView,{Null,Null,Null}}
@@ -730,16 +854,24 @@ End Statement
 
 
 Statement _ntui_DrawListViewItem{*listView.tuiListView,*rp.RastPort,fromX.l,toX.l}
+
   cbox.tuiRect\left = *listView\obj\cbox\left
   cbox\right = *listView\obj\cbox\right
-  cbox\top   = (fromX-*listView\topItem) * *listView\itemHeight
-  If cbox\top<0 Then cbox\top=0
-  cbox\top = cbox\top + *listView\obj\cbox\top + *listView\titleHeight
-
-  cbox\bottom = (toX-*listView\topItem+1) * *listView\itemHeight  -1
-  If cbox\bottom<0 Then Statement Return
-  cbox\bottom = cbox\bottom + *listView\obj\cbox\top + *listView\titleHeight
-
+  
+  If fromX>=0
+    cbox\top   = (fromX-*listView\topItem) * *listView\itemHeight
+    If cbox\top<0 Then cbox\top=0
+    cbox\top = cbox\top + *listView\obj\cbox\top + *listView\titleHeight
+  Else
+    cbox\top = *listView\obj\cbox\top
+  End If
+  If toX>=0
+    cbox\bottom = (toX-*listView\topItem+1) * *listView\itemHeight  -1
+    If cbox\bottom<0 Then Statement Return
+    cbox\bottom = cbox\bottom + *listView\obj\cbox\top + *listView\titleHeight
+  Else
+    cbox\bottom = *listView\obj\cbox\top + *listView\titleHeight -1
+  End If
   !tuiAndRect{cbox,cbox,*listView\obj\cbox}
   If !tuiValidRect{cbox}=False Then Statement Return
   _ntui_DrawListView{*listView,*rp,cbox}
@@ -780,91 +912,12 @@ End Statement
 ;/ - result.l     : ???                                                        /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.l _ntui_ParseListItem{*listView.tuiListView,*listItem.tuiListItem,*string.str}
-!_ASSERT{*listView}
-!_ASSERT{*listView\obj\classID=#TUICLASS_LISTVIEW}
+Function.s ntui_EscapeListViewString{*listView.tuiListView,string.s}
 
-If *listItem =Null Then Function Return Null
-*engine.tuiEngine = *listView\obj\engine
-If *engine=Null Then Function Return Null
-
-; parse the label...
-stringP.l  = str_GetPtr{*string}
-l.l        = str_Len{*string}
-i.l        = 0
-If (*listItem\cellA) Then FreeVec_ *listItem\cellA : *listItem\cellA=Null
-
-baseP.l = _ntui_ObtainTempBuffer{(l+1) * SizeOf.tuiListCell}
-*listItem\colN = 0
-labelP.l = baseP
-*cell.tuiListCell = labelP
-*cell\textLen  = 0
-*cell\img      = Null
-*cell\addFlags = 0
-*cell\pixWidth = 0
-labelP + SizeOf.tuiListCell
-
-While (i<l) ; fill the columns e.g.
-  Select Peek.b(stringP+i)
-    Case @"|"
-      Poke.b labelP,0 : labelP+1
-      If (labelP&1) Then Poke.b labelP,0 : labelP+1
-      *listItem\colN+1 : *cell = labelP  : labelP+SizeOf.tuiListCell
-      *cell\textLen  = 0
-      *cell\img      = Null
-      *cell\addFlags = 0
-      *cell\pixWidth = 0
-    Case @"\"
-      Select  Peek.b(stringP+i+1)
-        Case @"l" : *cell\addFlags|#TUIF_LEFT
-        Case @"r" : *cell\addFlags|#TUIF_RIGHT
-        Case @"b" : *cell\addFlags|#TUIF_BOLD
-        Case @"i" : *cell\addFlags|#TUIF_ITALIC
-        Case @"s" : *cell\addFlags|#TUIF_SMALL
-        Case @"u" : *cell\addFlags|#TUIF_UNDERLINED
-        Case @"f" : *cell\addFlags|#TUIF_FIX
-        Case @"d" : *cell\addFlags|#TUIF_DISABLED
-        Case @"h" : *cell\addFlags|#TUIF_HIGHLIGHT
-        Case @"~" : *cell\addFlags|#TUIF_GONE
-        Case @"|" : Poke.b labelP,@"|" : labelP+1
-        Case @"\" : Poke.b labelP,@"\" : labelP+1
-        Case @"t" : ;just continue with text
-        Case @"p" : ;picture
-          i+2
-          j.l = i
-          While i<l AND Peek.b(stringP+i)><@"|" AND Peek.b(stringP+i)><@"\"
-            i+1
-          Wend
-          imagefile.s = Peeks$(stringP+j,i-j)
-          ;error {"Loadimage: "+imagefile+"!"}
-
-          *cell\img = ntui_CreateTBImage{*engine,imagefile,#TUISIZE_INLINE,#TUISIZE_INLINE}
-          i-2
-      End Select
-      i+1
-    Case 0
-      ;Poke.b labelP,0 : labelP+1
-      ;If (labelP&1) Then Poke.b labelP,0 : labelP+1
-      ;*listItem\colN+1
-      i=l
-    Default
-      Poke.b labelP,Peek.b(stringP+i) : labelP+1
-      *cell\textLen+1
-  End Select
-  i+1
-Wend
-
-Poke.b labelP,0 : labelP+1
-;If (labelP&1) Then Poke.b labelP,0 : labelP+1
-*listItem\colN+1
-
-
-byteSize.l = labelP-baseP
-*listItem\cellA = AllocVec_(byteSize,#MEMF_ANY)
-If *listItem\cellA=Null Then Function Return Null
-CopyMem_ baseP,*listItem\cellA,byteSize
-_ntui_ReleaseTempBuffer{}
-Function Return *listItem\cellA
+  string=Replace$(string,"\","\"+"\")
+  string=Replace$(string,"|","\|")
+  Function Return string
+  
 End Function
 
 
@@ -888,7 +941,7 @@ Function.l _ntui_SetListViewAttr{*listView.tuiListView,ti_Tag.l,ti_Data.l}
       _ntui_ScrollListView{*listView,0,ti_Data-*listView\topItem   ,*rp}
       If *rp Then ntui_ReleaseRastPort{*listView}
       _ntui_PropagateBind{*listView,#TUIEV_BIND_VVALUE,*listView\topItem,Null}
-
+      
     Case #TUILVA_LEFTOFFSET
       *rp.RastPort = ntui_ObtainRastPort{*listView}
       _ntui_ScrollListView{*listView,ti_Data-*listView\leftOffset,0,*rp}
@@ -898,14 +951,19 @@ Function.l _ntui_SetListViewAttr{*listView.tuiListView,ti_Tag.l,ti_Data.l}
     ;Case #TUILVA_TITLEHEIGHT   : *listView\titleHeight  = ti_Data : done=True
 
     Case #TUILVA_TITLE        :
+      For n.l=0 To #TUILV_MAXSORTFUNCS-1
+        *listView\sortFunc[n]=Null
+      Next
+    
       If (ti_Data)
-        *string.str = Null
-        str_WritePtr{&*string,ti_Data}
-        _ntui_ParseListItem{*listView,*listView\title,*string}
-        str_Free{&*string}
+        str_WritePtr{&*listView\title\rawLabel,ti_Data}
+        *listView\titleHeight = *listView\obj\engine\defSize[#TUISIZE_INLINE] + 2 + *listView\obj\padding\top + *listView\cellPadding\bottom
       Else
-        _ntui_ParseListItem{*listView,*listView\title,Null}
+        str_Free{&*listView\title\rawLabel}
+        *listView\titleHeight = 0
       End If
+      *listView\title\addFlags|#TUIF_DIRTY
+
       ntui_Refresh{*listView,Null}
 
     Case #TUILVA_ONSELECT   : str_WritePtr{&*listView\onSelect\notifyID ,ti_Data}
@@ -914,6 +972,14 @@ Function.l _ntui_SetListViewAttr{*listView.tuiListView,ti_Tag.l,ti_Data.l}
     Case #TUILVA_ONTOUCHCB  : *listView\onTouch\callback = ti_Data
     Case #TUILVA_ONFILELISTENERCLOSE   : str_WritePtr{&*listView\onFileListenerClose\notifyID ,ti_Data}
     Case #TUILVA_ONFILELISTENERCLOSECB : *listView\onFileListenerClose\callback = ti_Data
+
+    Case #TUILVA_CELLCONTENT   : done = False; readonly!
+    Case #TUILVA_TOTALITEMS    : done = False; readonly
+    Case #TUILVA_TOTALWIDTH    : done = False; readonly
+    Case #TUILVA_VISIBLEITEMS  : done = False; readonly
+    Case #TUILVA_VISIBLEWIDTH  : done = False; readonly
+    Case #TUILVA_ITEMHEIGHT    : done = False; readonly
+    Case #TUILVA_TITLEHEIGHT   : done = False; readonly
 
     Default
       done = False
@@ -948,7 +1014,8 @@ Function.l _ntui_GetListViewAttr{*listView.tuiListView,ti_Tag.l,*ti_Data.longP}
     Case #TUILVA_ONTOUCHCB     : *ti_Data\l = *listView\onTouch\callback
     Case #TUILVA_ONFILELISTENERCLOSE   : *ti_Data\l = str_GetPtr{*listView\onFileListenerClose\notifyID}
     Case #TUILVA_ONFILELISTENERCLOSECB : *ti_Data\l = *listView\onFileListenerClose\callback
-
+    ;Case #TUILVA_CELLCONTENT
+      ;*cell.tuiListCell = _ntui_GetListCellP{*listView,*listItem,cellX}
     Default
       done=False
 
@@ -975,17 +1042,37 @@ Macro ntui_GetListItemP ; {itemX}
 End Macro
 
 
-Function.l _ntui_GetListItemP{*listView.tuiListView,itemX.l}
+Function.tuiListItem _ntui_GetListItemP{*listView.tuiListView,itemX.l}
+
   If itemX<0 Then Function Return *listView\title
   If itemX<*listView\totalItems
+    If *listView\sortA
+      itemX.l = Peek.l(*listView\sortA+itemX*SizeOf.l)
+    End If
     *listItem.tuiListItem = !ntui_GetListItemP{itemX}
     Function Return *listItem
   End If
   Function Return Null
+  
 End Function
 
+Function.tuiListItem _ntui_GetListSortedItemP{*listView.tuiListView,itemX.l}
 
-Function.l _ntui_GetListCellP{*listItem.tuiListItem,colX.l}
+  If itemX<0 Then Function Return *listView\title
+  If itemX<*listView\totalItems
+    If *listView\sortA
+      itemX.l = Peek.l(*listView\sortA+itemX*SizeOf.l)
+    End If
+    *listItem.tuiListItem = !ntui_GetListItemP{itemX}
+    Function Return *listItem
+  End If
+  Function Return Null
+  
+End Function
+
+Function.tuiListCell _ntui_GetListCellP{*listView.tuiListView,*listItem.tuiListItem,colX.l}
+
+  If *listItem\addFlags&#TUIF_DIRTY Then _ntui_ParseListItem{*listView,*listItem,*listItem\rawLabel}
   *cell.tuiListCell = *listItem\cellA
   If colX>=*listItem\colN Then Function Return Null
   While colX>0
@@ -994,9 +1081,10 @@ Function.l _ntui_GetListCellP{*listItem.tuiListItem,colX.l}
     *cell = nextP
     colX-1
   Wend
+  
   Function Return *cell
+  
 End Function
-
 
 
 ;///////////////////////////////////////////////////////////////////////////////
@@ -1011,21 +1099,115 @@ End Function
 ;/ - col.l    : ???                                                            /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Statement _ntui_SetListViewSorting{*listView.tuiListView,colX.l}
-!_ASSERT{*listView}
-!_ASSERT{*listView\obj\classID=#TUICLASS_LISTVIEW}
 
-If colX=*listView\primeSortCol
-  *listView\primeSortDir=1-*listView\primeSortDir
-Else
-  If *listView\secondSortDir=colX Then *listView\primeSortDir=1-*listView\secondSortDir
-  *listView\secondSortDir=*listView\primeSortDir
-  *listView\secondSortCol=*listView\primeSortCol
-  *listView\primeSortCol =colX
-End If
-If (*listView\secondSortCol=*listView\primeSortCol) Then *listView\secondSortCol=-1
-*listView\sortingDirty = 1
-ntui_Refresh{*listView,Null}
+
+
+Statement _lv_SortMerge{*listView.tuiListView,*src.l, iLeft.l, iRight.l, iEnd.l, *dst.l,*ccmp.tuiFunc,cellX.l}
+
+  i0.l = iLeft
+  i1.l = iRight
+  j.l  = iLeft
+ 
+  ;/* While there are elements in the left OR right lists */
+  While (j < iEnd) 
+    
+      ;/* If left List head Exists AND is <= existing right List head */
+      idx0.l = Peek.l(*src+i0*SizeOf.l)
+      idx1.l = Peek.l(*src+i1*SizeOf.l)
+      *lv0.tuiListItem = _ntui_GetListItemP{*listView,idx0}
+      *lv1.tuiListItem = _ntui_GetListItemP{*listView,idx1}
+      *cell0.tuiListCell = _ntui_GetListCellP{*listView,*lv0,cellX}
+      *cell1.tuiListCell = _ntui_GetListCellP{*listView,*lv1,cellX}
+      !_CallFuncPointer{*ccmp,result.l,*cell0,*cell1}
+      
+      If (i0 < iRight AND (i1 >= iEnd OR result<=0))
+          Poke.l *dst + j*SizeOf.l, Peek.l (*src + i0*SizeOf.l)
+          i0 = i0 + 1
+      Else        
+          Poke.l *dst + j*SizeOf.l, Peek.l (*src + i1*SizeOf.l)
+          i1 = i1 + 1
+      End If
+      j+1
+  Wend
+  
+End Statement
+
+
+
+; array A[] has the items To Sort; array B[] is a work array */
+Statement _lv_Sort{*listView.tuiListView}
+
+  cellX.l = *listView\primeSortCol
+  n.l = *listView\totalItems
+  If cellX<0 OR cellX>=#TUILV_MAXSORTFUNCS Then Statement Return
+  *ccmp.tuiFunc = *listView\sortFunc[cellX]
+  If *ccmp=Null Then Statement Return
+
+  If *listView\sortA = Null OR *listView\sortN<*listView\totalItems
+    *listView\sortA = AllocVec_(*listView\totalItems*SizeOf.l,#MEMF_ANY)
+    *listView\sortN = *listView\totalItems
+  End If
+  *tmp.l = AllocVec_(*listView\totalItems*SizeOf.l,#MEMF_ANY)
+  *src.l = *listView\sortA
+  *dst.l = *tmp
+  
+  width.l = 1
+  
+  ;/* Each 1-element run in A is already "sorted". */
+ 
+  ;/* Make successively longer sorted runs of Length 2, 4, 8, 16... Until whole array is sorted. */
+  While  (width < n)
+
+      ;/* Array A is full of runs of Length width. */
+      i.l = 0
+      While (i < n)
+          ;/* Merge two runs: A[i:i+width-1] AND A[i+width:i+2*width-1] To B[] */
+          ;/* OR copy A[i:n-1] To B[] ( If(i+width >= n) ) */
+          _lv_SortMerge{*listView,*src, i, Min(i+width, n), Min(i+2*width, n), *dst, *ccmp, cellX}
+          i = i + 2 * width
+      Wend
+ 
+      ;/* Now work array B is full of runs of Length 2*width. */
+      ;/* Copy array B To array A For Next iteration. */
+      ;/* A more efficient implementation would SWAP the roles of A AND B */
+      ;CopyArray(A, B, n);
+      Exchange *src,*dst
+      width = 2 * width
+      ;/* Now array A is full of runs of Length 2*width. */
+  Wend
+  
+  If *listView\sortA><*src
+    FreeVec_ *tmp
+    *listView\sortA = *src
+    *listView\sortN = *listView\totalItems
+  End If
+  
+End Statement
+
+
+
+Function.l _ntui_SortListView{*listView.tuiListView}
+
+End Function
+
+Statement _ntui_SetListViewSorting{*listView.tuiListView,colX.l}
+  !_ASSERT{*listView}
+  !_ASSERT{*listView\obj\classID=#TUICLASS_LISTVIEW}
+
+  If *listView\sortFunc[colX] = Null Then Statement Return
+
+  If colX=*listView\primeSortCol
+    *listView\primeSortDir=1-*listView\primeSortDir
+  Else
+    *listView\secondSortDir=*listView\primeSortDir
+    If *listView\secondSortDir=colX Then *listView\primeSortDir=1-*listView\secondSortDir
+    *listView\secondSortCol=*listView\primeSortCol
+    *listView\primeSortCol =colX
+  End If
+  If (*listView\secondSortCol=*listView\primeSortCol) Then *listView\secondSortCol=-1
+  *listView\sortingDirty = 1
+  ntui_Refresh{*listView,Null}
+  
 End Statement
 
 
@@ -1052,50 +1234,55 @@ End Statement
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
 Function.l ntui_AddListItem{*listView.tuiListView,itemX.l,label.s,@itemID.l,@userData.l,@flags.l}
-!_ASSERT{*listView}
-!_ASSERT{*listView\obj\classID=#TUICLASS_LISTVIEW}
+  !_ASSERT{*listView}
+  !_ASSERT{*listView\obj\classID=#TUICLASS_LISTVIEW}
 
-succ.l = False
-If itemX<0 Then itemX=*listView\totalItems
-If (flags=#TUI_NOFLAGS) Then flags=0
+  succ.l = False
+  If itemX<0 Then itemX=*listView\totalItems
+  If (flags=#TUI_NOFLAGS) Then flags=0
 
-If *listView\totalItems>=*listView\allocN ; re-alloc table
-  *listP.tuiListItem = AllocVec_((*listView\totalItems+*listView\incN)*SizeOf.tuiListItem,#MEMF_ANY)
-  If *listP
-    If *listView\listP
-      CopyMem_ *listView\listP,*listP,*listView\totalItems*SizeOf.tuiListItem
-      FreeVec_ *listView\listP
+  If *listView\totalItems>=*listView\allocN ; re-alloc table
+    *listP.tuiListItem = AllocVec_((*listView\totalItems+*listView\incN)*SizeOf.tuiListItem,#MEMF_ANY)
+    If *listP
+      If *listView\listP
+        CopyMem_ *listView\listP,*listP,*listView\totalItems*SizeOf.tuiListItem
+        FreeVec_ *listView\listP
+      End If
+      *listView\listP  = *listP
+      *listView\allocN = *listView\totalItems+*listView\incN
     End If
-    *listView\listP  = *listP
-    *listView\allocN = *listView\totalItems+*listView\incN
   End If
-End If
 
-If *listView\totalItems<*listView\allocN
-  If *listView\obj\value>=itemX Then *listView\obj\value+1
-  If *listView\ankerX   >=itemX Then *listView\ankerX+1
-  If (itemX<*listView\totalItems)
-    *listItem.tuiListItem = !ntui_GetListItemP{*listView\totalItems-1}
-    For i.l=itemX To *listView\totalItems-1
-      CopyMem_ *listItem,*listItem+SizeOf.tuiListItem,SizeOf.tuiListItem
-      *listItem - SizeOf.tuiListItem
-    Next
+  If *listView\totalItems<*listView\allocN
+    If *listView\obj\value>=itemX Then *listView\obj\value+1
+    If *listView\ankerX   >=itemX Then *listView\ankerX+1
+    If (itemX<*listView\totalItems)
+      *listItem.tuiListItem = !ntui_GetListItemP{*listView\totalItems-1}
+      For i.l=itemX To *listView\totalItems-1
+        CopyMem_ *listItem,*listItem+SizeOf.tuiListItem,SizeOf.tuiListItem
+        *listItem - SizeOf.tuiListItem
+      Next
+    End If
+    *listItem.tuiListItem = !ntui_GetListItemP{itemX}
+    *listItem\itemID   = itemID
+    *listItem\addFlags = flags|#TUIF_DIRTY
+    *listItem\cellA    = Null
+    *listItem\cellSize = 0
+    *listItem\userData = userData
+    *listItem\rawLabel = Null
+    If label Then str_WritePtr{&*listItem\rawLabel,&label} ;: _ntui_ParseListItem{*listView,*listItem,*labelS}
+    *listView\totalItems+1
+    succ = True
+    ;error{"added item "+label+" of "+Str$(*listView\totalItems)}
+    If *listView\vScroller Then _ntui_UpdateScroller{*listView\vScroller,*listView\topItem,*listView\visibleItems,*listView\totalItems,1,False}
+
+    ntui_Refresh{*listView,Null}
   End If
-  *listItem.tuiListItem = !ntui_GetListItemP{itemX}
-  *listItem\itemID   = itemID
-  *listItem\addFlags = flags
-  *listItem\cellA    = Null
-  *listItem\userData = userData
-  If label Then *labelS.str = Null : str_WritePtr{&*labelS,&label} : _ntui_ParseListItem{*listView,*listItem,*labelS}
-  *listView\totalItems+1
-  succ = True
-  ;error{"added item "+label+" of "+Str$(*listView\totalItems)}
-  If *listView\vScroller Then _ntui_UpdateScroller{*listView\vScroller,*listView\topItem,*listView\visibleItems,*listView\totalItems,1,False}
 
-  ntui_Refresh{*listView,Null}
-End If
-Function Return succ
+  Function Return succ
+
 End Function
+
 
 Function.l ntui_ChangeListItem{*listView.tuiListView,itemX.l,label.s,@itemID.l,@userData.l,@flags.l}
   !_ASSERT{*listView}
@@ -1105,12 +1292,16 @@ Function.l ntui_ChangeListItem{*listView.tuiListView,itemX.l,label.s,@itemID.l,@
   *listItem.tuiListItem = !ntui_GetListItemP{itemX}
   If itemID><-1           Then *listItem\itemID   = itemID
   If flags ><#TUI_NOFLAGS Then *listItem\addFlags = flags
-  If *listItem\cellA Then FreeVec_ *listItem\cellA    : *listItem\cellA=Null
   If userData><-1         Then *listItem\userData = userData
-  If label Then *labelS.str = Null : str_WritePtr{&*labelS,&label} : _ntui_ParseListItem{*listView,*listItem,*labelS}
+
+
+      ; TODO: free the images
+
+  str_WritePtr{&*listItem\rawLabel,&label}
+  *listItem\addFlags|#TUIF_DIRTY
   succ.l = True
   ntui_Refresh{*listView,Null}
-  ;_ntui_DrawListViewItem{*listView,*rp,itemX,itemX}
+
   Function Return succ
 
 End Function
@@ -1227,12 +1418,16 @@ End Function
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
 Function.s ntui_GetListItemText{*listView.tuiListView,itemX.l,colX.l}
+
   *listItem.tuiListItem = !ntui_GetListItemP{itemX}
   If colX<0 OR colX>=*listView\title\colN Then Function Return ""
 
+  If *listItem\addFlags&#TUIF_DIRTY Then _ntui_ParseListItem{*listView,*listItem,*listItem\rawLabel}
+
   *cell.tuiListCell = *listItem\cellA
   *str.str = Null
-
+  If *cell=Null Then Function Return ""
+  
   For col.l=0 To colX
     If *cell\textLen>0
       *str.str = (.str)&*cell\textLen
@@ -1295,32 +1490,38 @@ End Function
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
 Function.l ntui_RemListItem{*listView.tuiListView,itemX.l}
-!_ASSERT{*listView}
-!_ASSERT{*listView\obj\classID=#TUICLASS_LISTVIEW}
+  !_ASSERT{*listView}
+  !_ASSERT{*listView\obj\classID=#TUICLASS_LISTVIEW}
 
-succ.l = False
-If itemX<0 Then itemX=*listView\totalItems-1
-If itemX>=0 AND itemX<*listView\totalItems
-  *listItem.tuiListItem = !ntui_GetListItemP{itemX}
+  succ.l = False
+  If itemX<0 Then itemX=*listView\totalItems-1
+  If itemX>=0 AND itemX<*listView\totalItems
+    *listItem.tuiListItem = !ntui_GetListItemP{itemX}
 
-  If *listItem\cellA Then FreeVec_ *listItem\cellA    : *listItem\cellA=Null
+    If *listItem\cellA
+      FreePooled_ *listView\memPool,*listItem\cellA,*listItem\cellSize
+      *listItem\cellA    = Null
+      *listItem\cellSize = 0
+      ; TODO: free the images
+    End If
+    str_Free{&*listItem\rawLabel}
+    If *listView\obj\value=itemX Then *listView\obj\value=-1
+    If *listView\obj\value>itemX Then *listView\obj\value-1
+    If *listView\ankerX   =itemX Then *listView\ankerX=-1
+    If *listView\ankerX   >itemX Then *listView\ankerX-1
 
-  If *listView\obj\value=itemX Then *listView\obj\value=-1
-  If *listView\obj\value>itemX Then *listView\obj\value-1
-  If *listView\ankerX   =itemX Then *listView\ankerX=-1
-  If *listView\ankerX   >itemX Then *listView\ankerX-1
+    For i.l=itemX To *listView\totalItems-2
+      CopyMem_ *listItem+SizeOf.tuiListItem,*listItem,SizeOf.tuiListItem
+      *listItem + SizeOf.tuiListItem
+    Next
+    *listView\totalItems-1
+    ;ntui_PropagateBind{*listView}
+    ;If *listView\vScroller Then _ntui_UpdateScroller{*listView\vScroller,*listView\topItem,*listView\visibleItems,*listView\totalItems,1,False}
+    ntui_Refresh{*listView,Null}
+    succ=True
+  End If
+  Function Return succ
 
-  For i.l=itemX To *listView\totalItems-2
-    CopyMem_ *listItem+SizeOf.tuiListItem,*listItem,SizeOf.tuiListItem
-    *listItem + SizeOf.tuiListItem
-  Next
-  *listView\totalItems-1
-  ;ntui_PropagateBind{*listView}
-  ;If *listView\vScroller Then _ntui_UpdateScroller{*listView\vScroller,*listView\topItem,*listView\visibleItems,*listView\totalItems,1,False}
-  ntui_Refresh{*listView,Null}
-  succ=True
-End If
-Function Return succ
 End Function
 
 ;///////////////////////////////////////////////////////////////////////////////
@@ -1340,9 +1541,11 @@ End Function
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
 Function.l ntui_RemListItemByID{*listView.tuiListView,itemID.l}
-itemX.l = ntui_GetListItemIndexByID{*listView,itemID}
-If itemX>=0 Then Function Return ntui_RemListItem{*listView,itemX}
-Function Return False
+
+  itemX.l = ntui_GetListItemIndexByID{*listView,itemID}
+  If itemX>=0 Then Function Return ntui_RemListItem{*listView,itemX}
+  Function Return False
+  
 End Function
 
 
@@ -1358,7 +1561,24 @@ End Function
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
 Statement ntui_ClearListView{*listView.tuiListView}
-While ntui_RemListItem{*listView,-1} : Wend
+
+  While ntui_RemListItem{*listView,-1} : Wend
+
+  If *listView\title\cellA
+    *cell.tuiListCell = *listView\title\cellA
+    For col.l=0 To *listView\title\colN-1
+      *cell\pixWidth=0 ; not estimated yet
+      nextP.l = *cell + SizeOf.tuiListCell + *cell\textLen +1
+      If nextP&1 Then nextP+1   ; 16bit align pointer
+      *cell = nextP
+    Next
+  End If
+  *listView\totalWidth = 0
+  *listView\totalItems = 0
+  ;DeletePool_ *listView\memPool
+  ;*listView\memPool = CreatePool_(0,32768,32768)
+  ;ntui_SetAttr{*listView,#TUILVA_TOTALWIDTH,0}
+
 End Statement
 
 ;///////////////////////////////////////////////////////////////////////////////
@@ -1368,7 +1588,9 @@ End Statement
 ;/                                                                             /
 ;/ Description:                                                                /
 ;/ * do what happens if the user operates the ListView */                      /
-;/                                                                             /
+;/ 1...N Cell number
+;/ 0 no cell
+;/ -1...-N CellBorder
 ;/ Inputs:                                                                     /
 ;/ - *listView.tuiListView    : ???                                         /
 ;/ - *ev.tuiEvent    : ???                                               /
@@ -1389,7 +1611,7 @@ Function.l _ntui_GetListViewColumnFromXPos{*listView.tuiListView,cx.l}
       If cx>=cx1 AND cx<cx2 Then hitCellX=cellX:*hitCell = *cell
 
       If (*cell\addFlags&#TUIF_GONE)=0 AND cellX<*listView\title\colN-1
-        If cx>=cx2-1 AND cx<=cx2+3 Then Function Return -cellX-1 ; hit a seperator
+        If cx>=cx2-1 AND cx<=cx2+3 Then Function Return -cellX-2 ; hit a seperator
         cx1=cx2+2
       Else
         cx1=cx2
@@ -1402,16 +1624,21 @@ Function.l _ntui_GetListViewColumnFromXPos{*listView.tuiListView,cx.l}
   Else
     If cx>=0 AND cx<!tuiRectWidth{*listView\obj\cbox} Then hitCellX=0
   End If
-Function Return hitCellX
+  
+  Function Return hitCellX
+  
 End Function
 
 
 Function.l _ntui_GetListItemFromYPos{*listView.tuiListView,cy.l}
+
   itemX.l = -1
   If (cy>=*listView\titleHeight)
     itemX.l = (cy-*listView\titleHeight)/*listView\itemHeight + *listView\topItem
   End If
+  
   Function Return itemX
+  
 End Function
 
 
@@ -1485,8 +1712,8 @@ End Statement
 
 
 Statement _ntui_ListViewDeselectAll{*listView.tuiListView,*rp.RastPort}
-!_ASSERT{*listView}
-!_ASSERT{*listView\obj\classID=#TUICLASS_LISTVIEW}
+  !_ASSERT{*listView}
+  !_ASSERT{*listView\obj\classID=#TUICLASS_LISTVIEW}
 
   *listItem.tuiListItem = *listView\listP
   fromX.l = -1
@@ -1499,6 +1726,7 @@ Statement _ntui_ListViewDeselectAll{*listView.tuiListView,*rp.RastPort}
   If *rp
     If fromX>=0 Then _ntui_DrawListViewItem{*listView,*rp,fromX,toX}
   End If
+  
 End Statement
 
 
@@ -1542,6 +1770,19 @@ Function.l _ntui_DispatchListViewEvent{*listView.tuiListView,*ev.tuiEvent}
           itemX.l = _ntui_GetListItemFromYPos{*listView,*ev\pos\y-*listView\obj\cbox\top}
 
           If itemX=-1 ; we hit the title
+          
+            If cellX>=0 ; it a label
+              *cell.tuiListCell =_ntui_GetListCellP{*listView,*listView\title,cellX}
+              If *cell
+                *cell\addFlags| #TUIF_ACTIVE
+              *rp.RastPort = ntui_ObtainRastPort{*listView}
+              If *rp
+                _ntui_DrawListViewItem{*listView,*rp,-1,-1}
+                ntui_ReleaseRastPort{*listView}
+              End If                
+                
+              End If
+            End If
 
           Else
             ntui_GetEventAttr{*ev,#TUIEVA_QUALIFIER,&quali.l}
@@ -1603,14 +1844,28 @@ Function.l _ntui_DispatchListViewEvent{*listView.tuiListView,*ev.tuiEvent}
             done    = True
             cellX.l = _ntui_GetListViewColumnFromXPos{*listView,*ev\pos\x-*listView\obj\cbox\left}
             itemX.l = _ntui_GetListItemFromYPos{*listView,*ev\pos\y-*listView\obj\cbox\top}
+            If cellX>=0 AND itemX>=0
+              *listItem.tuiListItem = !ntui_GetListItemP{itemX}
 
-            *listItem.tuiListItem = !ntui_GetListItemP{itemX}
-
-            If ((*listItem\addFlags&#TUIF_ACTIVE)=#TUIF_ACTIVE)
-              If *ev\qualifier_ & #TUIQUAL_DOUBLECLICK
-                !tuiHandleNotify{done,*listView,onSelect,*ev}
-              Else
-                !tuiHandleNotify{done,*listView,onTouch,*ev}
+              If ((*listItem\addFlags&#TUIF_ACTIVE)=#TUIF_ACTIVE)
+                If *ev\qualifier_ & #TUIQUAL_DOUBLECLICK
+                  !tuiHandleNotify{done,*listView,onSelect,*ev}
+                Else
+                  !tuiHandleNotify{done,*listView,onTouch,*ev}
+                End If
+              End If
+            Else
+              If itemX=-1 ; title
+                If cellX>=0
+                  ;If *clickCol Then *clickCol\addFlags|#TUIF_ACTIVE - #TUIF_ACTIVE
+                  *cell.tuiListCell = _ntui_GetListCellP{*listView,*listView\title,cellX}
+                  If *cell
+                    If *cell\addFlags & #TUIF_ACTIVE
+                        _ntui_SetListViewSorting{*listView,cellX}
+                        *cell\addFlags| #TUIF_ACTIVE - #TUIF_ACTIVE
+                    End If
+                  End If
+                End If
               End If
             End If
           Else
@@ -1968,7 +2223,7 @@ Statement _ntui_CalculateListViewMinSize{*listView.tuiListView,*rp.RastPort}
 !_ASSERT{*engine}
 
 *listView\itemHeight   = *engine\defSize[#TUISIZE_INLINE] + !tuiBorderHeight{*listView\cellPadding}
-If *listView\title\cellA
+If str_Len{*listView\title\rawLabel}
   *listView\titleHeight = *engine\defSize[#TUISIZE_INLINE] + 2 + *listView\obj\padding\top + *listView\cellPadding\bottom
 Else
   *listView\titleHeight = 0
@@ -2010,6 +2265,8 @@ Statement _ntui_DeinitListView{*listView.tuiListView}
 
   *listView\vScroller = Null
   *listView\hScroller = Null
+  
+  If *listView\memPool Then DeletePool_ *listView\memPool : *listView\memPool = Null
 
   If *listView\primeSortImgUp    Then ntui_FreeTBImage{*listView\primeSortImgUp}
   If *listView\primeSortImgDown  Then ntui_FreeTBImage{*listView\primeSortImgDown}
@@ -2068,10 +2325,12 @@ Function.tuiListView ntui_ListView{*tagList.TagItem}
     *listView\listP                = Null
     *listView\allocN               = 0
     *listView\incN                 = 64
-    *listView\title\addFlags       = 0
+    *listView\title\addFlags       = #TUIF_DIRTY
     *listView\title\cellA          = Null
     *listView\title\itemID         = -1
     *listView\title\colN           = 0
+    *listView\title\rawLabel       = Null
+    *listView\title\cellSize       = 0
     *listView\hScroller            = Null
     *listView\vScroller            = Null
     *listView\pressedColN          = -1
@@ -2094,6 +2353,9 @@ Function.tuiListView ntui_ListView{*tagList.TagItem}
     *listView\primeSortCol         = -1
     *listView\secondSortDir        = 0
     *listView\primeSortDir         = 0
+    For n.l=0 To #TUILV_MAXSORTFUNCS-1
+      *listView\sortFunc[n]=Null
+    Next
 
     *listView\obj\Draw             = *_ntui_DrawListView
     *listView\obj\Layout           = *_ntui_LayoutListView
@@ -2127,6 +2389,9 @@ Function.tuiListView ntui_ListView{*tagList.TagItem}
 
     If (*listView\vScroller) Then ntui_Bind{*listView,*listView\vScroller}
     If (*listView\hScroller) Then ntui_Bind{*listView,*listView\hScroller}
+    
+    *listView\memPool = Null
+    *listView\memPool = CreatePool_(0,32768,32768)
 
   End If
 

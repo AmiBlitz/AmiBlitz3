@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1476
-; CursorColumn    = 32
+; CursorLine      = 831
+; CursorColumn    = 35
 ; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -98,9 +98,10 @@
 ;/ #max_objects   = n                                                          /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.l ntui_CreateRastPort{width.l,height.l,*friend.BitMap}
+Function.RastPort ntui_CreateRastPort{width.l,height.l,*friend.BitMap}
 
-  flags.l = #BMF_MINPLANES|#BMF_SPECIALFMT|(#PIXFMT_ARGB32 LSL 24)
+  flags.l = #BMF_MINPLANES
+  If *friend=Null Then flags = flags|#BMF_SPECIALFMT|(#PIXFMT_ARGB32 LSL 24)
   bdepth.l = 24
   *bmap.BitMap = AllocBitMap_(width,height,bdepth,flags,*friend)
   If *bmap
@@ -126,7 +127,7 @@ Statement ntui_FreeRastPort{*rp.RastPort}
     *layer.Layer          = *rp\Layer
     If *layer     Then DeleteLayer_ 0,*layer
     If *layerinfo Then DisposeLayerInfo_ *layerinfo
-    If *bmap Then FreeBitMap_ *bmap
+    If *bmap      Then FreeBitMap_ *bmap
   End If
 
 End Statement
@@ -280,6 +281,7 @@ End If
 
 End Statement
 
+
 Statement _ntui_WritePixelArrayScaled_deprecated{*srcA.tuiARGB,*srcRect.tuiRect,*dstRP.RastPort,*dstRect.tuiRect,imode.l,bgARGB.l}
 swidth.l  = !tuiRectWidth {*srcRect}
 sheight.l = !tuiRectHeight{*srcRect}
@@ -338,6 +340,69 @@ End If
 End Statement
 
 #TUIWPA_SOLID = 10
+Statement _ntui_WritePixelArrayAlpha4{*srcA.tuiARGB,sx.l,sy.l,*dstRP.RastPort,dx.l,dy.l,width.l,height.l,softmode.l,bgpen.l}
+
+  raw_ptr.l  = *srcA
+  bpr.l      = width*4
+  If raw_ptr = Null OR bpr<=0 Then Statement Return
+  width16.l = (((width+15) LSR 4) LSL 4)
+  tmp8.l     = _ntui_ObtainTempBuffer{width16*height}
+  
+  If tmp8
+    CopyMem_ *dstRP,&temprp.RastPort,SizeOf.RastPort
+    temprp\Layer = Null
+    temprp\BitMap = AllocBitMap_ (width16,1,8,0,0)
+    temprp\BitMap\BytesPerRow = width16 LSR 3
+    bpr8.l     = width16
+
+    If bgpen=-1
+      ReadPixelArray8_ *dstRP,dx,dy,dx+width-1,dy+height-1,tmp8,temprp          
+    End If
+
+    RunErrsOff
+    For y.l = 0 To height-1
+      dst.l = tmp8    + (y)*bpr8
+      src.l = raw_ptr + (y+sy)*bpr     + sx*4
+      For x.l = 0 To width-1
+        sA.l=Peek.b(src+0) & $FF
+
+        If sA>$20
+        ;If sA>$80 OR ((x+y)&1><0)
+          sR.l=Peek.b(src+1) & $FF
+          sG.l=Peek.b(src+2) & $FF
+          sB.l=Peek.b(src+3) & $FF
+        
+          c.l = (sR+sG+sB)/3
+          c0.l = sR
+          If sG<c0 Then c0=sG
+          If sB<c0 Then c0=sB
+          c1.l = sR
+          If sG>c1 Then c1=sG
+          If sB>c1 Then c1=sB
+          If c>0 Then d.l = (c1-c0)*256/c:Else d=0
+          
+          pen.l=1
+          If c>$20 Then pen=0
+          If c>$B0 Then pen=2
+          If d>$60 Then pen=3
+          
+            Poke.b dst,pen
+         ; End If
+        Else
+          If bgpen>0 Then Poke.b dst,bgpen
+        End If
+        dst+1 : src+4
+      Next
+    Next
+    WritePixelArray8_ *dstRP,dx,dy,dx+width-1,dy+height-1,tmp8,&temprp
+    LastRunErrsMode
+    FreeBitMap_ temprp\BitMap
+
+    _ntui_ReleaseTempBuffer{}
+  End If
+
+End Statement
+
 
 Statement _ntui_WritePixelArrayAlpha{*srcA.tuiARGB,sx.l,sy.l,*dstRP.RastPort,dx.l,dy.l,width.l,height.l,softmode.l,bgARGB.l}
 
@@ -479,7 +544,6 @@ Statement _ntui_WritePixelArrayAlpha{*srcA.tuiARGB,sx.l,sy.l,*dstRP.RastPort,dx.
 End Statement
 
 
-
 Statement _ntui_WritePixelArray{*srcA.tuiARGB,sx.l,sy.l,*dstRP.RastPort,dx.l,dy.l,width.l,height.l,softmode.l}
 
   raw_ptr.l = *srcA
@@ -559,7 +623,7 @@ End Statement
 ;/ - result.l     : ???                                                        /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.l _ntui_LoadBitMapViaPNG{filename.s,*width.l,*height.l}
+Function.tuiARGB _ntui_LoadBitMapViaPNG{filename.s,*width.l,*height.l}
 
   *raw.tuiARGB = Null
   *tuiPNG.tuiPNG = ntui_ReadPNG{filename}
@@ -582,7 +646,7 @@ Function.l _ntui_LoadBitMapViaPNG{filename.s,*width.l,*height.l}
 End Function
 
 
-Function.l _ntui_LoadBitMapViaIconV36{filename.s,*tpa.tuiPixelArray}
+Function.tuiARGB _ntui_LoadBitMapViaIconV36{filename.s,*tpa.tuiPixelArray}
   SHARED version_iconlib.l
 
   *raw.tuiARGB =Null
@@ -615,8 +679,6 @@ Function.l _ntui_LoadBitMapViaIconV36{filename.s,*tpa.tuiPixelArray}
     *tpa\width  = width
     *tpa\height = height
 
-
-
     *rp1.RastPort = ntui_CreateRastPort{width,height,*scr\BitMap}
     *rp2.RastPort = ntui_CreateRastPort{width,height,*scr\BitMap}
 
@@ -624,7 +686,6 @@ Function.l _ntui_LoadBitMapViaIconV36{filename.s,*tpa.tuiPixelArray}
       For n.l=0 To 1
         *img.Image = *icon\do_Gadget\GadgetRender
         *gad.Gadget = *icon\do_Gadget
-
 
         If n=0 Then state.l=#IDS_NORMAL : Else state=#IDS_SELECTED : *img = *icon\do_Gadget\SelectRender
 
@@ -696,7 +757,7 @@ Function.l _ntui_LoadBitMapViaIconV36{filename.s,*tpa.tuiPixelArray}
 End Function
 
 
-Function.l _ntui_LoadBitMapViaIcon{filename.s,*tpa.tuiPixelArray}
+Function.tuiARGB _ntui_LoadBitMapViaIcon_dep{filename.s,*tpa.tuiPixelArray}
   SHARED version_iconlib.l
 
   *raw.tuiARGB =Null
@@ -821,6 +882,128 @@ Function.l _ntui_LoadBitMapViaIcon{filename.s,*tpa.tuiPixelArray}
 End Function
 
 
+Function.tuiARGB _ntui_LoadBitMapViaIcon{filename.s,*tpa.tuiPixelArray}
+  SHARED version_iconlib.l
+  *raw.tuiARGB =Null
+  If version_iconlib=0 Then version_iconlib = _ntui_GetLibVersion{"icon.library"}
+  If version_iconlib<44 
+    *raw = _ntui_LoadBitMapViaIconV36{filename,*tpa}
+    Function Return *raw
+  End If
+
+  If LCase$(Right$(filename.s,5))=".info" Then filename.s=UnLeft$(filename.s,5)
+
+;  itags.tag10\ti_Tag = #ICONGETA_FailIfUnavailable,#FALSE,#ICONGETA_GetPaletteMappedIcon,#FALSE,#ICONGETA_RemapIcon,#TRUE,#ICONGETA_GenerateImageMasks,#TRUE,#TAG_END,0
+  itags.tag10\ti_Tag = #ICONGETA_FailIfUnavailable,#FALSE,#TAG_END,0
+  *icon.DiskObject = GetIconTagList_ (&filename,itags)
+
+  If *icon
+    DEFTYPE.Rectangle rectLI
+    rectLI\MinX = 0,0,0,0
+    itags\ti_Tag = #ICONDRAWA_Borderless,#TRUE,#ICONDRAWA_EraseBackground,#FALSE,#TAG_DONE,0
+    RunErrsOff
+    GetIconRectangleA_ 0,*icon,0,rectLI,itags
+    LastRunErrsMode
+    width.l  = rectLI\MaxX - rectLI\MinX +1
+    height.l = rectLI\MaxY - rectLI\MinY +1
+    xoff.l   = -rectLI\MinX;-1 "off by one" fix for AfA
+    yoff.l   = -rectLI\MinY;-1
+    aspect.l = 1
+    If width>=height*2-1 Then aspect=2
+    *friend.BitMap = Null
+    
+    ;FindScreen 0
+    ;*scr.Screen = Peek.l(Addr Screen (0))
+    ;*friend.BitMap = *scr\BitMap
+    check.l = -1
+    
+    *rp.RastPort = ntui_CreateRastPort{width,height,*friend}
+    *tpa\width  = width
+    *tpa\height = height*aspect
+    *rawW.tuiARGB = Null
+    *rawB.tuiARGB = Null
+    bprB.l = width*4
+    bprW.l = width*4
+    
+    If *rp><Null
+      For n.l=0 To 1
+        If n=0 Then state.l=#IDS_NORMAL : Else state=#IDS_SELECTED
+        tryiconagain:
+        FillPixelArray_ *rp,0,0,width,height,$00000000
+        itags\ti_Tag = #ICONDRAWA_Borderless,#TRUE,#ICONDRAWA_EraseBackground,#FALSE,#TAG_DONE,0
+        DrawIconStateA_ *rp,*icon,Null,xoff,yoff,state,itags
+        If *rawB=Null Then *rawB = AllocVec_(width*height*4*aspect,#MEMF_ANY)
+        ReadPixelArray_ *rawB,0,0,bprB,*rp,0,0,width,height,#RECTFMT_ARGB
+        If check><0
+          check.l = 0
+          For y.l=0 To height-1
+            For x.l=0 To width-1
+              check.l + Peek.l(*rawB+y*bprB + x*4)
+            Next
+          Next
+          
+          If check=0
+            FindScreen 0
+            *scr.Screen = Peek.l(Addr Screen (0))
+            *friend.BitMap = *scr\BitMap
+            ntui_FreeRastPort{*rp} : *rp=Null
+            *rp.RastPort = ntui_CreateRastPort{width,height,*friend}
+            Pop If:Pop If:Goto tryiconagain
+          End If
+          
+          check=0
+        End If
+
+        FillPixelArray_ *rp,0,0,width,height,$00FFFFFF
+        itags\ti_Tag = #ICONDRAWA_Borderless,#TRUE,#ICONDRAWA_EraseBackground,#FALSE,#TAG_DONE,0
+        DrawIconStateA_ *rp,*icon,Null,xoff,yoff,state,itags
+        If *rawW=Null Then *rawW = AllocVec_(width*height*4*aspect,#MEMF_ANY)
+        ReadPixelArray_ *rawW,0,0,bprW,*rp,0,0,width,height,#RECTFMT_ARGB
+
+        For y.l = 0 To height-1 ; get Alpha Channel
+          *srcW.tuiARGB = *rawW + y*bprW
+          *srcB.tuiARGB = *rawB + y*bprB
+          *dst.tuiARGB  = *rawB + y*bprB
+          For x.l = 0 To width-1
+            A.l = ($FF-*srcW\R+*srcB\R) & $FF
+            If A=0 OR A=$FF
+              *dst\A = A;,*srcB\R,*srcB\G,*srcB\B
+            Else
+              R.l = (*srcB\R & $FF)*$FF/A
+              G.l = (*srcB\G & $FF)*$FF/A
+              B.l = (*srcB\B & $FF)*$FF/A
+             *dst\A = A,R,G,B
+            End If
+            *dst+4
+            *srcB+4
+            *srcW+4
+          Next
+        Next
+
+        If aspect=2
+          For y.l = 0 To height-1
+            *src.tuiARGB = *rawB + y  *bprB
+            *dst.tuiARGB = *rawW + y*2*bprW
+            CopyMem_ *src,*dst,bprW
+            CopyMem_ *src,*dst+bprW,bprW
+          Next
+          Exchange *rawB,*rawW
+        End If
+
+        If n=0 Then *tpa\normal = *rawB : Else *tpa\active=*rawB
+        *rawB = Null
+      Next
+    End If
+
+    If *rp Then ntui_FreeRastPort{*rp}
+    If *rawW Then FreeVec_ *rawW : *rawW = Null
+
+    FreeDiskObject_ *icon
+  EndIf
+
+  Function Return *tpa\normal
+
+End Function
 
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
@@ -840,7 +1023,7 @@ End Function
 ;/ - result.l     : ???                                                        /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.l _ntui_LoadBitMapViaDT{filename.s,imgnum.l,*width.l,*height.l}
+Function.tuiARGB _ntui_LoadBitMapViaDT{filename.s,imgnum.l,*width.l,*height.l}
 DEFTYPE.BitMapHeader *bmhdp
 DEFTYPE.pdtBlitPixelArray DTM
 *raw.tuiARGB = Null : succ.l=False
@@ -932,7 +1115,7 @@ End Function
 ;/ - result.l     : ???                                                        /
 ;/                                                                             /
 ;///////////////////////////////////////////////////////////////////////////////
-Function.l _ntui_AttemptTuiBitMap{imagefile.s}
+Function.tuiBitMap _ntui_AttemptTuiBitMap{imagefile.s}
 
   If tuiGlobal\bitMapCache\tuiBitMapA  ; check if the image is already in cache ...
     For n.l=0 To tuiGlobal\bitMapCache\tuiBitMapsUsed-1
@@ -971,10 +1154,10 @@ Function.l _ntui_ExpandTuiBitMapCache{bitmapN.l}
 End Function
 
 
-Function.l _ntui_ObtainTuiBitMap{imagefile.s}
+Function.tuiBitMap _ntui_ObtainTuiBitMap{imagefile.s}
 
   *tbm.tuiBitMap = _ntui_AttemptTuiBitMap{imagefile}
-  If *tbm Then Function Return *tbm
+  If *tbm Then Function Return *tbm 
 
   If _ntui_ExpandTuiBitMapCache{tuiGlobal\bitMapCache\tuiBitMapsUsed} ; if buffer is large enough, add new image
     *tbm = AllocVec_(SizeOf.tuiBitMap,#MEMF_ANY)
@@ -991,9 +1174,9 @@ Function.l _ntui_ObtainTuiBitMap{imagefile.s}
       *tpa\disabled = Null
       *tpa\focus    = Null
       *tpa\mover    = Null
-      *tpa\width  = 1
-      *tpa\height = 1
-      *tbm\bmode=#TUIIBM_OPAQUE
+      *tpa\width    = 1
+      *tpa\height   = 1
+      *tbm\bmode    = #TUIIBM_OPAQUE
 
       If *tpa\normal=Null ; try Icon first...
         If Right$(imagefile,5)=".info"
@@ -1770,45 +1953,55 @@ Function.tuiTBImage ntui_CreateTBImage{*engine.tuiEngine,image.s,@tuiWidth.l,@tu
     Case "NEW"          : *tbi\tuiImage = #TUIIMAGE_NEW
     Default             : *tbi\tuiImage = #TUIIMAGE_BITMAP
       *buff.b = AllocVec_(4096,#MEMF_ANY)
-      lock.l = Lock_ (image,#ACCESS_READ)
-      If lock
-        If *buff
-          If NameFromLock_(lock,*buff,4095) = 0
-            image=Peek.s(*buff)
-          End If
+      If *buff
+        ;imagefile.s=image
+        lock.l = Lock_ (&image,#ACCESS_READ)
+        If lock
+          If NameFromLock_(lock,*buff,4095) = 0 Then imagefile.s=Peek.s(*buff) : Else imagefile=image
+          UnLock_ lock
+          *tbi\tuiBitMap = _ntui_ObtainTuiBitMap{imagefile}
         End If
-        UnLock_ lock
-        *tbi\tuiBitMap = _ntui_ObtainTuiBitMap{image}
-      Else
-        If str_Len{*engine\imageDir}>0
-          image = dos_AddPart{Peek.s(str_GetPtr{*engine\imageDir}),image}
-          lock.l = Lock_ (image,#ACCESS_READ)
-          If lock
-            If *buff
-              If NameFromLock_(lock,*buff,4095) = 0
-                image=Peek.s(*buff)
-              End If
+        ;If image="aiss" Then error{"trying "+imagefile+" = "+Hex$(*tbi\tuiBitMap)}
+      
+        If *tbi\tuiBitMap = Null
+          If str_Len{*engine\imagePath}>0
+            imagefile = dos_AddPart{str_Read{&*engine\imagePath},image}
+            lock.l = Lock_ (&imagefile,#ACCESS_READ)
+            If lock
+              If NameFromLock_(lock,*buff,4095) = 0 Then imagefile=Peek.s(*buff)
+              UnLock_ lock
+              *tbi\tuiBitMap = _ntui_ObtainTuiBitMap{imagefile}
             End If
-            UnLock_ lock
-            *tbi\tuiBitMap = _ntui_ObtainTuiBitMap{image}
           End If
+          ;If image="aiss" Then error{"trying "+imagefile+" = "+Hex$(*tbi\tuiBitMap)}
         End If
+      
+        If *tbi\tuiBitMap = Null
+          If str_Len{*engine\aissPath}>0
+            imagefile = dos_AddPart{str_Read{&*engine\aissPath},image}
+            lock.l = Lock_ (&imagefile,#ACCESS_READ)
+            If lock
+              If NameFromLock_(lock,*buff,4095) = 0 Then imagefile=Peek.s(*buff)
+              UnLock_ lock
+              *tbi\tuiBitMap = _ntui_ObtainTuiBitMap{imagefile}
+            End If
+          End If
+          ;If image="aiss" Then error{"trying "+imagefile+" = "+Hex$(*tbi\tuiBitMap)}
+        End If
+      
+        FreeVec_ *buff
       End If
-      If *buff Then FreeVec_ *buff
-
-
+      
       If *tbi\tuiBitMap=Null Then *tbi\tuiImage = #TUIIMAGE_UNKNOWN ;: error{"Loading error: "+image}
   End Select
 
   If *tbi\tuiBitMap=Null
     If *engine\useAISS
       If *tbi\tuiImage>=0 AND *tbi\tuiImage<#TUIMAX_IMAGES
-
         If tuiAISS(*tbi\tuiImage)><"" ; map to AISS!
           *tbi\tuiBitMap = _ntui_ObtainTuiBitMap{tuiAISS(*tbi\tuiImage)}
           If *tbi\tuiBitMap Then *tbi\tuiImage = #TUIIMAGE_BITMAP
         End If
-
       End If
     End If
   End If
@@ -1876,8 +2069,6 @@ Statement ntui_DrawTBImage{*tbi.tuiTBImage,*rp.RastPort,*bbox.tuiRect,*cbox.tuiR
   x2.l = *cbox\right
   y2.l = *cbox\bottom
 
-
-
   If *tbi\tuiImage><#TUIIMAGE_BITMAP
     If bgPen>=0
       SetAPen_ *rp,bgPen
@@ -1892,7 +2083,6 @@ Statement ntui_DrawTBImage{*tbi.tuiTBImage,*rp.RastPort,*bbox.tuiRect,*cbox.tuiR
     RectFill_ *rp,*cbox\left,*cbox\top,*cbox\right,*cbox\bottom
     bgPen=-1
   CEND
-
 
   If (flags&#TUIF_DISABLED)
     fgPen.l = *engine\pen[#TUIPEN_HALFSHADOW]
@@ -2824,8 +3014,11 @@ Select *tbi\tuiImage
           bx1.l = (x1+x2+1)/2-(*tpa\width)/2
           ;If bx1<x1 Then bx1=x1
           ;If by1<y1 Then by1=y1
-
-          _ntui_WritePixelArrayAlpha{*pa,0,0,*rp,bx1,by1,*tpa\width,*tpa\height,imode,bgARGB}
+          If *engine\cModel=#TUICM_TRUECOLOR
+            _ntui_WritePixelArrayAlpha{*pa,0,0,*rp,bx1,by1,*tpa\width,*tpa\height,imode,bgARGB}
+          Else
+            _ntui_WritePixelArrayAlpha4{*pa,0,0,*rp,bx1,by1,*tpa\width,*tpa\height,imode,bgPen}
+          End If
 
           If bgPen>=0
             SetAPen_ *rp,bgPen
@@ -2859,7 +3052,11 @@ Select *tbi\tuiImage
           ;If bx1<x1 Then bx1=x1
           ;If by1<y1 Then by1=y1
 
-          _ntui_WritePixelArray{*pa,0,0,*rp,bx1,by1,*tpa\width,*tpa\height,imode}
+          If *engine\cModel=#TUICM_TRUECOLOR
+            _ntui_WritePixelArray      {*pa,0,0,*rp,bx1,by1,*tpa\width,*tpa\height,imode}
+          Else
+            _ntui_WritePixelArrayAlpha4{*pa,0,0,*rp,bx1,by1,*tpa\width,*tpa\height,imode,bgPen}
+          End If
 
           If bgPen>=0
             SetAPen_ *rp,bgPen
@@ -2889,13 +3086,14 @@ End Select
   If *tbi\emblem
     !tuiCopyRect{ebox.tuiRect,*cbox}
     *tpa = _ntui_AccessTBImage{*tbi\emblem}
+    If (*tpa)
     ebox\bottom = *cbox\bottom + *tpa\height/2 : If ebox\bottom>*bbox\bottom Then ebox\bottom = *bbox\bottom
     ebox\right  = *cbox\right  + *tpa\width /2 : If ebox\right >*bbox\right  Then ebox\right  = *bbox\right
     ebox\top    = ebox\bottom-*tpa\height+1
     ebox\left   = ebox\right -*tpa\width+1
     ntui_DrawTBImage{*tbi\emblem,*rp,ebox,ebox,flags,#TUIPEN_TRANSPARENT}
+    End If
   End If
-
 
 End Statement
 

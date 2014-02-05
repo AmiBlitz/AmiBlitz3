@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 0
 ; Version         = 0.1.0
-; NumberOfBuilds  = 3556
+; NumberOfBuilds  = 3557
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 896
-; CursorColumn    = 29
+; CursorLine      = 2311
+; CursorColumn    = 1
 ; LabelSearch     = "att"
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -102,10 +102,11 @@ optimize 7
 Syntax 6
 #NTUI_DEBUG = 0
 #NTUI_SAFERESIZE = 0
-
+XINCLUDE "ab3support.include.ab3"
+If AB3Support_OpenLib{0}=False Then error{"Please install ab3support.library!"} : End
 
 XINCLUDE "NTUI/definitions.ab3"
-Syntax 6
+
 
 ;CNIF #NTUI_DEBUG
 Function.l RNDPen{}
@@ -213,7 +214,8 @@ End Statement
 
 
 ;/ include utility functions */
-XINCLUDE "z.include.ab3"
+XINCLUDE "dos.include.ab3"
+;XINCLUDE "z.include.ab3"
 XINCLUDE "mousepointer.ab3"
 XINCLUDE "tempbuffer.ab3"
 XINCLUDE "file.ab3"
@@ -252,8 +254,14 @@ Statement FAST ntui_FreeObject{*obj.tuiObject}
     ntui_FreeObject{*obj\child}
   Wend
 
+  !tuiHandleNotify{done.l,*obj,onFree,Null}
   If *obj\Deinit Then !_CallFuncPointer{*obj\Deinit,ret.l,*obj}
-
+  !tuiFreeNotifyHandler{*obj\onFocus}
+  !tuiFreeNotifyHandler{*obj\onLoseFocus}
+  !tuiFreeNotifyHandler{*obj\onMover}
+  !tuiFreeNotifyHandler{*obj\onLoseMover}
+  !tuiFreeNotifyHandler{*obj\onFree}
+  
   If *obj\child Then error{"\\__THIS_FUNCTION: Tui object still has children after free! classID="+Str$(*obj\classID)+"!"} : Statement Return
 
   If *obj\prev  Then *obj\prev\next_ = *obj\next_   ; relink previous
@@ -1046,7 +1054,17 @@ Function.l ntui_SetAttr{*obj.tuiObject,ti_Tag.l,ti_Data.l}
     Case #TUIA_USERDATA      : *obj\userData       = ti_Data
     Case #TUIA_MOUSEPOINTER  : ntui_SetPointer{*obj,ti_Data}
     Case #TUIA_GRADIENT      : *obj\gradient       = ti_Data
-
+    Case #TUIA_ONFOCUS       : str_WritePtr{&*obj\onFocus\notifyID ,ti_Data}
+    Case #TUIA_ONFOCUSCB     : *obj\onFocus\callback = ti_Data
+    Case #TUIA_ONLOSEFOCUS   : str_WritePtr{&*obj\onLoseFocus\notifyID ,ti_Data}
+    Case #TUIA_ONLOSEFOCUSCB : *obj\onLoseFocus\callback = ti_Data
+    Case #TUIA_ONMOVER       : str_WritePtr{&*obj\onMover\notifyID ,ti_Data}
+    Case #TUIA_ONMOVERCB     : *obj\onMover\callback = ti_Data
+    Case #TUIA_ONLOSEMOVER   : str_WritePtr{&*obj\onLoseMover\notifyID ,ti_Data}
+    Case #TUIA_ONLOSEMOVERCB : *obj\onLoseMover\callback = ti_Data
+    Case #TUIA_ONFREE        : str_WritePtr{&*obj\onFree\notifyID ,ti_Data}
+    Case #TUIA_ONFREECB      : *obj\onFree\callback = ti_Data
+ 
     Default
       !_ASSERT{False}
       done = False ; unknown attr
@@ -1179,6 +1197,16 @@ Function.l ntui_GetAttr{*obj.tuiObject,ti_Tag.l,*ti_Data_.l}
     Case #TUIA_USERDATA      : *ti_Data\l = *obj\userData
     Case #TUIA_ENGINE        : *ti_Data\l = *obj\engine
     Case #TUIA_GRADIENT      : *ti_Data\l = *obj\gradient
+    Case #TUIA_ONFOCUS       : *ti_Data\l = str_GetPtr{*obj\onFocus\notifyID}
+    Case #TUIA_ONFOCUSCB     : *ti_Data\l = *obj\onFocus\callback
+    Case #TUIA_ONLOSEFOCUS   : *ti_Data\l = str_GetPtr{*obj\onLoseFocus\notifyID}
+    Case #TUIA_ONLOSEFOCUSCB : *ti_Data\l = *obj\onLoseFocus\callback
+    Case #TUIA_ONMOVER       : *ti_Data\l = str_GetPtr{*obj\onMover\notifyID}
+    Case #TUIA_ONMOVERCB     : *ti_Data\l = *obj\onMover\callback
+    Case #TUIA_ONLOSEMOVER   : *ti_Data\l = str_GetPtr{*obj\onLoseMover\notifyID}
+    Case #TUIA_ONLOSEMOVERCB : *ti_Data\l = *obj\onLoseMover\callback
+    Case #TUIA_ONFREE        : *ti_Data\l = str_GetPtr{*obj\onFree\notifyID}
+    Case #TUIA_ONFREECB      : *ti_Data\l = *obj\onFree\callback    
     Default
       done=False
   End Select
@@ -1200,15 +1228,19 @@ Statement _ntui_DispatchEvent{*obj.tuiObject,*ev.tuiEvent}
 
   Select *ev\id
     Case #TUIEV_FOCUS
+      !tuiHandleNotify{done,*obj,onFocus,*ev}
       ntui_Refresh{*obj,Null}
 
     Case #TUIEV_LOSEFOCUS
+      !tuiHandleNotify{done,*obj,onLoseFocus,*ev}
       ntui_Refresh{*obj,Null}
 
     Case #TUIEV_MOVER
+      !tuiHandleNotify{done,*obj,onMover,*ev}
       ntui_Refresh{*obj,Null}
 
     Case #TUIEV_LOSEMOVER
+      !tuiHandleNotify{done,*obj,onLoseMover,*ev}
       ntui_Refresh{*obj,Null}
 
     Case #TUIEV_REFRESH
@@ -1339,6 +1371,8 @@ Function.tuiObject _ntui_CreateObject_deprecated{typeID.l,sizeof_obj.l,help.s,fl
     *obj\margin\top    = *engine\defMargin\top
     *obj\margin\right  = *engine\defMargin\right
     *obj\margin\bottom = *engine\defMargin\bottom
+    
+    
 
     *obj\parent      = tuiGlobal\buildHelper\parent               ; parent/child
     If (tuiGlobal\buildHelper\parent)
@@ -1447,6 +1481,12 @@ Function.tuiObject _ntui_CreateObject{typeID.l,sizeof_obj.l,flags.l}
     *obj\margin\top       = *engine\defMargin\top
     *obj\margin\right     = *engine\defMargin\right
     *obj\margin\bottom    = *engine\defMargin\bottom
+    
+    !tuiInitNotifyHandler{*obj\onFocus}
+    !tuiInitNotifyHandler{*obj\onLoseFocus}
+    !tuiInitNotifyHandler{*obj\onMover}
+    !tuiInitNotifyHandler{*obj\onLoseMover}
+    !tuiInitNotifyHandler{*obj\onFree}
 
     *obj\parent           = tuiGlobal\buildHelper\parent               ; parent/child
     If (tuiGlobal\buildHelper\parent)
@@ -1658,7 +1698,17 @@ Statement ntui_InitDefaultClass{}
   ntui_RegisterAttr{classID ,"bind"          ,#TUIA_NONE          ,#TUIAT_BIND   ,0,0}
   ntui_RegisterAttr{classID ,"align"         ,#TUIA_ALIGN         ,#TUIAT_INT    ,0,0}
   ntui_RegisterAttr{classID ,"gradient"      ,#TUIA_GRADIENT      ,#TUIAT_INT    ,0,0}
-
+  ntui_RegisterAttr{classID ,"onfocus"       ,#TUIA_ONFOCUS       ,#TUIAT_STRING ,0,0}
+  ntui_RegisterAttr{classID ,"onfocuscb"     ,#TUIA_ONFOCUSCB     ,#TUIAT_PTR    ,0,0}
+  ntui_RegisterAttr{classID ,"onlosefocus"   ,#TUIA_ONLOSEFOCUS   ,#TUIAT_STRING ,0,0}
+  ntui_RegisterAttr{classID ,"onlosefocuscb" ,#TUIA_ONLOSEFOCUSCB ,#TUIAT_PTR    ,0,0}
+  ntui_RegisterAttr{classID ,"onmover"       ,#TUIA_ONMOVER       ,#TUIAT_STRING ,0,0}
+  ntui_RegisterAttr{classID ,"onmovercb"     ,#TUIA_ONMOVERCB     ,#TUIAT_PTR    ,0,0}
+  ntui_RegisterAttr{classID ,"onlosemover"   ,#TUIA_ONLOSEMOVER   ,#TUIAT_STRING ,0,0}
+  ntui_RegisterAttr{classID ,"onlosemovercb" ,#TUIA_ONLOSEMOVERCB ,#TUIAT_PTR    ,0,0}
+  ntui_RegisterAttr{classID ,"onfree"        ,#TUIA_ONFREE        ,#TUIAT_STRING ,0,0}
+  ntui_RegisterAttr{classID ,"onfreecb"      ,#TUIA_ONFREECB      ,#TUIAT_PTR    ,0,0}
+  
   ntui_RegisterValue{classID,"left"          ,#TUIALIGN_LEFT}
   ntui_RegisterValue{classID,"right"         ,#TUIALIGN_RIGHT}
   ntui_RegisterValue{classID,"center"        ,#TUIALIGN_CENTER}
@@ -1718,6 +1768,14 @@ Statement ntui_InitDefaultClass{}
   ntui_RegisterValue{classID,"hscrollercontainer" ,#TUIBORDER_HSCROLLERCONTAINER}
   ntui_RegisterValue{classID,"vscrollercontainer" ,#TUIBORDER_VSCROLLERCONTAINER}
 
+  ntui_RegisterValue{classID,"inline"          ,#TUISIZE_INLINE   }
+  ntui_RegisterValue{classID,"font"            ,#TUISIZE_FONT   }
+  ntui_RegisterValue{classID,"fixfont"         ,#TUISIZE_FIXFONT   }
+  ntui_RegisterValue{classID,"smallfont"       ,#TUISIZE_SMALLFONT   }
+  ntui_RegisterValue{classID,"native"          ,#TUISIZE_NATIVE   }
+  ntui_RegisterValue{classID,"min"             ,#TUISIZE_MIN   }
+  ntui_RegisterValue{classID,"button"          ,#TUISIZE_BUTTON   }
+  
 End Statement
 
 
@@ -2375,20 +2433,19 @@ End Function
 !autoexit{_ntui_Free}
 
 
-*engine.tuiEngine = ntuib_Engine{"NTUI-Demo","NTUI","NTUI-Demo-Menu","Sys:disk.info",""}
+*engine.tuiEngine = ntuib_Engine{"NTUI-Demo","NTUI","NTUI-Demo-Menu","Sys:disk",""}
 If *engine=Null Then error{"Unable to initialized Engine!"} : End ; Ooops!
-a.s = "Sys:Prefs/Presets/NTUI/def2"
-ntui_SetAttr{*engine,#TUIEA_SKINPATH,&a.s}
-ntui_SetAttr{*engine,#TUIEA_USESKIN,0}
+;a.s = "Sys:Prefs/Presets/NTUI/def2"
+;ntui_SetAttr{*engine,#TUIEA_SKINPATH,&a.s}
+;ntui_SetAttr{*engine,#TUIEA_USESKIN,0}
 ntui_SetAttr{*engine,#TUIEA_USEAISS,0}
-ntui_SetAttr{*engine,#TUIEA_BORDERSTYLE,0}
+ntui_SetAttr{*engine,#TUIEA_BORDERSTYLE,1}
 ntui_SetAttr{*engine,#TUIEA_FILLSTYLE,1}
 ntui_SetAttr{*engine,#TUIEA_BUFFEREDDRAW,1}
-
-ntui_SetAttr{*engine,#TUIEA_DEFPADDING,2}
-ntui_SetAttr{*engine,#TUIEA_DEFMARGIN,2}
+buttonskin.s = "/Data/button.9.png"
+;ntui_SetAttr{*engine,#TUIEA_DEFPADDING,2}
+;ntui_SetAttr{*engine,#TUIEA_DEFMARGIN,2}
 If ntui_PopUp{*engine}=False Then error{"Unable to pop up!"}:End ; whats wrong with the screen!?
-
 
 ;ntui_BuildFromXMLFile{*engine,"Sourcecodes:Audio/HD-Rec_SVN/HD-Rec_Source/Plugins/MacroWave/gui/main.xml"}
 
@@ -2484,7 +2541,7 @@ If *demoWin
 
         ntuib_Label    {"Skinned Button",#TUIF_RIGHT}
         *btn.tuiButton=ntuib_Button   {"Skin","","","this is a button with 9-patch image skin"}
-        buttonskin.s = "/Data/button.9.png"
+
         ntui_SetAttr{*btn,#TUIA_BGIMAGE,&buttonskin}
 
         ntuib_Space{0,0} : ntuib_Space{0,0}

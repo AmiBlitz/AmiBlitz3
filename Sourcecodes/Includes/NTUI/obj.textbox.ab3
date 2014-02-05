@@ -150,7 +150,6 @@
 #TUITBA_ONCURSORCB         = #TUITBA_BASE + 31; rw
 #TUITBA_ONEDIT             = #TUITBA_BASE + 32; rw
 #TUITBA_ONEDITCB           = #TUITBA_BASE + 33; rw
-
 #TUITBA_TEXT               = #TUIA_STRING ; rw
 #TUITBA_NUMBER             = #TUIA_VALUE
 #TUITBA_SUBCLASSID         = #TUITBA_BASE + 34; rw
@@ -172,6 +171,8 @@
 #TUITBA_DEFAULTSHORTCUTS   = #TUITBA_BASE + 50; rw
 #TUITBA_ONCLICK            = #TUITBA_BASE + 51; rw
 #TUITBA_ONCLICKCB          = #TUITBA_BASE + 52; rw
+#TUITBA_ONPOSTKEY          = #TUITBA_BASE + 53; rw
+#TUITBA_ONPOSTKEYCB        = #TUITBA_BASE + 54; rw
 
 ;/* ntui TextBox Flags */
 #TUITBF_LEFTWRAP              = $00000001
@@ -230,15 +231,15 @@
 
 ;/* ntui TextBox Line Flags */
 #TUITBLF_NONE             = $0   ; no flags
-#TUITBLF_COMMENT          = $1   ; propagate multi-line comment
-#TUITBLF_INIT             = $2
-;#TUITBLF_DETOKENIZED      = $4
+#TUITBLF_INCOMMENT        = $1   ; propagate multi-line comment
+#TUITBLF_INTAG            = $2   ; propagate multi-line comment
+#TUITBLF_INIT             = $4
 #TUITBLF_STOLEN           = $8   ; line is not allocated by us
 #TUITBLF_ALLOC            = $10  ; was allocated by us
-;#TUITBLF_RETURN_LF        = $20  ; return code line feed ($0A)
-;#TUITBLF_RETURN_CR        = $40  ; return code return carrier ($0D)
-#TUITBLF_STYLED            = $4
 #TUITBLF_HOT              = $20
+#TUITBLF_STYLED           = $40
+
+#TUITBLF_STYLEFLAGS       = #TUITBLF_INCOMMENT|#TUITBLF_INTAG|#TUITBLF_HOT|#TUITBLF_STYLED
 
 ; Undo containers
 #TUITBUNDO_INSERTNEWLINE = 1
@@ -260,24 +261,27 @@
 #TUITBEV_FLCLOSE = #TUIEV_USER +2
 
 NEWTYPE.styleCommand
+
  clength.b  ; length to next command
  command.b  ; command
  data1.b    ; data of command
  data2.b    ; reserved
+ 
 End NEWTYPE
 
 
 NEWTYPE.tline ; line contains ASCII text and special tokenized version
-flags.l       ; like #tflag_comment
 
-blength.l     ; allocated length
-clength.l     ; character length (including return code)
-*text.b       ; pointer to (NOT 0 terminated!) text string
+  flags.l       ; like #tflag_comment
 
-sblength.l    ; allocated length in bytes
-sclength.l    ; command length
-*style.styleCommand ; tokenized info for text
-              ; format is length/command
+  blength.l     ; allocated length
+  clength.l     ; character length (including return code)
+  *text.b       ; pointer to (NOT 0 terminated!) text string
+
+  sblength.l    ; allocated length in bytes
+  sclength.l    ; command length
+  *style.styleCommand ; tokenized info for text
+                      ; format is length/command
 End NEWTYPE
 
 ; Tui TextBox Style Command
@@ -299,7 +303,7 @@ End NEWTYPE
 #TUISCB_DONE        =  0  ; we are done tokenizing
 #TUISCB_ERROR       = -1 ; error during tokenizing
 #TUISCB_NEXT        =  1  ; tokenize next line too
-#TUISCB_PREVFIRST   =  2  ; tokenize prev line FIRST
+#TUISCB_PREV        =  2  ; tokenize prev line FIRST
 
 NEWTYPE.tuiTextBox
 obj.tuiObject        ; tui object header
@@ -387,6 +391,7 @@ penObtained.w [#TUITBPEN_MAX]
 
 onChange.tuiNotifyHandler     ; called everytime the text changes (but not on every key)
 onKey.tuiNotifyHandler        ; called before every key-stroke
+onPostKey.tuiNotifyHandler    ; called after every key-stroke
 onEdit.tuiNotifyHandler       ; called when textbox first edited
 onCursor.tuiNotifyHandler     ; called everytime the cursor changes its position
 onFileListenerClose.tuiNotifyHandler
@@ -1523,24 +1528,29 @@ Statement _tb_DrawStyledLine{*textBox.tuiTextBox,*rp.RastPort,lpos.l,x.l,y.l,x2.
   If *tline
 
     If (*tline\flags&#TUITBLF_STYLED)=0
-      If \styleCB
-        !_CallFuncPointer{\styleCB,result.l,*textBox,lpos.l,*tline}
-      Else
-        *tline\flags = (*tline\flags|#TUITBLF_STYLED)
-        result = #TUISCB_DONE
-      End If
+      minlpos.l = lpos+1
+      maxlpos.l = lpos-1
+      curlpos.l = lpos
+    
+      Repeat
+        more.l = False
+        If \styleCB
+          !line_use{*xtline,curlpos}
+          If *xtline
+            !_CallFuncPointer{\styleCB,result.l,*textBox,curlpos,*xtline}
+            If result = #TUISCB_NEXT Then curlpos+1 : more=True : If curlpos>maxlpos Then maxlpos=curlpos
+            If result = #TUISCB_PREV Then curlpos-1 : more=True : If curlpos<minlpos Then minlpos=curlpos 
+            If result = #TUISCB_DONE AND curlpos<lpos Then curlpos+1 : more=True
+          End If
+        Else
+          *tline\flags = (*tline\flags|#TUITBLF_STYLED)
+          result = #TUISCB_DONE
+        End If
+        
+      Until more=False
     End If
 
-    While result=#TUISCB_NEXT
-      lpos+1
-      If lpos<*textBox\totalLines
-        !line_use{*xline, lpos}
-        !_CallFuncPointer{\styleCB,result,*textBox,lpos,*xline}
-       _tb_Damage{*textBox,lpos,lpos}
-      Else
-        result = #TUISCB_DONE
-      End If
-    Wend
+    If minlpos<maxlpos Then _tb_Damage{*textBox,minlpos,maxlpos}
 
     fontFlags.l = 0
 
@@ -2510,7 +2520,7 @@ Statement _tb_MoveCursor{*textBox.tuiTextBox,dx.l,dy.l,shift.l,*rp.RastPort}
     If (\edflags&#TUITBF_LOOSESELECTION><0) Then _tb_SetSelection{*textBox,-1,-1,-1,-1}
   End If
   ;If *rp Then _tb_ShowBrackets{*textBox,*rp}
-  ;!tuiHandleNotify{done.l,*textBox,onCursor,Null}
+  !tuiHandleNotify{done.l,*textBox,onCursor,Null}
 End Statement
 
 
@@ -3567,6 +3577,26 @@ Statement ntui_DeleteTextBoxSelection{*textBox.tuiTextBox,@*rp.RastPort}
 
 End Statement
 
+Function.l ntui_ReplaceTextBoxSelection{*textBox.tuiTextBox,*replace.b,replaceLen.l}
+  DEFTYPE.longP lposaP,lposbP,cposaP,cposbP
+
+  ntui_GetAttr{*textBox,#TUITBA_BEGINSELECTLINE,lposaP}
+  ntui_GetAttr{*textBox,#TUITBA_BEGINSELECTCHAR,cposaP}
+  ntui_GetAttr{*textBox,#TUITBA_ENDSELECTLINE,lposbP}
+  ntui_GetAttr{*textBox,#TUITBA_ENDSELECTCHAR,cposbP}
+
+  If lposaP\l<lposbP\l OR (lposaP\l=lposbP\l AND cposaP\l<=cposbP\l)
+    _tb_Delete{*textBox,lposaP\l,cposaP\l,lposbP\l,cposbP\l}
+    If *replace><Null AND replaceLen>0
+      _tb_Insert{*textBox,lposaP\l,cposaP\l,*replace,replaceLen}
+      _tb_seek{*textBox,lposaP,cposaP,replaceLen}
+    End If
+  End If
+    
+  Function Return True
+
+End Function
+
 
 Function.l ntui_ReplaceTextBoxText{*textBox.tuiTextBox,*replace.b,replaceLen.l,*find.b,findLen.l,casesensitive.l,all.l}
 
@@ -3900,7 +3930,6 @@ Function.l _ntui_TextBoxVanillaKey{*textBox.tuiTextBox,*ev.tuiEvent,*rp.RastPort
           _tb_SetCursor{*textBox,\cursor_lpos+1,0}
         End If
         done.l = True
-        ;str_Dup{&*ev\notifyID,*textBox\obj\onKeyDown}
         ;_tb_UpdateCursorPixelPos{*textBox,*rp}
       Else ; single line textbox
         ;\accept=False
@@ -3917,7 +3946,6 @@ Function.l _ntui_TextBoxVanillaKey{*textBox.tuiTextBox,*ev.tuiEvent,*rp.RastPort
         _tb_Delete{*textBox,\cursor_lpos,\cursor_cpos,\cursor_lpos,\cursor_cpos+1}
       End If
       done.l = True
-      ;str_Dup{&*ev\notifyID,*textBox\obj\onKeyDown}
       ;_tb_UpdateCursorPixelPos{*textBox,*rp}
       _tb_ScrollToCursor{*textBox,*rp}
 
@@ -3939,7 +3967,6 @@ Function.l _ntui_TextBoxVanillaKey{*textBox.tuiTextBox,*ev.tuiEvent,*rp.RastPort
         _tb_Delete{*textBox,delline,delpos,delline,delpos+1}
       End If
       done = True
-      ;str_Dup{&*ev\notifyID,*textBox\obj\onKeyDown}
       ;_tb_UpdateCursorPixelPos{*textBox,*rp}
 
     Default
@@ -4069,6 +4096,9 @@ Function.l _ntui_KeyStrokeTextBox{*textBox.tuiTextBox,*ev.tuiEvent,*rp.RastPort}
     Case #RAWKEY_DOWN ; 77 ; down
       If \undo Then ntui_StopUndoStep{\undo}
       _tb_MoveCursor{*textBox,0,1,shift,*rp}  : done=True
+      
+    Case #RAWKEY_ESC
+      done=False
 
     Case #RAWKEY_TAB ; 66 ; TAB
       If ((*textBox\edflags&#TUITBF_READONLY)=0)
@@ -4086,11 +4116,27 @@ Function.l _ntui_KeyStrokeTextBox{*textBox.tuiTextBox,*ev.tuiEvent,*rp.RastPort}
       If ((*textBox\edflags&#TUITBF_READONLY)=0)
         done = _ntui_TextBoxVanillaKey{*textBox,*ev,*rp}
       Else
-        If (quali&(#TUIQUAL_COM|#TUIQUAL_CTRL)) ; ok, copy is supported in ReadOnly!
-        ;Select vkey
-;          Case @"c" : _tb_do_copy{*textBox} :tuievent\notify=False
-;          Case 3    : _tb_do_copy{*textBox} :tuievent\notify=False; C
-        ;End Select
+        ntui_GetEventAttr{*ev,#TUIEVA_STRING,&vanillakeyP.l}
+        If vanillakeyP Then key.l = Peek.b(vanillakeyP) : Else key=0
+        ntui_GetEventAttr{*ev,#TUIEVA_QUALIFIER,&quali.l}
+
+        If (quali&#TUIQUAL_COM)
+          If (*textBox\edflags&#TUITBF_DEFAULTSHORTCUTS)><0
+            Select key
+              Case @"c":
+                _tb_Copy{*textBox,\selection_begin_lpos,\selection_begin_cpos,\selection_end_lpos,\selection_end_cpos}
+                done = True
+              Case @"a":
+                cpos.l = 0
+                !line_use{*tline, *textBox\totalLines-1}
+                If *tline
+                  cpos = *tline\clength
+                End If
+                _tb_SetSelection{*textBox,0,0,*textBox\totalLines,cpos}
+                done = True
+            End Select
+          End If
+          done=True
         End If
       End If
   End Select
@@ -4217,6 +4263,8 @@ Function.l _ntui_SetTextBoxAttr{*textBox.tuiTextBox,ti_Tag.l,ti_Data.l}
     Case #TUITBA_ONCLICKCB          : *textBox\onClick\callback = ti_Data    
     Case #TUITBA_ONKEY              : str_WritePtr{&*textBox\onKey\notifyID ,ti_Data}
     Case #TUITBA_ONKEYCB            : *textBox\onKey\callback = ti_Data
+    Case #TUITBA_ONPOSTKEY          : str_WritePtr{&*textBox\onPostKey\notifyID ,ti_Data}
+    Case #TUITBA_ONPOSTKEYCB        : *textBox\onPostKey\callback = ti_Data
     Case #TUITBA_ONEDIT             : str_WritePtr{&*textBox\onEdit\notifyID ,ti_Data}
     Case #TUITBA_ONEDITCB           : *textBox\onEdit\callback = ti_Data
     Case #TUITBA_ONSUBMIT           : str_WritePtr{&*textBox\onSubmit\notifyID ,ti_Data}
@@ -4232,7 +4280,7 @@ Function.l _ntui_SetTextBoxAttr{*textBox.tuiTextBox,ti_Tag.l,ti_Data.l}
     Case #TUITBA_STYLECB            : *textBox\styleCB = ti_Data
       *tline.tline = *textBox\doc
       For lpos.l = 0 To *textBox\totalLines-1
-        *tline\flags = (*tline\flags|#TUITBLF_STYLED|#TUITBLF_COMMENT) - (#TUITBLF_STYLED|#TUITBLF_COMMENT)
+        *tline\flags = (*tline\flags|#TUITBLF_STYLEFLAGS) - (#TUITBLF_STYLEFLAGS)
         *tline + SizeOf.tline
       Next
       _tb_AddFontStyles{*textBox}
@@ -4327,6 +4375,8 @@ Function.l _ntui_GetTextBoxAttr{*textBox.tuiTextBox,ti_Tag.l,*ti_Data.longP}
     Case #TUITBA_ONCHANGECB         : *ti_Data\l = *textBox\onChange\callback
     Case #TUITBA_ONKEY              : *ti_Data\l = str_GetPtr{*textBox\onKey\notifyID}
     Case #TUITBA_ONKEYCB            : *ti_Data\l = *textBox\onKey\callback
+    Case #TUITBA_ONPOSTKEY          : *ti_Data\l = str_GetPtr{*textBox\onPostKey\notifyID}
+    Case #TUITBA_ONPOSTKEYCB        : *ti_Data\l = *textBox\onPostKey\callback
     Case #TUITBA_ONEDIT             : *ti_Data\l = str_GetPtr{*textBox\onEdit\notifyID}
     Case #TUITBA_ONEDITCB           : *ti_Data\l = *textBox\onEdit\callback
     Case #TUITBA_ONSUBMIT           : *ti_Data\l = str_GetPtr{*textBox\onSubmit\notifyID}
@@ -4393,11 +4443,13 @@ Function.l _ntui_DispatchTextBoxEvent{*textBox.tuiTextBox,*ev.tuiEvent}
       _tb_Repair{*textBox,*rp}
 
       If *rp Then ntui_ReleaseRastPort{*textBox}
+      !tuiHandleNotify{done,*textBox\obj,onLoseFocus,*ev}
       done=True
 
     Case #TUIEV_FOCUS
       *rp.RastPort = ntui_ObtainRastPort{*textBox}
       *textBox\accept = True
+      *textBox\obj\flags | #TUIF_ACTIVE - #TUIF_ACTIVE
       If *textBox\edflags&#TUITBF_SELECTONFOCUS
 
         If *textBox\selection_begin_lpos<0
@@ -4416,12 +4468,15 @@ Function.l _ntui_DispatchTextBoxEvent{*textBox.tuiTextBox,*ev.tuiEvent}
       _tb_DoBlink{*textBox,*rp,On}
 
       If *rp Then ntui_ReleaseRastPort{*textBox}
+      !tuiHandleNotify{done,*textBox\obj,onFocus,*ev}
       done=True
 
     Case #TUIEV_LOSEMOVER
+      !tuiHandleNotify{done,*textBox\obj,onLoseMover,*ev}
       done=True
 
     Case #TUIEV_MOVER
+      !tuiHandleNotify{done,*textBox\obj,onMover,*ev}
       done=True
 
     Case #TUITBEV_APPEND:
@@ -4471,12 +4526,14 @@ Function.l _ntui_DispatchTextBoxEvent{*textBox.tuiTextBox,*ev.tuiEvent}
           done=True
           End If
         End If
+        
       End If
 
     Case #TUIEV_MOUSEUP
       If (*textBox\obj\flags & #TUIF_ACTIVE)
         !tuiHandleNotify{done,*textBox,onClick,*ev}
         done.l = True
+        *textBox\obj\flags | #TUIF_ACTIVE - #TUIF_ACTIVE
       End If
       
     Case #TUIEV_MOUSEMOVE
@@ -4498,6 +4555,12 @@ Function.l _ntui_DispatchTextBoxEvent{*textBox.tuiTextBox,*ev.tuiEvent}
         *rp.RastPort = ntui_ObtainRastPort{*textBox}
         done = _ntui_KeyStrokeTextBox{*textBox,*ev,*rp}
         If *rp Then ntui_ReleaseRastPort{*textBox}
+        !tuiHandleNotify{discard.l,*textBox,onPostKey,*ev}
+        If discard
+          *rp.RastPort = ntui_ObtainRastPort{*textBox}
+          _tb_Repair{*textBox,*rp}
+          If *rp Then ntui_ReleaseRastPort{*textBox}
+        End If
       End If
 
     Case #TUIEV_TICK
@@ -4880,6 +4943,7 @@ Statement _ntui_DeinitTextBox{*textBox.tuiTextBox}
   !tuiFreeNotifyHandler{*textBox\onChange}
   !tuiFreeNotifyHandler{*textBox\onClick}
   !tuiFreeNotifyHandler{*textBox\onKey}
+  !tuiFreeNotifyHandler{*textBox\onPostKey}
   !tuiFreeNotifyHandler{*textBox\onEdit}
   !tuiFreeNotifyHandler{*textBox\onSubmit}
   !tuiFreeNotifyHandler{*textBox\onCursor}
@@ -4914,6 +4978,10 @@ Function.tuiTextBox ntui_TextBox{*tagList.TagItem}
     For n.l=0 To 255 ; accpet all ASCII characters
       *textBox\validChar[n]=True
     Next
+    *textBox\validChar[$9B] = False
+    *textBox\validChar[$03] = False
+    *textBox\validChar[$9B] = False
+    *textBox\validChar[$9B] = False
 
     *textBox\step_\x                         = *textBox\obj\engine\defStep\x
     *textBox\step_\y                         = 4
@@ -4941,6 +5009,7 @@ Function.tuiTextBox ntui_TextBox{*tagList.TagItem}
     *textBox\tuiPenN[#TUITBPEN_LABEL]        = #TUIPEN_BLUE
     *textBox\tuiPenN[#TUITBPEN_BG2]          = #TUIPEN_TOOLTIPBG;#TUIPEN_SHINE
     *textBox\tuiPenS[#TUITBPEN_BG2]          = #TUIPEN_MARKER
+    *textBox\tuiPenN[#TUITBPEN_BG2]          = #TUIPEN_TOOLTIPBG;#TUIPEN_SHINE
 
     *textBox\font                            = Null
     *textBox\fontI                           = Null
@@ -4970,7 +5039,7 @@ Function.tuiTextBox ntui_TextBox{*tagList.TagItem}
     *textBox\topLine                         = 0
     *textBox\scrollerMode                    = #TUISCROLLER_AUTO
     *textBox\obj\gradient                    = #TUIORIENT_NONE
-    *textBox\scrollborder_x                  = \tab_width
+    *textBox\scrollborder_x                  = *textBox\tab_width
     *textBox\scrollborder_y                  = 0
     *textBox\filename                        = Null
     *textBox\hint                            = Null
@@ -4986,6 +5055,7 @@ Function.tuiTextBox ntui_TextBox{*tagList.TagItem}
     !tuiInitNotifyHandler{*textBox\onClick}
     !tuiInitNotifyHandler{*textBox\onChange}
     !tuiInitNotifyHandler{*textBox\onKey}
+    !tuiInitNotifyHandler{*textBox\onPostKey}
     !tuiInitNotifyHandler{*textBox\onEdit}
     !tuiInitNotifyHandler{*textBox\onSubmit}
     !tuiInitNotifyHandler{*textBox\onCursor}
@@ -5308,6 +5378,8 @@ Statement ntui_InitTextBoxClass{}
   ntui_RegisterAttr{classID,"onchangecb"       ,#TUITBA_ONCHANGECB         ,#TUIAT_PTR      , 0,0 }
   ntui_RegisterAttr{classID,"onkey"            ,#TUITBA_ONKEY              ,#TUIAT_STRING   , 0,0 }
   ntui_RegisterAttr{classID,"onkeycb"          ,#TUITBA_ONKEYCB            ,#TUIAT_PTR      , 0,0 }
+  ntui_RegisterAttr{classID,"onpostkey"        ,#TUITBA_ONPOSTKEY          ,#TUIAT_STRING   , 0,0 }
+  ntui_RegisterAttr{classID,"onpostkeycb"      ,#TUITBA_ONPOSTKEYCB        ,#TUIAT_PTR      , 0,0 }
   ntui_RegisterAttr{classID,"oncursor"         ,#TUITBA_ONCURSOR           ,#TUIAT_STRING   , 0,0 }
   ntui_RegisterAttr{classID,"oncursorcb"       ,#TUITBA_ONCURSORCB         ,#TUIAT_PTR      , 0,0 }
   ntui_RegisterAttr{classID,"onfilelistenerclose"         ,#TUITBA_ONFILELISTENERCLOSE          ,#TUIAT_STRING   , 0,0 }
@@ -5351,6 +5423,8 @@ Statement ntui_InitTextBoxClass{}
   ntui_RegisterAttr{classID,"onchangecb"       ,#TUITBA_ONCHANGECB         ,#TUIAT_PTR      , 0,0 }
   ntui_RegisterAttr{classID,"onkey"            ,#TUITBA_ONKEY              ,#TUIAT_STRING   , 0,0 }
   ntui_RegisterAttr{classID,"onkeycb"          ,#TUITBA_ONKEYCB            ,#TUIAT_PTR      , 0,0 }
+  ntui_RegisterAttr{classID,"onpostkey"        ,#TUITBA_ONPOSTKEY          ,#TUIAT_STRING   , 0,0 }
+  ntui_RegisterAttr{classID,"onpostkeycb"      ,#TUITBA_ONPOSTKEYCB        ,#TUIAT_PTR      , 0,0 }
   ntui_RegisterAttr{classID,"oncursor"         ,#TUITBA_ONCURSOR           ,#TUIAT_STRING   , 0,0 }
   ntui_RegisterAttr{classID,"oncursorcb"       ,#TUITBA_ONCURSORCB         ,#TUIAT_PTR      , 0,0 }
   ntui_RegisterAttr{classID,"text"             ,#TUITBA_TEXT               ,#TUIAT_STRING   , 0,0 }
