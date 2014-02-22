@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 518
+; NumberOfBuilds  = 519
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 959
-; CursorColumn    = 129
-; LabelSearch     = "sc"
+; CursorLine      = 1628
+; CursorColumn    = 46
+; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelPosition   = 0
@@ -204,6 +204,7 @@ NEWTYPE.DocType_AmiBlitz3
   *Tokens.hashmap     ; hashmap with tokens => lib/id
   *LTokens.hashmap    ; hashmap with lowercased tokens => tokens
   *Detokens.l         ; reverse map to hashmap entries
+  *TokensT.prefixtree
   *TempP.b
   *LineP.b
   AIDEDir.s           ; directory for Amiblitz3 related files
@@ -815,6 +816,8 @@ End Statement
 
 Statement genSdkMap{*sdk.prefixtree,*lsdk.prefixtree}
 
+  If *sdk=Null Then Statement Return
+
   pft_Reset{*sdk}
   While pft_GetNextItem{*sdk}
     key.s = pft_GetKey{*sdk}
@@ -859,6 +862,7 @@ End Function
 Function.s getSdkLookAhead{*local.prefixtree,*local_l.prefixtree,*sdk.prefixtree,*sdk_l.prefixtree,type_.s,prefix.s}
 
   lhl.s = ""
+  If *local
   succ.l = pft_Reset{*local,type_+":"+prefix}
   ;error{"local: pft_Reset("+type_+":"+prefix+") = "+Str$(succ)}
   While pft_GetNextItem{*local}
@@ -868,7 +872,9 @@ Function.s getSdkLookAhead{*local.prefixtree,*local_l.prefixtree,*sdk.prefixtree
     lhl + name+"\\09"
   Wend
   If lhl><"" Then Function Return lhl
-  
+  End If
+
+  If *sdk
   succ.l = pft_Reset{*sdk,type_+":"+prefix}
   ;error{"global: pft_Reset("+type_+":"+prefix+") = "+Str$(succ)}
   While pft_GetNextItem{*sdk}
@@ -877,6 +883,7 @@ Function.s getSdkLookAhead{*local.prefixtree,*local_l.prefixtree,*sdk.prefixtree
     name.s  = cropfield{info,0,$09,$09}
     lhl + name+"\\09"
   Wend
+  End If
   Function Return lhl
   
 End Function
@@ -1043,8 +1050,9 @@ Function.l _AmiBlitz3_ReadToken2LibFile{filename.s,*hm.hashmap}
   Function Return True
 
 End Function
- 
-Function.l _AmiBlitz3_ReadTokenFile{filename.s,*hm.hashmap,*cm.hashmap}
+
+
+Function.l _AmiBlitz3_ReadTokenFile{filename.s,*hm.hashmap,*cm.hashmap,*pft.prefixtree}
 
   fid.l = file_Open{filename,#file_read}
   If fid<0 Function Return False
@@ -1064,6 +1072,7 @@ Function.l _AmiBlitz3_ReadTokenFile{filename.s,*hm.hashmap,*cm.hashmap}
       lname.s = LCase$(name)
       If hashmap_GetItem{*hm,name}="" AND hashmap_GetItem{*hm,lname}="" AND hashmap_GetItem{*cm,lname}=""
         hashmap_AddItem{*hm,name,tokenS}
+        If *pft><Null Then pftlib_SetInt32{*pft,&name,tokenW & $FFFF}
         If *cm><Null AND name><lname Then hashmap_AddItem{*cm,lname,name}
       Else
         ; error{"Token Clash: "+name}
@@ -1081,6 +1090,7 @@ Function.l _AmiBlitz3_Prepare{refresh.l}
   tokenfile.s      = dos_AddPart{AmiBlitz3\AIDEDir,"tokens.tmp.txt"}
   includesfile.s   = dos_AddPart{AmiBlitz3\AIDEDir,"includes.tmp.txt"}
   hashmapfile.s    = dos_AddPart{AmiBlitz3\AIDEDir,"tokens.hash"}
+  tokenspftfile.s  = dos_AddPart{AmiBlitz3\AIDEDir,"tokens.pft"}
   lhashmapfile.s   = dos_AddPart{AmiBlitz3\AIDEDir,"tokens.l.hash"}
   sdkfile.s        = dos_AddPart{AmiBlitz3\AIDEDir,"sdk.pft"}
   lsdkfile.s       = dos_AddPart{AmiBlitz3\AIDEDir,"sdk.l.pft"}
@@ -1090,6 +1100,7 @@ Function.l _AmiBlitz3_Prepare{refresh.l}
   If dos_Exist{hashmapfile} AND dos_Exist{lhashmapfile} AND refresh=False
     AmiBlitz3\Tokens  = hashmap_Load{hashmapfile}
     AmiBlitz3\LTokens = hashmap_Load{lhashmapfile}
+    AmiBlitz3\TokensT = pft_Load{tokenspftfile}
   End If
   
   If dos_Exist{sdkfile} AND dos_Exist{lsdkfile} AND refresh=False
@@ -1100,14 +1111,19 @@ Function.l _AmiBlitz3_Prepare{refresh.l}
   ; /* ========== Regenerate if not exists ================= */
   If AmiBlitz3\Tokens=Null OR AmiBlitz3\LTokens=Null
     dos_RunCli{AmiBlitz3\Exe,0,-1,True,"-dump token "+tokenfile+""}
+
     *hm.hashmap = hashmap_Create{14}
     *cm.hashmap = hashmap_Create{14}
+    *pft.prefixtree = pft_Create{4096}
     If *hm
-      _AmiBlitz3_ReadTokenFile{tokenfile,*hm,*cm}
+      _AmiBlitz3_ReadTokenFile{tokenfile,*hm,*cm,*pft}
       AmiBlitz3\Tokens  = *hm
       AmiBlitz3\LTokens = *cm
+      AmiBlitz3\TokensT = pft_Optimize{*pft}
+      pft_Free{*pft}
       hashmap_Save{AmiBlitz3\Tokens,hashmapfile}
       hashmap_Save{AmiBlitz3\LTokens,lhashmapfile}
+      pft_Save{AmiBlitz3\TokensT,tokenspftfile}
     End If
   End If
 
@@ -1313,6 +1329,7 @@ End Function
 AmiBlitz3_Deinit:
 Statement AmiBlitz3_Deinit{}
 
+  If AmiBlitz3\TokensT  Then pft_Free{AmiBlitz3\TokensT}    : AmiBlitz3\TokensT  = Null
   If AmiBlitz3\Tokens   Then hashmap_Free{AmiBlitz3\Tokens} : AmiBlitz3\Tokens   = Null
   If AmiBlitz3\LTokens  Then hashmap_Free{AmiBlitz3\LTokens}: AmiBlitz3\LTokens  = Null
   If AmiBlitz3\Detokens Then FreeVec_ AmiBlitz3\Detokens    : AmiBlitz3\Detokens = Null
@@ -1521,7 +1538,8 @@ Function.l _AmiBlitz3_ImportAB3{docX.l,filename.s}
 
         Until headerDone
 
-        ntui_AppendTextBox{*textBox,inP+offset,rlength-offset}
+        ;ntui_AppendTextBox{*textBox,inP+offset,rlength-offset}
+        _ntui_SetTextBoxText{*textBox,inP+offset,rlength-offset}
       End If
       FreeVec_ inP
     End If
@@ -1658,13 +1676,14 @@ Function.l AmiBlitz3_Import{docX.l,*filenameP.b}
   filename.s = Peek.s(*filenameP)
   ex.s       = dos_GetExt{filename}
   *textBox.tuiTextBox = AIDE\Document[docX]\TextBox
-
+  ntui_SetAttr{*textBox,#TUITBA_UNDO,False}
   Select ex
     Case "ab2"
       err.l = ntui_LoadTextBox{*textBox,&filename}
       AIDE\Document[docX]\IsLocked = True
     Case "ab3"
       err.l = _AmiBlitz3_ImportAB3{docX,filename}
+      ntui_SetAttr{*textBox,#TUITBA_UNDO,True}
       AIDE\Document[docX]\IsLocked = False
     Case "bb2"
       err.l = _AmiBlitz3_ImportBB2{docX,filename}
@@ -1753,7 +1772,7 @@ Statement AmiBlitz3_UpdateSDK{docX.l}
     filt.s = ntui_GetStringByID{*ntui,!obj_ab3_filter}
   End If
   
-  #MAX_AB3RESULTS = 100
+  #MAX_AB3RESULTS = 1000
   If all 
     func=True:macr=True:newt=True:labe=True:cons=True:glob=True:loca=True:stri=True:toke=True
     prefix.s = ""
@@ -1772,7 +1791,7 @@ Statement AmiBlitz3_UpdateSDK{docX.l}
   
   filt = LCase$(filt)
   
-  If *lv
+  If *lv><Null AND *sdk><Null
     ntui_ClearListView{*lv}
     title.s = "\pinfo|\lEntity Name|\lMore..."
     ntui_SetAttr{*lv,#TUILVA_TITLE,&title}
@@ -1785,144 +1804,144 @@ Statement AmiBlitz3_UpdateSDK{docX.l}
       key.l = pftlib_GetFoundKey{*sdk,&keyLen.l}
       addit.l = False
         
-        Select Peek.l(key)
-          Case @"FUNC":
-            If func
-              info.s   = pft_GetString{*sdk}
-              name.s   = cropfield{info,0,$09,$09}
-              ;source.s = cropfield{info,1,$09,$09}          
-              ;line_.s  = cropfield{info,2,$09,$09}          
-              type_.s  = cropfield{info,3,$09,$09}
-              track.s  = cropfield{info,4,$09,$09}
-              help.s   = cropfield{info,5,$09,$00}
-              text.s   = "F|"+name+"|" + "{"+track+"}"
-              If type_><"" Then text + " => ."+type_+" "
-              If help><"" Then text+" ; "+help
-              addit = True
-            End If
-              
-          Case @"MACR"
-            If macr
-              info.s = pft_GetString{*sdk}
-              name.s   = cropfield{info,0,$09,$09}
-              ;source.s = cropfield{info,1,$09,$09}          
-              ;line_.s  = cropfield{info,2,$09,$09}          
-              help.s  = cropfield{info,3,$09,$09}
-              text.s = "M|!"+name +"|"
-              If help><"" Then text+"; "+help
-              addit = True
-            End If
-
-          Case @"TOKE"
-            If toke
-              info.s = pft_GetString{*sdk}
-              name.s   = cropfield{info,0,$09,$09}
-              ;source.s = cropfield{info,1,$09,$09}          
-              ;line_.s  = cropfield{info,2,$09,$09}          
-              help.s  = cropfield{info,3,$09,$09}
-              text.s = "@|"+name +"|"+ntui_EscapeListViewString{*lv,help}
-              addit = True
-            End If
-
-          Case @"CONS"
-            If cons
-              info.s = pft_GetString{*sdk}
-              name.s   = cropfield{info,0,$09,$09}
-              ;source.s = cropfield{info,1,$09,$09}          
-              ;line_.s  = cropfield{info,2,$09,$09}          
-              value.s  = cropfield{info,3,$09,$09}
-              help.s  = cropfield{info,4,$09,$09}
-              text.s = "C|#"+name + "|= "+value
-              If help><"" Then text+" ; "+help
-              addit = True
-            End If
-              
-          Case @"NEWT"
-            If newt
-              info.s = pft_GetString{*sdk}
-              name.s   = cropfield{info,0,$09,$09}
-              ;source.s = cropfield{info,1,$09,$09}          
-              ;line_.s  = cropfield{info,2,$09,$09}          
-              help.s  = cropfield{info,3,$09,$09}
-              text.s = "NT|."+name+"|"
-              If help><"" Then text+"; "+help
-              addit = True
-            EndIf
-              
-          Case @"LABE"
-            If labe
-              info.s = pft_GetString{*sdk}
-              name.s   = cropfield{info,0,$09,$09}
-              ;source.s = cropfield{info,1,$09,$09}          
-              ;line_.s  = cropfield{info,2,$09,$09}          
-              help.s  = cropfield{info,3,$09,$09}
-              text.s = "L|:"+name+"|"
-              If help><"" Then text+"; "+help
-              addit = True
-            End If
-
-          Case @"STRI"
-            If stri
-              info.s = pft_GetString{*sdk}
-              ;name.s     = cropfield{info,0,$09,$09}
-              ;source.s = cropfield{info,1,$09,$09}          
-              ;line_.s  = cropfield{info,2,$09,$09}          
-              help.s     = cropfield{info,4,$09,$09}
-              string.s   = cropfield{info,3,$09,$09}
-              string     = ntui_EscapeListViewString{*lv,string}
-              text.s = "$|"+"\d<literal>"+"|"+string+"|"
-              ;If help><"" Then text+"; "+help
-              addit = True
-            End If
-
-          Case @"GLOB"
-            If glob
-              info.s = pft_GetString{*sdk}
-              name.s   = cropfield{info,0,$09,$09}
-              ;source.s = cropfield{info,1,$09,$09}          
-              ;line_.s  = cropfield{info,2,$09,$09}          
-              typ.s    = cropfield{info,3,$09,$09}
-              help.s  = cropfield{info,4,$09,$09}
-              text.s = "G|"+name+"|."+typ+""
-              If help><"" Then text+" ; "+help
-              addit = True
-            End If
-              
-          Case @"LOCA"
-            If loca
-              info.s   = pft_GetString{*sdk}
-              name.s   = ntui_EscapeListViewString{*lv,cropfield{info,0,$09,$09}}
-              ;xpos.l   = Instr(name,"\")
-              ;infunc.s   = "???"
-              ;If xpos>0
-              ;  infunc = Left$(name,xpos-1)
-              ;  name   = Right$(name,FLen(name)-xpos)
-              ;End If
-              ;source.s = cropfield{info,1,$09,$09}          
-              ;line_.s  = cropfield{info,2,$09,$09}          
-              typ.s    = cropfield{info,3,$09,$09}
-              help.s   = cropfield{info,4,$09,$09}
-              text.s  = "V|"+name+"|."+typ+""
-              If help><"" Then text+" ; "+help
-              addit = True
-            End If
-            
-          Default
-            addit = False
-
-        End Select
-          
-        If addit
-          ;If filt><"" Then addit.l = instr_nocase{text,filt}
-          If filt><"" Then addit.l = instr_nocaseP{&text,FLen(text),&filt,FLen(filt),0}
-          If addit
-            count+1
-            ntui_AddListItem{*lv,-1,text,-1,Null,$0}
+      Select Peek.l(key)
+        Case @"FUNC":
+          If func
+            info.s   = pft_GetString{*sdk}
+            name.s   = cropfield{info,0,$09,$09}
+            ;source.s = cropfield{info,1,$09,$09}
+            ;line_.s  = cropfield{info,2,$09,$09}
+            type_.s  = cropfield{info,3,$09,$09}
+            track.s  = cropfield{info,4,$09,$09}
+            help.s   = cropfield{info,5,$09,$00}
+            text.s   = "F|"+name+"|" + "{"+track+"}"
+            If type_><"" Then text + " => ."+type_+" "
+            If help><"" Then text+" ; "+help
+            addit = True
           End If
+
+        Case @"MACR"
+          If macr
+            info.s = pft_GetString{*sdk}
+            name.s   = cropfield{info,0,$09,$09}
+            ;source.s = cropfield{info,1,$09,$09}
+            ;line_.s  = cropfield{info,2,$09,$09}
+            help.s  = cropfield{info,3,$09,$09}
+            text.s = "M|!"+name +"|"
+            If help><"" Then text+"; "+help
+            addit = True
+          End If
+
+        Case @"TOKE"
+          If toke
+            info.s = pft_GetString{*sdk}
+            name.s   = cropfield{info,0,$09,$09}
+            ;source.s = cropfield{info,1,$09,$09}
+            ;line_.s  = cropfield{info,2,$09,$09}
+            help.s  = cropfield{info,3,$09,$09}
+            text.s = "@|"+name +"|"+ntui_EscapeListViewString{*lv,help}
+            addit = True
+          End If
+
+        Case @"CONS"
+          If cons
+            info.s = pft_GetString{*sdk}
+            name.s   = cropfield{info,0,$09,$09}
+            ;source.s = cropfield{info,1,$09,$09}
+            ;line_.s  = cropfield{info,2,$09,$09}
+            value.s  = cropfield{info,3,$09,$09}
+            help.s  = cropfield{info,4,$09,$09}
+            text.s = "C|#"+name + "|= "+value
+            If help><"" Then text+" ; "+help
+            addit = True
+          End If
+
+        Case @"NEWT"
+          If newt
+            info.s = pft_GetString{*sdk}
+            name.s   = cropfield{info,0,$09,$09}
+            ;source.s = cropfield{info,1,$09,$09}
+            ;line_.s  = cropfield{info,2,$09,$09}
+            help.s  = cropfield{info,3,$09,$09}
+            text.s = "NT|."+name+"|"
+            If help><"" Then text+"; "+help
+            addit = True
+          EndIf
+
+        Case @"LABE"
+          If labe
+            info.s = pft_GetString{*sdk}
+            name.s   = cropfield{info,0,$09,$09}
+            ;source.s = cropfield{info,1,$09,$09}
+            ;line_.s  = cropfield{info,2,$09,$09}
+            help.s  = cropfield{info,3,$09,$09}
+            text.s = "L|:"+name+"|"
+            If help><"" Then text+"; "+help
+            addit = True
+          End If
+
+        Case @"STRI"
+          If stri
+            info.s = pft_GetString{*sdk}
+            ;name.s     = cropfield{info,0,$09,$09}
+            ;source.s = cropfield{info,1,$09,$09}
+            ;line_.s  = cropfield{info,2,$09,$09}
+            help.s     = cropfield{info,4,$09,$09}
+            string.s   = cropfield{info,3,$09,$09}
+            string     = ntui_EscapeListViewString{*lv,string}
+            text.s = "$|"+"\d<literal>"+"|"+string+"|"
+            ;If help><"" Then text+"; "+help
+            addit = True
+          End If
+
+        Case @"GLOB"
+          If glob
+            info.s = pft_GetString{*sdk}
+            name.s   = cropfield{info,0,$09,$09}
+            ;source.s = cropfield{info,1,$09,$09}
+            ;line_.s  = cropfield{info,2,$09,$09}
+            typ.s    = cropfield{info,3,$09,$09}
+            help.s  = cropfield{info,4,$09,$09}
+            text.s = "G|"+name+"|."+typ+""
+            If help><"" Then text+" ; "+help
+            addit = True
+          End If
+
+        Case @"LOCA"
+          If loca
+            info.s   = pft_GetString{*sdk}
+            name.s   = ntui_EscapeListViewString{*lv,cropfield{info,0,$09,$09}}
+            ;xpos.l   = Instr(name,"\")
+            ;infunc.s   = "???"
+            ;If xpos>0
+            ;  infunc = Left$(name,xpos-1)
+            ;  name   = Right$(name,FLen(name)-xpos)
+            ;End If
+            ;source.s = cropfield{info,1,$09,$09}
+            ;line_.s  = cropfield{info,2,$09,$09}
+            typ.s    = cropfield{info,3,$09,$09}
+            help.s   = cropfield{info,4,$09,$09}
+            text.s  = "V|"+name+"|."+typ+""
+            If help><"" Then text+" ; "+help
+            addit = True
+          End If
+
+        Default
+          addit = False
+
+      End Select
+
+      If addit
+        ;If filt><"" Then addit.l = instr_nocase{text,filt}
+        If filt><"" Then addit.l = instr_nocaseP{&text,FLen(text),&filt,FLen(filt),0}
+        If addit
+          count+1
+          ntui_AddListItem{*lv,-1,text,-1,Null,$0}
         End If
-          
-      Wend
-    EndIf
+      End If
+
+    Wend
+  EndIf
   image.s = "filter"
   text.s = Str$(count)+" results out of "+Str$(scount)+" total"
   If count<=0    Then image+"|off"
@@ -1976,13 +1995,17 @@ Function.l AmiBlitz3_JumpTo{docX.l,*typeP.b,*nameP.b,*moreP.b}
     docX.l   = Document_Open{source}
     If lpos>0 Then lpos-1
     If cpos>0 Then cpos-1
-    Document_JumpTo{docX,lpos,cpos}
+    Document_JumpTo{docX,lpos,cpos,True}
   End If
   
   Function Return 0
   
 End Function
 !_MakeGlobalFuncPointer{AmiBlitz3_JumpTo,{0,Null,Null,Null}}
+
+Function.s _ab3_GetScanResultFilename{docX.l}
+  Function Return "RAM:AB3"+Hex$(FindTask_(Null))+Str$(docX)+".async.txt"
+End Function
 
 
 AmiBlitz3_ScanSource:
@@ -2006,6 +2029,7 @@ Statement AmiBlitz3_ScanSource{docX.l,*filenameP.b}
   params.s  = filename
   ;error{"Scan source: "+ab3scan + " >"+resultfile+" " + params}
   ;Stop
+
   fid.l = file_Open{resultfile,#file_forcewrite}
   If fid>=0
     fh.l = file_GetFH{fid}
@@ -2022,6 +2046,57 @@ Statement AmiBlitz3_ScanSource{docX.l,*filenameP.b}
 
 End Statement
 !_MakeGlobalFuncPointer{AmiBlitz3_ScanSource,{0,Null}}
+
+
+AmiBlitz3_ScanSourceAsync:
+Statement AmiBlitz3_ScanSourceAsync{docX.l,*filenameP.b}
+
+  filename.s   = Peek.s(*filenameP)
+  resultfile.s = _ab3_GetScanResultFilename{docX}
+  ab3scan.s    = dos_AddPart{AmiBlitz3\AIDEDir,"AB3Scan"}
+  params.s     = filename
+  ;ntui_RunAsyncAndNotify{*obj.tuiObject,exe.s,params.s,outfile.s,notifyId.s,value.l,string.s}
+  ntui_RunAsyncAndNotify{*ntui,ab3scan,params,resultfile,"FILESCAN",docX,filename}
+
+End Statement
+!_MakeGlobalFuncPointer{AmiBlitz3_ScanSourceAsync,{0,Null}}
+
+
+AmiBlitz3_ScanSourceFinish:
+Statement AmiBlitz3_ScanSourceFinish{docX.l,*filenameP.b}
+
+  ;If *filenameP=Null Then Statement Return
+
+  resultfile.s = _ab3_GetScanResultFilename{docX.l}
+
+  *xtra.AmiBlitz3_Xtra = AIDE\Document[docX]\Xtra
+  If *xtra=Null Then Statement Return
+
+  If *xtra\LocalSDK Then pft_Free{*xtra\LocalSDK} : *xtra\LocalSDK = Null
+  If *xtra\LocalLSDK Then pft_Free{*xtra\LocalLSDK} : *xtra\LocalLSDK = Null
+
+  If *xtra\LocalSDK = Null Then *xtra\LocalSDK   = pft_Create{4096}
+  If *xtra\LocalSDK = Null Then Statement Return
+
+  If *xtra\LocalLSDK = Null Then *xtra\LocalLSDK = pft_Create{4096}
+  If *xtra\LocalLSDK = Null Then Statement Return
+
+  ;fid.l = file_Open{resultfile,#file_forcewrite}
+  ;If fid>=0
+    ;fh.l = file_GetFH{fid}
+    ;dos_RunCli{ab3scan,-1,-1,True,params,Null,fh}
+    ;file_Close{fid}
+    If *xtra\LocalSDK
+      _AmiBlitz3_ReadSDKFile{resultfile,*xtra\LocalSDK,$09}
+      pft_Sort{*xtra\LocalSDK}
+      If *xtra\LocalLSDK
+        genSdkMap{*xtra\LocalSDK,*xtra\LocalLSDK}
+      End If
+    End If
+  ;End If
+
+End Statement
+!_MakeGlobalFuncPointer{AmiBlitz3_ScanSourceFinish,{0,Null}}
 
 
 Function.s _ab3_CropPrevToken{*textP.b,cpos.l,*fpos.l}
@@ -2462,7 +2537,9 @@ Statement AmiBlitz3_Init{docType.l}
   AIDE\DocType[docType]\Export        = *AmiBlitz3_Export
   AIDE\DocType[docType]\Attach        = *AmiBlitz3_Attach
   AIDE\DocType[docType]\Detach        = *AmiBlitz3_Detach
-  AIDE\DocType[docType]\ScanSource    = *AmiBlitz3_ScanSource
+  AIDE\DocType[docType]\ScanSource    = Null;*AmiBlitz3_ScanSource
+  AIDE\DocType[docType]\ScanSourceAsync  = *AmiBlitz3_ScanSourceAsync
+  AIDE\DocType[docType]\ScanSourceFinish = *AmiBlitz3_ScanSourceFinish
   AIDE\DocType[docType]\UpdateSDK     = *AmiBlitz3_UpdateSDK
   AIDE\DocType[docType]\JumpTo        = *AmiBlitz3_JumpTo
   AIDE\DocType[docType]\OpenSettings  = *AmiBlitz3_OpenSettings

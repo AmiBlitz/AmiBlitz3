@@ -3,7 +3,7 @@
 ; 
 ; General Info
 ; -------------------------------------------------------
-; ExePath         = "Sys:Programme/AIDE/Types/AmiBlitz3"
+; ExePath         = "/AIDE/Types/AmiBlitz3"
 ; ExeFile         = "AB3Scan"
 ; CreateIcon      = 0
 ; Residents       = "all.res"
@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 521
+; NumberOfBuilds  = 573
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 8
-; CursorColumn    = 33
+; CursorLine      = 547
+; CursorColumn    = 12
 ; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -77,13 +77,17 @@
 ; /XTRA
 Syntax 6
 optimize 7
+XINCLUDE "ab3support.include.ab3"
 
-XINCLUDE "file.include.ab3"
+If AB3Support_OpenLib{0}=False Then error{"Please install ab3support.library!"} : End
+
 XINCLUDE "dos.include.ab3"
 XINCLUDE "strptr.include.ab3"
 XINCLUDE "prefixtree.include.ab3"
 
 error_SetFlags{#error_stdout}
+
+#FBUFF_SIZE = 32768
 
 #AB3H_NONE   = 0
 #AB3H_SEARCH = 1
@@ -146,12 +150,14 @@ vers.s = Peek.s(?version)
 #TOKEN_SHARED    = $8015
 #TOKEN_DEFTYPE   = $8033
 #TOKEN_SizeOf    = $802F
-#TOKEN_Peek      = $8002 ; 180/2
-#TOKEN_Poke      = $8001 ; 180/1
+#TOKEN_Peek      = $0001 ; 180/2
+#TOKEN_Poke      = $0001 ; 180/1
+#TOKEN_Skip      = $0001
 
 NEWTYPE.AmiBlitz3
 
   CharFlags.w[256]    ; character flags
+  *TokenT.prefixtree
 
 End NEWTYPE
 
@@ -165,10 +171,10 @@ NEWTYPE.Parser
   ab3header.l
 
   ; current line
-  first.l
-  bptr.l
-  clength.l
-  linecount.l
+  first.l     ; indicates the first token in statement
+  bptr.l      ; base pointer for current line
+  clength.l   ; character length of current line
+  linecount.l ; count of lines
 
   ; global settings
   recursive.l
@@ -176,10 +182,17 @@ NEWTYPE.Parser
   *filesT.prefixtree
   verbose.l
   dflags.l
+
+  ; state
   in_newtype.l
   in_function.l
   in_macro.l
   *incpath.str
+
+  ; buffer book keeping
+  *fbuffer.b
+  fbuffer_currentpos.l
+  fbuffer_fillpos.l ; read bytes in fbuffer
 
 End NEWTYPE
 
@@ -520,13 +533,15 @@ Function.l _ab3_ParseEnd{*parser.Parser,cpos.l}
     cpos.l = _ab3_SkipToken{*parser,cpos}
     token.s = Peeks$(*parser\bptr+opos,cpos-opos)
     If *parser\verbose>=#VB_DEBUG Then NPrint "DEBUG End: ",token
+    tokenid.l = pftlib_GetInt32{AmiBlitz3\TokenT,&token}
 
-    Select token
-      Case "Function"  : *parser\in_function = False
-      Case "Statement" : *parser\in_function = False
-      Case "NEWTYPE"   : *parser\in_newtype  = False
-      Case "Macro"     : *parser\in_macro    = False
+    Select tokenid
+      Case #TOKEN_Function  : *parser\in_function = False
+      Case #TOKEN_Statement : *parser\in_function = False
+      Case #TOKEN_NEWTYPE   : *parser\in_newtype  = False
+      Case #TOKEN_Macro     : *parser\in_macro    = False
     End Select
+
   End If
   If *parser\verbose>=#VB_DEBUG Then NPrint "DEBUG Parse ===... F:",*parser\in_function," NT:",*parser\in_newtype
 
@@ -602,28 +617,13 @@ End Function
 
 
 Function.l _ab3_ParseToken{*parser.Parser,cpos.l}
-
   opos.l  = cpos-1
   cpos    = _ab3_SkipToken{*parser,opos}
   token.s = Peeks$(*parser\bptr+opos,cpos-opos)
-  tokenid.w = 0
-  If *parser\verbose>=#VB_DEBUG Then NPrint "DEBUG Parse Text Token (=",token,")"
 
-  Select token
-    Case "Function"  : tokenid = #TOKEN_Function
-    Case "Statement" : tokenid = #TOKEN_Statement
-    Case "NEWTYPE"   : tokenid = #TOKEN_NEWTYPE
-    Case "Macro"     : tokenid = #TOKEN_Macro
-    Case "End"       : tokenid = #TOKEN_End
-    Case "XINCLUDE"  : tokenid = #TOKEN_XINCLUDE
-    Case "INCLUDE"   : tokenid = #TOKEN_INCLUDE
-    Case "SHARED"    : tokenid = #TOKEN_SHARED
-    Case "DEFTYPE"   : tokenid = #TOKEN_DEFTYPE
-    Case "If"        : tokenid = #TOKEN_If
-    Case "SizeOf"    : tokenid = #TOKEN_SizeOf
-    Case "Peek"      : tokenid = #TOKEN_Peek
-    Case "Poke"      : tokenid = #TOKEN_Poke
-    Default
+  tokenid.l=pftlib_GetInt32{AmiBlitz3\TokenT,&token}
+  If *parser\verbose>=#VB_DEBUG Then NPrint "DEBUG Parse Text Token ",token," => ",Hex$(tokenid)
+  If tokenid=0
      If *parser\in_newtype
        If opos>0
          c.w = Peek.b(*parser\bptr + opos-1)
@@ -663,13 +663,13 @@ Function.l _ab3_ParseToken{*parser.Parser,cpos.l}
        End If
      End If
      Function Return cpos
-  End Select
+  End If
 
   Select tokenid
-    Case #TOKEN_Function  : cpos = _ab3_ParseFunction{*parser,cpos}      
-    Case #TOKEN_Statement : cpos = _ab3_ParseFunction{*parser,cpos}      
-    Case #TOKEN_Macro     : cpos = _ab3_ParseMacro   {*parser,cpos}      
-    Case #TOKEN_NEWTYPE   : cpos = _ab3_ParseNewtype {*parser,cpos}      
+    Case #TOKEN_Function  : cpos = _ab3_ParseFunction{*parser,cpos}
+    Case #TOKEN_Statement : cpos = _ab3_ParseFunction{*parser,cpos}
+    Case #TOKEN_Macro     : cpos = _ab3_ParseMacro   {*parser,cpos}
+    Case #TOKEN_NEWTYPE   : cpos = _ab3_ParseNewtype {*parser,cpos}
     Case #TOKEN_XINCLUDE  : cpos = _ab3_ParseInclude {*parser,cpos}
     Case #TOKEN_INCLUDE   : cpos = _ab3_ParseInclude {*parser,cpos}
     Case #TOKEN_End       : cpos = _ab3_ParseEnd     {*parser,cpos}
@@ -758,7 +758,10 @@ Function.l FAST _ab3_ParseNumber{*parser.Parser,cpos.l}
 End Function
 
 
-Function.l ab3_ParseLine{*parser.Parser,cpos.l}
+Function.l ab3_ParseLine{*parser.Parser}
+
+  *parser\first   = True
+  cpos.l = 0
 
   While cpos<*parser\clength
     c.b = Peek.b(*parser\bptr+cpos) : cpos+1
@@ -830,6 +833,7 @@ Function.l ab3_ParseLine{*parser.Parser,cpos.l}
 
         End Select
         *parser\first=False
+
       Default
         ; hm, could only be space
     End Select
@@ -845,15 +849,16 @@ Function.Parser ab3_CreateParser{incpath.s,pattern.s,recursive.l,dflags.l,verbos
   *parser.Parser = AllocVec_(SizeOf.Parser,#MEMF_ANY)
   If *parser
     ; current file
-    *parser\filename   = Null
-    *parser\path       = Null
-    *parser\tokenized  = False
-    *parser\ab3header  = #AB3H_NONE
+    *parser\filename    = Null
+    *parser\path        = Null
+    *parser\tokenized   = False
+    *parser\ab3header   = #AB3H_NONE
 
     ; current line
-    *parser\first      = True
-    *parser\bptr       = Null
-    *parser\clength    = 0
+    *parser\first       = True
+    *parser\bptr        = Null
+    *parser\clength     = 0
+    
 
     ; global settings
     *parser\recursive   = recursive
@@ -870,6 +875,10 @@ Function.Parser ab3_CreateParser{incpath.s,pattern.s,recursive.l,dflags.l,verbos
     ParsePatternNoCase_ &pattern,&tempbuf,FLen(tempbuf)
     str_WritePtr{&*parser\pattern,&tempbuf}
     str_Write{&*parser\incpath,incpath}
+
+    *parser\fbuffer = AllocVec_(#FBUFF_SIZE,#MEMF_ANY)
+    *parser\fbuffer_currentpos = 0
+    *parser\fbuffer_fillpos    = 0
    ; NPrint "Incpath : ",str_Read{&*parser\incpath}," len = ",str_Len{*parser\incpath}
   End If
   
@@ -884,47 +893,75 @@ Statement ab3_FreeParser{*parser.Parser}
   str_Free{&*parser\path}
   str_Free{&*parser\incpath}
   str_Free{&*parser\pattern}
-  pft_Free{*parser\filesT} : *parser\filesT = Null
+  If *parser\filesT  Then pft_Free{*parser\filesT}  : *parser\filesT = Null
+  If *parser\fbuffer Then FreeVec_(*parser\fbuffer) : *parser\fbuffer = Null
 
 End Statement
 
-Function.s file_ReadAB3Line {fid.l}
+
+Function.l file_ReadAB3Line2 {*parser.Parser,fid.l}
 
   dummy.l = 0
-  dummy2.l = 0
-  maxc.l = 1024
-  a.s = ""
-  While dummy>=0
-    If file_EOF{fid}
-      dummy=-1
-    Else
-      dummy=0
-      If file_ReadMem {fid,&dummy+3,1} = False Then dummy=-1
-      If dummy=$00 OR dummy=$0a OR FLen(a)>maxc Then dummy=-1
-    End If
-
-    If dummy>=0
-      a.s + Chr$(dummy)
-    End If
-  Wend
-  Function Return a.s
+  bpos.l  = *parser\fbuffer_currentpos
+  eol.l = False
   
+  Repeat
+    If bpos>=*parser\fbuffer_fillpos
+      copylength.l = bpos-*parser\fbuffer_currentpos
+      If copylength>0 Then CopyMem_ *parser\fbuffer+*parser\fbuffer_currentpos,*parser\fbuffer,copylength
+      *parser\fbuffer_fillpos    = copylength
+      *parser\fbuffer_currentpos = copylength
+      readlength.l = Read_ (fid,*parser\fbuffer+*parser\fbuffer_fillpos,#FBUFF_SIZE-*parser\fbuffer_fillpos)
+      *parser\fbuffer_fillpos + readlength
+      bpos = *parser\fbuffer_currentpos
+      If readlength<=0 Then eol=True
+    Else
+      dummy=Peek.b(*parser\fbuffer + bpos)
+      If *parser\tokenized
+        If dummy<0 
+          bpos+1
+          dummy=Peek.b(*parser\fbuffer + bpos)
+          If dummy=0 
+            bpos+1
+            dummy=Peek.b(*parser\fbuffer + bpos)
+          End If
+        End If
+        If dummy=$00 Then eol=True
+      Else
+        If dummy=$0a Then eol=True
+      End If
+      
+      bpos+1
+    End If
+  Until eol
+  
+  *parser\bptr    = *parser\fbuffer + *parser\fbuffer_currentpos
+  *parser\clength = bpos-*parser\fbuffer_currentpos-1
+  *parser\fbuffer_currentpos = bpos
+  If *parser\clength>=0
+    *parser\linecount+1
+    NPrint "Line ",*parser\linecount,":(",bpos,"):",Peeks$(*parser\bptr,*parser\clength)
+  Else
+    NPrint "EOF"
+  End If
+  Function Return *parser\clength>=0
+
 End Function
 
 
-Function.l ab3_Parse{*parser.Parser,filename.s}
+Function.l ab3_ParseFile{*parser.Parser,filename.s}
 
   dosname.s = GetDosFileName{filename}
   
-  done.s = pft_FindItem{*parser\filesT,dosname}
-  If done="done" Then Function Return False
+  status.s = pft_FindItem{*parser\filesT,dosname}
+  If status="done" Then Function Return False
 
   pft_AddItem{*parser\filesT,dosname,"done"}
   str_Write{&*parser\path,dos_PathPart{dosname}}
   str_Write{&*parser\filename,dosname}
 
-  fid.l = file_Open{filename,#file_read}
-  If fid<0 Then Function Return False
+  fid.l = Open_ (&filename,#MODE_OLDFILE)
+  If fid=0 Then Function Return False
 
   *parser\tokenized = False
   *parser\linecount = 0
@@ -939,18 +976,13 @@ Function.l ab3_Parse{*parser.Parser,filename.s}
     NPrint "SOURCE\\09",dosname
   EndIf
 
-  Repeat
-    code.s = file_ReadAB3Line{fid}
-    *parser\linecount+1
-    ;NPrint "line: ",*parser\linecount,"::",code
-  
-    *parser\bptr    = &code ; base pointer
-    *parser\clength = FLen(code) ; length
-    *parser\first   = True
-    ab3_ParseLine{*parser,0}
+  *parser\fbuffer_currentpos = 0
+  *parser\fbuffer_fillpos    = 0
+  While file_ReadAB3Line2{*parser,fid}
+    ab3_ParseLine{*parser}
+  Wend
 
-  Until file_EOF{fid}
-  file_Close{fid}
+  Close_ fid
   
   Function Return True
   
@@ -971,7 +1003,7 @@ Function.l ab3_Scan{*parser.Parser,path.s}
         If fib\fib_DirEntryType<0
           If MatchPatternNoCase_ (&*parser\pattern\str,&fib\fib_FileName)><0 
             ; parse file...
-            ab3_Parse{*parser,filename}
+            ab3_ParseFile{*parser,filename}
           End If
         Else
           If *parser\recursive
@@ -988,11 +1020,11 @@ Function.l ab3_Scan{*parser.Parser,path.s}
   
   pft_Reset{*parser\filesT}
   While pft_GetNextItem{*parser\filesT}
-    value.s    = pft_GetString{*parser\filesT}
+    status.s   = pft_GetString{*parser\filesT}
     filename.s = pft_GetKey{*parser\filesT}
     ;NPrint "Check ",filename," :: ",value
-    If value="todo"
-      ab3_Parse{*parser,filename}
+    If status="todo"
+      ab3_ParseFile{*parser,filename}
       pft_AddItem{*parser\filesT,filename,"done"}
       pft_Reset{*parser\filesT}
     End If
@@ -1003,7 +1035,14 @@ Function.l ab3_Scan{*parser.Parser,path.s}
 End Function
 
 
-Function.l ab3_Init{}
+Statement ab3_Deinit{}
+
+  If AmiBlitz3\TokenT Then pft_Free{AmiBlitz3\TokenT} : AmiBlitz3\TokenT = Null
+
+End Statement
+
+
+Function.l ab3_Init{tokenfile.s}
 
   For n.l=0 To 255
     AmiBlitz3\CharFlags[n] = #AB3TF_ILLEGAL | #AB3TF_STOP | #AB3TF_NEW |#AB3TF_2BYTETOKEN
@@ -1138,6 +1177,37 @@ Function.l ab3_Init{}
   AmiBlitz3\CharFlags[@"~"] = #AB3TF_STOP | #AB3TF_NEW | #AB3TF_COPY
   AmiBlitz3\CharFlags[ 127] = #AB3TF_ILLEGAL | #AB3TF_STOP | #AB3TF_NEW
 
+  AmiBlitz3\TokenT = pft_Load{tokenfile}
+
+  If AmiBlitz3\TokenT=Null
+    AmiBlitz3\TokenT = pft_Create{4096}
+    pftlib_SetInt32{AmiBlitz3\TokenT,"End",#TOKEN_End}
+    pftlib_SetInt32{AmiBlitz3\TokenT,"Return",#TOKEN_Return    } ; $8007
+    pftlib_SetInt32{AmiBlitz3\TokenT,"Statement",#TOKEN_Statement } ; $8008
+    pftlib_SetInt32{AmiBlitz3\TokenT,"Function",#TOKEN_Function  } ; $8009
+    pftlib_SetInt32{AmiBlitz3\TokenT,"If",#TOKEN_If        } ; $800B
+    pftlib_SetInt32{AmiBlitz3\TokenT,"While",#TOKEN_While     } ; $800C
+    pftlib_SetInt32{AmiBlitz3\TokenT,"Macro",#TOKEN_Macro     } ; $800D
+    pftlib_SetInt32{AmiBlitz3\TokenT,"Select",#TOKEN_Select    } ; $800E
+    pftlib_SetInt32{AmiBlitz3\TokenT,"Case",#TOKEN_Case      } ; $800F
+    pftlib_SetInt32{AmiBlitz3\TokenT,"For",#TOKEN_For       } ; $8016
+    pftlib_SetInt32{AmiBlitz3\TokenT,"Then",#TOKEN_Then      } ; $8021
+    pftlib_SetInt32{AmiBlitz3\TokenT,"Stop",#TOKEN_Stop      } ; $802D
+    pftlib_SetInt32{AmiBlitz3\TokenT,"TRAP",#TOKEN_TRAP      } ; $80AE
+    pftlib_SetInt32{AmiBlitz3\TokenT,"Repeat",#TOKEN_Repeat    } ; $80BB
+    pftlib_SetInt32{AmiBlitz3\TokenT,"EndIf",#TOKEN_EndIf     } ; $80C0
+    pftlib_SetInt32{AmiBlitz3\TokenT,"Object",#TOKEN_Object    } ; $80D7
+    pftlib_SetInt32{AmiBlitz3\TokenT,"NEWTYPE",#TOKEN_NEWTYPE   } ; $8001
+    pftlib_SetInt32{AmiBlitz3\TokenT,"INCLUDE",#TOKEN_INCLUDE   } ; $8013
+    pftlib_SetInt32{AmiBlitz3\TokenT,"XINCLUDE",#TOKEN_XINCLUDE  } ; $8012
+    pftlib_SetInt32{AmiBlitz3\TokenT,"SHARED",#TOKEN_SHARED    } ; $8015
+    pftlib_SetInt32{AmiBlitz3\TokenT,"DEFTYPE",#TOKEN_DEFTYPE   } ; $8033
+    pftlib_SetInt32{AmiBlitz3\TokenT,"SizeOf",#TOKEN_SizeOf    } ; $802F
+    ;pftlib_SetInt32{AmiBlitz3\TokenT,"Peek",#TOKEN_Peek      } ; $8002 ; 180/2
+    ;pftlib_SetInt32{AmiBlitz3\TokenT,"Poke",#TOKEN_Poke      } ; $8001 ; 180/1
+    ;pftlib_SetInt32{AmiBlitz3\TokenT,"Dc",#TOKEN_Skip      } ; $8001 ; 180/1
+    ;pftlib_SetInt32{AmiBlitz3\TokenT,"Ds",#TOKEN_Skip      } ; $8001 ; 180/1
+  End If
   Function Return True
 
 End Function
@@ -1161,6 +1231,9 @@ verbose.l    = 1
 recursive.l  = False
 incpath.s    = ""
 dflags.l     = #DF_ALL
+exefile.s    = dos_GetProgFile{""}
+tokendir.s   = dos_PathPart{exefile}
+tokenfile.s  = dos_AddPart{tokendir,"tokens.pft"}
 
 ; Get the required CLI arguments ...
 filename.s = dos_GetNextArg{} ; first read the filename
@@ -1179,6 +1252,7 @@ Repeat
     Case "h"  : showhelp   = True  ; show the help and quit
     Case "r"  : recursive  = True
     Case "i"  : incpath    = dos_GetNextArg{}
+    Case "t"  : tokenfile  = dos_GetNextArg{}
     Case "df" : dflags   = 0
       flags.s = LCase$(dos_GetNextArg{})
       If Instr(flags,"f") Then dflags|#DF_FUNCTION
@@ -1221,6 +1295,7 @@ If err><False OR showhelp = True
   NPrint "                      I = includes"
   NPrint "                      $ = strings"
   NPrint "  -(i)nclude <path> : include directory"
+  NPrint "  -(t)okens <file>  : prefixtree file with AmiBlitz3 tokens"
   NPrint "  -(r)ecursive      : scan recursive (XINCLUDES) too"
   NPrint "  -(v)erbose <v>    : verbose level"
   NPrint "  -(h)help          : show this help"
@@ -1239,12 +1314,16 @@ End If
 
 ; Do something useful here and do some shell output...
 If verbose>1 Then NPrint "INFO Scan \\22",path,"\\22 for \\22",pattern,"\\22..."
-ab3_Init{}
+ab3_Init{tokenfile}
 *parser.Parser = ab3_CreateParser{incpath,pattern,recursive,dflags,verbose}
-If *parser = Null Then NPrint "*** Unable to create AB3 Parser!" : End
+If *parser = Null Then NPrint "*** Unable to create AB3 Parser!" : Goto exit
 ab3_Scan{*parser,path}
+;pft_SaveASCII{*parser\filesT,"ram:ab3scanfilelist.pft.txt"}
+;pft_Save{*parser\filesT,"ram:ab3scanfilelist.pft.bin"}
 If *parser\verbose>1 Then NPrint "INFO Done."
-ab3_FreeParser{*parser} : *parser = Null
+exit:
+If *parser Then ab3_FreeParser{*parser} : *parser = Null
+ab3_Deinit{}
 End
 
 Dc.b "$VER: "
