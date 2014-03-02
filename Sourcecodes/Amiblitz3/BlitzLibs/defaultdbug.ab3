@@ -1,0 +1,572 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = ""
+; ExeFile         = ""
+; CreateIcon      = 1
+; Residents       = ""
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 0
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 0
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 80000
+; RuntimeDebug    = 1
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 1
+; CursorColumn    = 1
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 5
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 5
+; Max GadgetList  = 5
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 20
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 5
+; Max BlitzFont   = 4
+; Max GTList      = 20
+; /XTRA
+
+
+;OK, here's the source code to the Blitz2 default debugger.
+;
+;The debugger system works like this...
+;
+;When Blitz2 is first run, the program 'Blitz2:dbug/defaultdbug'
+;is LoadSeg 'ed into memory. When a program is run from within
+;Blitz2, the debug prog get's started up via 'CreateProc'. The
+;new compiler menu option 'Load Debug Module' allows a different
+;debugger to be used instead of 'defaultdbug'.
+;
+;Note that the debug prog (eg: this prog) and the main prog (the
+;program actually being debugged) run as separate tasks.
+
+;***************************************************************;
+
+;The debug program is supplied the following routines by the main
+;prog. The debug prog is supplied a look up table of the functions
+;via the task control block USERDATA pointer. Have a look at the
+;!d_call{} macro and d_sethandler{}, d_detoke{} procedures in the
+;code to see how I call them. Note that most of these will NOT have
+;any effect until the next program statement is executed.
+
+;SETHANDLER - call this when the debugger has done all it's setup
+;stuff (eg: opening windows etc), and is ready to be used and
+;abused. SETHANDLER requires A0 to be pointing to a table of
+;debug routines (see below) - checkout the 'htable' table in
+;the program code...
+
+;DETOKE - this allows you to detokenise a line of program source.
+;On input, A0 = tokenised text and A1 = buffer to place detokenised
+;text into.
+
+;FINDOFFSET - given A0 = tokenised source line and D0=statement
+;offset, this function will return D0 = detokenised statement
+;offset.
+
+;EVAL - Evaluates the null terminated string in A0. The answer
+;eventually gets returned via 'EVALHANDLER' (see below).
+
+;EXEC - Executes the null terminated string in A0. Any errors in
+;execution get reported through 'EVALHANDLER' (see below).
+
+;QUIT - call this to end program execution - but don't actually do
+;anything (eg: 'END'!) until the main prog calls your 'CLEANUP'
+;routine (see below).
+
+;SKIP - call this to cause the next program statement to be
+;'skipped' or ignored
+
+;****************************************************************;
+
+;The debug program needs to supply the following routines to
+;the main prog. Note that these routines will be called by another
+;task (not the debug task), and therefore should only perform
+;very simple operations (eg: setting flags, or 'Signal' ing the
+;debug task).
+
+;STATEHANDLER - called before the execution of every line of
+;program code, except for stuff in supervisor mode (ie: interupts).
+;This routine is only allowed to play with A0 and A1 (to keep things
+;fast). On entry, A0 contains a pointer to an 'info' block:
+;
+; NEWTYPE.statehandlerinfo
+;   DREGS[8]    ;contents of data registers D0...D7
+;   AREGS[8]    ;contents of address registers A0...A7
+;   *PC.pcinfo  ;program counter
+;   CC.w        ;condition codes
+; END NEWTYPE
+;
+;The *PC entry points to another 'info' block:
+;
+; NEWTYPE.pcinfo
+;   *SRC.src    ;pointer to start of source code line
+;   OFFSET.w    ;pointer to offset in source line of current statement.
+;   SKIP.w      ;offset to next statement (so we can skip this one
+;               ;if we want!)
+; END NEWTYPE
+;
+; NEWTYPE.src
+;   *NEXT.src   ;pointer to next line
+;   *PREV.src   ;pointer to previous line
+;   CHARS.b     ;how many characters in line
+;   CHRS[0]     ;actual tokenised source code
+; END NEWTYPE
+;
+;The actual program code starts 8 bytes after PC...
+;On exit, your statehandler return should return with the Z flag
+;set if it's OK to run the statement. If the Z flag is clear, then
+;the statement will not be executed, and your 'WAITHANDLER' routine
+;will eventually be called (see below).
+
+;SUPERHANDLER - called when a runtime error occurs in supervisor
+;mode. A0 points to a null terminated string describing the error.
+
+;USERHANDLER - called when a runtime error occurs in user
+;mode. A0 points to a null terminated string describing the error.
+
+;WAITHANDLER - called whenever a program statement is NOT executed.
+;The main purpose of this function is to allow for a 'Step' function.
+
+;EVALHANDLER - called with either the result of an EVAL call (see
+;above), or when errors occur during either an EVAL or an EXEC.
+
+;CLEANUP - called when the debug program is required to finish.
+;This may be triggered by an 'End' statement in the main prog,
+;or a call to 'QUIT' (see above). As this is called by the main prog
+;task, and not the debug task, this routine should really only
+;inform the debug task to end.
+
+;******************************************************************;
+
+;Note that in this version, I've used a 'checkflag/VWait' type
+;approach to intertask communication. This is due purely to laziness
+;on my part (been too busy writing a game...) and would be much more
+;elegant if replaced by an exec 'Signal' or (gasp!) 'PutMsg' type
+;system...
+
+;******************************************************************;
+
+#test=0
+
+DEFTYPE.l
+#bufflen=4096:#buffand=#bufflen-1
+
+Macro d_call
+MOVE.l d_table(pc),a2:MOVE.l `1 LSL 2(a2),a2:JSR (a2)
+End Macro
+
+Statement d_sethandler{}
+LEA htable(pc),a0:!d_call{2}
+End Statement
+
+Function$ d_detoke{sa}
+SHARED d_d$
+GetReg a0,sa:GetReg a1,&d_d$
+!d_call{3}
+Function Return d_d$
+End Function
+
+Statement d_eval{t$}
+SHARED d_ev$
+d_ev$=t$:GetReg a0,&d_ev$:!d_call{4}
+End Statement
+
+Statement d_exec{t$}
+SHARED d_ex$
+d_ex$=t$:GetReg a0,&d_ex$:!d_call{5}
+End Statement
+
+Statement d_quit{}
+!d_call{6}
+End Statement
+
+Statement d_skip{}
+!d_call{8}
+End Statement
+
+Macro d_basic
+MOVE.l d_a5(pc),a5
+End Macro
+
+NEWTYPE.d_event  ;a debug event!
+    ;
+t.w ;type...0=supervisor error
+    ;       1=user error
+    ;       2=eval result
+    ;       3=trace this line...
+    ;       4=end
+    ;
+i.w ;buffer put val!
+s$  ;string
+    ;
+End NEWTYPE
+
+Dim List d_e.d_event(10)
+
+.add_event
+Statement add_event{t,s$}
+;
+SHARED d_e()
+Forbid_
+If AddLast(d_e())
+  d_e()\t=t
+  MOVE bufferput(pc),d0:SUBQ #4,d0:AND #buffand,d0:PutReg d0,d_e()\i
+  d_e()\s=s$
+EndIf
+Permit_
+End Statement
+
+MOVE.l 4,a0:MOVE.l 276(a0),a0:MOVE.l 88(a0),d_table:MOVE.l a5,d_a5
+MaxLen d_d$=256:MaxLen d_ev$=256:MaxLen d_ex$=256
+Poke.l ?d_dadd,&d_d$
+statego.w=0:dstatus.w=0:prtcode.w=0:Poke.l ?statego_,&statego
+buffmem=AllocMem_(#bufflen,$10001):Poke.l ?buffmem_,buffmem:CLR bufferput
+;
+Goto mainstart
+
+d_dadd:   Dc.l 0
+d_table:  Dc.l 0
+d_a5:     Dc.l 0
+statego_: Dc.l 0
+buffmem_: Dc.l 0
+bufferput:Dc 0
+
+htable  ;handler table
+Dc.l d_statehandler,d_superhandler,d_userhandler
+Dc.l d_waithandler,d_evalhandler,d_cleanup
+
+d_statehandler
+MOVE.l buffmem_(pc),a1:ADD bufferput(pc),a1:MOVE.l 64(a0),(a1)
+ADDQ #4,bufferput:ANDI #buffand,bufferput
+MOVE.l statego_(pc),a1:TST (a1):RTS
+
+d_superhandler
+!d_basic:PutReg a0,sa
+Gosub stopit:add_event{0,Peek$(sa)}
+RTS
+
+d_userhandler
+!d_basic:PutReg a0,sa
+Gosub stopit:add_event{1,Peek$(sa)}
+RTS
+
+d_waithandler
+!d_basic
+If prtcode    ;print code out?
+  prtbusy=-1
+  add_event{3,""} ;print me out!
+  While prtbusy:VWait:Wend  ;wait till printed!
+EndIf
+If dstatus=2  ;stopped?
+  While stepcnt=0 AND dstatus=2:VWait:Wend:stepcnt-1
+EndIf
+RTS
+
+d_evalhandler
+;
+!d_basic:PutReg a0,sa
+add_event{2,Peek$(sa)}
+RTS
+
+d_cleanup
+;
+!d_basic:add_event{4,""}:RTS
+
+;*****************************************************************
+
+.mainstart
+
+Gosub initgads
+
+ww=258:wh=25:SizeLimits ww,wh,-1,-1
+
+Gosub findsc:wx=sw LSR 1-(ww LSR 1):wy=16:Gosub openwindow
+
+CNIF #test=0
+d_sethandler{}
+CEND
+
+Repeat
+Gosub getevent
+Select ev
+Case 2  ;newsize
+  Gosub newsize:Gosub refwindow
+Case 4  ;refresh
+  Gosub refwindow
+Case 64 ;gadget up
+  Select GadgetHit
+  Case 1  ;stop
+    If dstatus<>2 Then !d_call{1}
+  Case 2  ;step
+    stepcnt+1
+  Case 3  ;skip
+    If dstatus=2 Then !d_call{8}:stepcnt+1
+  Case 4  ;trace
+    Forbid_:dstatus=1:statego=-1:Permit_
+  Case 5  ;run
+    If dstatus
+      cil=0:pb=0:Gosub refwindow:li=0:lt$=""
+      Forbid_
+      prtcode=0:dstatus=0:statego=0
+      Permit_
+    EndIf
+  Case 6  ;<<
+    If dstatus=2 Then Gosub backward
+  Case 7  ;>>
+    If dstatus=2 AND pb<>0 Then Gosub forward
+  Case 8  ;execute
+    SetString 1,1,ex$
+    t$="Execute...":Gosub getascii:ex$=t$
+    d_exec{ex$}:stepcnt+1
+  Case 9  ;evaluate
+    SetString 1,1,ev$
+    t$="Evaluate...":Gosub getascii:ev$=t$
+    d_eval{ev$}:stepcnt+1
+  End Select
+Case 512
+  CNIF #test=1
+    End
+  CELSE
+    d_quit{}:stepcnt+1
+  CEND
+Case 1024
+  i$=Inkey$
+  Select Asc(i$)
+  Case 27
+    CNIF #test=1
+      End
+    CELSE
+      d_quit{}:stepcnt+1
+    CEND
+  Case 28
+    Gosub checkw
+    If li
+      If Peek.l(il+4)
+        il=Peek.l(il+4):Gosub prtcode2
+      EndIf
+    EndIf
+  Case 29
+    Gosub checkw
+    If li
+      If Peek.l(il)
+        il=Peek.l(il):Gosub prtcode2
+      EndIf
+    EndIf
+  End Select
+End Select
+Forever
+
+.backoff
+If pb
+  pb=0:i=Peek.l(buffmem+cb):mc=-1:Gosub prtcode
+EndIf
+Return
+
+.backward
+If pb=0 Then bb=cb
+bb-4 AND #buffand:i=Peek.l(buffmem+bb)
+If i=0
+  If pb=0 Then Return
+  bb+4 AND #buffand:t$="At end of buffer":DisplayBeep_ 0:Goto wprint
+EndIf
+pb=-1:mc=-1:Goto prtcode
+
+.forward
+bb+4 AND #buffand
+If (bb+4 AND #buffand)=Peek.w(?bufferput) Then pb=0
+i=Peek.l(buffmem+bb):mc=-1:Goto prtcode
+
+.checkw
+If ih<8 Then wh=25+16:Goto openwindow
+Return
+
+.prtcode
+;
+;i=info
+;
+;mc=-1 to make current
+;cil=current ins. line, cio=current offset
+;
+Gosub checkw:il=Peek.l(i):io=Peek.w(i+4)-9
+If mc Then cil=il:cio=io:mc=0
+;
+Gosub prtcode2
+;
+li=i:Return
+
+prtcode2
+;
+y=ym:i2=il
+While y<=ih-8 AND i2<>0
+  Gosub prti2:y+8:i2=Peek.l(i2)
+Wend
+While y<=ih-8:WLocate 0,12+y:Print spc$:y+8:Wend
+;
+y=ym-8:i2=Peek.l(il+4)
+While y>=0 AND i2<>0
+  Gosub prti2:y-8:i2=Peek.l(i2+4)
+Wend
+While y>=0:WLocate 0,12+y:Print spc$:y-8:Wend
+;
+Return
+
+.prti2 ;i2 at y
+;
+GetReg a0,i2+9
+MOVE.l d_dadd(pc),a1:!d_call{3}:SUB.l d_dadd(pc),a1:SUBQ #1,a1
+MOVE.l d_dadd(pc),a0:MOVE.l a1,-(a0)
+;
+If i2=cil
+  GetReg a0,i2+9:GetReg d0,cio:!d_call{7}:PutReg d0,cio2
+  d_d$=Left$(d_d$,cio2)+" "+Mid$(d_d$,cio2+1)
+EndIf
+;
+WLocate 0,12+y:WColour 1,0:Print LSet$(d_d$,cw)
+;
+If i2=cil
+  WLocate cio2 LSL 3,12+y:WColour 3,0
+  If pb
+    Print ">"
+  Else
+    WJam 3:Print " ":WJam 1
+  EndIf
+EndIf
+;
+Return
+
+.wprint
+Gosub checkw
+WLocate ix-WLeftOff,iy+ih-WTopOff:WColour 3,0:Print LSet$(t$,cw)
+lt$=t$
+Return
+
+.initgads
+Borders 2,2:BorderPens 2,1
+gx=4:gn=1
+Repeat
+  Read t$
+  If t$<>""
+    gf=0:If gn=10 Then gf=1
+    TextGadget 0,gx,11,gf,gn,t$:gx+Len(t$)LSL 3+4
+    gn+1
+  EndIf
+Until t$=""
+Borders Off
+StringGadget 1,8,12,8,1,256,-16
+Return
+
+Data$ "BRK","STP","SKP","TRC","RUN","<<",">>","EXC","EVL"
+Data$ ""
+
+findsc
+FindScreen 0:s0=Peek.l(Addr Screen(0))
+sw=Peek.w(s0+12):sh=Peek.w(s0+14)
+Return
+
+.refwindow
+If li<>0 OR lt$<>""
+  WBox ix,iy,ix+iw-1,iy+ih-1,0
+  If li Then i=li:Gosub prtcode
+  t$=lt$:Gosub wprint
+EndIf
+Return
+
+.getascii
+x=WindowX:y=WindowY+WindowHeight LSR 1-12:w=WindowWidth:h=23
+ResetString 1,1
+Window 1,x,y,w,h,$1000,t$,1,0,1
+ActivateString 1,1
+;
+Repeat
+  ev2.l=WaitEvent
+Until ev2=64 AND EventWindow=1
+;
+Free Window 1:Use Window 0:t$=StringText$(1,1):Return
+
+.openwindow
+Window 0,wx,wy,ww,wh,$f,"Blitz 2 DBUG",1,0,0:w0=Peek.l(Addr Window(0))
+.newsize
+ix=WLeftOff:iy=WTopOff+12:iw=InnerWidth:ih=InnerHeight-20
+cw=iw LSR 3:ch=ih LSR 3
+ym=ch LSR 1:If ch&1=0 Then ym-1
+ym LSL 3:spc$=String$(" ",cw)
+Return
+
+.stopit
+prtcode=-1:stepcnt=0:dstatus=2:statego=-1
+Return
+
+.getevent
+Repeat
+  While FirstItem(d_e())
+    Select d_e()\t
+    Case 0  ;supervisor mode error!
+      t$="(*) "+d_e()\s:Gosub wprint:Gosub goterr ;DisplayBeep_ 0
+    Case 1  ;user mode error!
+      t$=d_e()\s:Gosub wprint:Gosub goterr         ;DisplayBeep_ 0
+    Case 2  ;eval/exec result!
+      t$=d_e()\s:Gosub wprint
+    Case 3  ;dump code baby!
+      cb=d_e()\i:i=Peek.l(buffmem+cb)
+      pb=0:mc=-1:Gosub prtcode:prtbusy=0
+    Case 4  ;outa-here
+      FreeMem_ buffmem,#bufflen:End
+    End Select
+    MaxLen d_e()\s=0:KillItem d_e()
+  Wend
+  ev=Event:If ev=0 Then WaitTOF_
+Until ev
+Return
+
+.goterr:
+  DisplayBeep_ 0:ScreenToFront_ s0:Activate 0:Return

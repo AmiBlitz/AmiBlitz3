@@ -1,0 +1,744 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "blitz2:Decompiled"
+; ExeFile         = "memlib.obj"
+; CreateIcon      = 0
+; Residents       = "blitzlibs:libmacs.res,blitzlibs:blitzoffs.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 0
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8191
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 1
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 33
+; CursorColumn    = 1
+; LabelSearch     = "mungwa"
+; LabelRemark     = 0
+; LabelAll        = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max IconInfo    = 1
+; Max NChunky     = 1
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 5
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; Max File        = 5
+; Max GadgetList  = 5
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 5
+; Max Anim        = 10
+; Max Sound       = 10
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max BitMap      = 10
+; Max Slice       = 10
+; Max Page        = 4
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 5
+; Max BlitzFont   = 4
+; Max GTList      = 5
+; /XTRA
+_SysBase EQU $4
+Macro addtail ;a1=liststruct a0=node
+ADDQ.L  #4,a1
+MOVE.L  4(a1),D0
+MOVE.L  a0,4(a1)
+EXG     D0,a1
+MOVE.L D0,(a0)
+MOVE.l a1,4(a0)
+MOVE.L  a0,(a1)
+End Macro
+
+Macro remove ;a0 liststruct a1 node
+MOVEA.L (A1)+,A0
+MOVE.L (A1),A1
+MOVE.L  A0,(A1)
+MOVE.L  A1,4(A0)
+End Macro
+
+
+Macro init ; a0 liststruct
+        MOVE.L  A0,(A0)  ;A0 points to the list header
+        ADDQ.L  #4,(A0)  ;Bump LH_HEAD(A0) to address of LH_TAIL
+        CLR.L   4(A0)
+        MOVE.L  A0,8(A0)
+End Macro
+
+MaxIntSgnd EQU $7FFFFFFF
+AllocPooled EQU -$2c4
+FreePooled SET -$2Ca
+#return0=0
+#poolmem=1
+#mungwall=1   ;wall is 12bytes before and 16 bytes after
+              ;it try to show the sourceline of the memalloc
+              ;also 8 Bytes are cleared if you release mem
+              ;slowdown is max 20% 32Bytes more mem per alloc is used
+              ;do a sysjsr $c007 before program end
+              ;RELEASE MEM IN EXITROUTINE IS NOT CHECKED
+              ;to check if walls are ok
+              ;otherwise this is only done when release mem
+              ;
+#walldebug=0  ;only activate wall in debug mode (not used now)
+ ;TODO: implement the wallcheck SysJsr $c007
+  MOVEQ.l #$00,D0
+ RTS
+;optimize 4 impossible to work for now compile modfe fpu ffp
+  Dc.b $FF,$FA,$00,$00 ;....
+  Ds.w 3
+  Dc.b $C0,$00,$C0,$08 ;....    maximum tokennum
+  Ds.l 1
+  Dc.l AL_0_BC
+  Dc.b $00,$01 ;..
+  Dc.l AL_0_D0
+  Ds.l 3
+  Dc.l AL_0_268
+  Ds.l 3
+  Dc.l AJL_0_16A
+  Ds.l 4
+  Dc.l AJL_0_19E
+  Ds.l 4
+  Dc.l AJL_0_136
+  Ds.l 4
+  Dc.l AJL_0_150
+  Ds.l 4
+  Dc.l AJL_0_1EA
+  Ds.l 4
+  Dc.l AJL_0_218
+  Ds.l 4
+  Dc.l AJL_0_108
+  Ds.l 4
+  Dc.l allocret  ;alibjsr $c007
+  Ds.l 1
+AL_0_BC:
+  Ds.l 3
+  Dc.l AJL_0_F0
+  Ds.l 1
+AL_0_D0:
+  Ds.l 3
+  Dc.l AJL_0_108
+  Ds.l 1
+  Dc.b $FF,$FF,$00,$00 ;....
+  Ds.w 1
+memlist:
+  Ds.l 1
+AL_0_EE:
+  Ds.w 1
+  ;OK, here's how our mem linking works:
+;
+;firstdata.l - points to current list header
+;
+;listheader - 8 bytes.
+;00.l - pointer to next listheader
+;04.l - first memblock
+;08.l last memalloc address
+;
+;Memblocks are 8 bytes longer than normal
+;
+;00.l - Next
+;04.l - length of memblock + 8
+;08.l - CHIP or fast indicator
+;12.l - free
+;16...  Mem returned to User.
+;
+;sorta like this:
+;
+;firstdata ---list---list---list...
+;               !      !      !
+;              mem    mem    mem
+;               !      !      !
+;              mem    mem    mem
+;               :      :      :
+;               :      :      :
+;
+;first list is always current local one.
+
+;******************** CODE SECTION ********************
+.allocret
+:;allocate some memory in the local region!
+  MOVEM.l A0-A1/A6,-(A7)
+ CNIF #mungwall=1
+ ADD.l #16+16*2,d0
+ CELSE
+  ADD.l #16,D0
+ CEND
+  MOVE.l D0,-(A7)
+  MOVEA.l _SysBase,A6
+_AllocMem SET -$C6
+CNIF #poolmem=1
+  BTST #1,d1
+  BNE 'chipm
+  MOVE.l mempool,a0
+  JSR AllocPooled(a6)
+CELSE
+   JSR _AllocMem(A6)
+CEND
+  TST.l D0
+   BEQ.w 'l1
+  MOVEA.l D0,A0
+  MOVEA.l memlist(PC),A1
+   ADDQ.l #4,a1
+   !addtail
+;  MOVE.l $4(A1),(A0)
+;  MOVE.l d0,8(a1)
+;  MOVE.l A0,$4(A1)
+  MOVE.l (A7)+,12(A0)    ;size was 4
+CNIF #mungwall=1
+  MOVE.l a0,a1
+  SUB.w #16,a1
+  ADD.l 12(a0),a1        ; add of size
+  ADD.w #16,a0
+  ;MOVE.l #$DEADDEAD,(a0)+
+  MOVE.l 28(a7),(a0)+
+  MOVE.l #$EADDEADA,(a0)+
+  MOVE.l #$ADDEADAD,(a0)+
+  MOVE.l #$DAEAD987,(a0)+
+  MOVE.l #$DEADDEAD,(a1)+
+  MOVE.l #$EADDEADA,(a1)+
+  MOVE.l #$ADDEADAD,(a1)+
+  MOVE.l #$DAEAD987,(a1)+
+CELSE
+  ADD.w #16,A0
+CEND
+  MOVE.l A0,D0
+'l1 MOVEM.l (A7)+,A0-A1/A6
+ RTS
+ 'chipm
+   MOVE.l mempoolchip,a0
+   JSR AllocPooled(a6)
+   TST.l D0
+    BEQ.w JL_0_25C
+   MOVEA.l D0,A0
+   MOVEA.l memlist(PC),A1
+    ADDQ.l #4,a1
+    !addtail
+   ;MOVE.l $4(A1),(A0)
+   ;MOVE.l A0,$4(A1)
+   MOVE.l (A7)+,12(A0)  ;was 4
+   MOVE.l #"ChIp",8(a0)
+ CNIF #mungwall=1
+   MOVE.l a0,a1
+   SUB.w #16,a1
+   ADD.l 4(a0),a1
+   ADD.w #16,a0
+   ;MOVE.l #$DEADDEAD,(a0)+
+   MOVE.l 28(a7),(a0)+
+   MOVE.l #$EADDEADA,(a0)+
+   MOVE.l #$ADDEADAD,(a0)+
+   MOVE.l #$DAEAD987,(a0)+
+   MOVE.l #$DEADDEAD,(a1)+
+   MOVE.l #$EADDEADA,(a1)+
+   MOVE.l #$ADDEADAD,(a1)+
+   MOVE.l #$DAEAD987,(a1)+
+
+ CELSE
+   ADD.w #16,A0
+ CEND
+   MOVE.l A0,D0
+   MOVEM.l (A7)+,A0-A1/A6
+  RTS
+AJL_0_F0:                           ;init
+.codeinit
+  CLR.l memlist
+  MOVE.l d2,-(a7)
+CNIF #poolmem=1
+   MOVE.l $4,a6
+   MOVE.l #$10000,d0
+   MOVE.l #32768,d1
+   MOVE.l #32768,d2
+   JSR -$2b8(a6)
+   MOVE.l d0,mempool
+    TST.l D0
+   BEQ.w JL_0_25C
+   MOVE.l #$10002,d0
+   MOVE.l #32768,d1
+   MOVE.l #32768,d2
+   JSR -$2b8(a6)
+   MOVE.l d0,mempoolchip
+    TST.l D0
+   BEQ.w JL_0_25Cc
+   CMP.l #"OuT ",AL_0_268
+ BNE 'l10
+ MOVE.b #1,debug
+'l10
+CEND
+   BSR.w AJL_0_1EA
+  MOVE.l #AJL_0_112,D0
+  MOVE.l (a7)+,d2
+  CLR.w AL_0_EE
+ RTS
+mempool: Dc.l 0
+mempoolchip: Dc.l 0
+
+
+.codefinit
+
+standardfreecode
+AJL_0_108:
+CNIF #mungwall=0
+   BSR.w AJL_0_218
+   BNE.w AJL_0_108
+CEND
+CNIF #poolmem=1
+   MOVE.l a6,-(a7)
+   MOVE.l $4,a6
+   MOVE.l mempool,a0
+   JSR -702(a6)
+   MOVE.l mempoolchip,a0
+   JSR -702(a6)
+   MOVE.l (a7)+,a6
+ CEND
+ RTS
+
+AJL_0_112:
+ BRA.w AJL_0_16A
+
+JL_0_116:
+ BRA.w AJL_0_19E
+
+JL_0_11A:
+ BRA.w AJL_0_136
+
+JL_0_11E:
+ BRA.w AJL_0_150
+
+JL_0_122:
+.findglob
+  TST.l (A0)
+   BEQ.w JL_0_12E
+  MOVEA.l (A0),A0
+ BRA.w JL_0_122
+
+JL_0_12E:
+  MOVE.l A0,memlist
+ RTS
+
+AJL_0_136:
+.globalloc
+  MOVE.l A0,-(A7)
+  MOVEA.l memlist(PC),A0
+  MOVE.l A0,-(A7)
+   BSR.w findglob
+   BSR.w AJL_0_16A
+  MOVE.l (A7)+,memlist
+  MOVEA.l (A7)+,A0
+ RTS
+
+AJL_0_150:
+.globfree
+  MOVE.l A0,-(A7)
+  MOVEA.l memlist(PC),A0
+  MOVE.l A0,-(A7)
+   BSR.w findglob
+   BSR.w AJL_0_19E
+  MOVE.l (A7)+,memlist
+  MOVEA.l (A7)+,A0
+ RTS
+
+AJL_0_16A:
+.localloc:;allocate some memory in the local region!
+  MOVEM.l A0-A1/A6,-(A7)
+ CNIF #mungwall=1
+ ADD.l #16+16*2,d0
+ CELSE
+  ADD.l #18,D0                  ;2 bytes must be larger or field fails
+ CEND
+  MOVE.l D0,-(A7)
+  MOVEA.l _SysBase,A6
+  JSR -$84(a6)
+_AllocMem SET -$C6
+CNIF #poolmem=1
+  BTST #1,d1
+  BNE 'chipm
+  MOVE.l mempool,a0
+  JSR AllocPooled(a6)
+CELSE
+   JSR _AllocMem(A6)
+CEND
+  TST.l D0
+   BEQ.w JL_0_25C
+  MOVEA.l D0,A0
+  MOVEA.l memlist(PC),A1
+  ADDQ.l #4,a1
+  !addtail
+;  MOVE.l $4(A1),(A0)
+;  MOVE.l A0,$4(A1)
+;  MOVE.l d0,8(a1)
+  MOVE.l (A7)+,12(A0);was 4
+CNIF #mungwall=1
+  MOVE.l a0,a1
+  SUB.w #16,a1
+  ADD.l 12(a0),a1   ;size of mem
+  ADD.w #16,a0
+  ;MOVE.l #$DEADDEAD,(a0)+
+  MOVE.l 28(a7),(a0)+
+  MOVE.l #$EADDEADA,(a0)+
+  MOVE.l #$ADDEADAD,(a0)+
+  MOVE.l #$DAEAD987,(a0)+
+  MOVE.l #$DEADDEAD,(a1)+
+  MOVE.l #$EADDEADA,(a1)+
+  MOVE.l #$ADDEADAD,(a1)+
+  MOVE.l #$DAEAD987,(a1)+
+CELSE
+  ADD.w #16,A0
+CEND
+  JSR -$8a(a6)
+  MOVE.l A0,D0
+  MOVEM.l (A7)+,A0-A1/A6
+ RTS
+'chipm
+  MOVE.l mempoolchip,a0
+  JSR AllocPooled(a6)
+  TST.l D0
+   BEQ.w JL_0_25C
+  MOVEA.l D0,A0
+  MOVEA.l memlist(PC),A1
+  ADDQ.l #4,a1
+  !addtail
+  ;MOVE.l $4(A1),(A0)
+  ;MOVE.l A0,$4(A1)
+  MOVE.l (A7)+,12(A0)   ;was 4
+  MOVE.l #"ChIp",8(a0)
+CNIF #mungwall=1
+  MOVE.l a0,a1
+  SUB.w #16,a1
+  ADD.l 12(a0),a1
+  ADD.w #16,a0
+  ;MOVE.l #$DEADDEAD,(a0)+
+  MOVE.l 28(a7),(a0)+
+  MOVE.l #$EADDEADA,(a0)+
+  MOVE.l #$ADDEADAD,(a0)+
+  MOVE.l #$DAEAD987,(a0)+
+  MOVE.l #$DEADDEAD,(a1)+
+  MOVE.l #$EADDEADA,(a1)+
+  MOVE.l #$ADDEADAD,(a1)+
+  MOVE.l #$DAEAD987,(a1)+
+
+CELSE
+  ADD.w #16,A0
+CEND
+  JSR -$8a(a6)
+  MOVE.l A0,D0
+  MOVEM.l (A7)+,A0-A1/A6
+ RTS
+                                                                                                                               
+
+AJL_0_19E:
+.locfree    ;a1=mem, d0=len(ignored!)
+  MOVEM.l D1/A0/A6,-(A7)
+  ;MOVE.l $1c(a7),-(a7)  ;put call address to stack so wi|eout stacktrace show correct call address
+  MOVE.l memlist(PC),D1
+   BEQ.w JL_0_1C6
+  CMP.l #0,a1
+   BEQ JL_0_1C6
+CNIF #mungwall=1
+  SUB.w #16+16,a1
+CELSE
+  SUB.w #16,A1
+CEND
+  MOVEA.l D1,A0
+  ADDQ.w #4,A0
+  MOVEA.l _SysBase,A6
+  JSR -$84(a6)
+JL_0_1B0:
+  MOVE.l 4(a1),a0
+  CMPA.l (A0),A1
+   BNE.w errormem
+   MOVEA.l D1,A0
+    MOVE.l 12(A1),D0
+   ADDQ.w #4,A0
+   MOVE.l a1,-(a7)
+   !remove
+   MOVE.l (a7)+,a1
+  ;MOVE.l (A1),(A0)
+CNIF #poolmem=1
+_FreeMem SET -$D2
+CNIF #mungwall=1
+  MOVE.l a1,a0
+  ADD.w #20,a0
+  ;CMP.l #$DEADDEAD,(a0)+
+  ;BNE munghit1
+  CMP.l #$EADDEADA,(a0)+
+  BNE munghit1
+  CMP.l #$ADDEADAD,(a0)+
+  BNE munghit1
+  CMP.l #$DAEAD987,(a0)+
+  BNE munghit1
+  MOVE.l a0,d1
+  MOVE.l a1,a0
+  SUB.w #16,a0
+  ADD.l d0,a0
+mungr1:  CMP.l #$DEADDEAD,(a0)+
+  BNE munghit4
+  CMP.l #$EADDEADA,(a0)+
+  BNE munghit4
+  CMP.l #$ADDEADAD,(a0)+
+  BNE munghit4
+  CMP.l #$DAEAD987,(a0)+
+  BNE munghit4
+  MOVE.l d1,a0
+  MOVE.l #$abfeefcd,(a0)+
+  MOVE.l #$bcdefefe,(a0)+
+  MOVE.l #$ccdefefe,(a0)+
+mungr4
+CEND
+ MOVE.l mempool,a0
+  CMP.l #"ChIp",8(a1)
+  BNE 'l1
+  MOVE.l mempoolchip,a0
+'l1:  JSR FreePooled(a6)
+CELSE
+   JSR _FreeMem(A6)
+CEND
+JL_0_1C6b:
+   JSR -$8a(a6)
+JL_0_1C6:
+  ;ADDQ.l #4,a7
+  MOVEM.l (A7)+,D1/A0/A6
+ RTS
+ CNIF #mungwall=1
+.munghit1
+ BSR low
+ BRA mungr1
+.low:
+ MOVEM.l d0-d1/a0-a1,-(a7)
+ ;MOVE.l $0,a0 ;show enforcer hit
+ MOVE.l a1,a0
+ ADD.w #16,a0
+ MOVE.l (a0),a0
+ MOVEQ #30,d0
+'l1: CMP.w #$4e41,-(a0)
+ DBEQ d0,'l1
+ TST.w d0
+ BMI 'l2
+
+ MOVE.l 2(a0),d0
+ ADD.l #9,d0
+ TRAP #0
+ BRA 'l3
+'l2: MOVE.l #mungtext,d0
+ TST.b debug
+ BNE 'l10
+ TRAP #11
+ BRA 'l3
+'l10: TRAP #0
+'l3: MOVEM.l (a7)+,d0-d1/a0-a1
+ RTS
+.high: MOVEM.l d0-d1/a0-a1,-(a7)
+ MOVE.l #mungtext2,d0
+ TRAP #0
+ MOVEM.l (a7)+,d0-d1/a0-a1
+ RTS
+munghit2
+ BSR low
+ BRA mungr2
+munghit3
+ BSR low
+ BRA mungr3
+munghit4
+ BSR low
+ BRA mungr4
+
+ CEND
+
+JL_0_1CC:
+  MOVE.l (A0),D1
+  MOVEA.l D1,A0
+   BNE.w JL_0_1B0
+  MOVE.w AL_0_EE(PC),D1
+   BNE.w JL_0_1C6
+  NOT.w AL_0_EE
+errormem: MOVE.l #AL_0_277,D0
+ TRAP #$0
+ BRA JL_0_1C6b
+AJL_0_1EA:
+.newmem:;create a new node (for local stuff)
+  MOVEM.l D0-D1/A0-A1/A6,-(A7)
+  MOVEQ.l #20,D0
+  MOVEQ.l #$01,D1
+  MOVEA.l _SysBase,A6
+CNIF #poolmem=1
+  MOVE.l mempool,a0
+   JSR AllocPooled(a6)
+CELSE
+   _AllocMem SET -$C6
+   JSR _AllocMem(A6)
+CEND
+  TST.l D0
+   BEQ.w JL_0_25Cb
+  MOVEA.l D0,A0
+  MOVE.l memlist(PC),(A0)
+  MOVE.l A0,memlist
+  MOVE.l #$e0e0e0e0,16(a0)
+  ;CLR.l $4(A0)
+  ADDQ.l #4,a0
+  !init
+  MOVEM.l (A7)+,D0-D1/A0-A1/A6
+ RTS
+
+AJL_0_218:
+.freelast:;free up most recent node, return eq=1 if none!
+  MOVEM.l D0-D1/A0-A2/A6,-(A7)
+  MOVEA.l _SysBase,A6
+  MOVE.l memlist(PC),D0
+  BEQ.w JL_0_256
+  MOVEA.l D0,A1
+  MOVE.l (A1),memlist
+  MOVE.l a1,-(a7)
+  MOVE.l 4(a1),a2
+JL_0_23C:
+  CMP.l #$0,(a2)
+  BEQ.w JL_0_254
+  MOVEA.l A2,A1
+  CMP.l #52,12(a2)
+  BLE 'nopool
+  CMP.l #"lIsT",36+16(a1)          ;free pool from lists
+  BNE 'nopool
+  CMP.w #1,6+16(a1)
+  BNE 'nopool
+  MOVE.l 0+16(a1),a0
+  CMP.l #0,a0
+  BEQ 'nopool
+  MOVE.l a1,-(a7)
+  JSR -702(a6)
+  MOVE.l (a7)+,a1
+'nopool:  MOVE.l 12(A2),D0 ;was 4
+  MOVEA.l (A2),A2
+_FreeMem SET -$D2
+CNIF #poolmem=1
+CNIF #mungwall=1
+  MOVE.l a1,a0
+  ADD.w #20,a0
+  ;CMP.l #$DEADDEAD,(a0)+
+  ;BNE munghit2
+  CMP.l #$EADDEADA,(a0)+
+  BNE munghit2
+  CMP.l #$ADDEADAD,(a0)+
+  BNE munghit2
+  CMP.l #$DAEAD987,(a0)+
+  BNE munghit2
+  MOVE.l a0,d1
+
+mungr2:  MOVE.l a1,a0
+  SUB.w #16,a0
+  ADD.l d0,a0
+  CMP.l #$DEADDEAD,(a0)+
+  BNE munghit3
+  CMP.l #$EADDEADA,(a0)+
+  BNE munghit3
+  CMP.l #$ADDEADAD,(a0)+
+  BNE munghit3
+  CMP.l #$DAEAD987,(a0)+
+  BNE munghit3
+mungr3
+  MOVE.l d1,a0
+  MOVE.l #$abcdefcd,(a0)+
+  MOVE.l #$bcdefefe,(a0)+
+  MOVE.l #$ccdefefe,(a0)+
+CEND
+  MOVE.l mempool,a0
+  CMP.l #"ChIp",8(a1)
+  BNE 'l1
+  MOVE.l mempoolchip,a0
+'l1
+  JSR FreePooled(a6)
+ CELSE
+   JSR _FreeMem(A6)
+ CEND
+ TST.l (a2)
+ BNE.w JL_0_23C
+
+JL_0_254:
+  MOVE.l (a7)+,a1
+  MOVEQ.l #20,D0
+  CNIF #poolmem=0
+  _FreeMem SET -$D2
+   JSR _FreeMem(A6)
+  CELSE
+   MOVE.l mempool,a0
+   JSR FreePooled(a6)
+  CEND
+                                                                                                                                                                                                                                                        
+
+
+  MOVEQ.l #-$01,D0
+JL_0_256:
+  MOVEM.l (A7)+,D0-D1/A0-A2/A6
+ RTS
+debug: Dc.w 0
+JL_0_25Cb:
+CNIF #return0=1
+  MOVEM.l (A7)+,D0-D1/A0-A2/A6
+  RTS
+CELSE
+  MOVE.l #AL_0_268,D0
+ TRAP #$0
+CEND
+
+JL_0_25C:
+CNIF #return0=1
+  ADDQ.l #4,a7
+  JSR -$8a(a6)
+  MOVEM.l (A7)+,A0-A1/A6
+  RTS
+CELSE
+  MOVE.l #AL_0_268,D0
+ TRAP #$0
+CEND
+JL_0_25Cc:
+CNIF #return0=1
+  RTS
+CELSE
+  MOVE.l #AL_0_268,D0
+ TRAP #$0
+CEND
+
+AL_0_268:
+  Dc.b "OuT of Memory!",0
+AL_0_277:
+  Dc.b "Unable to Free Memory (Hint: program overide illegal mem)",0,0
+mungtext
+ Dc.b "Mungwall Hit",0
+globfreestate: Dc.b 0
+mungtext2
+ Dc.b "Mungwall Hit Upper Bound",0
+  Dc.b "p",0
+  Dc.b "Nu",0
+  Dc.b $01 ;.
+  Even
