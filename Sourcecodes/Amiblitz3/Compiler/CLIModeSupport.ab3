@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 293
-; CursorColumn    = 97
-; LabelSearch     = "macrobu"
+; CursorLine      = 150
+; CursorColumn    = 1
+; LabelSearch     = "ini"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -147,6 +147,7 @@ Function.l InitEmulatedPED{}
   !ComData_SetL{comFunc_CallMenuEntry ,#call_menuentry}
   !ComData_SetL{comFunc_CallDummy     ,#0}
   !ComData_SetL{comLong_AB3IsAvailable,#teddata}
+  !ComData_LEA{comFunc_DebugTrap              ,A0}                : MOVE.l #com_debugtrap ,(A0) ;$38
   MOVE.l #100,progressbar_width
 
   MOVE.l #str_path_deflibs ,deflib
@@ -158,6 +159,18 @@ Function.l InitEmulatedPED{}
   If mempoolP
     GetD0 mempoolP
     !ComData_SetL{comPtr_MemPool,d0}
+
+    ; init temp string buffer
+    tempStringBufferP.l = AllocPooled_(mempoolP,(#MAX_Columns+2)*3)
+    If tempStringBufferP
+      GetD0 tempStringBufferP + (#MAX_Columns+2) * 0
+      MOVE.l D0,comPtr_Temp_TokenString1
+      GetD0 tempStringBufferP + (#MAX_Columns+2) * 1
+      MOVE.l D0,comPtr_Temp_TokenString2
+      GetD0 tempStringBufferP + (#MAX_Columns+2) * 2
+      MOVE.l D0,comPtr_Temp_TokenString3
+    End If
+
   Else
     error{"Could not allocate enough memory. Emulated PED closes down now."}
     succ=False
@@ -168,6 +181,278 @@ Function.l InitEmulatedPED{}
   Function Return succ
 End Function
 
+JMP skip_PEDEmu
+.PEDEmu_vars
+instring              Dc.b 0
+instring2             Dc.b 0
+instring3             Dc.b 0
+Even
+
+.com_debugtrap:
+  MOVEA.l A0,A2
+  MOVEQ.l #$00,D1
+
+ dbt_JL_0_44E6:
+    ADDQ.w #1,D1
+    TST.b (A0)+
+  BNE.b dbt_JL_0_44E6
+
+  MOVEA.l A2,A1
+  SUBQ.w #1,D1
+  BPL.w dbt_JL_0_5F62
+RTS
+
+;.parse_line:                         ; input A2: textstring, results in comPtr_Temp_TokenString1
+;  MOVEA.l comPtr_Temp_TokenString1,A1
+;  MOVE.l A1,-(A7)
+;  MOVE.w comWord_MaxColumns,D1
+;  SUBQ.w #1,D1
+;  MOVE.w comWord_DoTokenize,D0
+;  BNE.w dbt_JL_0_5F68
+;
+;  MOVEA.l A1,A0
+;  dbt_JL_0_5F48:
+;    MOVE.b (A2)+,(A0)+
+;    CMPI.b #$20,-$1(A0)
+;     BEQ.w dbt_JL_0_5F56
+;    MOVEA.l A0,A1
+;    dbt_JL_0_5F56:
+;  DBF D1,dbt_JL_0_5F48
+;
+  dbt_JL_0_5F5A:                         ; tokenise line
+  CLR.b (A1)+
+  MOVE.l A1,D5
+  SUB.l (A7)+,D5
+  RTS
+
+  dbt_JL_0_5F62:         ; debugger entry point
+  MOVE.l A1,-(A7)
+  BRA.w dbt_JL_0_5F72
+
+  dbt_JL_0_5F68:
+  CMPI.b #$20,$0(A2,D1.W)
+  BNE.w dbt_JL_0_5F7E
+
+  dbt_JL_0_5F72:
+  SUBQ.w #1,D1
+   BPL.b dbt_JL_0_5F68
+  ADDQ.w #4,A7
+  CLR.b (A1)
+  MOVEQ.l #$01,D5
+  RTS
+
+  dbt_JL_0_5F7E:
+  MOVE.l A4,-(A7)
+  MOVEQ.l #$00,D0
+  MOVE.w D0,comWord__AL_0_86B8
+  CLR.b instring2
+
+  dbt_JL_0_5F88:
+    MOVE.b (A2)+,D2
+    CMP.b #$22,d2
+    BNE 'l10
+    NOT.b instring2
+   'l10
+    TST.b instring2
+    BNE 'l11
+
+    BCLR #$7,D2                      ;morechar
+   'l11
+    CMP.b comByte__L_0_8BCD,D2
+    BNE.w dbt_JL_0_5FA2
+
+    dbt_JL_0_5F96:
+    NOT.w comWord__AL_0_86B8
+
+    dbt_JL_0_5F9C:
+    JSR dbt_JL_0_60B2
+    BRA.b dbt_JL_0_5F88
+
+    dbt_JL_0_5FA2:
+    MOVE.w comWord__AL_0_86B8,D4
+    BNE.b dbt_JL_0_5F9C
+    JSR dbt_JL_0_60C6
+    BEQ.w dbt_JL_0_6030
+    .dbt_temp1
+    dbt_JL_0_5FB0:
+    CMP.b #$30,d2                    ;number 0-9
+     BLT 'l10
+    CMP.b #$39,d2
+     BGT 'l10
+    BRA dbt_JL_0_6066
+   'l10:
+    CMP.b #"_",D2
+     BEQ.w dbt_JL_0_6066
+    CMP.b #$2E,D2
+     BEQ.w dbt_JL_0_6066
+    CMP.b #"\",D2
+     BEQ.w dbt_JL_0_6066
+    CMP.b comByte__L_0_8BCF,D2
+     BNE.w dbt_JL_0_5FDC
+
+    dbt_JL_0_5FD0:
+      JSR dbt_JL_0_60B2
+      MOVE.b (A2)+,D2
+      BCLR #$7,D2
+    BRA.b dbt_JL_0_5FD0
+
+    dbt_JL_0_5FDC:
+    CMP.b #"'",d2
+     BEQ dbt_JL_0_5FE4
+    CMP.b #"#",D2
+     BEQ.w dbt_JL_0_5FE4                 ;jump notokenize
+    CMP.b #"$",D2                    ;tokenize $ #
+     BNE.w dbt_JL_0_6018
+
+    dbt_JL_0_5FE4:
+      JSR dbt_JL_0_60B2
+      MOVE.b (A2)+,D2
+      BCLR #$7,D2
+      CMP.b #$22,d2
+      BNE 'l10
+      BRA dbt_JL_0_5FE4
+     'l10
+      CMP.b #"_",d2
+       BEQ dbt_JL_0_5FE4
+      CMP.b #"0",D2
+       BCS.w dbt_JL_0_6018
+      CMP.b #"z",D2                  ;f
+       BHI.w dbt_JL_0_6018
+      CMP.b #"9",D2
+       BLS.b dbt_JL_0_5FE4
+      CMP.b #"A",D2
+       BCS.w dbt_JL_0_6018
+      CMP.b #"a",D2
+       BCC.b dbt_JL_0_5FE4
+      CMP.b #"Z",D2                  ;F
+    BLS.b dbt_JL_0_5FE4
+
+    dbt_JL_0_6018:
+    JSR dbt_JL_0_60B2
+    MOVE.b (A2)+,D2
+    CMP.b #$22,d2
+     BNE 'l10
+    NOT.b instring2
+   'l10
+    TST.b instring2
+     BNE 'l11
+    BCLR #$7,D2                      ;morechar
+   'l11
+    CMP.b comByte__L_0_8BCD,D2
+     BEQ.w dbt_JL_0_5F96
+    JSR dbt_JL_0_60C6
+    BNE.b dbt_JL_0_5FB0
+
+    dbt_JL_0_6030:
+    SUBQ.w #1,A2
+    MOVEA.l comPtr_TokenBase,A3
+
+    dbt_JL_0_6036:
+    MOVEA.l A2,A4
+    MOVE.l A3,-(A7)
+    ADDQ.w #6,A3
+
+    dbt_JL_0_603C:
+    MOVE.b (A3)+,D3
+     BEQ.w dbt_JL_0_6082
+    MOVE.b (A4)+,D2
+    BCLR #$7,D2
+    ORI.b #$20,D3
+    ORI.b #$20,D2
+    CMP.b D3,D2
+    BEQ.b dbt_JL_0_603C
+
+    dbt_JL_0_6054:
+    MOVEA.l (A7)+,A3
+    MOVE.l (A3),D3
+     BEQ.w dbt_JL_0_6060
+    MOVEA.l D3,A3
+    BRA.b dbt_JL_0_6036
+
+    dbt_JL_0_6060:
+    MOVE.b (A2)+,D2
+    BCLR #$7,D2
+
+    dbt_JL_0_6066:
+     JSR dbt_JL_0_60B2
+    MOVE.b (A2)+,D2
+    CMP.b #$22,d2
+    BNE 'l10
+    NOT.b instring2
+   'l10
+    TST.b instring2
+     BNE 'l11
+    BCLR #$7,D2            ;morechar
+   'l11
+    CMP.b comByte__L_0_8BCD,D2
+     BEQ.w dbt_JL_0_5F96
+    JSR dbt_JL_0_60C6
+    BEQ.b dbt_JL_0_6066
+    BRA.w dbt_JL_0_5FB0
+
+    dbt_JL_0_6082:
+    MOVE.b (A4),D2
+    BCLR #$7,D2
+    JSR dbt_JL_0_60C6            ;ascii to token
+     BEQ.b dbt_JL_0_6054
+    CMP.b #$30,d2            ;number 0-9
+     BLT 'l10
+    CMP.b #$39,d2
+     BGT 'l10
+    BRA dbt_JL_0_6054
+   'l10:
+    CMP.b #"_",D2
+     BEQ.b dbt_JL_0_6054
+    MOVEA.l (A7)+,A3
+    ADDQ.w #4,A3
+    MOVE.b (A3)+,(A1)
+    BSET #$7,(A1)+
+    MOVE.b (A3),(A1)+
+    MOVE.l A4,D4
+    SUB.l A2,D4
+    ADD.w D4,D0
+    CMP.w D1,D0
+     BHI.w dbt_JL_0_60C0
+    MOVEA.l A4,A2
+  BRA.w dbt_JL_0_5F88
+
+dbt_JL_0_60B2:
+  MOVE.b D2,(A1)+
+  ADDQ.w #1,D0
+  CMP.w D1,D0
+  BHI.w dbt_JL_0_60BE
+RTS
+
+dbt_JL_0_60BE:
+  ADDQ.w #4,A7
+
+  dbt_JL_0_60C0:
+  MOVEA.l (A7)+,A4
+BRA.w dbt_JL_0_5F5A
+
+dbt_JL_0_60C6:
+  CMP.b #"A",D2
+   BCS.w dbt_JL_0_60E8
+  CMP.b #"z",D2
+   BHI.w dbt_JL_0_60E8
+  CMP.b #"[",D2
+   BCS.w dbt_JL_0_60E6
+  CMP.b #"a",D2
+   BCS.w dbt_JL_0_60E8
+
+  dbt_JL_0_60E6:
+  CMP.w D2,D2
+
+  dbt_JL_0_60E8:
+RTS
+
+dbt_JL_0_60EA:
+  EXG.l D0,D2
+  BSR.b dbt_JL_0_60C6
+  EXG.l D0,D2
+RTS
+
+.skip_PEDEmu
 
 ;/* deinit what has been inited before */
 Function.l DeinitEmulatedPED{}
@@ -180,6 +465,11 @@ Function.l DeinitEmulatedPED{}
     !ComData_SetL{comPtr_MemPool,d0}
     DeletePool_ mempoolP
   End If
+
+  CLR.l d0
+  !ComData_SetL{comPtr_Temp_TokenString1,#0}
+  !ComData_SetL{comPtr_Temp_TokenString2,#0}
+  !ComData_SetL{comPtr_Temp_TokenString3,#0}
 
   Function Return succ
 End Function
