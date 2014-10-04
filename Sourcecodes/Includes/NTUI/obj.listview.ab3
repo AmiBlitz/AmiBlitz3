@@ -147,6 +147,7 @@
 #TUILVA_ONTOUCHCB         =  #TUILVA_BASE + 15
 #TUILVA_ONFILELISTENERCLOSE   =  #TUILVA_BASE + 16
 #TUILVA_ONFILELISTENERCLOSECB =  #TUILVA_BASE + 17
+#TUILVA_SCROLLERMODE      =  #TUILVA_BASE + 18
 
 #TUILVEV_APPEND  = #TUIEV_USER +1
 #TUILVEV_FLCLOSE = #TUIEV_USER +2
@@ -930,7 +931,8 @@ Function.l _ntui_SetListViewAttr{*listView.tuiListView,ti_Tag.l,ti_Data.l}
   done.l = True
 
   Select ti_Tag
-    Case #TUILVA_MULTISELECT  : *listView\multiSelect = ti_Data : done=True
+    Case #TUILVA_MULTISELECT  : *listView\multiSelect  = ti_Data : done=True
+    Case #TUILVA_SCROLLERMODE : *listView\scrollerMode = ti_Data : done=True
 
     ;Case #TUILVA_TOTALITEMS    : *listView\totalItems   = ti_Data : done=True
     ;Case #TUILVA_TOTALWIDTH    : *listView\totalWidth   = ti_Data : done=True
@@ -1000,6 +1002,7 @@ Function.l _ntui_GetListViewAttr{*listView.tuiListView,ti_Tag.l,*ti_Data.longP}
   done.l=True
   Select ti_Tag
     Case #TUILVA_MULTISELECT   : *ti_Data\l = *listView\multiSelect
+    Case #TUILVA_SCROLLERMODE  : *ti_Data\l = *listView\scrollerMode
     Case #TUILVA_TOTALITEMS    : *ti_Data\l = *listView\totalItems
     Case #TUILVA_TOTALWIDTH    : *ti_Data\l = *listView\totalWidth
     Case #TUILVA_VISIBLEITEMS  : *ti_Data\l = *listView\visibleItems
@@ -1677,18 +1680,22 @@ Statement _ntui_LayoutListView{*listView.tuiListView,*rp.RastPort,*bbox.tuiRect}
   ;*listView\obj\cbox\top  + *listView\obj\padding\top
 
   If *listView\vScroller
-    xs.l = *listView\vScroller\obj\minsize\x
-    !tuiCopyRect{sbox.tuiRect,*obj\ibox}
-    *obj\ibox\right - xs
-    *obj\cbox\right = *obj\ibox\right
-    sbox\left  = *obj\cbox\right +1
-    _ntui_Layout{*listView\vScroller,*rp,sbox}
+    If *listView\visibleItems<*listView\totalItems AND *listView\scrollerMode><#TUISCROLLER_NEVER OR *listView\scrollerMode=#TUISCROLLER_ALWAYS
+      xs.l = *listView\vScroller\obj\minsize\x
+      !tuiCopyRect{sbox.tuiRect,*obj\ibox}
+      *obj\ibox\right - xs
+      *obj\cbox\right = *obj\ibox\right
+      sbox\left  = *obj\cbox\right +1
+      _ntui_Layout{*listView\vScroller,*rp,sbox}
+    Else
+      *listView\vScroller\obj\flags|#TUIF_ONSCREEN - #TUIF_ONSCREEN
+    End If
   End If
 
   *listView\visibleWidth =  !tuiRectWidth{*listView\obj\cbox}
 
   If *listView\hScroller
-    If *listView\visibleWidth<*listView\totalWidth
+    If *listView\visibleWidth<*listView\totalWidth  AND *listView\scrollerMode><#TUISCROLLER_NEVER OR *listView\scrollerMode=#TUISCROLLER_ALWAYS
       ys.l = *listView\hScroller\obj\minsize\y
       !tuiCopyRect{sbox.tuiRect,*listView\obj\ibox}
       *listView\obj\ibox\bottom - ys
@@ -1974,6 +1981,10 @@ Function.l _ntui_DispatchListViewEvent{*listView.tuiListView,*ev.tuiEvent}
           fromX.l = *listView\ankerX
           If toX<0 OR fromX>*listView\totalItems Then toX=fromX
           *rp.RastPort = ntui_ObtainRastPort{*listView}
+          dy.l = 0
+          If *listView\ankerX<*listView\topItem Then dy = *listView\ankerX-*listView\topItem
+          If *listView\ankerX>=*listView\topItem+*listView\visibleItems Then dy = *listView\ankerX-(*listView\topItem+*listView\visibleItems-1)         
+          _ntui_ScrollListView{*listView,0,dy,*rp}
           If *rp
             _ntui_DrawListViewItem{*listView,*rp,fromX,toX}
             ntui_ReleaseRastPort{*listView}
@@ -1989,6 +2000,10 @@ Function.l _ntui_DispatchListViewEvent{*listView.tuiListView,*ev.tuiEvent}
           toX.l = *listView\ankerX
           If fromX<0 OR fromX>*listView\totalItems Then fromX=toX
           *rp.RastPort = ntui_ObtainRastPort{*listView}
+          dy.l = 0
+          If *listView\ankerX<*listView\topItem Then dy = *listView\ankerX-*listView\topItem
+          If *listView\ankerX>=*listView\topItem+*listView\visibleItems Then dy = *listView\ankerX-(*listView\topItem+*listView\visibleItems-1)         
+          _ntui_ScrollListView{*listView,0,dy,*rp}
           If *rp
             _ntui_DrawListViewItem{*listView,*rp,fromX,toX}
             ntui_ReleaseRastPort{*listView}
@@ -2006,14 +2021,22 @@ Function.l _ntui_DispatchListViewEvent{*listView.tuiListView,*ev.tuiEvent}
           done      = True
           itemX.l = *listView\ankerX
           If (itemX>=0 AND itemX<*listView\totalItems)
+            *listItem.tuiListItem = !ntui_GetListItemP{itemX}
+            wasActive.l = (*listItem\addFlags&#TUIF_ACTIVE)
             *rp.RastPort = ntui_ObtainRastPort{*listView}
             _ntui_ListViewDeselectAll{*listView,*rp}
-            *listItem.tuiListItem = !ntui_GetListItemP{itemX}
             *listItem\addFlags|#TUIF_ACTIVE
             If (*rp)
               _ntui_DrawListViewItem{*listView,*rp,itemX,itemX}
               ntui_ReleaseRastPort{*listView}
             End If
+            
+            If wasActive
+              !tuiHandleNotify{done,*listView,onSelect,*ev}
+            Else
+              !tuiHandleNotify{done,*listView,onTouch,*ev}
+            End If
+            
           End If
       End Select
 
@@ -2433,10 +2456,6 @@ Function.tuiListView ntuib_ListView{title.s,@multiSelect.l,@onSelect.s,@help.s,@
 End Function
 
 
-
-
-
-
 Statement ntui_InitListViewClass{}
 
   classID.l = ntui_RegisterClass{"listview",(.tuiFunc)*ntui_ListView,Null}
@@ -2445,6 +2464,7 @@ Statement ntui_InitListViewClass{}
   ntui_RegisterAttr{classID,"cellcontent"     ,#TUILVA_CELLCONTENT      ,#TUIAT_STRING ,0,0}
   ntui_RegisterAttr{classID,"title"           ,#TUILVA_TITLE            ,#TUIAT_STRING ,0,0}
   ntui_RegisterAttr{classID,"topitem"         ,#TUILVA_TOPITEM          ,#TUIAT_INT    ,0,0}
+  ntui_RegisterAttr{classID,"scrollermode"    ,#TUILVA_SCROLLERMODE     ,#TUIAT_INT    ,0,0}
   ntui_RegisterAttr{classID,"leftoffset"      ,#TUILVA_LEFTOFFSET       ,#TUIAT_INT    ,0,0}
   ntui_RegisterAttr{classID,"totalitems"      ,#TUILVA_TOTALITEMS       ,#TUIAT_INT    ,0,0}
   ntui_RegisterAttr{classID,"totalwidth"      ,#TUILVA_TOTALWIDTH       ,#TUIAT_INT    ,0,0}
