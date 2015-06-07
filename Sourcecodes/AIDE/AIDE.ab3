@@ -3,7 +3,7 @@
 ; 
 ; General Info
 ; -------------------------------------------------------
-; ExePath         = "DH18:AMITest/Amiblitz3/AIDE"
+; ExePath         = "//AIDE"
 ; ExeFile         = "AIDE"
 ; CreateIcon      = 0
 ; Residents       = "all.res"
@@ -262,7 +262,6 @@ NEWTYPE.AIDE_DocType
   DebugProjectCmd.s
   ScanProjectCmd.s
   ScanSDKCmd.s
-  OpenCmd.s
 
   *DebugSource.tuiFunc   ; callback for debugging
   *BuildSource.tuiFunc   ; callback for building a file
@@ -278,12 +277,13 @@ NEWTYPE.AIDE_DocType
   *ScanSource.tuiFunc    ; callback for scanning the source
   *ScanSourceAsync.tuiFunc    ; callback for scanning the source
   *ScanSourceFinish.tuiFunc    ; callback for scanning the source
-  *UpdateSDK.tuiFunc
+  *UpdateBrowser.tuiFunc
   *JumpTo.tuiFunc
   ;*LongHelp.tuiFunc
   ;*QuickHelp.tuiFunc
   *OpenSettings.tuiFunc  ; Open the settings window for this document type
   *ApplySettings.tuiFunc ; Apply the settings window for this document type
+  *ScanSDK.tuiFunc
 
 End NEWTYPE
 
@@ -493,6 +493,8 @@ Macro obj_ab3_filter_stats  "obj_ab3_filter_stats"  :End Macro
 Macro obj_splash_message    "obj_splash_message"    :End Macro
 Macro obj_splash_progress   "obj_splash_progress"   :End Macro
 
+Macro obj_prefs_doctype_list "obj_prefs_doctype_list" :End Macro
+
 ; Notifies
 Macro ev_aide_about             "ev_about"               :End Macro
 Macro ev_aide_calculator        "ev_calculator"          :End Macro
@@ -567,6 +569,10 @@ Macro ev_setlayout_large        "ev_setlayout_large"         :End Macro
 
 Macro ev_input_select           "ev_input_select"            :End Macro
 Macro ev_filelist_iconinfo      "ev_filelist_iconinfo" : End Macro
+
+Macro ev_prefs_doctype_refresh_sdk "ev_prefs_doctype_refresh_sdk" : End Macro
+Macro ev_prefs_doctype_list        "ev_prefs_doctype_list" : End Macro
+
 
 ; deprecated
 Macro file_win_source_settings_ab3 "win_source_settings_ab3.xml" :End Macro
@@ -662,10 +668,11 @@ Statement AIDE_Init{icon.s,dir.s}
     AIDE\DocType[docTypeX]\ScanSource    = Null  ; callback for scanning the source
     AIDE\DocType[docTypeX]\ScanSourceAsync  = Null  ; callback for scanning the source
     AIDE\DocType[docTypeX]\ScanSourceFinish = Null  ; callback for scanning the source
-    AIDE\DocType[docTypeX]\UpdateSDK     = Null
+    AIDE\DocType[docTypeX]\ScanSDK       = Null
     AIDE\DocType[docTypeX]\JumpTo        = Null
     AIDE\DocType[docTypeX]\OpenSettings  = Null
     AIDE\DocType[docTypeX]\ApplySettings = Null
+    AIDE\DocType[docTypeX]\UpdateBrowser = Null
   Next
   
   AIDE\IsBuilding  = False
@@ -676,10 +683,9 @@ Statement AIDE_Init{icon.s,dir.s}
 End Statement
 
 
-
 progIcon.s  = dos_GetStartIcon{"AIDE"}
 progFile.s  = dos_GetProgFile{"Sourcecodes:AmiBlitz3/AIDE/AIDE"}
-progDir.s   = dos_PathPart{progFile} ; dos_GetProgDir{""}
+progDir.s   = dos_PathPart{progFile}
 AIDE_Init{progIcon,progDir}
 
 
@@ -703,7 +709,6 @@ SHARED startprogress.l
   End If
   
 End Statement
-
 
 
 Statement Popup_Help{name.s,text.s,source.s,x.l,y.l}
@@ -870,7 +875,7 @@ Statement AIDE_AutoLayout{}
   right.l  = *ntui\screen_\Width-1
 
 
-  ;lock.l = LockIBase_ (0)
+  lock.l = LockIBase_ (0)
   *myWindow.Window = *ntui\screen_\FirstWindow
 
   While *myWindow
@@ -895,8 +900,7 @@ Statement AIDE_AutoLayout{}
     End If
     *myWindow = *myWindow\NextWindow
   Wend
-
-  ;UnlockIBase_ lock
+  UnlockIBase_ lock
   
   *win.tuiWindow = ntui_GetWindowByID{*ntui,!win_main}
   If *win
@@ -923,16 +927,16 @@ End Statement
 
 Function.l DocType_Examine{filename.s}
 
-  docType.l = #DOCTYPE_DEFAULT
+  docTypeX.l = #DOCTYPE_DEFAULT
   For n.l=1 To #DOCTYPE_MAX-1
     If AIDE\DocType[n]\PatternParsed><""
       If MatchPatternNoCase_ (&AIDE\DocType[n]\PatternParsed,&filename)
-        docType = n
+        docTypeX = n
       End If
     End If
   Next
 
-  Function Return docType
+  Function Return docTypeX
 
 End Function
 
@@ -1206,6 +1210,7 @@ Function.l Document_SetTitle{docX.l,title.s,image.s}
     If Document_IsEdited{docX}      Then image = image + "|edit"   : ntui_SetAttr{*source,#TUIA_BOLD,True}       : Else ntui_SetAttr{*source,#TUIA_BOLD,False}
     If AIDE\Document[docX]\IsLocked Then image = image + "|off" ;: ntui_SetAttr{*source,#TUIA_UNDERLINED,True} : Else ntui_SetAttr{*source,#TUIA_UNDERLINED,False}
     ntui_SetAttr{*source,#TUIGA_IMAGE,&image}
+    ntui_SetAttr{AIDE\Document[docX]\TextBox,#TUITBA_READONLY,AIDE\Document[docX]\IsLocked}
 
     ntui_SetString{*source,title}
     ntui_Refresh{*tab,Null}
@@ -1264,7 +1269,6 @@ Statement AIDE_UpdateGui{}
         *parent.tuiObject = ntui_GetObjectByID{*ntui,!obj_main_menubar}
     End Select
 
-
     ; project control
     ntui_SetAttrByID{*parent,!obj_project_build   ,#TUIA_DISABLED,AIDE\IsBuilding OR canBuildProject=False}
     ntui_SetAttrByID{*parent,!obj_project_rebuild ,#TUIA_DISABLED,AIDE\IsBuilding OR canBuildProject=False}
@@ -1315,9 +1319,9 @@ Statement Document_RemDocType{docX.l}
 
   !If_BadDocX_Then{ Statement Return}
 
-  oldDocType.l = AIDE\Document[docX]\DocType
-  If AIDE\DocType[oldDocType]\Detach
-    !_CallFuncPointer{AIDE\DocType[oldDocType]\Detach,res.l,docX}
+  oldDocTypeX.l = AIDE\Document[docX]\DocType
+  If AIDE\DocType[oldDocTypeX]\Detach
+    !_CallFuncPointer{AIDE\DocType[oldDocTypeX]\Detach,res.l,docX}
   End If
 
   AIDE\Document[docX]\DocType = #DOCTYPE_DEFAULT
@@ -1326,16 +1330,16 @@ Statement Document_RemDocType{docX.l}
 End Statement
 
 
-Function.l Document_SetDocType{docX.l,docType.l}
+Function.l Document_SetDocType{docX.l,docTypeX.l}
 
   !If_BadDocX_Then{ Function Return False }
 
   Document_RemDocType{docX.l}
 
-  If AIDE\DocType[docType]\Attach
-    !_CallFuncPointer{AIDE\DocType[docType]\Attach,res.l,docX}
+  If AIDE\DocType[docTypeX]\Attach
+    !_CallFuncPointer{AIDE\DocType[docTypeX]\Attach,res.l,docX}
   Else
-    AIDE\Document[docX]\DocType = docType
+    AIDE\Document[docX]\DocType = docTypeX
     ntui_SetAttr{AIDE\Document[docX]\TextBox,#TUITBA_STYLECB,Null}
     res.l = True
   End If
@@ -1454,15 +1458,15 @@ Function.l Document_Save{docX.l,filename.s,@force.l}
 
   If filename
     filepart.s = dos_FilePart{filename}
-    docType.l = DocType_Examine{filepart}
-    If docType=#DOCTYPE_DEFAULT Then docType=AIDE\Document[docX]\DocType
+    docTypeX.l = DocType_Examine{filepart}
+    If docTypeX=#DOCTYPE_DEFAULT Then docTypeX=AIDE\Document[docX]\DocType
 
-    If AIDE\Document[docX]\DocType><docType
-      Document_SetDocType{docX,docType}
+    If AIDE\Document[docX]\DocType><docTypeX
+      Document_SetDocType{docX,docTypeX}
     End If
 
-    If AIDE\DocType[docType]\Export
-      !_CallFuncPointer{AIDE\DocType[docType]\Export,err.l,docX,&filename}
+    If AIDE\DocType[docTypeX]\Export
+      !_CallFuncPointer{AIDE\DocType[docTypeX]\Export,err.l,docX,&filename}
     Else
       err.l = ntui_SaveTextBox{AIDE\Document[docX]\TextBox,&filename}
     End If
@@ -1470,6 +1474,7 @@ Function.l Document_Save{docX.l,filename.s,@force.l}
     If err=0
       ntui_SetAttr{AIDE\Document[docX]\TextBox,#TUITBA_FILENAME,&filename}
       ntui_SetAttr{AIDE\Document[docX]\TextBox,#TUITBA_EDITED,False}
+      ntui_SetAttr{AIDE\Document[docX]\TextBox,#TUITBA_READONLY,AIDE\Document[docX]\IsLocked}
       Document_SetTitle{docX,filepart,""}
       *tab.tuiObject = ntui_GetObjectByID{*ntui,!obj_main_sourcetab}
       ntui_Refresh{*tab,Null}
@@ -1497,25 +1502,25 @@ Statement Document_Show{docX.l}
   End If
   
   If docX>=0
-    docType.l = AIDE\Document[docX]\DocType
+    docTypeX.l = AIDE\Document[docX]\DocType
 
     If AIDE\Document[docX]\NeedScan=True
 
       AIDE\Document[docX]\NeedScan=False
       filename.s = Document_GetFileName{docX}
 
-      If (AIDE\DocType[docType]\ScanSourceAsync)
-        !_CallFuncPointer{AIDE\DocType[docType]\ScanSourceAsync, res.l, docX, &filename}
+      If (AIDE\DocType[docTypeX]\ScanSourceAsync)
+        !_CallFuncPointer{AIDE\DocType[docTypeX]\ScanSourceAsync, res.l, docX, &filename}
       Else
-        If (AIDE\DocType[docType]\ScanSource)
-          !_CallFuncPointer{AIDE\DocType[docType]\ScanSource, res.l, docX, &filename}
+        If (AIDE\DocType[docTypeX]\ScanSource)
+          !_CallFuncPointer{AIDE\DocType[docTypeX]\ScanSource, res.l, docX, &filename}
         End If
       End If
 
     End If
     
-    If (AIDE\DocType[docType]\UpdateSDK)
-      !_CallFuncPointer{AIDE\DocType[docType]\UpdateSDK, res.l, docX}
+    If (AIDE\DocType[docTypeX]\UpdateBrowser)
+      !_CallFuncPointer{AIDE\DocType[docTypeX]\UpdateBrowser, res.l, docX}
     End If
   End If
 
@@ -1605,15 +1610,15 @@ Statement Document_Scan_dep{docX.l}
 
   filename.s = Document_GetFileName{docX}
 
-  docType.l = AIDE\Document[docX]\DocType
-  If AIDE\DocType[docType]\ScanSource
+  docTypeX.l = AIDE\Document[docX]\DocType
+  If AIDE\DocType[docTypeX]\ScanSource
 
     If filename=""
       error{"No file is associated with this document."}
       Statement Return
     End If
 
-    !_CallFuncPointer{AIDE\DocType[docType]\ScanSource, res.l, docX, &filename}
+    !_CallFuncPointer{AIDE\DocType[docTypeX]\ScanSource, res.l, docX, &filename}
     AIDE_UpdateGui{}
   ;Else
     ;error{"No scanning configured for this file type."}
@@ -1628,14 +1633,14 @@ Function.l Document_Load{docX.l,filename.s}
   !If_BadDocX_Then{ Function Return False }
 
   succ.l = False
-  docType.l = -1
+  docTypeX.l = -1
   filepart.s = dos_FilePart{filename}
-  docType = DocType_Examine{filepart}
+  docTypeX = DocType_Examine{filepart}
 
-  If Document_SetDocType{docX,docType}
+  If Document_SetDocType{docX,docTypeX}
 
-    If AIDE\DocType[docType]\Import
-      !_CallFuncPointer{AIDE\DocType[docType]\Import,err.l,docX,&filename}
+    If AIDE\DocType[docTypeX]\Import
+      !_CallFuncPointer{AIDE\DocType[docTypeX]\Import,err.l,docX,&filename}
     Else      
       err.l = ntui_LoadTextBox{AIDE\Document[docX]\TextBox,&filename}
     End If
@@ -1677,8 +1682,8 @@ Statement Document_Debug{docX.l}
   filename.s = Document_GetFileName{docX}
   edited.w   = Document_IsEdited{docX}
 
-  docType.l = AIDE\Document[docX]\DocType
-  If AIDE\DocType[docType]\DebugSource
+  docTypeX.l = AIDE\Document[docX]\DocType
+  If AIDE\DocType[docTypeX]\DebugSource
 
     If filename=""
       error{"No file is associated with this document."}
@@ -1692,7 +1697,7 @@ Statement Document_Debug{docX.l}
       End If
     End If
 
-    !_CallFuncPointer{AIDE\DocType[docType]\DebugSource, res.l, docX, &filename}
+    !_CallFuncPointer{AIDE\DocType[docTypeX]\DebugSource, res.l, docX, &filename}
     If res=0
       AIDE\IsDebugging=True
       AIDE\IsBuilding =True
@@ -1715,8 +1720,8 @@ Statement Document_Build{docX.l}
   filename.s = Document_GetFileName{docX}
   edited.w   = Document_IsEdited{docX}
 
-  docType.l = AIDE\Document[docX]\DocType
-  If AIDE\DocType[docType]\BuildSource
+  docTypeX.l = AIDE\Document[docX]\DocType
+  If AIDE\DocType[docTypeX]\BuildSource
 
     If filename=""
       error{"No file is associated with this document."}
@@ -1730,7 +1735,7 @@ Statement Document_Build{docX.l}
       End If
     End If
 
-    !_CallFuncPointer{AIDE\DocType[docType]\BuildSource, res.l, docX, &filename}
+    !_CallFuncPointer{AIDE\DocType[docTypeX]\BuildSource, res.l, docX, &filename}
     If res=0
       AIDE\IsBuilding = True
     Else
@@ -1897,7 +1902,6 @@ Statement AIDE_Deinit{exitcode.l}
 
   If *ntui
     ntui_Iconify{*ntui}
-    ;AIDE\Prefs\FileListPath = ntui_GetStringByID{*ntui,!obj_filelist_path}
   End If
   
   If exitcode = 0 Then Prefs_Write{AIDE\Icon}
@@ -1927,6 +1931,14 @@ Statement AIDE_Deinit{exitcode.l}
   If AIDE\AddAssignDone Then dos_RemAssign{"Libs",dos_AddPart{AIDE\InstallPath,"Libs"}} : AIDE\AddAssignDone = False
 
 End Statement
+
+
+Statement AIDE_Deinit_Error{}
+
+  AIDE_Deinit{-1}
+  
+End Statement
+!autoexit{AIDE_Deinit_Error}
 
 
 Statement Prefs_Apply{}
@@ -2005,16 +2017,17 @@ Statement Prefs_Read{icon.s}
     If AIDE\DocType[n]\ReadPrefs
       !_CallFuncPointer{AIDE\DocType[n]\ReadPrefs,res.l,&icon}
     End If
+    If AIDE\RefreshAll
+      If AIDE\DocType[n]\ScanSDK
+        !_CallFuncPointer{AIDE\DocType[n]\ScanSDK,res.l}
+      End If
+    End If    
   Next
+  AIDE\RefreshAll                = False
 
+  ; move to scanSDK
   ;StartUp_Message{"scan AISS folder..."}
   ;AISS_Refresh{"","",True}
-
-  ; just a hack to make sure AB3 gets initialized
-  ;If AIDE\RefreshAll
-  ;  _AmiBlitz3_Prepare{True}
-  ;  AIDE\RefreshAll = False
-  ;End If
 
 End Statement
 
@@ -2143,9 +2156,9 @@ Statement Document_ApplySettings{docX.l}
 
   !If_BadDocX_Then{ Statement Return }
 
-  docType.l = AIDE\Document[docX]\DocType
-  If AIDE\DocType[docType]\ApplySettings
-    !_CallFuncPointer{AIDE\DocType[docType]\ApplySettings, res.l, docX}
+  docTypeX.l = AIDE\Document[docX]\DocType
+  If AIDE\DocType[docTypeX]\ApplySettings
+    !_CallFuncPointer{AIDE\DocType[docTypeX]\ApplySettings, res.l, docX}
   Else
     error{"No source settings available for this file type."}
   End If
@@ -2157,9 +2170,9 @@ Statement Document_OpenSettings{docX.l}
 
   !If_BadDocX_Then{ Statement Return}
 
-  docType.l = AIDE\Document[docX]\DocType
-  If AIDE\DocType[docType]\OpenSettings
-    !_CallFuncPointer{AIDE\DocType[docType]\OpenSettings, res.l, docX}
+  docTypeX.l = AIDE\Document[docX]\DocType
+  If AIDE\DocType[docTypeX]\OpenSettings
+    !_CallFuncPointer{AIDE\DocType[docTypeX]\OpenSettings, res.l, docX}
   Else
     error{"No source settings available for this file type."}
   End If
@@ -2203,14 +2216,28 @@ Statement Window_Calculator{}
 End Statement
 
 
-Statement Prefs_SelectDoctype{doctypeX.l}
+Statement Prefs_SelectDoctype{docTypeX.l}
 
-  If doctypeX<0 OR doctypeX>=#DOCTYPE_MAX
-    ntui_SetAttrByID{*ntui,"obj_prefs_doctype_group",#TUIA_DISABLED,#TRUE}
-  Else
-    ntui_SetAttrByID{*ntui,"obj_prefs_doctype_group",#TUIA_DISABLED,#FALSE}
-    ntui_SetStringByID{*ntui,"obj_prefs_doctype_icon",AIDE\DocType[doctypeX]\DefIcon}
-    ntui_SetStringByID{*ntui,"obj_prefs_doctype_path",AIDE\DocType[doctypeX]\Name}
+  ntui_SetAttrByID{*ntui,"obj_prefs_doctype_refresh_sdk",#TUIA_DISABLED,#TRUE}
+  ntui_SetAttrByID{*ntui,"obj_prefs_doctype_group",#TUIA_DISABLED,#TRUE}
+  
+  If docTypeX>=0 AND docTypeX<#DOCTYPE_MAX
+    ntui_SetAttrByID{*ntui,"obj_prefs_doctype_group",#TUIA_ENABLED,#TRUE}
+    ;ntui_SetAttrByID{*ntui,"obj_prefs_doctype_path",#TUIA_ENABLED,#TRUE}
+    ntui_SetStringByID{*ntui,"obj_prefs_doctype_icon",AIDE\DocType[docTypeX]\DefIcon}
+    ntui_SetStringByID{*ntui,"obj_prefs_doctype_path",AIDE\DocType[docTypeX]\BasePath}
+    ntui_SetStringByID{*ntui,"obj_prefs_doctype_build_source",AIDE\DocType[docTypeX]\BuildSourceCmd}
+    ntui_SetStringByID{*ntui,"obj_prefs_doctype_debug_source",AIDE\DocType[docTypeX]\DebugSourceCmd}
+    ntui_SetStringByID{*ntui,"obj_prefs_doctype_scan_source",AIDE\DocType[docTypeX]\ScanSourceCmd}    
+    ntui_SetStringByID{*ntui,"obj_prefs_doctype_build_project",AIDE\DocType[docTypeX]\BuildProjectCmd}
+    ntui_SetStringByID{*ntui,"obj_prefs_doctype_debug_project",AIDE\DocType[docTypeX]\DebugProjectCmd}
+    ntui_SetStringByID{*ntui,"obj_prefs_doctype_scan_project",AIDE\DocType[docTypeX]\ScanProjectCmd}    
+    ntui_SetStringByID{*ntui,"obj_prefs_doctype_sdkpath",AIDE\DocType[docTypeX]\SDKPath}
+    ntui_SetStringByID{*ntui,"obj_prefs_doctype_scan_sdk",AIDE\DocType[docTypeX]\ScanSDKCmd}    
+
+    If (AIDE\DocType[docTypeX]\ScanSDK)
+      ntui_SetAttrByID{*ntui,"obj_prefs_doctype_refresh_sdk",#TUIA_ENABLED,#TRUE}
+    End If    
   End If
   
 End Statement
@@ -2232,14 +2259,14 @@ Statement Window_Preferences{}
       If AIDE\Prefs\PubScreenName = "Workbench" Then scrmode.l = 0 : Else scrmode = 1
       ntui_SetValueByID{*win,"obj_prefs_screenmode",        scrmode}
       
-      *lv.tuiListView = (.tuiListView)ntui_GetObjectByID{*ntui,"obj_prefs_doctype_list"}
+      *lv.tuiListView = (.tuiListView)ntui_GetObjectByID{*ntui,!obj_prefs_doctype_list}
       If *lv
-        For doctypeX.l=0 To #DOCTYPE_MAX-1
-          If AIDE\DocType[doctypeX]\Name><""
+        For docTypeX.l=0 To #DOCTYPE_MAX-1
+          If AIDE\DocType[docTypeX]\Name><""
             image.s = "file"
-            If AIDE\DocType[doctypeX]\DefIcon Then image=AIDE\DocType[doctypeX]\DefIcon
-            lvitem.s = "\p"+image+"|"+AIDE\DocType[doctypeX]\Name
-            ntui_AddListItem{*lv,0,lvitem,doctypeX,0,0}
+            If AIDE\DocType[docTypeX]\DefIcon Then image=AIDE\DocType[docTypeX]\DefIcon
+            lvitem.s = "\p"+image+"|"+AIDE\DocType[docTypeX]\Name
+            ntui_AddListItem{*lv,0,lvitem,docTypeX,docTypeX,0}
           End If
         Next
       End If
@@ -2324,6 +2351,22 @@ Statement AIDE_HandleNotifies{}
 
     Case "QUIT"         ; someone wants us to quit
       AIDE\Quit = True
+      For docX.l=0 To #DOCUMENT_MAX-1
+        If AIDE\Document[docX]\IsUsed
+          If Document_IsEdited{docX}
+            option.l = ask{"\\22" + AIDE\Document[docX]\Title + "\\22 has unsafed changes.\\n","Save|Discard|Cancel"}
+            Select option
+              Case 1 :
+                Document_Save{docX,""}
+              Case 2 :
+               ; discard changes
+              Case 0 :
+                AIDE\Quit = False
+                docX = #DOCUMENT_MAX 
+            End Select
+          End If
+        End If
+      Next
 
     Case !ev_aide_about
       Window_About{}
@@ -2631,15 +2674,15 @@ Statement AIDE_HandleNotifies{}
     Case !ev_src_jumpto
       docX.l = Document_FindActive{}
       If docX>=0
-        docType.l = AIDE\Document[docX]\DocType
+        docTypeX.l = AIDE\Document[docX]\DocType
         *lv.tuiListView = (.tuiListView)ntui_GetObjectByID{*ntui,!obj_src_list}
         If *lv
           i.l     = ntui_GetFirstSelectedListItem{*lv}
           type_.s = ntui_GetListItemText{*lv,i,0}
           name.s  = ntui_GetListItemText{*lv,i,1}
           more.s  = ntui_GetListItemText{*lv,i,2}
-          If (AIDE\DocType[docType]\JumpTo)
-            !_CallFuncPointer{AIDE\DocType[docType]\JumpTo, res.l, docX, &type_, &name, &more}
+          If (AIDE\DocType[docTypeX]\JumpTo)
+            !_CallFuncPointer{AIDE\DocType[docTypeX]\JumpTo, res.l, docX, &type_, &name, &more}
           End If
         End If
       End If
@@ -2647,9 +2690,9 @@ Statement AIDE_HandleNotifies{}
     Case !ev_src_refresh
       docX.l = Document_FindActive{}
       If docX>=0
-        docType.l = AIDE\Document[docX]\DocType
-        If (AIDE\DocType[docType]\UpdateSDK)
-          !_CallFuncPointer{AIDE\DocType[docType]\UpdateSDK, res.l, docX}
+        docTypeX.l = AIDE\Document[docX]\DocType
+        If (AIDE\DocType[docTypeX]\UpdateBrowser)
+          !_CallFuncPointer{AIDE\DocType[docTypeX]\UpdateBrowser, res.l, docX}
         End If
       End If
       
@@ -2661,27 +2704,28 @@ Statement AIDE_HandleNotifies{}
       End If
       
     Case !ev_ab3_jumpto
-      docType.l = #DOCTYPE_AMIBLITZ3
+      docTypeX.l = #DOCTYPE_AMIBLITZ3
       *lv.tuiListView = (.tuiListView)ntui_GetObjectByID{*ntui,!obj_ab3_list}
       If *lv
         i.l     = ntui_GetFirstSelectedListItem{*lv}
         type_.s = ntui_GetListItemText{*lv,i,0}
         name.s  = ntui_GetListItemText{*lv,i,1}
         more.s  = ntui_GetListItemText{*lv,i,2}
-        If (AIDE\DocType[docType]\JumpTo)
-          !_CallFuncPointer{AIDE\DocType[docType]\JumpTo, res.l, -1, &type_, &name, &more}
+        If (AIDE\DocType[docTypeX]\JumpTo)
+          !_CallFuncPointer{AIDE\DocType[docTypeX]\JumpTo, res.l, -1, &type_, &name, &more}
         End If
       End If
 
     Case !ev_ab3_refresh
-      docType.l = #DOCTYPE_AMIBLITZ3
-      If (AIDE\DocType[docType]\UpdateSDK)
-        !_CallFuncPointer{AIDE\DocType[docType]\UpdateSDK, res.l, -1}
+      docTypeX.l = #DOCTYPE_AMIBLITZ3
+      If (AIDE\DocType[docTypeX]\UpdateBrowser)
+        !_CallFuncPointer{AIDE\DocType[docTypeX]\UpdateBrowser, res.l, -1}
       End If
       
     Case !ev_ab3_rescan
       ntui_ShowWindowByID{*ntui,!win_splash}
-      _AmiBlitz3_Prepare{True}
+      AmiBlitz3_ScanSDK{}
+      _AmiBlitz3_Prepare{}
       id.s = !ev_ab3_refresh
       ntui_PostNotify{*ntui,&id}
       ntui_HideWindowByID{*ntui,!win_splash}
@@ -2785,11 +2829,35 @@ CEND
               Document_JumpTo{docX,lpos,True}
             End If
           EndIf
-
-
         EndIf
-
       EndIf
+      
+      Case !ev_prefs_doctype_refresh_sdk
+        *lv.tuiListView = (.tuiListView)ntui_GetObjectByID{*ntui,!obj_prefs_doctype_list}
+        If *lv
+          i.l = ntui_GetFirstSelectedListItem{*lv}
+          If i >= 0
+            docTypeX.l = ntui_GetListItemUserData{*lv,i}
+            If docTypeX>=0
+              If (AIDE\DocType[docTypeX]\ScanSDK)
+                !_CallFuncPointer{AIDE\DocType[docTypeX]\ScanSDK, res.l}
+              End If
+            End If
+          End If
+        End If
+      
+      Case !ev_prefs_doctype_list
+        *lv.tuiListView = (.tuiListView)ntui_GetObjectByID{*ntui,!obj_prefs_doctype_list}
+        If *lv
+          i.l = ntui_GetFirstSelectedListItem{*lv}
+          If i >= 0
+            docTypeX.l = ntui_GetListItemUserData{*lv,i}
+            Prefs_SelectDoctype{docTypeX}       
+          Else
+            Prefs_SelectDoctype{-1}
+          End If
+        End If
+        
       Case !ev_input_select
         *win.tuiWindow = ntui_GetNotifyWindow{*notify}
         If *win
@@ -2797,9 +2865,30 @@ CEND
           *lv.tuiListView = (.tuiListView)ntui_GetObjectByID{*win,!obj_selector_list}
           i.l = ntui_GetFirstSelectedListItem{*lv}
           If i>=0
-            token.s = ntui_GetListItemText{*lv,i,0}
-            ;ntui_GetNextSelectedListItem{*lv}
-            ;If token Then error{"token selected: "+token}
+            selection.s = ntui_GetListItemText{*lv,i,0}
+            docX.l = Document_FindActive{}
+            If docX>=0            
+             *textBox.tuiTextBox = (.tuiTextBox)ntui_GetObjectByID{AIDE\Document[docX]\Source,!obj_source_text}
+              ntui_GetAttr{*textBox,#TUITBA_CURSORLINE,&lpos.l}
+              ntui_GetAttr{*textBox,#TUITBA_CURSORCHAR,&cpos.l}
+              *lineP.b = lpos
+              ntui_GetAttr{*textBox,#TUITBA_LINE,&*lineP}
+              If *lineP
+                ; here it becomes AB3 specific => func pointer
+                fpos.l = _ab3_FindReplaceStart{*lineP,cpos}
+                xpos.l = Instr(selection,".",0)
+                If xpos > 0
+                  selection = Left$(selection,xpos-1)
+                End If
+                If Left$(selection,1) = "*"
+                  selection = Right$(selection, FLen(selection) - 1)
+                End If
+                If fpos>=0
+                  ntui_SetTextBoxSelection    {*textBox,Null,lpos,fpos,lpos,cpos}
+                  ntui_ReplaceTextBoxSelection{*textBox,&selection,FLen(selection)}
+                End If
+              End If
+            End If
           End If
         End If
         
@@ -2807,12 +2896,12 @@ CEND
         sourcefile.s = ntui_GetNotifyString{*notify}
         docX.l = Document_FindByFilename{sourcefile}
         If docX>=0
-          docType.l = Document_GetDocType{docX}
-          If (AIDE\DocType[docType]\ScanSourceFinish)
-            !_CallFuncPointer{AIDE\DocType[docType]\ScanSourceFinish, res.l, docX, &sourcefile}
+          docTypeX.l = Document_GetDocType{docX}
+          If (AIDE\DocType[docTypeX]\ScanSourceFinish)
+            !_CallFuncPointer{AIDE\DocType[docTypeX]\ScanSourceFinish, res.l, docX, &sourcefile}
             If docX = Document_FindActive{}
-               If (AIDE\DocType[docType]\UpdateSDK)
-               !_CallFuncPointer{AIDE\DocType[docType]\UpdateSDK, res.l, docX}
+              If (AIDE\DocType[docTypeX]\UpdateBrowser)
+                !_CallFuncPointer{AIDE\DocType[docTypeX]\UpdateBrowser, res.l, docX}
               End If
             End If
             
@@ -2826,6 +2915,7 @@ CEND
 
       Default
         *con.tuiTextBox = (.tuiTextBox)ntui_GetObjectByID {*ntui,!obj_main_console}
+       
         If *con
           id.s = ntui_GetNotifyID{*notify}
           If id
@@ -2846,7 +2936,6 @@ End Statement
 
 
 ;/* ============== Main Program ==============
-
   exitcode.l = 0
   
   ; build the splash screen
@@ -2896,4 +2985,3 @@ End Statement
 .cleanup
   AIDE_Deinit{exitcode}
 End
-
