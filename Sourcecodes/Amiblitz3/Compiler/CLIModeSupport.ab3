@@ -708,7 +708,7 @@ Function.l LoadSource{sourcefile.s}
             Poke.w ?default_interruptcheck,0                              ;+obsolet: interruptcheck vorgabe
             Poke.w ?default_overflowcheck,0                               ;+obsolet: overflow vorgabe
 
-            If OnePassCompiling = False                                   ; check if try OnePassCompiling ; no use old buffer size   ; yes use small to loadn and big to compile  tomsmart1
+            If OnePassCompiling = False                                   ; check if try OnePassCompiling ; no use old buffer size   ; yes use small to load and big to compile  tomsmart1
               Poke.l ?objectbuffer     ,#DEFAULT_OBJECTBUFFERSIZE         ; replaced with there default value  tomsmart1
               Poke.l ?libsbuffer       ,#DEFAULT_LIBSBUFFERSIZE           ;                    "
               Poke.l ?systembuffer     ,#DEFAULT_SYSTEMBUFFERSIZE         ;                    "
@@ -1035,6 +1035,7 @@ End Statement
 
 
 Function.l CompileSource{exefile.s,debug.l,release.l,comdbgflags.l,stringbuffersize.l} ; expand to support CLI Compiler and Debugger settings tomsmart1
+ SHARED releaseexe.l , releasedbg_save.w      ; added for the new create of release exe  tomsmart1
 
   ;check if there are cli args for compiler and debugger settings
   ;else use settings of the xtra data  tomsmart1
@@ -1113,99 +1114,96 @@ Function.l CompileSource{exefile.s,debug.l,release.l,comdbgflags.l,stringbuffers
   If release   ; set make smallest (for release); only for release we overwrite the settings of the sourcefile  tomsmart1
     !SetBoolXtra{make_smallestcode,1}
     !ComData_SetB{comByte_FuncOptimize,#1}     ; set it to the old default for smallest size  tomsmart1
+    !ComData_GetW{comWord_CreateDebugFile,D0}  ; get status
+    releasedbg_save = PutD0                    ; save status
+    !ComData_SetW{comWord_CreateDebugFile,#0}  ; switch it off that the dbg file is not created for every compile
+    releaseexe = True                          ; set it on
   Else                                         ; NO, it is debug, we dont care about size, but want 1-pass compiling
                                                ; deactivate else because we use the settings of the sourcefile  tomsmart1
     !SetBoolXtra{make_smallestcode,0}          ; If someone doesnt want to release, he gives a damn about the size (usually)
     !ComData_SetB{comByte_FuncOptimize,#0}     ; if we dont make smallest, we dont need to prune functions
-  End If                                       ; Wanderer 2013 05 15
+                                               ; Wanderer 2013 05 15
+    releaseexe = False                         ; set it off
+  End If                                       
 
-  newexesize.l = $7FFFFFFF
 
   !ComData_LEA{comStr_CurrentDir,D0}
   currentDirP.l = PutD0
   sourcepath.s = Peek.s(currentDirP)
 
-  Repeat
-    oldexesize.l = newexesize
+  ; do some cleanup before invoking compiler */
+  CLR.w anyerrs
+  CLR.w debugversion
+  CLR.w flag_noPED
+  CLR.w flag_noCLI
+  MOVE.l #$FFFFffff,linenumat
+  MOVE.l #$FFFFffff,compilelinecounter
 
-    ; do some cleanup before invoking compiler */
-    CLR.w anyerrs
-    CLR.w debugversion
-    CLR.w flag_noPED
-    CLR.w flag_noCLI
-    MOVE.l #$FFFFffff,linenumat
-    MOVE.l #$FFFFffff,compilelinecounter
+  SetCurrentDir{sourcepath}
 
-    SetCurrentDir{sourcepath}
+  If exefile
+    MOVE.w #1,makeexec_remember
 
+    ; changed to support relative paths for the exe file  tomsmart1
+    If "" <> dos_DevicePart{exefile}                       ; check if the exefile have a devicename like "RAM:"
+      global_exefilename = exefile                         ; yes, use only this path
+    Else
+      global_exefilename = dos_AddPart{sourcepath,exefile} ; no, use the source file path as start path plus the exepath
+    EndIf
+    Poke.l ?ptr_newexefilename,&global_exefilename
+    Poke.s ?exepath     ,dos_PathPart{exefile}
+    Poke.s ?exefilename ,dos_FilePart{exefile}
+  Else
+    MOVE.w #0,makeexec_remember
+    ; use exe settings from xtra information
+  End If
+
+  MOVE.l A4,-(a7)
+  !asm
+  !ComData_GetL{comPtr_FirstSourceLine,A5}
+  !ComData_GetL{comLong_TotalLines,D7}
+
+  MOVE.l A5,firstitem_
+  MOVE.w D7,numlines_org
+  MOVE.l d7,numlines
+
+  _ab3_compileloop:
+    MOVE.w makeexec_remember,makeexec                                     ;MOVE.w #$FFFF,debugversion
+    JSR ab3_OpenDebugFile
+    JSR startcompile
+    JSR ab3_CloseDebugFile
+    TST.l errorcounter                                                    ; if a error happen do not the second pass
+    BNE 'notagain
+    CMP.l #"NORE",reqmode
+  BEQ _ab3_compileloop
+
+ 'notagain
+  !basic
+  MOVE.l (a7)+,A4
+
+  MOVE.l globallinecount,D0
+  counter.l = PutD0
+
+  MOVE.l anyerrs,d0
+  err.l = PutD0
+
+  errcount.l = Peek.l(?errorcounter)
+  If cli_verbose>=1 Then Print counter-1," line(s) compiled, "
+
+  If errcount>0
+    NPrint "\\1B[1m",errcount," error(s)!"
+  Else
+    If cli_verbose>=1 Then NPrint "0 errors."
+  End If
+
+  If err=0
     If exefile
-      MOVE.w #1,makeexec_remember
-
-      ; changed to support relative paths for the exe file  tomsmart1
-      If "" <> dos_DevicePart{exefile}                       ; check if the exefile have a devicename like "RAM:"
-        global_exefilename = exefile                         ; yes, use only this path
-      Else
-        global_exefilename = dos_AddPart{sourcepath,exefile} ; no, use the source file path as start path plus the exepath
-      EndIf
-      Poke.l ?ptr_newexefilename,&global_exefilename
-      Poke.s ?exepath     ,dos_PathPart{exefile}
-      Poke.s ?exefilename ,dos_FilePart{exefile}
-    Else
-      MOVE.w #0,makeexec_remember
-      ; use exe settings from xtra information
+      If cli_verbose>=1 Then NPrint "Saving executable as \\22",exefile,"\\22."
+      !asm
+      JSR savefile
+      !basic
     End If
-
-    MOVE.l A4,-(a7)
-    !asm
-    !ComData_GetL{comPtr_FirstSourceLine,A5}
-    !ComData_GetL{comLong_TotalLines,D7}
-
-    MOVE.l A5,firstitem_
-    MOVE.w D7,numlines_org
-    MOVE.l d7,numlines
-
-    _ab3_compileloop:
-      MOVE.w makeexec_remember,makeexec                                     ;MOVE.w #$FFFF,debugversion
-      JSR ab3_OpenDebugFile
-      JSR startcompile
-      JSR ab3_CloseDebugFile
-      TST.l errorcounter                                                    ; if a error happen do not the second pass
-      BNE 'notagain
-      CMP.l #"NORE",reqmode
-    BEQ _ab3_compileloop
-'notagain
-    !basic
-    MOVE.l (a7)+,A4
-
-    MOVE.l globallinecount,D0
-    counter.l = PutD0
-
-    MOVE.l anyerrs,d0
-    err.l = PutD0
-
-    errcount.l = Peek.l(?errorcounter)
-    If cli_verbose>=1 Then Print counter-1," line(s) compiled, "
-
-    If errcount>0
-      NPrint "\\1B[1m",errcount," error(s)!"
-    Else
-      If cli_verbose>=1 Then NPrint "0 errors."
-    End If
-
-    If err=0
-      If exefile
-        If cli_verbose>=1 Then NPrint "Saving executable as \\22",exefile,"\\22."
-        !asm
-        JSR savefile
-        !basic
-        If release
-          newexesize.l = dos_GetFileSize{exefile}
-          If newexesize<=0 Then newexesize = $7FFFFFFF
-        End If
-      End If
-    End If
-
-  Until newexesize>=oldexesize
+  End If
 
   fh.l = Output_()     ; flush the stdout before we do something else
   If fh Then Flush_ fh

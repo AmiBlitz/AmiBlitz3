@@ -13,8 +13,8 @@
 ; StringBuffer    = 20000
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
-; Version         = 3.6.4
-; NumberOfBuilds  = 400
+; Version         = 3.6.5
+; NumberOfBuilds  = 500
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1449
-; CursorColumn    = 31
-; LabelSearch     = "startcompi"
+; CursorLine      = 31686
+; CursorColumn    = 1
+; LabelSearch     = "release"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -246,6 +246,23 @@ If ( FindResident_("MorphOS") )
 Else
   Poke.b ?MorphOS,0      ; set it to use CacheClear_U
 EndIf
+
+; added here so the init is also available for the climode
+; for create release exe (minimized exe)
+ releaseexe.l               = False
+ releasedbg_save.w          = 0
+ releasemakesmall_save.b    = 0
+ releasefuncoptimize_save.b = 0
+ releasedebugger_save.b     = 0
+
+; for compiler status info
+ MaxLen comstatusstr.s = 100 ; set the max leng of the comstatusstring because if it not set the string get partly trashed do the first compile from init to pass 1
+ comstatusstr   = !TRANS{"Initializing Compiler..."} ;default settings
+ calcpro.l      = 0
+ calcpro_old.l  = 0
+ typ_old.l      = -1
+ pass_old.l     = -1
+ update_comstatus_gui.b = False ; for the first
 
 
 dbg_fid.l = -1 ; no debug file id yet!
@@ -1542,7 +1559,7 @@ BRA newcreate2
   ;O.K.... Now to create it
   MOVE.l D0,ptr_newexefilename
   MOVE.w #-1,debugversion
-  MOVE.w set_make_smallestcode,-(A7)
+  ;MOVE.w set_make_smallestcode,-(A7) ; deactivate because it make no sense  tomsmart1
   ;bset #$7,make_smallestcode        ;make small!                      ;set optimize for create file    ;make small!
 
   ; new >
@@ -1562,7 +1579,7 @@ BRA newcreate2
   BSR.w savefile
 
  'skip
-  MOVE.w (A7)+,set_make_smallestcode
+  ;MOVE.w (A7)+,set_make_smallestcode ; deactivate because it make no sense  tomsmart1
 
  cancel_createexe:   ; was 'err
 RTS
@@ -1587,11 +1604,8 @@ RTS
 
 
 ab3_OpenDebugFile:
+  BSR ab3_CloseDebugFile     ; remove double code and replaced it with a call of the subroutine  tomsmart1
   !basic
-  Poke.w ?word_WriteDebugFileNow,0
-  If dbg_fid>=0
-    file_Close{dbg_fid} : dbg_fid = -1
-  End If
   If dbg_fid.l<0
     CLR.l d0
     !ComData_GetW{comWord_CreateDebugFile,D0}
@@ -2325,7 +2339,14 @@ compiler_job: Dc.w 0                                      ; added by thilo: what
   ;< new
   BSR.w compileall
   ; new >
-  ADDQ.w #1,pass ; this is always, even when no exe is generated, can we not pop out here if we just compile? Wanderer 2013 05 15
+  ADDQ.w #1,pass
+  !regs2stack           ; added to get the needed size for the exe from the first compile for the create the release exe  tomsmart1
+  !basic
+  samesize.l = 0
+  needsize0.l = Peek.l(?bigpc) -Peek.l(?destbufferstart)
+  !asm
+  !stack2regs
+
   TST.l errorcounter
   BEQ 'skiperrorstop
  RTS
@@ -2403,6 +2424,28 @@ compiler_job: Dc.w 0                                      ; added by thilo: what
   BSR.w compileall
   ; new >
   ADDQ.w #1,pass
+  !regs2stack             ; added to get the needed size for the exe from the last (second) compile for the create the release exe  tomsmart1
+  !basic
+  If releaseexe = True                                       ; test if we creat a releas exe
+    needsize1.l = Peek.l(?bigpc) -Peek.l(?destbufferstart)   ; get the size form the last compile
+    If (needsize1 = needsize0) AND (releasedbg_save = 1)     ; test if we we can not reduce the size anymore and need to cread a dbg file
+      !ComData_SetW{comWord_CreateDebugFile,#1}              ; set create .dbg file to one
+      !asm
+      JSR ab3_OpenDebugFile                                  ; open the .dbg flie
+      !stack2regs
+      BSR compileall                                         ; compile for the last time to creat the dbg file
+      !regs2stack
+      !basic
+    EndIf
+    If needsize1 < needsize0   ; test if the needed size is smaller then the compile befor
+      needsize0 = needsize1    ; yes the new size is that the old size
+      !asm
+      !stack2regs
+      BRA 'l3                  ; back to the funcscan and compile again
+    EndIf
+  EndIf
+  !asm
+  !stack2regs
   ; < new
 
  'nosmall
@@ -3559,13 +3602,12 @@ debugmode:  Ds.w 1                                         ;debugga org source ;
   LEA  clrreq,a1
   MOVE.w #2000,(a1)
   !basic
-  MaxLen comstatusstr.s = 100 ; set the max leng of the comstatusstring because if it not set the string get partly trashed do the first compile from init to pass 1
-  comstatusstr   = !TRANS{"Initializing Compiler..."} ;default settings
-  calcpro.l      = 0
-  calcpro_old.l  = 0
-  typ_old.l      = -1
-  pass_old.l     = -1
-  update_comstatus_gui.b = True ; for the first
+  comstatusstr  = !TRANS{"Initializing Compiler..."} ;default settings
+  calcpro       = 0
+  calcpro_old   = 0
+  typ_old       = -1
+  pass_old      = -1
+  update_comstatus_gui = True ; for the first
 
   GetD0 &comstatusstr : !ComData_SetL{comPtr_CompileStatusString,d0}  ; set pointer of status string for gui tomsmart1 2012 05 12
   GetD0 &calcpro      : !ComData_SetL{comPtr_CompileCalcProLong ,d0}  ; set pointer of calcpro long for gui tomsmart1 2012 05 12
@@ -30076,15 +30118,15 @@ RTS
   progress.l     = PutD0
   total.l        = Peek.w(?progressbar_width)
   calcpro        = (progress * 100) / total +1
-  pass.l         = Peek.w(?pass)
+  pass.l         = Peek.w(?pass) + 1           ; added +1 so the shown status info begin with 1 instead of 0  tomsmart1
   typ.l          = Peek.w(?compiler_job)
 
 
-If (pass><pass_old OR typ><typ_old)
+  If (pass><pass_old) OR (typ><typ_old)
 
     If pass_old><pass
       passtatusstr.s = !TRANS{"Pass"}+" "+Str$(pass)+"..."
-      If cli_verbose>=2 Then NPrint passtatusstr
+      If cli_verbose>=1 Then NPrint passtatusstr        ; changed form 2 to get compilepass number in verbose mode 1  tomsmart1
     End If
 
     pass_old = pass
@@ -30113,7 +30155,7 @@ If (pass><pass_old OR typ><typ_old)
     !ComData_JSR{comFunc_UpdateCompileStatusWin}          ; jsr to the gui updateroutine  tomsmart1 2012 05 12 ;no extra check needed for CLImode because without PED the function only has a RTS
     !basic
     update_comstatus_gui  = False ; because we update the gui
-   EndIf
+  EndIf
   !asm
 RTS
  
@@ -30969,7 +31011,7 @@ menu_items:Dc.l menu_compile_run                                ;menuadds oreg s
            Dc.l menu_newcreate
            Dc.l menu_dummyfunc
            Dc.l menu_toggledebug
-           Dc.l menu_dummyfunc
+           Dc.l menu_createreleaseexe                           ; changed to make it possible to access the routine from PED tomsmart1
            Dc.l menu_dummyfunc
 Even4
 
@@ -31717,6 +31759,35 @@ Even
  EndIf
  !asm
 RTS
+
+.menu_createreleaseexe:                               ; moved from PED to create minimized exe size = release exe  tomsmart1
+ !basic
+   releaseexe = True                                  ; set release modus to on
+   !ComData_GetW{comWord_CreateDebugFile,D0}          ; get the status for creating .dbg file
+   releasedbg_save = PutD0                            ; save the status
+   !ComData_SetW{comWord_CreateDebugFile,#0}          ; set it of so it will not create with every needed compile run
+   releasemakesmall_save = Peek.b(?make_smallestcode) ; save the status of make smallest code
+   Poke.b ?make_smallestcode,-128                     ; set it on so we can create a minimized exe and we don't need to set it manuely in the compiler settings
+   !ComData_GetB{comByte_FuncOptimize,D0}             ; get the status of function optimizer
+   releasefuncoptimize_save = PutD0                   ; save it
+   !ComData_SetB{comByte_FuncOptimize,#1}             ; set it on
+   releasedebugger_save = Peek.b(?use_debugger)       ; save the status of the use of the debugger
+   Poke.b ?use_debugger,0                             ; set if off because we create a release verion and need no debugging code
+ !asm
+ JSR menu_newcreate                                   ; jump to start the compiling
+ !regs2stack                                          ; save the registers
+ !basic
+   releaseexe = False                                 ; set creat release exe off
+   GetD0 releasedbg_save                              ; set the old status of create .dbg file back
+   !ComData_SetW{comWord_CreateDebugFile,D0}          ;                      "
+   Poke.b ?use_debugger,releasedebugger_save          ; set the old status of use Debugger back
+   GetD0 releasefuncoptimize_save                     ; set the old status of function optimizer back
+   !ComData_SetB{comByte_FuncOptimize,D0}             ;                       "
+   Poke.b ?make_smallestcode,releasemakesmall_save    ; set the old status of make smallest code back
+ !asm
+ !stack2regs                                          ; set registers back
+RTS
+
 Even
 
 
