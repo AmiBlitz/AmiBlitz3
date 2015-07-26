@@ -13,8 +13,8 @@
 ; StringBuffer    = 20000
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
-; Version         = 3.6.3
-; NumberOfBuilds  = 347
+; Version         = 3.6.4
+; NumberOfBuilds  = 400
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -229,6 +229,12 @@ If dos_GetToolState{"START_WITHOUT_LIBS"} = -1
 Else
   Poke.b ?start_without_libs,0
 EndIf
+; -- check if One pass compiling is set as Tooltype to use big buffers for compiling  tomsmart1
+If dos_GetToolState{"ONEPASSCOMPILING"} = -1
+  OnePassCompiling.l = True
+Else
+  OnePassCompiling   = False
+EndIf
 
 !TRANS_INIT{"AmiBlitz3"}     ; init localization via translation.include
 
@@ -274,6 +280,7 @@ If CLIMode
   cli_comstrbufsize.l = 0
   cli_exestacksize.l  = 0
   cli_maxerrors.l     = 0                     ; added to make maxerrorcount changable in CLIMode  tomsmart1
+  OnePassCompiling    = False
   If cli_numargs=0 Then showhelp=True
 
   ; Get the CLI arguments
@@ -288,6 +295,7 @@ If CLIMode
       Case "r" : larg="release"
       Case "h" : larg="help"
       Case "v" : larg="verbose"
+      Case "1" : larg="1pass"
     End Select
 
     Select larg
@@ -344,13 +352,13 @@ If CLIMode
                         EndIf
       Case "strbufsize": cli_comstrbufsize = Vallong(dos_GetNextArg{})
       Case "stacksize" : cli_exestacksize  = Vallong(dos_GetNextArg{})
-      Case "maxerrors": cli_maxerrors    = Vallong(dos_GetNextArg{})                              ; added to make the maxerrorcount changeable in CLI MODE  tomsmart1
-                        If ((cli_maxerrors > 0) AND (cli_maxerrors <4097))                        ; check
-                          Poke.l ?maxerrorcount,cli_maxerrors
-                        EndIf
-
-      Case "verbose"  : cli_verbose     = Vallong(dos_GetNextArg{})
-      Case "h"        : showhelp        = True             ; show the help and quit
+      Case "maxerrors" : cli_maxerrors     = Vallong(dos_GetNextArg{})                              ; added to make the maxerrorcount changeable in CLI MODE  tomsmart1
+                         If ((cli_maxerrors > 0) AND (cli_maxerrors <4097))                        ; check
+                           Poke.l ?maxerrorcount,cli_maxerrors
+                         EndIf
+      Case "1pass"     : OnePassCompiling = True   ; added to use big buffers for compile so only 1 pass is needed  tomsmart1
+      Case "verbose"   : cli_verbose      = Vallong(dos_GetNextArg{})
+      Case "help"      : showhelp         = True             ; show the help and quit
       Default
         If arg><""
           NPrint "\\1b[1m*** ERROR: Unknown option \\22",arg,"\\22 specified!\\1b[0m"
@@ -376,7 +384,8 @@ If CLIMode
     NPrint "  -setdbg <check>     : set debugger settings (check=auto|irq|asm|ofl)"                  ; added  tomsmart1
     NPrint "  -strbufsize <n>     : set the string buffer size of the compiler"                      ; added  tomsmart1
     NPrint "  -stacksize <n>      : set the stacksize for the exe if it run/debug"                   ; added  tomsmart1
-    NPrint "  -maxerrors <n>      ; set maxerrorcounter of the compiler (1-4096; default=99)"        ; added  tomsmart1
+    NPrint "  -maxerrors <n>      : set maxerrorcounter of the compiler (1-4096; default=99)"        ; added  tomsmart1
+    NPrint "  -(1)pass            : use large buffers for compile"
     NPrint "  -dform <n>          : format of compiler internals dump (0=bin, 1=ASCII; default=1)"
     NPrint "  -PED                : start AmiBlitz3 IDE (PED)"
     NPrint "  -save <file>        : re-save source code (convert format, if needed)"
@@ -2216,6 +2225,15 @@ compiler_job: Dc.w 0                                      ; added by thilo: what
   ;O.K. Here we go.....
   ;
   MOVE.l A7,errstack                                      ;startcompile
+
+  !regs2stack
+  BTST #$7,make_smallestcode       ; test if makesmall is set
+  BNE 'nobigallox                  ; yes makesmall is set, we don't change the buffers
+    JSR bigallox                   ; no try to make big buffers for 1 pass compile
+
+  'nobigallox
+  !stack2regs
+
   ; new >
         ;tst.l mempool2
         ;beq 'l10
@@ -2292,7 +2310,7 @@ compiler_job: Dc.w 0                                      ; added by thilo: what
   CLR.w pass
   ; new >
   MOVE.w #0,compiler_job
-  CLR.l funcscanon
+  CLR.l errorcounter
   ; < new
 
  'retry
@@ -2313,12 +2331,12 @@ compiler_job: Dc.w 0                                      ; added by thilo: what
  RTS
 
  'skiperrorstop
-  MOVE.w dontwrite,d0
+  MOVE.w dontwrite_nomemleft,d0
   CMP.w #1,d0
   BNE 'l3
   TST.l errorcounter
   BNE 'l3
-  CLR.w dontwrite
+  CLR.w dontwrite_nomemleft
   BSR compileall                                           ;if a function is not found
   ADDQ.w #1,pass
 
@@ -2388,7 +2406,7 @@ compiler_job: Dc.w 0                                      ; added by thilo: what
   ; < new
 
  'nosmall
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
   BEQ.w 'dosave
   ;
   ;MOVEA.l #comreq_datas,A0
@@ -3502,7 +3520,7 @@ setcvars:
   CLR.w intsused
   CLR.w anyerrs
   CLR.w blitzmode
-  CLR.w dontwrite                                              ;nomemleft
+  CLR.w dontwrite_nomemleft                                              ;nomemleft
   CLR.w constmode
   CLR.w cmake
   CLR.w cfetchmode
@@ -3832,7 +3850,7 @@ passnxt:
   ;
   ;misc finish-ups
   ;
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
    BNE.b 'skipjsrs
   MOVEA.l endjmpat(PC),A4
   MOVE.l destpointer,(A4)
@@ -4018,7 +4036,7 @@ RTS
    BSR.w reget
    BNE.w illeolerr
    ; new >
-   TST.w dontwrite
+   TST.w dontwrite_nomemleft
    BNE 'l1
    TST.l stacktrack
    BNE errormsg_stack
@@ -4170,7 +4188,7 @@ debugstuffa:
   ;
   MOVE.l destpointer,d_pc
   MOVE.l bigpc,d_bigpc
-  MOVE.w dontwrite,d_nomemleft
+  MOVE.w dontwrite_nomemleft,d_nomemleft
   ;
   MOVEM.l D0-D1,-(A7)
   ;
@@ -4185,7 +4203,7 @@ debugstuffa:
   MOVE.l D1,cont_pc2
    BEQ.b 'skip
   ;
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
    BNE.b 'skip
   ;
   MOVEA.l D1,A4
@@ -4214,7 +4232,7 @@ debugstuffa:
   JSR writedatalong
   MOVE.l destbufferstart,d1
   JSR writedatalong
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
   BNE 'nohunk
   MOVE.l data1,d1
   SUBQ.l #4,d1
@@ -4256,7 +4274,7 @@ debugstuffa:
   BSR.w JUMP_writeword
   CMP.l #9,d1
   BEQ 'pos1
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
   BNE 'nopad
   MOVE.l lastsourceline,d1
   MOVE.l d1,-6(a4)
@@ -4269,7 +4287,7 @@ debugstuffa:
   MOVE.l data1,d2
   SUB.l destbufferstart,d2
   JSR writedatalong
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
   BNE 'no2
   JSR addhunkoffset
 
@@ -4277,7 +4295,7 @@ debugstuffa:
   MOVE.l data1,d2
   SUB.l destbufferstart,d2
   JSR writedatalong
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
   BNE 'no
   JSR addhunkoffset
   MOVE.l lastwritedat,a1
@@ -4341,7 +4359,7 @@ undodebug:
     BNE.b 'rts
   CEND
   ; < new
-  MOVE.w d_nomemleft,dontwrite
+  MOVE.w d_nomemleft,dontwrite_nomemleft
   MOVE.l d_bigpc,bigpc
   MOVE.l d_pc,destpointer
   MOVE.l cont_pc2,cont_pc
@@ -4704,7 +4722,7 @@ handlelab2:
  BRA.w referr
 
  'isok
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'isaskip
   MOVEA.l $4(A3),A1
   BTST #$0,$7(A3)
@@ -4968,7 +4986,7 @@ get_tokencode:           ; was handletoken  org source     ; blitz instruction f
             TST.w inmacro
             BNE.b 'l10
           CEND
-          MOVE.w d_nomemleft,dontwrite
+          MOVE.w d_nomemleft,dontwrite_nomemleft
           MOVE.l d_bigpc,bigpc
           MOVE.l d_pc,destpointer
           MOVE.l cont_pc2,cont_pc
@@ -5743,7 +5761,7 @@ doendseterr:
   MOVE.w inerr(PC),D1
    BEQ.w errerr3
   CLR.w inerr
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'skip
   MOVEA.l errjmp(PC),A0
   MOVE.l destpointer,(A0)
@@ -5776,7 +5794,7 @@ JMP Atokejsr
   MOVE.l destpointer,errjmp
   BSR.w addoff
   JSR writelong
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'skip
   MOVEA.l errcode(PC),A0
   MOVE.l destpointer,(A0)
@@ -5814,7 +5832,7 @@ intlineat:  Ds.l 1
   MOVE.l destpointer,intjmpat
   BSR.w writelong
   MOVEA.l (A7)+,A0
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
   BNE.w 'dontpoke
   MOVE.l destpointer,(A0)
 
@@ -5953,7 +5971,7 @@ directdo:
   MOVE.w #"4:",(a0)+
 
  'noexdebug
-  CLR.w dontwrite
+  CLR.w dontwrite_nomemleft
   MOVE.w #$FFFF,lasta6
   BSR.w compile_line                                        ;.....compile it
   TST.b exdebug
@@ -5967,7 +5985,7 @@ directdo:
   BSR.w writeword                                          ;JMP
   MOVE.l ret15add(PC),D1
   BSR.w writelong                                          ;jmp to done
-  MOVE.w dontwrite,D0
+  MOVE.w dontwrite_nomemleft,D0
    BNE.w nodirmem
   MOVE.l directbuffer,$3E(A7)                              ;install code address
 
@@ -8020,7 +8038,7 @@ asmit:
  'nosizep
   CMPA.l destbufferend,A4
    BCS.w 'oky
-  MOVE.w #$FFFF,dontwrite     ; was -1
+  MOVE.w #$FFFF,dontwrite_nomemleft     ; was -1
  BRA.w 'done
 
  'oky
@@ -8089,7 +8107,7 @@ JMP handle_compileerror
 
 
 asmfixer:                                                  ;end of pass asm filler-inner
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'done
   BTST #$7,make_smallestcode
    BEQ.w 'go
@@ -9281,7 +9299,7 @@ BRA.w fetchpees3
   MOVE.w #$c4ff,d1                                         ;savetemp+regnum
   ADD.w parnum,d1
   JSR Atokejsr
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
   BNE 'l1
   MOVE.l data1start,d1
   MOVE.l destpointer,a4
@@ -9363,7 +9381,7 @@ BRA.w fetchpees3
   MOVE.w #$c4ff,d1                                         ;savetemp+regnum
   ADD.w parnum,d1
   JSR Atokejsr
-   TST.w dontwrite
+   TST.w dontwrite_nomemleft
    BNE 'l1
    MOVE.l data1start,d1
    MOVE.l destpointer,a4
@@ -9791,7 +9809,7 @@ uselib3:
  'loop
   CMPA.l data1start,A2
    BCS.w 'okp
-  MOVE.w #$FFFF,dontwrite     ; -1
+  MOVE.w #$FFFF,dontwrite_nomemleft     ; -1
 
  'bad
   ADDQ.w #2,A0
@@ -9842,7 +9860,7 @@ uselib3:
   SUB.l destbufferstart,D2
    BSR.w addhunkoffset
   MOVEA.l (A7)+,A2
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
    BNE.w 'next
   MOVE.l $28(A1),D2
   SUB.l $12(A1),D2
@@ -9947,7 +9965,7 @@ fixjsrs:
   ;
   MOVEM.l (A7)+,D2-D3/A2-A3
 ; 'loop4
-  MOVE.w dontwrite,D0
+  MOVE.w dontwrite_nomemleft,D0
    BEQ.w 'ok
 
  'loop5
@@ -11023,7 +11041,7 @@ pokedata1b:                                               ;byte into data1
  RTS
 
  'over
-  MOVE.w #$FFFF,dontwrite     ; was -1                             ;move #-1, org source
+  MOVE.w #$FFFF,dontwrite_nomemleft     ; was -1                             ;move #-1, org source
   ADDQ.l #1,data1
 RTS
 
@@ -11042,7 +11060,7 @@ pokedata1:                                                ;poke word in d1 into 
  RTS
 
  'over
-  MOVE.w #$FFFF,dontwrite    ; was -1
+  MOVE.w #$FFFF,dontwrite_nomemleft    ; was -1
   ADDQ.l #2,data1
 RTS
 
@@ -11253,7 +11271,7 @@ JMP error_create_exe
  'l11
   MOVEM.l d5-d7/d3,-(a7)
   ; < new
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
   BNE.w 'fixdone
   ; new >
   MOVE.l chipsize,d5
@@ -11857,7 +11875,7 @@ JMP error_create_exe
   ; -- restore offsets for extern debug
   TST.b exdebug
    BEQ 'fixdoneb
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
   BNE.w 'fixdoneb
   MOVE.l chipsize,d5
   MOVE.l bsssize,d3
@@ -14097,7 +14115,7 @@ writelong:                                                ;pokel org source
  RTS
 
  'overa
-  MOVE.w #$FFFF,dontwrite                                  ;#-1 org source
+  MOVE.w #$FFFF,dontwrite_nomemleft                                  ;#-1 org source
   CLR.b fast
   CLR.b fpu
   CLR.b iee                                                ; in writeword this is #2
@@ -14143,7 +14161,7 @@ BRA.w 'msa
  RTS
 
  'over
-  MOVE.w #$FFFF,dontwrite                                  ;#-1 org source
+  MOVE.w #$FFFF,dontwrite_nomemleft                                  ;#-1 org source
   ADDQ.w #2,A4
   CLR.b fast
   CLR.b fpu
@@ -14172,7 +14190,7 @@ writebyte:                                                 ;pokebyte org source
  RTS
 
  'over
-  MOVE.w #-1,dontwrite
+  MOVE.w #-1,dontwrite_nomemleft
   ADDQ.w #1,A4
   CLR.b fast
   CLR.b fpu
@@ -15228,7 +15246,7 @@ maineval2:
   MOVE.w #$c4ff,d1                                         ;savetemp+regnum
   ADD.w parnum,d1
   JSR Atokejsr
-   TST.w dontwrite
+   TST.w dontwrite_nomemleft
    BNE 'notst2_l1
    MOVE.l data1start,d1
    MOVE.l destpointer,a4
@@ -15347,7 +15365,7 @@ calcloop:  ; was eval5 org source
   OR.w -$14(A0),D1
   MOVE.w D1,-$14(A0)
    BNE.w 'no
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'no
   ;
   ;YES! We can do it!
@@ -15400,7 +15418,7 @@ calcloop:  ; was eval5 org source
   ; new >
   CLR.l load_var_addr
   CLR.l imm_addr
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
   BNE '1
   ; < new
   JSR (A0)                                                 ;calc constant inline expression
@@ -18437,7 +18455,7 @@ litstring:
   ; new >
   NOT instringon
   ; < new
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
   BNE.w 'skip
   ; new >
   CMP.b #2,optistring
@@ -20150,7 +20168,7 @@ pushdo:
   SUB.l D1,D0              ;len
   MOVE.w D0,pushclen
    BEQ.w 'skip
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'skip
   ;
   ; new >
@@ -20199,7 +20217,7 @@ pushput:
    BEQ.w 'skip
   MOVE.l destpointer,D1     ;pc before put
   ADD.l D0,destpointer
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
    BNE.w 'skip
   ;
   LSR.w #1,D0
@@ -20212,7 +20230,7 @@ pushput:
     CMPA.l destbufferend,A1
     BCS.w 'ok
 
-    MOVE.w #$FFFF,dontwrite    ; was -1
+    MOVE.w #$FFFF,dontwrite_nomemleft    ; was -1
   BRA.w 'skip
 
    'ok
@@ -20443,7 +20461,7 @@ makeinits:
 
  'yi
   CLR.w noinits+2
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'yi2
   ; new >
   TST.l newinitaddr
@@ -21909,7 +21927,7 @@ evalconst3:
   CLR.w regnum
   MOVE.l destpointer,-(A7)
   MOVE.l destbufferend,-(A7)
-  MOVE.w dontwrite,-(A7)
+  MOVE.w dontwrite_nomemleft,-(A7)
   MOVE.w lasta6,-(A7)
   MOVE.w cfetchmode,-(A7)
    BNE.w 'something
@@ -21926,7 +21944,7 @@ evalconst3:
  'some2
   MOVE.l A0,-(A7)
   MOVE.l constlibat,destbufferend      ;for overflow
-  CLR.w dontwrite
+  CLR.w dontwrite_nomemleft
 
   MOVE.w #$FFFF,lasta6                 ; was -1
   MOVE.w #$FFFF,cfetchmode             ; was -1
@@ -21951,7 +21969,7 @@ evalconst3:
   MOVE.w #$4E75,D1               ;rts!
    BSR.w writeword
   ;
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w conmemerr
   ;
   MOVEA.l (A7)+,A0
@@ -21965,7 +21983,7 @@ evalconst3:
  'bc1
   MOVE.w (A7)+,cfetchmode
   MOVE.w (A7)+,lasta6
-  MOVE.w (A7)+,dontwrite
+  MOVE.w (A7)+,dontwrite_nomemleft
   MOVE.l (A7)+,destbufferend
   MOVE.l (A7)+,destpointer
   MOVE.w (A7)+,regnum
@@ -22299,7 +22317,7 @@ pokedata2:
  RTS
 
  'over
-  MOVE.w #$FFFF,dontwrite        ; was -1
+  MOVE.w #$FFFF,dontwrite_nomemleft        ; was -1
   ADDQ.l #2,data2
 RTS
 
@@ -22313,7 +22331,7 @@ pokedata2b:
  RTS
 
  'over
-  MOVE.w #$FFFF,dontwrite        ; was -1
+  MOVE.w #$FFFF,dontwrite_nomemleft        ; was -1
   ADDQ.l #1,data2
 RTS
 
@@ -23285,7 +23303,7 @@ RTS
 
  'done
   MOVEA.l (A7)+,A0
-  MOVE.w dontwrite,D2
+  MOVE.w dontwrite_nomemleft,D2
    BNE.w 'nopoke
   MOVE.l D1,(A0)
 
@@ -23570,7 +23588,7 @@ RTS
  BRA.w 'close
 
  'over
-  MOVE.w #$FFFF,dontwrite          ; was -1
+  MOVE.w #$FFFF,dontwrite_nomemleft          ; was -1
   MOVE.l D0,destpointer
 
  'close
@@ -24154,7 +24172,7 @@ doendsel:                                                  ;doendselect
   CNIF #longbranch
     TST.b fast
     BEQ 'loop_l1
-    MOVE.w dontwrite,D0
+    MOVE.w dontwrite_nomemleft,D0
     BNE.w 'skip
     ADDQ.l #2,d1
     MOVE.l d1,-2(a0)
@@ -24162,7 +24180,7 @@ doendsel:                                                  ;doendselect
   CEND
 
  'loop_l1
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
      BNE.w 'skip
   CMP.l #MaxWordSgnd,D1
    BHI.w JUMP_cbraerr
@@ -24222,7 +24240,7 @@ fillbne:
   CNIF #longbranch
     TST.b fast
     BEQ 'l1
-    TST.w dontwrite
+    TST.w dontwrite_nomemleft
     BNE.w 'skip
     ADDQ.l #2,d1
     MOVE.l D1,-2(A0)
@@ -24230,7 +24248,7 @@ fillbne:
   CEND
 
  'l1
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
      BNE.w 'skip
   ; < new
    CMP.l #MaxWordSgnd,D1
@@ -24456,7 +24474,7 @@ JUMP_unterr1 JMP unterr1
   JSR reget
    BNE.w JUMP_syntaxerr
   ;
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'skip
   MOVEA.l firstrep,A0
   MOVEA.l destpointer,A1
@@ -24851,7 +24869,7 @@ labcnt:   Ds.w 1
   ;
   MOVEA.l (A7)+,A0
   MOVE.w (A7)+,D2
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'done
   ;
   MOVE.w labcnt(PC),D1
@@ -25275,7 +25293,7 @@ do_function2:                                             ;do_statement jump to 
    MOVE.w #$c500-4,d1                                      ;savetemp+regnum
    ADD.w d6,d1
    JSR Atokejsr
-   TST.w dontwrite
+   TST.w dontwrite_nomemleft
    BNE 'l10
    MOVE.l data1start,d1
    MOVE.l destpointer,a4
@@ -25411,7 +25429,7 @@ JMP get1bytemain
 
 
 linkput:
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'skip
   MOVE.l destpointer,-(A7)
   ;
@@ -25469,7 +25487,7 @@ procfixer:
  RTS
 
  'cont
-   MOVE.w dontwrite,D1                                     ;writeallocmem for functions (after releasemem called)
+   MOVE.w dontwrite_nomemleft,D1                                     ;writeallocmem for functions (after releasemem called)
    BNE.w 'contskip
   ;
   ; new >
@@ -25743,7 +25761,7 @@ doendif2:
     TST.b fast
     BEQ 'l3
     ADDQ.l #4,D1
-    MOVE.w dontwrite,D0
+    MOVE.w dontwrite_nomemleft,D0
     BNE.w 'skip
     MOVE.l d1,-$4(a1)
   BRA 'skip
@@ -25753,7 +25771,7 @@ doendif2:
   ; < new
   ADDQ.l #2,d1
   ; new >
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
   ;< new
   BNE 'skip
   ; new >
@@ -25918,7 +25936,7 @@ doend2:
   MOVEQ.l #$03,D1
    JSR writetrap
   ;
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'norerrf1
   ;
   MOVEA.l intcleanat,A0
@@ -25948,7 +25966,7 @@ doend2:
   MOVE.l #$70004E75,D1
    BSR.w writelong
   ;
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'sintdone
   MOVEA.l intjmpat,A0
   MOVE.l destpointer(PC),(A0)
@@ -25975,7 +25993,7 @@ doend2:
   ; new >
   CMP.l #"noa7",-4(a5)
   BNE 'l10
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
   BNE 'l10
   MOVE.l destpointer,d1
   SUBQ.l #4,d1
@@ -26073,7 +26091,7 @@ endstate:                                                 ;End Statement
   MOVE.w proceduremode,D1
    BEQ.w JUMP_badpenderr
   ;
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'ship
   MOVEA.l firstpend,A2
 
@@ -26188,7 +26206,7 @@ endstate:                                                 ;End Statement
    BSR.w procfixer
   ;
   MOVEA.l (A7)+,A0
-  MOVE.w dontwrite,D1
+  MOVE.w dontwrite_nomemleft,D1
    BNE.w 'skipjp
   MOVE.l destpointer,-(A0)
 
@@ -26223,7 +26241,7 @@ droplocals:
   ;
   TST.b debugmode
    BEQ.b 'skip
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
    BNE.b 'skip
   ;
   MOVEA.l proclocals(PC),A0
@@ -26349,7 +26367,7 @@ JUMP_noforerr  JMP noforerr
   ADDQ.l #2,D1
   CMP.l #MinWordSgnd,D1  ; #32768,
    BCC.w JUMP_bigforerr
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
    BNE.w 'nopoke1
   MOVE.w D1,-$2(A0)
 
@@ -26359,7 +26377,7 @@ JUMP_noforerr  JMP noforerr
   SUBQ.l #6,D1
   CMP.l #MinWordSgnd,D1 ;#32768,
    BCC.w JUMP_bigforerr
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
    BNE.w 'skip
   NEG.w D1
   MOVE.w D1,-$2(A1)
@@ -28256,7 +28274,7 @@ debugversion:         Ds.w 1                               ;makeexec org source 
 noinits:              Ds.l 1                               ;flag for if we have any init routines!
                                                            ;6.l=no!
 letstart:             Ds.l 1
-dontwrite:            Ds.w 1                               ;nomemleft org source
+dontwrite_nomemleft:  Ds.w 1                               ;nomemleft org source
 lastgloballabel:      Ds.l 32                              ;lastbiglab ds.b 128 org source
     ;
 locdatast:            Ds.l 1
@@ -29509,7 +29527,7 @@ RTS
 
 
 .gotoendsource
-  ; MOVE.w #1,dontwrite
+  ; MOVE.w #1,dontwrite_nomemleft
 
 ;'l1
   ; JSR naloextline
@@ -29614,7 +29632,7 @@ Even
   CMP.l #-1,chipstart
   BNE 'lnf1
   MOVE.l destpointer,a4
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
   BNE 'lnf1
   MOVE.w #$4e71,-2(a4)
 
@@ -29658,7 +29676,7 @@ RTS
   BNE 'lnf1
   CMP.l #-1,chipstart
   BNE 'lnf1
-  TST.w dontwrite
+  TST.w dontwrite_nomemleft
   BNE 'lnf1
   MOVE.w #$4e71,-2(a4)
 
@@ -31648,6 +31666,57 @@ errorlimit_text:     Dc.b "There are too much errors, compiling is stop now. Ple
 Even
 
 sysdebug:            Dc.l $3F0
+Even
+
+
+.bigallox
+ !basic
+ If OnePassCompiling = True
+   maxmem.l = (AvailMem_ (#MEMF_PUBLIC) LSR 2)  ; 1/4 of the available free mem
+   objectlength.l = Peek.l(?objlen)
+   If Peek.b(?use_debugger) = 0
+     If (objectlength < 3670056) AND (maxmem > 3670056)
+       MOVE.l #3145727,d2     ; objectbuffersize
+       MOVE.l  #262143,d3     ; libsbuffersize
+       MOVE.l  #131071,d4     ; systembuffersize
+       MOVE.l  #131071,d5     ; databuffersize
+       JSR makeallox  ; added 40 buffer more
+       !basic
+     Else
+       If (objectlength < 1572904) AND (maxmem > 1572904)
+         !asm
+         MOVE.l #1310719,d2     ; objectbuffersize
+         MOVE.l  #131071,d3     ; libsbuffersize
+         MOVE.l   #65535,d4     ; systembuffersize
+         MOVE.l   #65535,d5     ; databuffersize
+         JSR makeallox ; added 40 buffer more
+         !basic
+       EndIf
+     EndIf
+   Else
+     maxmem LSL 1 ; for debug test for 1/2 of the available mem
+     If (objectlength < 12058664) AND (maxmem > 12058664)
+       MOVE.l #5242879,d2     ; objectbuffersize
+       MOVE.l  #262143,d3     ; libsbuffersize
+       MOVE.l #6291455,d4     ; systembuffersize
+       MOVE.l  #262143,d5     ; databuffersize
+       JSR makeallox ; added 40 buffer more
+       !basic
+     Else
+       If (objectlength < 6094888) AND (maxmem > 6094888)
+         !asm
+         MOVE.l #2621439,d2     ; objectbuffersize
+         MOVE.l  #262143,d3     ; libsbuffersize
+         MOVE.l #3145727,d4     ; systembuffersize
+         MOVE.l   #65535,d5     ; databuffersize
+         JSR makeallox ; added 40 buffer more
+         !basic
+       EndIf
+     EndIf
+   EndIf
+ EndIf
+ !asm
+RTS
 Even
 
 
