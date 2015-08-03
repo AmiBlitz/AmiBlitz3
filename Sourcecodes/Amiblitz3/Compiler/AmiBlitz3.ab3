@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.6.5
-; NumberOfBuilds  = 504
+; NumberOfBuilds  = 600
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1591
-; CursorColumn    = 26
-; LabelSearch     = "alloxinc"
+; CursorLine      = 1525
+; CursorColumn    = 66
+; LabelSearch     = "dbg_deto"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -264,7 +264,9 @@ EndIf
  pass_old.l     = -1
  update_comstatus_gui.b = False ; for the first
 
-
+; for .dbg file creation
+#MAX_dbg_detokenlinesBufferSize = 131072                   ;was 65536  changed because we reduce detokenline size to MAX_Columns for the error info  tomsmart1
+MaxLen dbg_detokenlinesBuffer.s = #MAX_dbg_detokenlinesBufferSize
 dbg_fid.l = -1 ; no debug file id yet!
 
 #defaultmaxerrorcount              = 99                    ; moved it to support the change of maxerrorcount in CLIMode  tomsmart1
@@ -1597,7 +1599,14 @@ RTS
 ; new >
 ab3_CloseDebugFile:
   !basic
-    If dbg_fid>=0 Then file_Close{dbg_fid} : dbg_fid = -1
+    If dbg_fid>=0
+      If fillcount.l > 0                                         ; added to check if we still have data so save in the buffer  tomsmart1
+        file_WriteMem{dbg_fid,&dbg_detokenlinesBuffer,fillcount} ; yes save it
+        fillcount = 0                                            ; set it back to zero bytes
+      EndIf
+      file_Close{dbg_fid}
+      dbg_fid = -1
+    EndIf
     Poke.w ?word_WriteDebugFileNow,0
   !asm
 RTS
@@ -1606,76 +1615,84 @@ RTS
 ab3_OpenDebugFile:
   BSR ab3_CloseDebugFile     ; remove double code and replaced it with a call of the subroutine  tomsmart1
   !basic
-  If dbg_fid.l<0
-    CLR.l d0
-    !ComData_GetW{comWord_CreateDebugFile,D0}
-    dbg_Create.l = PutD0
-    If (dbg_Create) ; only when set!
-      exefileP.l = Peek.l (?ptr_newexefilename)
-      exefile.s = ""
-      If exefileP Then exefile.s = Peek.s(exefileP)
-      If exefile><""
-        dbg_fid = file_Open{exefile+".dbg",#file_forcewrite}
-        If dbg_fid>=0
-          Poke.w ?word_WriteDebugFileNow,-1
+    If dbg_fid.l<0
+      CLR.l d0
+      !ComData_GetW{comWord_CreateDebugFile,D0}
+      dbg_Create.l = PutD0
+      If (dbg_Create) ; only when set!
+        exefileP.l = Peek.l (?ptr_newexefilename)
+        exefile.s = ""
+        If exefileP Then exefile.s = Peek.s(exefileP)
+        If exefile><""
+          dbg_fid = file_Open{exefile+".dbg",#file_forcewrite}
+          If dbg_fid>=0
+            Poke.w ?word_WriteDebugFileNow,-1
+          End If
         End If
+        oldhunkoffset.l = -1
+        oldfile.s       = ""
+        fillcount       = 0       ; set it to zero bytes in the buffer
       End If
-      oldhunkoffset.l = -1
-      oldfile.s       = ""
     End If
-  End If
   !asm
 RTS
 
 
 ab3_WriteDebugFile:
-TST.w word_WriteDebugFileNow
-BEQ 'skipdebugfile
-!basic
-  If dbg_fid>=0
-    pass.l          = Peek.w(?pass)
-    makesmallest.b  = Peek.b(?make_smallestcode)               ; get the status of make_smallestcode  tomsmart1
-    If pass><0 OR makesmallest=0                               ; check expand for makesmallestcode so if it not set that then the dbgfile will fill because we don't reach Pass>0  tomsmart1
-      oldhunkoffset.l = hunkoffset.l
-      oldfile.s       = codefile.s
-      If Peek.w (?ininclude)>0
-        codeline.l = Peek.l(?includeline);-1
-        codefile.s = dos_FilePart{incdim(Peek.w(?ininclude)-1)}
-      Else
-        !ComData_LEA{comStr_SourceName,A0}
-        MOVE.l A0,D0
-        sourceP.l = PutD0
-        codefile.s = Peek.s(sourceP)
-        codeline.l = Peek.l(?linenumat)
-      End If
-      hunkoffset.l = Peek.l(?destpointer)-Peek.l(?destbufferstart)
-      If oldhunkoffset><hunkoffset OR oldfile><codefile
-
-        ;Format ""
-;        *sourceLine.SourceLine_t = Peek.l(?sourceline)
-;        If *sourceLine Then sourceLineText.s = Peek.s(&*sourceLine\Text) : Else sourceLineText = "NULL"
-        ;file_WriteLine{dbg_fid,Hex$(hunkoffset)+" "+Str$(codeline)+" \\22"+codefile+"\\22"};::"+sourceLineText}
-
-        *sourceLine.SourceLine_t = Peek.l(?sourceline)
-        If *sourceLine
-          MaxLen detokenline.s = 65536
-         !ComData_GetL{comPtr_PreProcessor,include_preprocessor}
-         *tn.preprocessor = Peek.l(?include_preprocessor)
-          written.l = preproc_Detokenize{*tn,&*sourceLine\Text,&detokenline,*sourceLine\CharLength}
-          If written>0 Then Poke.b &detokenline+written-1,0
-          sourceLineText.s = Peek.s(&detokenline)
+  TST.w word_WriteDebugFileNow
+  BEQ 'skipdebugfile
+  !basic
+    If dbg_fid>=0
+      pass.l          = Peek.w(?pass)
+      makesmallest.b  = Peek.b(?make_smallestcode)               ; get the status of make_smallestcode  tomsmart1
+      If pass><0 OR makesmallest=0                               ; check expand for makesmallestcode so if it not set that then the dbgfile will fill because we don't reach Pass>0  tomsmart1
+        oldhunkoffset.l = hunkoffset.l
+        oldfile.s       = codefile.s
+        If Peek.w (?ininclude)>0
+          codeline.l = Peek.l(?includeline);-1
+          codefile.s = dos_FilePart{incdim(Peek.w(?ininclude)-1)}
         Else
-          sourceLineText = "NULL"
+          !ComData_LEA{comStr_SourceName,A0}
+          MOVE.l A0,D0
+          sourceP.l = PutD0
+          codefile.s = Peek.s(sourceP)
+          codeline.l = Peek.l(?linenumat)
         End If
+        hunkoffset.l = Peek.l(?destpointer)-Peek.l(?destbufferstart)
+        If oldhunkoffset><hunkoffset OR oldfile><codefile
+          linebegintext.s = Hex$(hunkoffset)+" <"+codefile+"@"+Str$(codeline)+"> "
+          linebeginlen.l  = FLen(linebegintext)
+          Poke.s &dbg_detokenlinesBuffer+fillcount,linebegintext           ; copy the begin of the line text to the buffer
+          fillcount + linebeginlen
 
-        file_WriteLine{dbg_fid,Hex$(hunkoffset)+" <"+codefile+"@"+Str$(codeline)+"> "+sourceLineText}
+          *sourceLine.SourceLine_t = Peek.l(?sourceline)
+          If *sourceLine
+            !ComData_GetL{comPtr_PreProcessor,include_preprocessor}
+            *tn.preprocessor = Peek.l(?include_preprocessor)
+            written.l = preproc_Detokenize{*tn,&*sourceLine\Text,&dbg_detokenlinesBuffer+fillcount,*sourceLine\CharLength}
+            If written>0
+              written-1
+            EndIf
+            fillcount + written                                            ; added the dekotenline size to the count
+          Else
+            Poke.s &dbg_detokenlinesBuffer+fillcount,"NULL"                ; copy it to the buffer
+            fillcount + 4                                                  ; added the size to the count
+          End If
 
-        ;Format ""
+          Poke.b &dbg_detokenlinesBuffer+fillcount,10                      ; copy line end (return) in to the buffer
+          fillcount +1                                                     ; count +1
+
+          If fillcount >= (#MAX_dbg_detokenlinesBufferSize - #MAX_Columns) ; check if we have no room for a nother line
+            file_WriteMem{dbg_fid,&dbg_detokenlinesBuffer,fillcount}       ; no room write the buffer it do disk
+            fillcount = 0                                                  ; set it back to zero bytes
+          EndIf
+
+        End If
       End If
     End If
-  End If
-!asm
-'skipdebugfile
+  !asm
+
+ 'skipdebugfile
 RTS
 
 word_WriteDebugFileNow: Dc.w 0
@@ -30002,7 +30019,7 @@ Even
   error_type$ = error$
   error$ + "\\n"+!TRANS{"Possible wrong Code begins here:"}+"\\n" ; added translation here to prevent a translation of possible programcode if it done in PED  tomsmart1 ; added newlines to reduce the wide of the requester  tomsmart1
   If Peek.l (?beforeparameterfetch)
-    MaxLen detokenline.s = 65536
+    MaxLen detokenline.s = #MAX_Columns+1        ; was 65536  changed it to the max size of a sourceline  tomsmart1
    !ComData_GetL{comPtr_PreProcessor,include_preprocessor}
    *tn.preprocessor = Peek.l(?include_preprocessor)
     written.l = preproc_DetokenizeLine{*tn,Peek.l (?beforeparameterfetch),&detokenline}
