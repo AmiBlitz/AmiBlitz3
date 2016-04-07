@@ -87,8 +87,8 @@
 ;/ Author: Thilo Koehler                                                       /
 ;/                                                                             /
 ;/ Requirements: Amiblitz V2.4                                                 /
-;/               ab3support.library (for png support)                          /
-;/               jpeg.library       (for jpeg support)                         /
+;/               ab3zlib.library (for png support)                          /
+;/               jpeg.library    (for jpeg support)                         /
 ;/                                                                             /
 ;/ Purpose:                                                                    /
 ;/ Replace and heavily extend the custom chip blit commands and shape comman:: /
@@ -148,10 +148,10 @@ CNIF @#use_shapeslib = 0
   #use_shapeslib = 1       ; shapelib is turned on by default
 CEND
 
-XINCLUDE "ab3support.include.ab3"
+XINCLUDE "error.include.ab3"
+XINCLUDE "zlib.include.ab3"
 XINCLUDE "screen.include.ab3"
 XINCLUDE "image_blitmacros.ab3"
-XINCLUDE "error.include.ab3"
 XINCLUDE "convert.include.ab3"
 XINCLUDE "file.include.ab3"
 XINCLUDE "iff-ilbm.include.ab3"
@@ -222,10 +222,6 @@ CNIF #use_jpeg_library
     CloseLibrary_ image_jpegbase
   End If
 CEND
-
-
-If AB3Support_OpenLib{2} = 0 Then error{"image.include.ab3: Please install Version 2 of ab3support.library!"} : End
-
 
 .IMAGE_NEWTYPES
 NEWTYPE.imagedat
@@ -1505,12 +1501,12 @@ Function.l image_GetARGBBpr{image.l}
 
   Function Return \bpr
 End Function
- 
+
 Function.l image_GetARGBBitmapPtr{image.l}
 
   Function Return \ARGBbitmap_ptr
 End Function
- 
+
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
 ;/ Syntax:  result.l = image_GetOpenGLTexturePtr{image.l}                      /
@@ -2871,7 +2867,7 @@ Function.l image_GetExHeight{}
 
   Function Return imageengine\exHeight
 End Function
- 
+
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
 ;/ Syntax:  result.l = image_GetExDepth{}                                      /
@@ -2955,7 +2951,7 @@ SHARED imagedat(),imageengine:USEPATH imagedat(image)
           bmaplock.l       = LockBitMapTagList_(*rp\BitMap,tag5)
           UnLockBitMap_ bmaplock
           LastRunErrsMode
- 
+
           Select pixfmt
             Case #PIXFMT_ARGB32
               For dy.l = 0 To ys-1
@@ -3059,8 +3055,8 @@ Function.l image_DecodeMask{image.l,ptr.l}
         datatotal.l = Peek.l(ptr) : ptr + 4
         totalmem.l  = \mask_bpr * \img_height
         If mask_bpr = \mask_bpr
-          error.l = zlib_Uncompress{\mask_ptr,&totalmem,ptr,datatotal}
-          If error = 0 Then succ = True
+          status.l = zlib_Uncompress{\mask_ptr,&totalmem,ptr,datatotal}
+          If status = #Z_OK Then succ = True
         Else
           ; re-copy
           error{"\\__THIS_FUNCTION: Different bytes per row!"}
@@ -3244,8 +3240,9 @@ SHARED imagedat()
                     mptr   = cptr + clen
                     If temp
                       ; decompress
-                      temp_size.l = img_width*img_height*4 : error.l = zlib_Uncompress{temp,&temp_size,cptr,clen}
-                      If error = 0
+                      temp_size.l = img_width*img_height*4
+                      status.l = zlib_Uncompress{temp,&temp_size,cptr,clen}
+                      If status = #Z_OK
                       Select PFMT
                         Case @"0rgb"
                           *rp.RastPort = image_GetRPPtr{image}
@@ -3290,7 +3287,8 @@ SHARED imagedat()
                     For y.l = 0 To img_height-1
                       clen.l = Peek.l(cptr) : cptr + 4
                       ptr.l  = \raw_ptr + y* \bpr
-                      ulen.l = img_width*4 : error = zlib_Uncompress{ptr,&ulen,cptr,clen}
+                      ulen.l = img_width*4
+                      status = zlib_Uncompress{ptr,&ulen,cptr,clen}
                       cptr + clen
                     Next
                     mptr = cptr
@@ -5745,14 +5743,18 @@ Function.l image_WriteMask{image.l,fid.l,@compress.l}
       If compress < 0 OR compress > 9 Then compress = 9
       rowlength.l = \mask_bpr
       totalmem.l  = rowlength * \img_height
-      temp_size.l = totalmem+rowlength/1000+12
+      temp_size.l = zlib_CompressBound{totalmem}
       temp.l      = AllocVec_(temp_size,#MEMF_ANY)
-      ;GZ_CompressMem_ \mask_ptr,totalmem,temp,totalmem+12,0,compress,&written
-      written     = temp_size : zlib_Compress{temp,&written,\mask_ptr,totalmem,compress}
-      succ & file_WriteLong{fid,written}
-      succ & file_WriteMem{fid,temp,written}
-      succ & file_CloseChunk{fid,@"CMSK"}
-      FreeVec_ temp
+      If temp
+        written     = temp_size
+        zlib_Compress{temp,&written,\mask_ptr,totalmem,compress}
+        succ & file_WriteLong{fid,written}
+        succ & file_WriteMem{fid,temp,written}
+        succ & file_CloseChunk{fid,@"CMSK"}
+        FreeVec_ temp
+      Else
+        succ = False
+      End If
     EndIf
     Function Return succ
   End If
@@ -5981,55 +5983,56 @@ SHARED imagedat(),imageengine,imgargs():USEPATH imagedat(image)
               If compress
                 If file_WriteChunk{fid,@"CDAT"}   ; Save Raw Data 32bit
                   written.l   = 0
-                  tempCSize.l = imgmemsize +2048
+                  tempCSize.l = zlib_CompressBound{imgmemsize}
                   tempC.l     = AllocVec_(tempCSize,#MEMF_ANY)
                   If tempC
                     If compress < 0 OR compress > 9 Then compress = 9 : If (flags&#image_sf_fast) Then compress = 1
-
-                    written = tempCSize : error.l = zlib_Compress{tempC,&written,temp,imgmemsize,compress}
-                    If error = 0
-                    If (flags&#image_sf_fast) = 0
+                    written = tempCSize
+                    status.l = zlib_Compress{tempC,&written,temp,imgmemsize,compress}
+                    If status = #Z_OK
+                     If (flags&#image_sf_fast) = 0
                       If doRGB
                         _image_FilterDelta24{temp,\img_width*3,temp,\img_width*3,\img_width,\img_height}
                       Else
                         _image_FilterDelta32{temp,\img_width*4,temp,\img_width*4,\img_width,\img_height}
                       End If
-                      ;GZ_CompressMem_ temp,imgmemsize,tempC+written,tempCSize-written,0,compress,&writtenD.l
-                      writtenD.l = tempCSize-written : zlib_Compress{tempC+written,&written,temp,imgmemsize,compress}
-                    Else
+                      writtenD.l = tempCSize-written
+                      status.l = zlib_Compress{tempC+written,&writtenD,temp,imgmemsize,compress}
+                      If status >< #Z_OK Then writtenD = -1
+                     Else
                       writtenD = -1
-                    End If
-                    If written <= writtenD OR writtenD <= 0
+                     End If
+                     If written <= writtenD OR writtenD <= 0
                       dataSize.l = written
                       dataPtr.l  = tempC
                       doDelta.l  = False
-                    Else
+                     Else
                       dataSize = writtenD
                       dataPtr  = tempC+written
                       doDelta  = True
-                    End If
+                     End If
 
-                    PFMT.l = @"????"
-                    If doRGB
+                     PFMT.l = @"????"
+                     If doRGB
                       If doYUV
                         If doDelta Then PFMT = @"0yuv" : Else PFMT = @"0YUV"
                       Else
                         If doDelta Then PFMT = @"0rgb" : Else PFMT = @"0RGB"
                       End If
-                    Else
+                     Else
                       If doYUV
                         If doDelta Then PFMT = @"ayuv" : Else PFMT = @"AYUV"
                       Else
                         If doDelta Then PFMT = @"argb" : Else PFMT = @"ARGB"
                       End If
-                    End If
+                     End If
 
-                    datapos.l = file_GetSeekPos{fid}
-                    file_Seek{fid,formpos}
-                    file_WriteTag{fid,@"PFMT",PFMT}
-                    file_Seek{fid,datapos}
-                    succ & file_WriteLong{fid,dataSize}
-                    succ & file_WriteMem{fid,dataPtr,dataSize}
+                     datapos.l = file_GetSeekPos{fid}
+                     file_Seek{fid,formpos}
+                     file_WriteTag{fid,@"PFMT",PFMT}
+                     file_Seek{fid,datapos}
+                     succ & file_WriteLong{fid,dataSize}
+                     succ & file_WriteMem{fid,dataPtr,dataSize}
                     Else
                       succ = False
                     End If
@@ -6095,12 +6098,13 @@ SHARED imagedat(),imageengine,imgargs():USEPATH imagedat(image)
                 written.l = 0
                 If compress < 0 OR compress > 9 Then compress = 6
                 rowlength.l = \img_width*4
-                temp_size.l = rowlength+rowlength/1000+12
+                temp_size.l = zlib_CompressBound{rowlength}
                 temp.l      = AllocVec_(temp_size,#MEMF_ANY)
                 For y.l = 0 To \img_height-1
                   ptr.l   = \raw_ptr + y*\bpr
-                  written = temp_size : error.l = zlib_Compress{temp,&written,ptr,rowlength,compress}
-                  If error = 0
+                  written = temp_size
+                  status.l = zlib_Compress{temp,&written,ptr,rowlength,compress}
+                  If status = #Z_OK
                     succ & file_WriteLong{fid,written}
                     succ & file_WriteMem{fid,temp,written}
                   End If
@@ -6403,7 +6407,7 @@ SHARED imagedat()
   USEPATH imagedat(image)
   Function Return \handle_x
 End Statement
- 
+
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
 ;/ Syntax:  result.l =  image_GetHandleY{image.l}                              /
