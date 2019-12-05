@@ -22,6 +22,7 @@ Everything you need as of:
 
 ## Where do I get further informations about it all?
 Try the following sources:
+
 https://www.amiblitz.de                         | various documentation about AmiBlitz3 (needs some updates)
 
 https://www.amiforce.de                         | additional information and fora
