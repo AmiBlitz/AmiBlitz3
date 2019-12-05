@@ -14,6 +14,7 @@ You may copy the OS-libraries in Libs-Drawer to system's "Libs"-drawer before st
 ## What this package contains:
 Everything you need as of:
 - Full IDE with needed OS-libraries
+- localization for english, german and french available
 - lots of documentations accessable from IDE (check "Help"-Menu)
 - lots of usefull includes written in AB3 itself (with its own documentation)
 - every include file has its own short demo in it, just compile and run them!
@@ -21,5 +22,8 @@ Everything you need as of:
 
 ## Where do I get further informations about it all?
 Try the following sources:
-https://www.amiblitz.de   | various documentation about AmiBlitz3
-https://www.amiforce.de   | additions information and fora
+https://www.amiblitz.de                         | various documentation about AmiBlitz3 (needs some updates)
+
+https://www.amiforce.de                         | additional information and fora
+
+https://www.facebook.com/groups/342460143062811 | english facebook-group
