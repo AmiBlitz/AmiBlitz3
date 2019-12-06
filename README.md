@@ -4,7 +4,7 @@ What we have got here is the complete package of AmiBlitz3 - a BASIC-compiler fo
 ## Requirements are:
 - Kickstart 2.04
 - 68020 (not tested below)
-- 10megs of RAM to do things
+- 10megs of RAM to do things, _16megs of RAM to do serious development_
 - FPU ... but only when building FPU-optimized executables :-)
 
 ## Installation:
