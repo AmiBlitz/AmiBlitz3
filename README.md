@@ -9,7 +9,7 @@ What we have got here is the complete package of AmiBlitz3 - a BASIC-compiler fo
 - FPU ... but only when building FPU-optimized executables :-)
 
 ## Installation:
-To get started with AB3, just download the repository and extract it somewhere on your harddisk.
+To get started with AB3, just download the [current release](https://github.com/AmiBlitz/AmiBlitz3/releases/tag/v3.7.0) and extract it somewhere on your harddisk.
 You may copy the OS-libraries in Libs-Drawer to system's "Libs"-drawer before starting, otherwise the IDE will complain about mission OS-libraries.
 
 ## What this package contains:
