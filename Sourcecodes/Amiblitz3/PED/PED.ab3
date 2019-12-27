@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.7.2
-; NumberOfBuilds  = 41
+; NumberOfBuilds  = 49
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 23636
-; CursorColumn    = 1
-; LabelSearch     = "shortc"
+; CursorLine      = 217
+; CursorColumn    = 3
+; LabelSearch     = "log_de"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -280,11 +280,6 @@ Macro log_Mem
   log_Print{memstr$,#log_debug}
 End Macro
 
-Macro ev_WaitEvent
-  ev.l = WaitEvent
-End Macro
-
-
 optimize 5
 Syntax 6
 #USE_WIZARD = 1
@@ -305,7 +300,7 @@ log_Print{"===================================================================",
 ; ------------------------------------------------------
 .TYPES
 DEFTYPE.l quicktype,vars
-DEFTYPE .l
+DEFTYPE.l
 
 NEWTYPE.project
   name.s
@@ -992,7 +987,7 @@ Statement window_welcome{txt0$,@txt1$,@txt2$,@txt3$,@txt4$}
 ;event_about:
   welcome_Exit.b = False
   Repeat
-    !ev_WaitEvent
+    ev.l = WaitEvent
 
     If RawKeyState(#RAWKEY_ESC) Then ev = 0 : welcome_Exit = True
 
@@ -1332,6 +1327,7 @@ Statement read_libmapping{_file.s}
   fid.l = file_Open{_file,#file_read}
   If fid<>-1
     file_Cache{fid}
+    log_Print{"loading libslist..."}
     Repeat
       zeile$ = file_ReadLine{fid}
       qpos.w = Instr(zeile$,";")
@@ -1348,6 +1344,7 @@ Statement read_libmapping{_file.s}
     file_Close{fid}
     If libcounter = 0 Then Statement Return
 
+    log_Print{"scanning tokenlist..."}
     *tpointer.l = *tokenbase
     If *tpointer
       Repeat
@@ -1382,7 +1379,85 @@ Statement read_libmapping{_file.s}
 
         *tpointer.l = token_next
       Until (*tpointer = 0)
+      log_Print{"scanning finished."}
     EndIf
+  EndIf
+End Statement
+
+
+Statement map_tokens_to_libs{_file.s}
+  SHARED *tokenbase.tokeninfo
+  SHARED lib_mapping$()
+
+  fid.l = file_Open{_file,#file_read}
+  If fid<>-1
+    ; check content of file, if there is only little garbage, then ignore it
+    If file_GetLength{fid} < 5
+      file_Close{fid}
+      Statement Return
+    EndIf
+
+    log_Print{"building hashmap..."}
+    *hm.hashmap = hashmap_Create{8}
+    file_Cache{fid}
+    Repeat
+      zeile$ = file_ReadLine{fid}
+      qpos.w = Instr(zeile$,";")
+      If qpos
+        lstring$ = Left$(zeile$,qpos-1)
+        rstring$ = Right$(zeile$,FLen(zeile$)-qpos)
+
+        ; get libnumber from internal structure
+        libname$ = StrChg(lstring$," ","")
+        firsttoken$ = StrLower(StrChg(rstring$," ",""))
+        hashmap_AddItem{*hm, firsttoken$, libname$}
+      EndIf
+    Until file_EOF{fid}
+    file_Close{fid}
+
+    ; running through the tokenindex and map tokens to library names
+    log_Print{"scanning tokenlist..."}
+    *tpointer.l = *tokenbase
+    If *tpointer
+      currentLibName$ = ""
+      Repeat
+        token_next.l   = Peek.l(*tpointer)
+        token_name$    = Peek$(*tpointer+6)
+        libnum.w       = Peek.w(*tpointer+4) LSR 7
+
+        If libnum > 0
+          ; check if token is first token of a blitzlib
+          libname$ = hashmap_GetItem{*hm, StrLower(token_name$)}
+          If libname$ = ""
+            libname$ = currentLibName$
+          End If
+
+          ; check if token is part of library, that is already used
+          ; if libnum is unused, map libname to libnum
+          ; if a libnum appears, here a libname has been mapped, we have a libclash!
+          If libname$ <> ""
+            ;log_Print{"first token of library "+libname$+ ": " + lib_mapping$(libnum,0)}
+            If Instr(lib_mapping$(libnum,0),"unused") = 0
+              message$ = !TRANS{"Library clash!\\n" }
+              message$ + !TRANS{"The dynamic added lib"}+" \\22" + libname$ + "\\22\\n"
+              message$ + !TRANS{"has overwritten"}+" \\22"+lib_mapping$(libnum,0)+"\\22 "+!TRANS{"stored in acidlibs/deflibs"}+".\\n"
+              message$ + !TRANS{"Both libs have the same Lib-ID"}+" "+ Str$(libnum)+".\\n\\n"
+              message$ + !TRANS{"Sourcecode that uses"}+" "+ lib_mapping$(libnum,0) + " "+!TRANS{"might not work,\\n"}
+              message$ + !TRANS{"because these functions are now mapped to"}+" "+libname$+".\\n\\n"
+              message$ + !TRANS{"You should remove the appropriate library from userlibs-directory,\\nor change the Lib-ID to a free one."}
+              dummy.l = ask{message$,!TRANS{"Ok"},!TRANS{"Error"}}
+              lib_mapping$(libnum,0) = libname$ + " ("+!TRANS{ "clashing with"}+" "+lib_mapping$(libnum,0)+")"
+            Else
+              lib_mapping$(libnum,0) = libname$
+            EndIf
+            lib_mapping$(libnum,1) = token_name$
+          End If
+        EndIf
+        *tpointer.l = token_next
+      Until (*tpointer = 0)
+      log_Print{"scanning finished."}
+    EndIf
+    hashmap_Free{*hm}
   EndIf
 End Statement
 
@@ -2163,8 +2238,12 @@ begin1:
   ; -- and check consistency based on the mapping files and the internal libnums
   WZ_ShowMessage{!TRANS{"Building tokenindex..."}}
   *tokenbase.tokeninfo = Peek.l(?comPtr_TokenBase)
-  read_libmapping{dos_AddPart{my_systemdir$,"token_mapping_libs.txt"}}
-  read_libmapping{dos_AddPart{my_systemdir$,"token_mapping_userlibs.txt"}}
+  map_tokens_to_libs{dos_AddPart{my_systemdir$,"token_mapping_libs.txt"}}
+  map_tokens_to_libs{dos_AddPart{my_systemdir$,"token_mapping_userlibs.txt"}}
+  ;read_libmapping{dos_AddPart{my_systemdir$,"token_mapping_libs.txt"}}
+  ;read_libmapping{dos_AddPart{my_systemdir$,"token_mapping_userlibs.txt"}}
+
+
 
   !log_Mem{"after doing token index"}
 
@@ -2789,6 +2868,7 @@ RTS
  LockAllOpenWZWin{}
  WZWindow WZID("WIN_SETTINGS"),?wzgui,255,-2,-2,-2,-2,WZID("WIN_SETTINGS")
  Use Window WZID("WIN_SETTINGS")
+ log_Print{"settingswindow id: " + Str$(WZID("WIN_SETTINGS"))}
  ; make tab 0 active
  WZPrint "SET_PAGES",0
 
@@ -2834,18 +2914,17 @@ RTS
 
  WZPrint "SET_TAB_SIZE"       ,Peek.w(?tab_size)
  WZPrint "SET_CURSORBLINKRATE",Peek.b(?blinkrate)
- If OSVersion = #AmigaOS4                            ; check if OS4
-   WZDisable "SET_MOUSEWHEELSTEP"                    ; yes disable it becau we use the System value
- Else                                                ; no print used value.
-   WZPrint "SET_MOUSEWHEELSTEP" ,Peek.l(?wheelstep)  ; add to make Mousewheelsteprate configuratable and saveable tomsmart1
+ If OSVersion = #AmigaOS4                           ; check if OS4
+   WZDisable "SET_MOUSEWHEELSTEP"                   ; yes disable it becau we use the System value
+ Else                                               ; no print used value.
+   WZPrint "SET_MOUSEWHEELSTEP",Peek.l(?wheelstep)  ; add to make Mousewheelsteprate configuratable and saveable tomsmart1
  EndIf
 
-
- tsourcedir$  =sourcedir$
- tdeflibfile$ =deflibfile$
- tincludedir$ =includedir$
- tautodocdir$ =autodocdir$
- thelpdir$    =helpdir$
+ tsourcedir$  = sourcedir$
+ tdeflibfile$ = deflibfile$
+ tincludedir$ = includedir$
+ tautodocdir$ = autodocdir$
+ thelpdir$    = helpdir$
 
  WZPrint "SET_SOURCEDIR"  ,&tsourcedir$
  WZPrint "SET_DEFLIBS"    ,&tdeflibfile$
@@ -2858,18 +2937,31 @@ RTS
  temp_width.w  = Peek.w(?ownscreen_width)
  temp_height.w = Peek.w(?ownscreen_height)
  temp_depth.w  = Peek.w(?ownscreen_depth)
+
  ;-- get screenname
+ log_Print{"getting screenmodename for id: " + Str$(temp_id)}
  temp_scr$ = screen_GetModeName{temp_id}
- ;--  check if is the ID unknown then get best match
+ log_Print{"modename = " + Str$(temp_scr$)}
+
+ ;--  check if the ID unknown then get best match
  If temp_scr$ = "unknown"
-   temp_id.l = screen_GetBestModeID{temp_width,temp_height,temp_depth}
+   log_Print{"screenmode unknown, searching for best match available mode..."}
+   If dos_CheckLib{"cybergraphics.library",0} = False
+     error{"Missing 'cybergraphics.library':\\nIDE needs this library in order to obtain best matching screen mode.\\n"}
+     temp_id.l = 0
+   Else
+     temp_id.l = screen_GetBestModeID{temp_width,temp_height,temp_depth}
+   EndIf
+   log_Print{"most matching id: " + Str$(temp_id)}
    temp_scr$ = screen_GetModeName{temp_id}
+   log_Print{"modename = " + temp_scr$}
  EndIf
+
  ;-- set screenrequester initials
  screen_SetASLInitialDims{temp_id,temp_width,temp_height,temp_depth}
  WZPrint "SET_SCREENNAME",&temp_scr$
 
- ;-- get Font infos
+ ;-- get font infos
  newsourcefont$      = Peek.s(?str_sourcefontname)
  newsourcefontsize.l = Peek.w(?sourcefontsize)
  newguifont$         = guifont$
@@ -2881,23 +2973,23 @@ RTS
  olduse_wbfont.b     = use_wbfont               ; temp variables to check former stat
  olduse_wbscreen.b   = Peek.b(?use_wbscreen)
 
- If Peek.b(?use_wbscreen)<>0
+ If Peek.b(?use_wbscreen) <> 0
    WZPrint "SET_USEWB"  ,On
    WZPrint "SET_CLONEWB",Off
    WZDisable "SET_SCREENNAME"
    WZDisable "SET_SCREEN"
    For i = 0 To 3
-    WZDisable "SET_SCREENCOL"+Str$(i)   ; disable Screencolors
+    WZDisable "SET_SCREENCOL" + Str$(i)   ; disable Screencolors
    Next i
    usewbscreen_tmp.b = True             ; temporay variable for prefs window
  Else
    For i = 0 To 3
-    WZEnable "SET_SCREENCOL"+Str$(i)    ; enable Screencolors
+    WZEnable "SET_SCREENCOL" + Str$(i)    ; enable Screencolors
    Next i
    usewbscreen_tmp.b = False
  EndIf
 
- If Peek.b(?clone_wbscreen)<>0
+ If Peek.b(?clone_wbscreen) <> 0
    WZPrint "SET_USEWB"  ,Off
    WZPrint "SET_CLONEWB",On
    WZDisable "SET_SCREENNAME"
@@ -2906,14 +2998,14 @@ RTS
  EndIf
 
  If use_wbfont = True                   ;<>0
-   WZPrint "SET_USEWBFONT",On
+   WZPrint "SET_USEWBFONT", On
    WZDisable "SET_SOURCEFONT"
    WZDisable "SET_SOURCEFONTNAME"
    WZDisable "SET_GUIFONT"
    WZDisable "SET_GUIFONTNAME"
    usewbfont_tmp.b = True               ; temporay variable for prefs window
  Else
-   WZPrint "SET_USEWBFONT",Off
+   WZPrint "SET_USEWBFONT", Off
    WZEnable "SET_SOURCEFONT"
    WZEnable "SET_SOURCEFONTNAME"
    usewbfont_tmp.b = False
@@ -2949,18 +3041,21 @@ RTS
  SliderUsed.b       = False
 
  Repeat
-   !ev_WaitEvent
+   ev.l = WaitEvent
 
-   If Peek.b(?onlinehelp)<>0
+   If Peek.b(?onlinehelp) <> 0
       If (ev<>#IDCMP_INTUITICKS) AND (ev<>#IDCMP_ACTIVEWINDOW) AND (ev<>#IDCMP_GADGETHELP)  AND (ev<>#IDCMP_CHANGEWINDOW)
         WZ_HideHelp{}
-      EndIf
-      If ev = #IDCMP_GADGETHELP Then WZ_ShowHelp{}
+      Else
+        If (ev = #IDCMP_GADGETHELP) Then WZ_ShowHelp{}
+      End If
    EndIf
+
+   If ev<>#IDCMP_INTUITICKS AND (ev<>#IDCMP_MOUSEMOVE) Then log_Print{Hex$(ev)}
 
    Select ev
      Case #IDCMP_MOUSEMOVE
-       If SliderUsed = True       ; check if colorslider used befor
+       If SliderUsed = True       ; check if colorslider used before
          SliderUsed = False       ; set it back
        Else
          If (WZInput("SET_PAGES") = 2) AND (cw_open = True)
@@ -2993,6 +3088,11 @@ RTS
 
      Case #IDCMP_IDCMPUPDATE
        ; check the colorgadgets
+       log_Print{"event: IDCMPUPDATE"}
+       log_Print{"eventwindow: " + Str$(EventWindow)}
+       log_Print{"gadid: " + Str$(WZGadHit)}
+       log_Print{"gadname: " + Str$(WZGadName)}
+
        If Left$(WZGadName,9) = "SET_COLOR"
          colnum = Vallong(StrChg(WZGadName,"SET_COLOR",""))
          update_colors = True
@@ -3013,9 +3113,9 @@ RTS
            EndIf
             _RGB = AB3RGB_temp(colnum) : old_RGB = _RGB    ; added set of _RGB and old_RGB because else it is undefind  tomsmart1
            Gosub update_colorsliders ; added to set the colorsilders to the select color  tomsmart1
-        EndIf
-      EndIf
-
+         EndIf
+       EndIf
+       log_Print{"check other gadget..."}
        ;-- check all other gadgets
        Select WZGadName
 
@@ -3199,6 +3299,7 @@ RTS
               temp_scr$     = screen_GetASLModeName{}
               log_Print{"selected screen depth: " + Str$(temp_depth),#log_debug}
               WZPrint "SET_SCREENNAME",&temp_scr$
+              log_Print{"written screenname... " + temp_scr$}
               rebuild_gui   = True
            EndIf
 
@@ -3275,10 +3376,13 @@ RTS
 
        End Select
 
+      log_Print{"end_of_event"}
    End Select
  Until exit_settings = True
 
+ log_Print{"settings loop finished."}
  If use_settings = True
+   log_Print{"storing all settings"}
    WZ_LockWindow{"WIN_SETTINGS"}
    Poke.b ?auto_format,           WZInput("SET_AUTO_FORMAT")
    Poke.b ?auto_constructs,       WZInput("SET_COMPLETE_CONSTRUCTS")
@@ -3390,7 +3494,7 @@ RTS
        ;get WBfont for Sourcefont
        sourcefont$=""     ;that change_sourcefont get the WBfont
        Poke.s ?str_sourcefontname,sourcefont$
-       If rebuild_gui =False            ; check if we only need to update the source window  tomsmart1
+       If rebuild_gui = False            ; check if we only need to update the source window  tomsmart1
          !asm
          JSR set_pointernormal
          JSR close_sourcewindow
@@ -3411,6 +3515,7 @@ RTS
  If reopen_settings Then Goto settings_loop
 
  If save_settings
+   log_Print{"saving settings..."}
    WZ_LockWindow{"WIN_SETTINGS"}
    Gosub write_newprefs
    ;MOVE.w #$FFFF,prefswritten_state
@@ -3426,6 +3531,7 @@ RTS
  JSR set_pointernormal
  !basic
  If rebuild_gui
+   log_Print{"rebuilding the gui..."}
    !asm
    JSR close_gui
    JSR change_sourcefont
@@ -8947,7 +9053,7 @@ ColumnsOffsetStore:    Ds.w 1
   exit_goto.b = False
 
   Repeat
-    !ev_WaitEvent
+    ev.l = WaitEvent
     Select ev
 
       Case #IDCMP_IDCMPUPDATE
@@ -14503,7 +14609,7 @@ Return
 
 .open_gui:
   !basic
-
+  log_Print{"opening gui..."}
   If (use_wbfont = True)  OR  (Peek.b(?use_wbscreen)<>0)              ; check if we use workbench fonts or screen for Gui tomsmart1
 
     ;Gosub SetGuiFontToWBScreenFont                                   ; try to get the workbench screen font settinge out of the screen structure tomsmart1
@@ -14586,8 +14692,13 @@ Return
         myscreen_Width  = screen_GetWidth{}
         myscreen_Height = screen_GetHeight{}
         myscreen_Depth  = screen_GetDepth{}
-        myscreen_modeid = screen_GetBestModeID{myscreen_Width,myscreen_Height,myscreen_Depth}
-
+        If dos_CheckLib{"cybergraphics.library",0} = False
+          error{"Missing 'cybergraphics.library':\\nIDE needs this library in order to obtain best matching screen mode.\\n"}
+          myscreen_modeid = 0
+        Else
+          log_Print{"getting best screenmodeid..."}
+          myscreen_modeid = screen_GetBestModeID{myscreen_Width,myscreen_Height,myscreen_Depth}
+        End If
         Poke.l ?ownscreen_modeid ,myscreen_modeid
         Poke.w ?ownscreen_height ,myscreen_Height
         Poke.w ?ownscreen_width  ,myscreen_Width
@@ -14599,10 +14710,11 @@ Return
     EndIf
   EndIf
   If (screen_GetDepth{} < 4) ; AND (Peek.b(?newcolormode)<>0)
-    log_Print{"screen depth: "+ Str$(1 LSL screen_GetDepth{}),#log_debug}
-    log_Print{"screen_GetDepth: "+ Str$(screen_GetDepth{}),#log_debug}
+    log_Print{"screen colors: " + Str$(1 LSL screen_GetDepth{}),#log_debug}
+    log_Print{"screen_GetDepth(): "+ Str$(screen_GetDepth{}),#log_debug}
     dummy.l = ask{!TRANS{"It is recommended to open a screen with at least 16 colors."},!TRANS{"Ok"},!TRANS{"Info"}}
   EndIf
+  log_Print{"poking around..."}
   Poke.s ?str_pedscreenname,Peek$(?str_screentitle)
   Poke.l ?ptr_pedscreen    ,Peek.l(Addr Screen(0))
 
@@ -14611,10 +14723,11 @@ Return
     ;  PubScreenStatus_ Peek.l(Addr Screen(0)),0   ; make the PubScreen public for real
     ;EndIf
     If Peek.w(?use_default_pubscreen)<>0
+      log_Print{"settings defaultpubscreen"}
       SetDefaultPubScreen_ ?str_defaultpubscreen
     EndIf
   EndIf
-
+  log_Print{"setting colors..."}
   Gosub set_storedcolors
   !asm
 
@@ -14631,9 +14744,12 @@ Return
   JSR arexx_send_openwindow
 
   !basic
+  log_Print{"init menues"}
   Gosub init_menus
+  log_Print{"init windowlayouts"}
   Gosub load_windowlayouts
   If autolayout><-1 Then AutoLayout{&wtemp,autolayout}
+  log_Print{"do window layout"}
   Gosub do_windowlayout
   !asm
   MOVE.l #$00,D0
@@ -18535,7 +18651,7 @@ Even                   ; make sure To have enough space reserved
  use_default_pubscreen:                      ;                               TOOLTYPE
                         Ds.w 1
  ownscreen_depth:                            ;                               TOOLTYPE
-                        Dc.b $00,$02
+                        Dc.b $00,$04
 
  startup_folder:
                         Dc.b $FF,$FF
@@ -19145,10 +19261,10 @@ Return
   GTMenuTitle    0,5,   !TRANS{"Help"                        }
    GTMenuItem  0,0,5, 0,!TRANS{"What's New?"                 },""          ,0,#MENU_WHATSNEW
    GTMenuItem  0,0,5, 1
-   GTMenuItem  0,0,5, 2,!TRANS{"General AB3 Guide"           },""          ,0,#MENU_GENERALGUIDE
+   GTMenuItem  0,4,5, 2,!TRANS{"General AB3 Guide"           },"F1"        ,0,#MENU_GENERALGUIDE
    GTMenuItem  0,0,5, 3,!TRANS{"Programming in Blitz"        },""          ,0,#MENU_PROGRAMGUIDE
-   GTMenuItem  0,0,5, 4,!TRANS{"Includes Guide"              },""          ,0,#MENU_INCLUDEGUIDE
-   GTMenuItem  0,0,5, 5,!TRANS{"Blitzlibs Guide"             },""          ,0,#MENU_BLITZLIBSGUIDE
+   GTMenuItem  0,4,5, 4,!TRANS{"Includes Guide"              },"F2"        ,0,#MENU_INCLUDEGUIDE
+   GTMenuItem  0,4,5, 5,!TRANS{"Blitzlibs Guide"             },"F3"        ,0,#MENU_BLITZLIBSGUIDE
    GTMenuItem  0,0,5, 6,!TRANS{"Shortcuts Reference"         },""          ,0,#MENU_SHORTCUTREFERENCE
    GTMenuItem  0,0,5, 7
    GTMenuItem  0,0,5, 8,!TRANS{"Instruction Browser"         },""          ,0,#MENU_INSTRUCTIONBROWSER
@@ -19698,7 +19814,7 @@ RTS
 
   exit_project.b = False
   Repeat
-    !ev_WaitEvent
+    ev.l = WaitEvent
     Select ev
     Case #IDCMP_IDCMPUPDATE
       Select WZGadName
@@ -21843,7 +21959,7 @@ RTS
     exit_print.b = False
 
     Repeat
-      !ev_WaitEvent
+      ev.l = WaitEvent
       Select ev
 
         Case #IDCMP_CLOSEWINDOW
@@ -23686,18 +23802,18 @@ Return
            WZ_AddRow{"SHORTCUTS",       "####"                         ,       "####"}
            WZ_AddRow{"SHORTCUTS",!TRANS{"<ALT>+<CURSOR RIGHT>" }       ,!TRANS{"Jump to label/func"} }
            WZ_AddRow{"SHORTCUTS",!TRANS{"<ALT>+<CURSOR LEFT>"}         ,!TRANS{"Back from Label/func"} }
-           WZ_AddRow{"SHORTCUTS",!TRANS{"<ALT>+Left Mousebutton"}      ,!TRANS{"Jump to label/func"} }
-           WZ_AddRow{"SHORTCUTS",!TRANS{"<ALT>+Middle Mousebutton"}    ,!TRANS{"Back from Label/func"} }
+           WZ_AddRow{"SHORTCUTS",!TRANS{"<ALT>+left mousebutton"}      ,!TRANS{"Jump to label/func"} }
+           WZ_AddRow{"SHORTCUTS",!TRANS{"<ALT>+middle mousebutton"}    ,!TRANS{"Back from Label/func"} }
            WZ_AddRow{"SHORTCUTS",       "####"                         ,       "####"}
-           WZ_AddRow{"SHORTCUTS",!TRANS{"<ALT>+click on a filename"}   ,!TRANS{"save and compile and run"} }
-           WZ_AddRow{"SHORTCUTS",!TRANS{"<CTRL>+click on a filename"}  ,!TRANS{"save and create exe (save both if you click on different)"} }
+           WZ_AddRow{"SHORTCUTS",!TRANS{"<ALT>+click on filename"}     ,!TRANS{"save and compile and run"} }
+           WZ_AddRow{"SHORTCUTS",!TRANS{"<CTRL>+click on filename"}    ,!TRANS{"save and create exe (save both if you click on different)"} }
            WZ_AddRow{"SHORTCUTS",       "####"                         ,       "####"}
            WZ_AddRow{"SHORTCUTS",!TRANS{"<CTRL>+<E>"}                  ,!TRANS{"insert 'end if'"} }
            WZ_AddRow{"SHORTCUTS",!TRANS{"<CTRL>+<F>"}                  ,!TRANS{"insert a 'Function' skeleton"} }
            WZ_AddRow{"SHORTCUTS",!TRANS{"<CTRL>+<N>"}                  ,!TRANS{"insert a 'NewType' skeleton"} }
            WZ_AddRow{"SHORTCUTS",!TRANS{"<CTRL>+<S>"}                  ,!TRANS{"insert a 'Statement' skeleton"} }
            WZ_AddRow{"SHORTCUTS",       "####"                         ,       "####"}
-           WZ_AddRow{"SHORTCUTS",!TRANS{"<CTRL>+<X>"}                  ,!TRANS{"CUT same as <AMIGA> + <X>"} }
+           WZ_AddRow{"SHORTCUTS",!TRANS{"<CTRL>+<X>"}                  ,!TRANS{"CUT same as <AMIGA>+<X>"} }
            WZ_AddRow{"SHORTCUTS",!TRANS{"<CTRL>+<C>"}                  ,!TRANS{"COPY vertical, all select lines only copyed at the select column"} }
            WZ_AddRow{"SHORTCUTS",!TRANS{"<CTRL>+<V>"}                  ,!TRANS{"PASTE vertical, all lines pasted at the cursor column"} }
            WZ_AddRow{"SHORTCUTS",       "####"                         ,       "####"}
@@ -23772,7 +23888,7 @@ Return
   exit_cli.b = False : get_arguments.b = False
 
   Repeat
-    !ev_WaitEvent
+    ev.l = WaitEvent
 
     ; bubble onlinehelp for most windows
    ; If Peek.b(?onlinehelp)<>0
