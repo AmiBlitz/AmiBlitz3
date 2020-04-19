@@ -21,12 +21,6 @@ Everything you need as of:
 - every include file has its own short demo in it, just compile and run them!
 - some examples to demonstrate various features
 
-## After unpack information:
-After unpacking the zip package on an Amiga some protect bits are not properly in place.
-At a minumum the 'E' (executable) bit must be added on the REDDebugger program in the 'debug' folder.
-Otherwise the debugger will not start on 'Compile&Start' and the console window will hang.
-
-
 ## Where do I get further informations about it all?
 Try the following sources:
 
