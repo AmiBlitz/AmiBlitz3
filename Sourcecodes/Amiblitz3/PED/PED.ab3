@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.7.3
-; NumberOfBuilds  = 79
+; NumberOfBuilds  = 124
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 10608
-; CursorColumn    = 1
-; LabelSearch     = "al_0_86c0"
+; CursorLine      = 16369
+; CursorColumn    = 43
+; LabelSearch     = "key_cursorri"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -75,8 +75,6 @@
 ; Max XBSound     = 10
 ; Max Chunky      = 20
 ; /XTRA
-; XTRA
-; Embedded .xtra Header
 ;
 ; General Info
 ; -------------------------------------------------------
@@ -280,6 +278,19 @@ XINCLUDE "translation.include.ab3"
 
 #MAX_TEMPLATES  = 16
 
+
+
+optimize 5
+Syntax 6
+#USE_WIZARD = 1
+XINCLUDE "PE/wizard_Tools.include.ab3"      ; added to make debugging of this include easier befor it was include by wizard_Table.include  tomsmart1
+XINCLUDE "PE/wizard_Table.include.ab3"      ; removed reset of the syntax level because i made it Syntax compatible  tomsmart1
+XINCLUDE "PE/wizard_ColorWheel.include.ab3"
+ColorWheelError.b = False
+
+XINCLUDE "PE/logging.include.ab3"
+
+
 Macro log_Mem
   oldf.l = availf.l
   availc.l = AvailMem_(#MEMF_CHIP)
@@ -291,20 +302,10 @@ Macro log_Mem
   log_Print{memstr$,#log_debug}
 End Macro
 
-optimize 5
-Syntax 6
-#USE_WIZARD = 1
-XINCLUDE "PE/wizard_Tools.include.ab3"      ; added to make debugging of this include easier befor it was include by wizard_Table.include  tomsmart1
-XINCLUDE "PE/wizard_Table.include.ab3"      ; removed reset of the syntax level because i made it Syntax compatible  tomsmart1
-XINCLUDE "PE/wizard_ColorWheel.include.ab3"
-ColorWheelError.b = False
-
-XINCLUDE "PE/logging.include.ab3"
 log_SetLevel{#log_debug}
 log_SetDestination{#log_toconsole,"System/PED.log"}
 log_Print{"===================================================================",#log_debug}
 !log_Mem{"beginn"}
-
 
 ; ------------------------------------------------------
 ; TYPENDEFINITIONEN
@@ -312,6 +313,69 @@ log_Print{"===================================================================",
 .TYPES
 DEFTYPE.l quicktype,vars
 DEFTYPE.l
+
+  NEWTYPE.sourceLine              ; offset
+    *nextLine.sourceLine          ; 0000
+    *previousLine.sourceLine      ; 0004
+    strLength.b                   ; 0009
+    *strSourceLine.b              ; 000A
+  End NEWTYPE
+
+  Function.b cutLine{*sl.sourceLine}
+      *prevLine.sourceLine = *sl\previousLine
+      *nextLine.sourceLine = *sl\nextLine
+      If (*prevLine = 0) AND (*nextLine = 0)
+        Function Return False
+      End If
+      ; clear old references to other lines
+      *sl\previousLine = 0
+      *sl\nextLine = 0
+
+      ; connect previous and next line to cut current line off
+      If *prevLine <> 0
+        *prevLine\nextLine = *nextLine
+      End If
+      If *nextLine <> 0
+        *nextLine\previousLine = *prevLine
+      End If
+
+      Function Return True
+  End Function
+
+  Statement appendLine{*afterLine.sourceLine, *appendLine.sourceLine, tempfsl.l}
+      ; afterLine: the line to append the appendLine to
+      ; appendLine: the line to append after the afterLine
+      ; tempfsl: Pointer to FirstSourceLine
+
+      If *afterLine = 0                           ; previous line has no previous line
+        ;log_Print{"no previousline"}
+
+        *exfirstLine.sourceLine = Peek.l(tempfsl)
+        *exfirstLine\previousLine = *appendLine
+
+        *appendLine\previousLine = 0
+        *appendLine\nextLine = *exfirstLine
+
+        Poke.l tempfsl, *appendLine
+
+      Else
+        *nextLine.sourceLine = *afterLine\nextLine
+        *appendLine\previousLine = *afterLine
+        *appendLine\nextLine = *nextLine
+
+        If *nextLine <> 0
+          *nextLine\previousLine = *appendLine
+        EndIf
+        *afterLine\nextLine = *appendLine
+
+      EndIf
+  End Statement
+
+
+
+
+
+
 
 NEWTYPE.project
   name.s
@@ -581,7 +645,7 @@ Macro newalloc
   MOVE.l d0,-(a7)
   JSR _AllocPooled(a6)
   MOVE.l (a7)+,d1
-  TST.l d0
+  TST.l d0                      ; allocpooled returns memadress in d0
   BEQ 'avp_fail1`@
     MOVE.l d0,a0
     MOVE.l d1,(a0)+
@@ -1855,6 +1919,7 @@ a$ = dos_GetProgIcon{dos_AddPart{default_assign$,"AmiBlitz3"} }   ;  replaces ha
   disk_object.l = dos_OpenToolTypes{a$}
   If disk_object
     If dos_GetToolState{"no_welcome"}         = -1 Then Poke.b ?no_welcome         ,1 : Else Poke.b ?no_welcome         ,0
+    If dos_GetToolState{"askbeforequit"}      = -1 Then Poke.b ?ask_before_quit    ,1 : Else Poke.b ?ask_before_quit    ,0
     If dos_GetToolState{"standardeditmode"}   = -1 Then Poke.b ?new_editmode       ,1 : Else Poke.b ?new_editmode       ,0
     If dos_GetToolState{"oldsearch"}          = -1 Then Poke.w ?oldsearch          ,1 : Else Poke.w ?oldsearch          ,0
     If dos_GetToolState{"nodisplaybeep"}      = -1 Then Poke.b ?nodisplaybeep      ,1 : Else Poke.b ?nodisplaybeep      ,0
@@ -1928,10 +1993,11 @@ a$ = dos_GetProgIcon{dos_AddPart{default_assign$,"AmiBlitz3"} }   ;  replaces ha
 
   scroll_rate.l = dos_GetToolValue{"scrollrate",0}
   If scroll_rate<>0
-    If vvblank_SetFreq {scroll_rate}=False Then MOVE.b #1,old_scrolling
+    If vvblank_SetFreq{scroll_rate}=False Then MOVE.b #1,no_scrollrate
   Else
-    MOVE.b #1,old_scrolling
+    MOVE.b #1,no_scrollrate
   EndIf
+
   Poke.b ?blinkrate, dos_GetToolValue{"cursorblinkrate",5}
   Poke.l ?wheelstep, dos_GetToolValue{"MOUSEWHEELSTEP",6}     ; added to make Mousewheelsteprate changeable  tomsmart1
 
@@ -2212,7 +2278,7 @@ begin1:
   ADDA.w comWord_MaxColumns,A0
   ADDQ.w #6,A0
   MOVE.l A0,D0
-  MOVEQ.l #$01,D1
+  ;MOVEQ.l #$01,D1                 ; memtype not needed with allocpool
   !newalloc
   MOVE.l D0,comPtr_DosBuffer
   BEQ.w exit_PED_closelibraries
@@ -2225,7 +2291,7 @@ begin1:
   MOVE.l A0,comPtr_Temp_TokenStringObsolete
 
   MOVE.l #$2F60 + 1000,D0
-  MOVE.l #$10000,D1
+  ;MOVE.l #$10000,D1              ; memtype not needed with allocpool
   !newalloc
   BEQ.w exit_PED_closelibraries
 
@@ -2236,7 +2302,7 @@ begin1:
   ADD.l #MAX_Columns+4,a0 : MOVE.l A0,AL_0_5BA6
   ADD.l #MAX_Columns+4,a0 : MOVE.l A0,AL_0_5BAA
   ADD.l #MAX_Columns+4,a0 : MOVE.l A0,expandstore
-  ADD.l #MAX_Columns+4,a0 : MOVE.l A0,AL_0_5BB2
+  ADD.l #MAX_Columns+4,a0 : MOVE.l A0,lineundeletestore
   ADD.l #MAX_Columns+4,a0
 
   !regs2stack
@@ -2934,6 +3000,7 @@ RTS
  If Peek.w(?smart_tokenization)    Then WZPrint "SET_SMART_TOKENIZATION" ,On
  If Peek.b(?new_editmode)          Then WZPrint "SET_STANDARD_EDITMODE"  ,On
  If Peek.b(?no_welcome)            Then WZPrint "SET_WELCOME"            ,On
+ If Peek.b(?ask_before_quit)       Then WZPrint "SET_ASKBEFOREQUIT"      ,On
 
  If Peek.b(?onlinehelp)            Then WZPrint "SET_ONLINEHELP"         ,On
  If Peek.w(?bold_tokens)           Then WZPrint "SET_BOLDTOKENS"         ,On
@@ -2955,11 +3022,11 @@ RTS
 
  WZPrint "SET_SORTLABELS"     ,sort_labels
 
- If NOT Peek.b(?old_scrolling)
-   WZDisable "SET_SCROLLRATE"
- Else
+; If NOT Peek.b(?no_scrollrate)
+;   WZDisable "SET_SCROLLRATE"
+; Else
    WZPrint "SET_SCROLLRATE"   ,scroll_rate
- EndIf
+; EndIf
 
  WZPrint "SET_TAB_SIZE"       ,Peek.w(?tab_size)
  WZPrint "SET_CURSORBLINKRATE",Peek.b(?blinkrate)
@@ -3440,6 +3507,7 @@ RTS
    Poke.w ?smart_tokenization,    Abs(WZInput("SET_SMART_TOKENIZATION"))
    Poke.b ?new_editmode,          WZInput("SET_STANDARD_EDITMODE")
    Poke.b ?no_welcome,            WZInput("SET_WELCOME")
+   Poke.b ?ask_before_quit,       WZInput("SET_ASKBEFOREQUIT")
    Poke.b ?onlinehelp,            WZInput("SET_ONLINEHELP")
    Poke.w ?bold_tokens,           WZInput("SET_BOLDTOKENS")
    Poke.w ?italic_remarks,        WZInput("SET_ITALICREMARKS")
@@ -3464,7 +3532,7 @@ RTS
 
    sort_labels = -WZInput("SET_SORTLABELS")
    scroll_rate = WZInput("SET_SCROLLRATE")
-   If scroll_rate = 0 Then Poke.b ?old_scrolling,1 ;Else vvset_blank{scroll_rate}
+   If scroll_rate = 0 Then Poke.b ?no_scrollrate,1 Else vvblank_SetFreq{scroll_rate}
    Poke.w ?tab_size      ,WZInput("SET_TAB_SIZE")
    Poke.b ?blinkrate     ,WZInput("SET_CURSORBLINKRATE")
    Poke.l ?wheelstep     ,WZInput("SET_MOUSEWHEELSTEP")     ; added to make Mousewheelsteprate changeable, no special OS4 handling nessacary because the System settings are used by any event  tomsmart1
@@ -3755,6 +3823,7 @@ Return
 
        ; save other settings
        dos_SetToolSwitch{"NO_WELCOME"        ,-WZInput("SET_WELCOME")}
+       dos_SetToolSwitch{"ASKBEFOREQUIT"     ,-WZInput("SET_ASKBEFOREQUIT")}
        dos_SetToolSwitch{"STANDARDEDITMODE"  ,-WZInput("SET_STANDARD_EDITMODE")}
        dos_SetToolSwitch{"OLDSEARCH"         ,-WZInput("SET_OLDSEARCH")}
        dos_SetToolSwitch{"NODISPLAYBEEP"     ,-WZInput("SET_NO_DISPLAYBEEP")}
@@ -4180,7 +4249,7 @@ old_loading_routine:
   MOVE.l #$0001,comLong_TotalLines
   MOVE.l comPtr_Temp_TokenString2,tempstore
   JSR JL_0_4F5A
-  JSR JL_0_4F1A
+  JSR newSourcelineFromTempString
   MOVE.l A0,comPtr_FirstSourceLine
   MOVE.l A0,comPtr_CurrentSourceLine
   CLR.l $4(A0)
@@ -4191,7 +4260,7 @@ old_loading_routine:
     MOVE.l comPtr_Temp_TokenString2,tempstore
     JSR JL_0_4F5A
     BMI.w JL_0_FD6
-    JSR JL_0_4F1A
+    JSR newSourcelineFromTempString
     MOVE.l A0,comPtr_LastSourceLine
     MOVE.l A0,(A4)
     ADDQ.l #1,comLong_TotalLines
@@ -5227,58 +5296,72 @@ JMP _redraw
   MOVE.l #$46696C65,(A0)+
   MOVE.b #$0,(A0)+
   TST.l D0
-   BEQ.w exit_quitall
+  BEQ.w exit_quitall
 
-  JSR dummy_compilercall
-  JSR clear_labellist
-  ; -- hier problem mit enforcer bei !newfree
-  JSR clear_actualsource
-  ; --
-  MOVEA.l actualfile,A0
-  JSR close_actualsource
-  JSR print_filenames
-  TST.l loadedfilesbase
-   BNE.b menu_quitall
+    JSR dummy_compilercall
+    ;JSR clear_labellist    called in clear_actualsource
+    ; -- hier problem mit enforcer bei !newfree
+    JSR clear_actualsource
+    ; --
+    MOVEA.l actualfile,A0
+    JSR close_actualsource
+    JSR print_filenames
 
-  JSR arexx_send_quitplease
-;  LEA $E(A7),A7                      ;This is pure evil stackmagic that work only for on case that the
-                                      ;jump to the routine comes form the asm event/message loop for the
-                                      ;Sourcewindow and not form the Basic loop for the other windows
-  JMP Exit_main                       ;Jump to real exit, this fix the Exit bug if the Sourcewindow not active  tomsmart1
+    TST.l loadedfilesbase
+    BNE.b menu_quitall
+      JSR arexx_send_quitplease
+      ;  LEA $E(A7),A7                  ;This is pure evil stackmagic that work only for on case that the
+                                        ;jump to the routine comes form the asm event/message loop for the
+                                        ;Sourcewindow and not form the Basic loop for the other windows
+      JMP Exit_main                     ;Jump to real exit, this fix the Exit bug if the Sourcewindow not active  tomsmart1
 
- exit_quitall:
+  exit_quitall:
 RTS
 
 
 .menu_quit:
-  MOVEA.l #str_newfile_req,A0
-  MOVE.l #$51756974,(A0)+            ; "Quit"
+  MOVEA.l #str_newfile_req,A0         ; patch the requester name
+  MOVE.l #"Quit",(A0)+
   MOVE.b #$0,(A0)+
   JSR show_newfilerequest
-  MOVEA.l #str_newfile_req,A0
-  MOVE.l #$4E657720,(A0)+            ; "New File"
-  MOVE.l #$46696C65,(A0)+
+  MOVEA.l #str_newfile_req,A0         ; unpatch the requester name
+  MOVE.l #"New ",(A0)+
+  MOVE.l #"File",(A0)+
   MOVE.b #$0,(A0)+
+
   TST.l D0
-   BEQ.w exit_quit
+  BEQ.w exit_quit
+    JSR dummy_compilercall
+    ;JSR clear_labellist              called in clear_actualsource
+    JSR clear_actualsource            ;alle zeilen loeschen und freigeben
 
-  JSR dummy_compilercall
-  JSR clear_labellist
-  JSR clear_actualsource             ;alle zeilen loeschen und freigeben
+    MOVEA.l actualfile,A0
+    JSR close_actualsource
 
-  MOVEA.l actualfile,A0
-  JSR close_actualsource
-
-  TST.l loadedfilesbase
-   BNE.w exit_quit
-
-  JSR arexx_send_quitplease
-;  LEA $E(A7),A7                      ;This is pure evil stackmagic that work only for on case that the
+    TST.l loadedfilesbase
+    BNE.w exit_quit
+      !regs2stack
+      !basic
+      dummy.l = 1
+      If Peek.b(?ask_before_quit) = 1
+        dummy.l=ask{!TRANS{"Closing last source, do you really want to quit?"},!TRANS{"Ok|Cancel"},!TRANS{"Question"}}
+      EndIf
+      If dummy = 0
+        Pop If
+        !stack2regs
+        !asm
+        JSR menu_opennew
+        BRA exit_quit
+      EndIf
+      !stack2regs
+      !asm
+      JSR arexx_send_quitplease
+      ;LEA $E(A7),A7                  ;This is pure evil stackmagic that work only for on case that the
                                       ;jump to the routine comes form the asm event/message loop for the
                                       ;Sourcewindow and not form the Basic loop for the other windows
-  JMP Exit_main                       ;Jump to real exit, this fix the Exit bug if the Sourcewindow not active  tomsmart1
+      JMP Exit_main                   ;Jump to real exit, this fix the Exit bug if the Sourcewindow not active  tomsmart1
+  exit_quit:
 
- exit_quit:
   JSR update_statusarea
 RTS
 
@@ -5619,59 +5702,25 @@ RTS
 .key_cursordown:
   !regs2stack
   !basic
-  mqualifier.w = Peek.w(?message_qualifier)
+  mqualifier.w = Peek.w(?message_qualifier) AND (NOT #IEQUALIFIER_REPEAT) ; remove "repeat" flag
   mqualistor.w = Peek.w(?comWord_QualifierStore)
-
-  log_Print{"cursordown - " + Hex$(mqualifier)+".."+Hex$(mqualistor)}
+  ; convert right qualifiers to left qualifiers to make selctblock smarter
+  If (mqualifier AND #IEQUALIFIER_RSHIFT)
+    mqualifier = (mqualifier & (NOT #IEQUALIFIER_RSHIFT)) | #IEQUALIFIER_LSHIFT
+  EndIf
+  If (mqualifier AND #IEQUALIFIER_RALT)
+    mqualifier = (mqualifier & (NOT #IEQUALIFIER_RALT)) | #IEQUALIFIER_LALT
+  EndIf
 
   Select mqualifier
-    Case $0000                         ; -- CURSOR DOWN FOR FREEWHEEL ;
-      Pop Select
-      !asm
-      !stack2regs
-      RTS
-      ;partly disabled to prevent double event if FreeWheel active  tomsmart1
-      ;MOVE.l comLong_DisplayLineOffset,d0
-      ;ADD.l comLong_DisplayLine,D0
-      ;ADD.l wheelstep,d0
-      ;JMP gotoline
-
-    Case $8000                         ; -- CURSOR DOWN
+    Case #IEQUALIFIER_RELATIVEMOUSE                         ; $8000: one line down
       Pop Select
       !asm
       !stack2regs
       MOVE.b #1,doedit2
       JMP movelinedown
 
-    Case $8200                         ; -- CURSOR DOWN PRESSING
-      Pop Select
-      !asm
-      !stack2regs
-      MOVE.b #1,doedit2
-      JMP movelinedown
-
-    ;Case $8001                         ; -- LSHIFT + CURSOR DOWN
-
-    Case $8008                         ; -- CTRL + CURSOR DOWN
-      Pop Select
-      !asm
-      !stack2regs
-      JMP menu_bottom
-
-    Case $8010                         ; -- LALT + CURSOR DOWN
-      Pop Select
-      !asm
-      !stack2regs
-      JMP jump_historydown
-
-    Case $8009                         ; -- LSHIFT-CTRL + CURSOR DOWN
-      Pop Select
-      Goto selectblockdown
-    Case $800A
-      Pop Select
-      Goto selectblockdown
-
-    Default
+    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LSHIFT   ; $8001: page down
       Pop Select
       !asm
       !stack2regs
@@ -5683,6 +5732,83 @@ RTS
       MOVE.l comLong_TotalLines,D0
       SUBQ.l #1,D0
       BRA.w gotoline
+
+    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_CONTROL  ; $8008: jump to bottomline
+      Pop Select
+      !asm
+      !stack2regs
+      JMP menu_bottom
+
+    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LALT     ; $8010: move current line down
+      Pop Select
+      *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
+      *prevLine.sourceLine = *currentLine\previousLine
+      *nextLine.sourceLine = *currentLine\nextLine
+      tmpCurrentLine.l = Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
+      tmpTotalLines.l = Peek.l(?comLong_TotalLines)
+      If tmpCurrentLine < tmpTotalLines AND *nextLine <> 0 ; if no nextline, we cannot move up
+        If cutLine{*currentLine}
+          temp_FirstSourceLine.l = ?comPtr_FirstSourceLine
+          appendLine{*nextLine, *currentLine, temp_FirstSourceLine}
+          ;Poke.l ?comPtr_CurrentSourceLine,*nextLine
+          Poke.w ?comWord_SourceChanged,$FFFF
+
+          Pop If : Pop If
+          ; check if text is scrolled
+          tmpDisplayLine.l = Peek.l(?comLong_DisplayLine)
+          tmpDisplayLineOffset.l = Peek.l(?comLong_DisplayLineOffset)
+          tmpViewableLines.l = Peek.l(?viewablelines)
+          If tmpDisplayLineOffset + tmpViewableLines > tmpTotalLines
+            Pop If
+            !asm
+            !stack2regs
+            JSR increase_DisplayLine
+            JMP _redraw
+          Else
+            Pop If
+            If tmpViewableLines > (tmpDisplayLine + 1 + Peek.l(?comLong_BoundLines))
+              Pop If
+              !asm
+              !stack2regs
+              JSR increase_DisplayLine
+              JMP _redraw
+            End If
+            !asm
+            !stack2regs
+            ADDQ.l #1,comLong_DisplayLineOffset
+            JSR source_fullscroll_down
+            JSR JL_0_5B60
+            JMP _redraw
+          EndIf
+        Else
+          log_Print{"*** cut not successfull ***"}
+        EndIf
+      Else
+        log_Print{"no alt-cursor down available."}
+      EndIf
+      !asm
+      !stack2regs
+      ;      JMP jump_historydown      now mapped to cursr right + alt
+      RTS
+
+    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LSHIFT + #IEQUALIFIER_CONTROL  ; $8009: select block downwarts
+      Pop Select
+      Goto selectblockdown
+
+    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LSHIFT + #IEQUALIFIER_LALT     ; $800A: select block downwarts
+      Pop Select
+      Goto selectblockdown
+
+    Case $0000                         ; -- CURSOR DOWN FOR FREEWHEEL
+      Pop Select
+      !asm
+      !stack2regs
+      RTS
+      ;partly disabled to prevent double event if FreeWheel active
+      ;MOVE.l comLong_DisplayLineOffset,d0
+      ;ADD.l comLong_DisplayLine,D0
+      ;ADD.l wheelstep,d0
+      ;JMP gotoline
 
   End Select
 
@@ -5771,28 +5897,115 @@ JL_0_252E:
   MOVE.l comLong_DisplayLineOffset,D0
   ADD.l viewablelines,D0
   CMP.l comLong_TotalLines,D0
-  BCC.w JUMP_JL_0_640C
-  MOVE.l comLong_DisplayLine,D0
-  ADDQ.l #1,D0
-  ADD.l comLong_BoundLines,D0
-  CMP.l viewablelines,D0
-  BCS.w JUMP_JL_0_640C
-  ADDQ.l #1,comLong_DisplayLineOffset
-  JSR source_fullscroll_down
+  BCC.w JUMP_increase_DisplayLine
+    MOVE.l comLong_DisplayLine,D0
+    ADDQ.l #1,D0
+    ADD.l comLong_BoundLines,D0
+    CMP.l viewablelines,D0
+    BCS.w JUMP_increase_DisplayLine
+      ADDQ.l #1,comLong_DisplayLineOffset
+      JSR source_fullscroll_down
 JMP JL_0_5B60
 
 
-JUMP_JL_0_640C:
-JMP JL_0_640C
+JUMP_increase_DisplayLine:
+JMP increase_DisplayLine
 
 
 ;AJL_0_2566:                          ;cursor_up
 .key_cursorup:
   !regs2stack
   !basic
-  mqualifier.w = Peek.w(?message_qualifier)
+  mqualifier.w = Peek.w(?message_qualifier) AND NOT $200; remove "pressing" flag
   mqualistor.w = Peek.w(?comWord_QualifierStore)
+  ; convert right qualifiers to left qualifiers to make selctblock smarter
+  If (mqualifier AND #IEQUALIFIER_RSHIFT)
+    mqualifier = (mqualifier & (NOT #IEQUALIFIER_RSHIFT)) | #IEQUALIFIER_LSHIFT
+  EndIf
+  If (mqualifier AND #IEQUALIFIER_RALT)
+    mqualifier = (mqualifier & (NOT #IEQUALIFIER_RALT)) | #IEQUALIFIER_LALT
+  EndIf
+
   Select mqualifier
+    Case #IEQUALIFIER_RELATIVEMOUSE   ; $8000 (just the key)
+      Pop Select
+      !asm
+      !stack2regs
+      MOVE.b #1,doedit2
+      JMP movelineup
+
+    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LSHIFT   ; $8001
+      Pop Select
+      !asm
+      !stack2regs
+      MOVE.l comLong_DisplayLineOffset,D0
+      ADD.l comLong_DisplayLine,D0
+      CMP.l viewablelines,D0
+      BCC.w JL_0_2588
+        MOVEQ.l #$00,D0
+        BRA.w gotoline
+      JL_0_2588:
+      SUB.l viewablelines,D0
+      BRA.w gotoline
+
+    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_CONTROL  ; $8008
+      Pop Select
+      !asm
+      !stack2regs
+      JMP menu_top
+
+    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LALT     ; $8010
+      Pop Select
+      *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
+      *prevLine.sourceLine = *currentLine\previousLine
+      *nextLine.sourceLine = *currentLine\nextLine
+      temp_currentline.l = Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
+      ;log_Print{Str$(temp_currentline) + " " + Str$(*prevLine)}
+      ;!log_memhex{*prevLine,32}
+      If temp_currentline > 0 AND *prevLine <> 0 ; if no previousline, we cannot move up
+        If cutLine{*currentLine}
+          temp_FirstSourceLine.l = ?comPtr_FirstSourceLine
+          appendLine{*prevLine\previousLine, *currentLine, temp_FirstSourceLine}
+          ;Poke.l ?comPtr_CurrentSourceLine,*nextLine
+          Poke.w ?comWord_SourceChanged,$FFFF
+
+          Pop If : Pop If
+          ; check if text is scrolled
+          If Peek.l(?comLong_DisplayLineOffset) = 0 OR (Peek.l(?comLong_DisplayLine) > Peek.l(?comLong_BoundLines))
+            Pop If
+            !asm
+            !stack2regs
+            JSR decrease_DisplayLine
+            JMP _redraw
+          Else
+            Poke.l ?comLong_DisplayLineOffset, Peek.l(?comLong_DisplayLineOffset)-1
+            Pop If
+            !asm
+            !stack2regs
+            JSR source_fullscroll_up
+            JSR JL_0_5B24
+            JMP _redraw
+          EndIf
+        Else
+          log_Print{"*** cut not successfull ***"}
+        EndIf
+      Else
+        log_Print{"no alt-cursor up available."}
+      EndIf
+      !asm
+      !stack2regs
+      ;      JMP jump_historyup       now mapped to cursr left + alt
+      RTS
+
+    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LSHIFT + #IEQUALIFIER_CONTROL ; $8009
+      Pop Select
+      Goto selectblockup
+
+    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LSHIFT + #IEQUALIFIER_LALT    ; $800A: select block upwarts
+      Pop Select
+      Goto selectblockup
+
+
     Case $0000                         ; cursor_up for freewheel
       Pop Select
       !asm
@@ -5803,57 +6016,6 @@ JMP JL_0_640C
       ;ADD.l comLong_DisplayLine,D0
       ;SUB.l wheelstep,d0
       ;JMP gotoline
-
-    Case $8000                         ; -- just the key
-      Pop Select
-      !asm
-      !stack2regs
-      MOVE.b #1,doedit2
-      JMP movelineup
-
-    Case $8200                         ; -- pressing the key
-      Pop Select
-      !asm
-      !stack2regs
-      MOVE.b #1,doedit2
-      JMP movelineup
-
-    ;Case $8001                         ; -- LSHIFT
-
-    Case $8008                         ; -- CTRL
-      Pop Select
-      !asm
-      !stack2regs
-      JMP menu_top
-
-    Case $8010                         ; -- LALT
-      Pop Select
-      !asm
-      !stack2regs
-      JMP jump_historyup
-
-    Case $8009                         ; -- LSHIFT-CTRL
-      Pop Select
-      Goto selectblockup
-
-    Case $800A                         ; -- RSHIFT-CTRL
-      Pop Select
-      Goto selectblockup
-
-    Default
-      Pop Select
-      !asm
-      !stack2regs
-      MOVE.l comLong_DisplayLineOffset,D0
-      ADD.l comLong_DisplayLine,D0
-      CMP.l viewablelines,D0
-       BCC.w JL_0_2588
-      MOVEQ.l #$00,D0
-      BRA.w gotoline
-
-     JL_0_2588:
-      SUB.l viewablelines,D0
-      BRA.w gotoline
 
   End Select
 
@@ -5878,71 +6040,72 @@ BRA.w movelineup
   ADD.w comWord_Column,D0
 JMP set_blockend
 
+
 .movelineup:
-  BSR checkedit2
- CNIF #hardfold = 1
-   MOVE.l a2,-(a7)
-   MOVE.l a4,a2
-   CMP.l #";@@0",9(a2)
-   BNE 'n1
-   BSR doreverse
-   TST.l foldnum
-   BEQ 'n1
+  BSR checkedit2                                  ; check if marked Block shall be deleted
 
-  'w1
-   CMP.l #";@@1",9(a2)
-   BNE 'n2
-   MOVE.l (a2),a4
-  BRA 'n1
-
-  'n2
-  'n22
+CNIF #hardfold = 1
+  MOVE.l a2,-(a7)
+  MOVE.l a4,a2
+  CMP.l #";@@0",9(a2)
+  BNE 'n1
+    BSR doreverse
+    TST.l foldnum
+      BEQ 'n1
+ 'w1
+  CMP.l #";@@1",9(a2)
+  BNE 'n2
+    MOVE.l (a2),a4
+    BRA 'n1
+ 'n2
+ 'n22
     MOVE.l 4(a2),d0
     MOVE.l d0,a2
-    BNE 'w1
+  BNE 'w1
+ 'n1
+    MOVE.l (a7)+,a2
 
-  'n1
-   MOVE.l (a7)+,a2
- CELSE
-   MOVE.l a2,-(a7)
-   MOVE.l comPtr_CurrentSourceLine,a4
-   MOVE.l a4,a2
-   ;MOVE.l comPtr_CurrentSourceLine,a2
-   CMP.l #";@@0",9(a2)
-   BNE 'l1
+CELSE
+  MOVE.l a2,-(a7)                                ; push A2 to Stack
+  MOVE.l comPtr_CurrentSourceLine,a4             ; currentLine to A4
+  MOVE.l a4,a2                                   ; currentLine to A2
 
-  'l2
-   JSR doreverse
-   TST.l foldnum
-   BEQ 'l1
-   MOVE.l 4(a2),d0
-   BEQ 'l1
-   MOVE.l d0,a2
-   SUBQ.l #1,comLong_DisplayLineOffset
-   CMP.l #";@@1",9(a2)
-   BNE 'l2
-   MOVE.l a2,comPtr_CurrentSourceLine
-   JSR _redraw
-   MOVE.l (a7)+,a2
-  RTS
-
-  'l1
-   MOVE.l (a7)+,a0
+  CMP.l #";@@0",9(a2)
+  BNE 'l1
+   'l2
+    JSR doreverse
+    TST.l foldnum
+    BEQ 'l1
+      MOVE.l 4(a2),d0
+      BEQ 'l1
+        MOVE.l d0,a2
+        SUBQ.l #1,comLong_DisplayLineOffset
+        CMP.l #";@@1",9(a2)
+        BNE 'l2
+          MOVE.l a2,comPtr_CurrentSourceLine
+          JSR _redraw
+          MOVE.l (a7)+,a2
+          RTS
+ 'l1
+  MOVE.l (a7)+,a0                               ; get A2 back from Stack but in A0
  CEND
-  MOVE.l $4(A4),D0
-  BEQ.b setpointer_to_normal
-  MOVE.l D0,comPtr_CurrentSourceLine
-  MOVE.l comLong_DisplayLineOffset,D0
-  BEQ.w JUMP_JL_0_642A
-  MOVE.l comLong_DisplayLine,D0
-  CMP.l comLong_BoundLines,D0
-  BHI.w JUMP_JL_0_642A
-  SUBQ.l #1,comLong_DisplayLineOffset
-  JSR source_fullscroll_up
-JMP JL_0_5B24
 
-JUMP_JL_0_642A:
-JMP JL_0_642A
+  MOVE.l $4(A4),D0                              ; get currentLine.PrevLine in D0
+  BEQ.b setpointer_to_normal                    ; if null, exit  here
+
+  MOVE.l D0,comPtr_CurrentSourceLine            ; set prevline as new currentline
+  MOVE.l comLong_DisplayLineOffset,D0           ; if text is not scrolled just decrease displayLine
+  BEQ.w JUMP_decrease_DisplayLine
+
+  MOVE.l comLong_DisplayLine,D0                 ; if displayLine>BoundLines just decrease displayLine
+  CMP.l comLong_BoundLines,D0
+  BHI.w JUMP_decrease_DisplayLine
+    SUBQ.l #1,comLong_DisplayLineOffset         ; otherwise scroll whole text one line up
+    JSR source_fullscroll_up
+    JMP JL_0_5B24
+
+JUMP_decrease_DisplayLine:
+JMP decrease_DisplayLine
 
 
 .menu_markindent:
@@ -6021,35 +6184,32 @@ RTS
 .checkedit2                          ;neweditmode
   CLR.b nodelete
   TST.b new_editmode
-   BEQ 'l1
-  TST.b doedit2
-   BEQ 'l1
-  MOVE.b doedit2,d0
-  CLR.b doedit2
-  CMP.l  #$ffffffff,comLong_BlockEndY
-   BEQ 'l1
-  !regs2stack
-  CMP.b #2,d0
-   BNE 'l2
-  JSR arexxfunc_cut
-  MOVE.l comLong_BlockStartY,d0
-  JSR gotoline
-  MOVE.w comLong_BlockStartX,comWord_Column
-  TST.b nodisplaybeep
-   BNE 'l2
-  MOVEA.l ptr_pedscreen,A0
-  MOVEA.l _intuibase,A6
-  JSR _DisplayBeep(A6)
-
- 'l2
-  MOVE.l #$ffffffff,comLong_BlockEndY
-  JSR cursor_off
-  MOVE.b #1,nodelete
-
+  BEQ 'l1
+    TST.b doedit2
+    BEQ 'l1
+      MOVE.b doedit2,d0
+      CLR.b doedit2
+      CMP.l  #$ffffffff,comLong_BlockEndY
+      BEQ 'l1
+        !regs2stack
+        CMP.b #2,d0                                       ; if doedit2, then cut the marked block
+        BNE 'l2
+          JSR arexxfunc_cut
+          MOVE.l comLong_BlockStartY,d0
+          JSR gotoline
+          MOVE.w comLong_BlockStartX,comWord_Column
+          TST.b nodisplaybeep
+          BNE 'l2
+            MOVEA.l ptr_pedscreen,A0
+            MOVEA.l _intuibase,A6
+            JSR _DisplayBeep(A6)
+       'l2
+        MOVE.l #$ffffffff,comLong_BlockEndY
+        JSR cursor_off
+        MOVE.b #1,nodelete
  'l5
   JSR _redraw
   !stack2regs
-
  'l1
 RTS
 
@@ -6058,26 +6218,26 @@ RTS
   JSR allocnewline
   BEQ.w JUMP_memAlert_CloseSource
 
- JL_0_265E:
+  insertline:
   MOVE.w #$FFFF,comWord_SourceChanged
   MOVE.l comLong_DisplayLineOffset,D0
   ADD.l comLong_DisplayLine,D0
-  JSR JL_0_57B6
+  JSR JL_0_57B6                               ; increase blockendY if paste within a block
   ADDQ.l #1,comLong_TotalLines
-  MOVE.l $4(A4),D1
-  BEQ.w JL_0_268C
-  MOVEA.l D1,A1
-  MOVE.l A0,(A1)
-  MOVE.l A1,$4(A0)
-BRA.w JL_0_2692
 
-JL_0_268C:
-  MOVE.l A0,comPtr_FirstSourceLine
-
- JL_0_2692:
+  MOVE.l $4(A4),D1                            ; ptr to previousline to D1
+  BEQ.w JL_0_268C                             ; if null it must be the firstline
+    MOVEA.l D1,A1                             ; ... otherwise insert the new line (A0)
+    MOVE.l A0,(A1)
+    MOVE.l A1,$4(A0)
+    BRA.w JL_0_2692
+  JL_0_268C:
+    MOVE.l A0,comPtr_FirstSourceLine
+  JL_0_2692:
   MOVE.l A4,(A0)
   MOVE.l A0,$4(A4)
   MOVE.l A0,comPtr_CurrentSourceLine
+
   MOVE.l comLong_DisplayLine,D7
   JSR source_partscroll_up
 JMP JL_0_57E0
@@ -6086,76 +6246,83 @@ JUMP_memAlert_CloseSource:                                 ; move it out of the 
 JMP memAlert_CloseSource
 
 
+
 .menu_undeleteline:
   MOVEQ.l #$00,D5
-  MOVE.w comWord__AL_0_8A6A,D5
-  MOVEA.l AL_0_5BB2,A1
+  MOVE.w comWord_UndeleteStoreStrLen,D5
+  MOVEA.l lineundeletestore,A1
   TST.b (A1)
   BEQ.w JUMP_JL_0_76E8
-  MOVE.l comPtr_Temp_TokenString2,-(A7)
-  MOVE.l A1,comPtr_Temp_TokenString2
-  JSR JL_0_4F1A
-  MOVE.l (A7)+,comPtr_Temp_TokenString2
-  BSR.b JL_0_265E
-  JSR print_current_sourceline
-  MOVEQ.l #$00,D0
-  MOVE.l comLong_DisplayLineOffset,D0
-  ADD.l comLong_DisplayLine,D0
-  JSR JL_0_57B6
-RTS
+    MOVE.l comPtr_Temp_TokenString2,-(A7)
+    MOVE.l A1,comPtr_Temp_TokenString2
+    JSR newSourcelineFromTempString             ; returns ptr in A0
+    MOVE.l (A7)+,comPtr_Temp_TokenString2
 
-JUMP_JL_0_76E8:
-JMP JL_0_76E8
+    BSR.b insertline                            ; insert the newline into source
+
+    JSR print_current_sourceline
+
+    MOVEQ.l #$00,D0
+    MOVE.l comLong_DisplayLineOffset,D0
+    ADD.l comLong_DisplayLine,D0
+    JSR JL_0_57B6                               ; increase BlockEndY if inserted into block
+    RTS
+
+  JUMP_JL_0_76E8:
+  JMP JL_0_76E8                                 ; nothing as RTS
 
 
 .menu_deleteline:
   MOVE.w #$FFFF,comWord_SourceChanged
-  CMPI.l #$ffffFFFF,comLong_BlockEndY
-   BEQ.w JL_0_2738
-  MOVE.l comLong_DisplayLineOffset,D0
+
+  CMPI.l #$ffffFFFF,comLong_BlockEndY           ; update Blockmark if available
+  BEQ.w JL_0_2738
+
+  MOVE.l comLong_DisplayLineOffset,D0           ;
   ADD.l comLong_DisplayLine,D0
   CMP.l comLong_BlockStartY,D0
-   BCS.w JL_0_272C
-  CMP.l comLong_BlockEndY,D0
-   BHI.w JL_0_2738
-  SUBQ.l #1,comLong_BlockEndY
-  MOVE.l comLong_BlockEndY,D0
-  CMP.l comLong_BlockStartY,D0
-   BCC.w JL_0_2738
-  CLR.l comLong_BlockEndY
+  BCS.w JL_0_272C
+    CMP.l comLong_BlockEndY,D0                    ;
+    BHI.w JL_0_2738
+      SUBQ.l #1,comLong_BlockEndY                   ;
+      MOVE.l comLong_BlockEndY,D0
+      CMP.l comLong_BlockStartY,D0
+      BCC.w JL_0_2738
+        CLR.l comLong_BlockEndY                       ;
+  JL_0_272C:
+    SUBQ.l #1,comLong_BlockStartY                 ;
+    SUBQ.l #1,comLong_BlockEndY                   ;
+  JL_0_2738:
+                                                ; ----- delete current line in A4
+  MOVE.l (A4),D7                                ; pointer to currentLine.nextline to D7
+  BEQ.w JL_0_2776                               ; if no nextline jump down
 
- JL_0_272C:
-  SUBQ.l #1,comLong_BlockStartY
-  SUBQ.l #1,comLong_BlockEndY
+  SUBQ.l #1,comLong_TotalLines                  ; reduce TotalLines
+  MOVE.l $4(A4),D6                              ; pointer to currentLine.prevLine to D6
+  JSR StoreCurrentSourceLine                    ; store current source line
 
- JL_0_2738:                         ;delete line
-  MOVE.l (A4),D7
-   BEQ.w JL_0_2776
-  SUBQ.l #1,comLong_TotalLines
-  MOVE.l $4(A4),D6
-   JSR JL_0_6BD2
-  MOVEA.l D7,A1
-  MOVE.l D6,$4(A1)
-   BNE.w JL_0_2760
-  MOVE.l A1,comPtr_FirstSourceLine
-BRA.w JL_0_2764
+  MOVEA.l D7,A1                                 ; Pointer to currentLine.nextline To A1
+  MOVE.l D6,$4(A1)                              ; pointer to currentLine.prevLine to nextLine.prevLine
+  BNE.w JL_0_2760                               ; if no prevLine
+    MOVE.l A1,comPtr_FirstSourceLine            ;   set nextline as new FirstSourceLine
+    BRA.w JL_0_2764                             ; else
+  JL_0_2760:
+    MOVEA.l D6,A0                               ;   pointer to currentLine.prevLine to A0
+    MOVE.l D7,(A0)                              ;   set currentLine.nextLine to prevLine.nextLine
+  JL_0_2764:
 
- JL_0_2760:
-  MOVEA.l D6,A0
-  MOVE.l D7,(A0)
+  MOVE.l D7,comPtr_CurrentSourceLine            ; set currentLine.nextLine as new CurrentSourceLine
 
- JL_0_2764:
-  MOVE.l D7,comPtr_CurrentSourceLine
-  MOVE.l comLong_DisplayLine,D7
+  MOVE.l comLong_DisplayLine,D7                 ; scroll down
   JSR source_partscroll_down
 JMP JL_0_5B60
 
 
 JL_0_2776:
-  MOVE.l $4(A4),D6
-  BEQ.w JL_0_27C2
+  MOVE.l $4(A4),D6                              ; pointer to currentLine.prevLine to D6
+  BEQ.w JL_0_27C2                               ; if not available jump down
   SUBQ.l #1,comLong_TotalLines
-  JSR JL_0_6BD2
+  JSR StoreCurrentSourceLine
   MOVEA.l D6,A0
   MOVE.l A0,comPtr_CurrentSourceLine
   MOVE.l A0,comPtr_LastSourceLine
@@ -6172,12 +6339,13 @@ JMP JL_0_5B24
 JL_0_27B6:
   MOVE.l comLong_DisplayLine,D7
   JSR source_partscroll_down
-JMP JL_0_642A
+JMP decrease_DisplayLine
 
 
 JL_0_27C2:
-   JSR JL_0_6BD2
+   JSR StoreCurrentSourceLine                   ; store currentLine
 JMP JL_0_5B00
+
 
 
 .menu_joinline:                      ;join line
@@ -6428,7 +6596,7 @@ BRA.b JL_0_29DA
   ADDI.w #$9,D0
   MOVEQ.l #$01,D1
   MOVEA.l _execbase,A6
-  JSR JL_0_492E
+  JSR AllocPoolMem
   MOVEA.l D0,A0
   MOVE.b D5,$8(A0)
   LEA $9(A0),A0
@@ -6672,16 +6840,16 @@ BRA.w JL_0_2C2E
 
 gotoline:
   CLR.w -(A7)
+
   TST.l d0
   BGE JL_0_2C2E
-  MOVEQ #0,d0
+    MOVEQ #0,d0
 
- JL_0_2C2E:
+  JL_0_2C2E:
   CMP.l comLong_TotalLines,d0
   BLE 'l10
-  MOVE.l comLong_TotalLines,d0
-  SUBQ.l #1,d0
-
+    MOVE.l comLong_TotalLines,d0
+    SUBQ.l #1,d0
  'l10
   MOVE.l comLong_DisplayLineOffset,D1
   MOVE.l D1,-(A7)
@@ -7132,7 +7300,13 @@ BRA JL223
 .menu_opennew:                       ;open new func
   MOVE.w #1,loadmode
 
- JL223:
+  JL223:
+  !regs2stack
+  !basic
+  log_Print{"menu_opennew called"}
+  !asm
+  !stack2regs
+
   JSR storeline
   MOVE.l d0,-(a7)
   MOVE.l comFunc_ReadXtraFile,d0
@@ -7140,7 +7314,6 @@ BRA JL223
     MOVE.l d0,a0
     CLR.l d0
     JSR (a0)
-
  'l10
   MOVE.l (a7)+,d0
 
@@ -7150,9 +7323,11 @@ BRA JL223
   MOVE.l ##MEMF_CLEAR,D1
   !newalloc;JSR _AllocVec(A6)
   TST.l D0
-   BEQ.w JUMP_display_memoryalert
+  BEQ.w JUMP_display_memoryalert
+
   TST.l AL_0_84B2
-   BNE.w JL_0_2E70
+  BNE.w JL_0_2E70
+
   MOVEM.l D0/A6,-(A7)
   JSR clear_sourcebuffer;JL_0_6B7C
   CLR.w comWord_SourceChanged
@@ -8168,7 +8343,7 @@ JL_0_3748:
     ADDQ.w #1,D4
   BRA.b JL_0_3790
 
- JL_0_37A2:
+  JL_0_37A2:
   MOVE.l A2,-(A7)
   MOVE.l comPtr_Temp_TokenString2,tempstore
   JSR JL_0_4F5A
@@ -8177,7 +8352,7 @@ JL_0_3748:
   JSR JL_0_5596
   CLR.b skipit
 
- JL_0_37B4:
+  JL_0_37B4:
   MOVEA.l comPtr_Temp_TokenString2,A0
 
  'n10
@@ -8223,15 +8398,14 @@ JL_0_3748:
   JSR JL_0_4F5A
   TST.w d0
   BMI.w JL_0_37CA
-  ;BEQ.w JL_0_37F6
-  JSR JL_0_4F1A
-  JSR JL_0_4E08
-  BRA.b JL_0_37B4
-
-
+    JSR newSourcelineFromTempString
+    JSR JL_0_4E08
+    BRA.b JL_0_37B4
   JL_0_37CA:
+
   JSR allocnewline
   BEQ.w memAlert_CloseSource
+
   JSR JL_0_4E08
   MOVEA.l comPtr_Temp_TokenString1,A3
   BRA.w JL_0_37F6
@@ -8241,7 +8415,7 @@ JL_0_3748:
   BRA.w JL_0_37F6
 
   JL_0_37E6:
-  JSR JL_0_4F1A
+  JSR newSourcelineFromTempString
   JSR JL_0_4E08
   MOVEA.l comPtr_Temp_TokenString1,A3
   JSR JL_0_4E36
@@ -8339,7 +8513,7 @@ JL_0_38D8:
   MOVEQ.l #$01,D1
   MOVEA.l _execbase,A6
   ADDI.w #$9,D0
-  JSR JL_0_492E
+  JSR AllocPoolMem
   MOVEA.l D0,A0
   LEA $9(A0),A0
   MOVEA.l comPtr_Temp_TokenString1,A1
@@ -8371,7 +8545,7 @@ JL_0_3928:
   ADDI.w #$9,D0
   MOVEQ.l #$01,D1
   MOVEA.l _execbase,A6
-   JSR JL_0_492E
+   JSR AllocPoolMem
   MOVEA.l D0,A0
   MOVEM.l A0/A5,-(A7)
   LEA $9(A0),A0
@@ -8560,11 +8734,8 @@ RTS
 
   JL_0_3B1E:
   JSR check_events
-  !regs2stack                        ; incldue a wait, because on emulatiom, mouse scrolls VERY fast
-  !basic
-  Delay_ 1
-  !asm
-  !stack2regs
+;  JSR delay                          ; include a wait, because on emulatiom, mouse scrolls VERY fast
+
   CMP.w #-$4,D7
   BEQ.w JL_0_3DD0
   JSR get_mousepos                   ;mark block loop
@@ -9023,71 +9194,7 @@ JL_0_3EC6:
 _redrawb
   JMP _redraw
 
-
 ColumnsOffsetStore:    Ds.w 1
-
-;Dc.b "09"
-;Dc.l comLong_DisplayLine
-;  JL_0_3EEC:
-;  MOVE.w D3,comLong_DisplayLine+2
-;  MOVEA.l comPtr_CurrentSourceLine,A0
-;
-;  JL_0_3EF6:
-;    MOVEA.l A0,A4
-;    CMP.l D3,D0
-;    BEQ.w JL_0_3F0E
-;    SUBQ.l #1,D0
-;    MOVEA.l $4(A4),A0
-;    CMPA.l #$0,A0
-;  BNE.b JL_0_3EF6
-;
-;  ADDQ.w #1,D0
-;
-;  JL_0_3F0E:
-;  MOVE.w D0,comLong_DisplayLine+2
-;  MOVE.l A4,comPtr_CurrentSourceLine
-;  MOVEA.l A4,A2
-;  LEA $9(A2),A2
-;  JSR JL_0_775E
-;RTS
-;
-;
-;JL_0_3F26:
-;  MOVE.l comLong_DisplayLine,D0
-;  MOVE.w D3,comLong_DisplayLine+2
-;  MOVEA.l comPtr_CurrentSourceLine,A0
-;
-;  JL_0_3F36:
-;    MOVEA.l A0,A4
-;    CMP.l D3,D0
-;    BEQ.w JL_0_3F4C
-;    ADDQ.l #1,D0
-;    MOVEA.l (A4),A0
-;    CMPA.l #$0,A0
-;  BNE.b JL_0_3F36
-;
-;  SUBQ.w #1,D0
-;
-;  JL_0_3F4C:
-;  MOVE.w D0,comLong_DisplayLine+2
-;  MOVE.l A4,comPtr_CurrentSourceLine
-;  MOVEA.l A4,A2
-;  LEA $9(A2),A2
-;  JSR JL_0_775E
-;RTS
-
-;deactivated because it is not called form the compiler anymore  tomsmart1 2013 12 28
-;.activate_gad_in_compilerwin:        ;newtype function
-;  MOVE.l A0,-(A7)
-;  MOVEQ.l #$08,D1
-;  MOVEA.l _dosbase,A6
-;  JSR _Delay(A6)
-;  MOVEA.l (A7)+,A0
-;  MOVEA.l comPtr_CompilerWindow,A1
-;  SUBA.l A2,A2
-;  MOVEA.l _intuibase,A6
-;  JSR _ActivateGadget(A6)
-;RTS
 
 
 .menu_gotoline:                      ;goto line
@@ -9846,7 +9953,7 @@ AL_0_4734:  Ds.l 1
 RTS
 
 
-JL_0_492E:
+AllocPoolMem:
   ;MOVE.w #$FFFF,comWord__AL_0_86C0
   !newalloc  ;AllocPooled(a0:poolHeader, d0:memSize
   TST.l D0
@@ -10379,33 +10486,31 @@ readcache_cachelen:   Dc.l 0
 readcache_chunklen:   Dc.l 0
 readcache_dotokenize: Dc.l 0
 
-JL_0_4F1A:
-  MOVE.l D5,D0
-  ADDI.w #$9,D0
-  MOVEQ.l #$01,D1
-  MOVEA.l _execbase,A6
-  JSR JL_0_492E
-  JL_0_4F2A:
-  JSR JL_0_FBDE
-  NOP
-  MOVEA.l comPtr_Temp_TokenString2,A1
-  LEA $9(A0),A0
+newSourcelineFromTempString:
+  MOVE.l D5,D0                            ; strlen form D5 to D0
+  ADDI.w #$9,D0                           ; add 9
+  JSR AllocPoolMem                        ; return memaddress in D0/A0
 
+  JSR init_sourceline                     ; init sourcelinestruct at New memadress
+                                          ; clr pointer to previous/next line, set stringlength byte
+
+  MOVEA.l comPtr_Temp_TokenString2,A1     ; copy stored source string to new sourceline
+  LEA $9(A0),A0
   JL_0_4F3A:
-  MOVE.b (A1)+,(A0)+
-   BNE.b JL_0_4F3A
-  MOVEA.l D0,A0
+    MOVE.b (A1)+,(A0)+
+  BNE.b JL_0_4F3A
+
+  MOVEA.l D0,A0                           ; memaddress again in A0
   MOVE.b comByte_LabelIdentifier,D0
   MOVE.l A1,-(A7)
   LEA $9(A0),A1
-
   JL_0_4F4A:
-  CMPI.b #$20,(A1)+
-   BEQ.b JL_0_4F4A
-  CMP.b -(A1),D0
+    CMPI.b #$20,(A1)+                     ; skip spaces
+  BEQ.b JL_0_4F4A
+
+  CMP.b -(A1),D0                          ; Label at the beginning?
   MOVEA.l (A7)+,A1
-   ;BEQ.w JL_0_46CC
-   BRA.w JL_0_46CC
+  BRA.w JL_0_46CC                         ; set labelchangedflag an return
 RTS
 
 JL_0_4F5A:
@@ -10417,54 +10522,57 @@ JL_0_4F5A:
 
   JL_0_4F68:
   TST.b D0
-   BPL.w JL_0_4F82
-  MOVE.b D0,(A0)+
-  MOVE.l A0,-(A7)
-   JSR readbyte
-  MOVEA.l (A7)+,A0
-   BMI.w JL_0_4FD2
-  MOVE.b D0,(A0)+
-  BRA.w JL_0_4FB6
-
+  BPL.w JL_0_4F82
+    MOVE.b D0,(A0)+
+    MOVE.l A0,-(A7)
+    JSR readbyte
+    MOVEA.l (A7)+,A0
+    BMI.w JL_0_4FD2
+    MOVE.b D0,(A0)+
+    BRA.w JL_0_4FB6
   JL_0_4F82:
+
   CMP.b #$A,D0
-   BNE.w JL_0_4F8E                   ;end line clipboard
+  BNE.w JL_0_4F8E                   ;end line clipboard
+
   TST.b (a5)
   BNE 'c2
-  SUBQ.l #$1,d6
-  ADDQ #1,a5
+    SUBQ.l #$1,d6
+    ADDQ #1,a5
  'c2
-    CMP.l #"STYL",(a5)
-    BEQ 's1
+  CMP.l #"STYL",(a5)
+  BEQ 's1
     CMP.l #"COLS",(a5)
     BNE 'c1
-    MOVE.l 4(a5),d0
-    ADDQ.l #8,a5
-    SUBQ.l #8,d6
-    ADD.l d0,a5
-    SUB.l d0,d6
-  BRA 'c2
+      MOVE.l 4(a5),d0
+      ADDQ.l #8,a5
+      SUBQ.l #8,d6
+      ADD.l d0,a5
+      SUB.l d0,d6
+    BRA 'c2
  's1
-  SUBQ.l #4,d6
-  CMP.l #0,4(a5)
-  BNE 'c1
-  SUBQ.l #4,d6
-  CMP.l #"CHRS",8(a5)
-  BNE 'c1
-  SUBQ.l #4,d6
-  CMP.b #0,12(a5)
-  BNE 'c1
-  SUBQ.l #4,d6
-  ADD.w # 16,a5
+    SUBQ.l #4,d6
+    CMP.l #0,4(a5)
+    BNE 'c1
+      SUBQ.l #4,d6
+      CMP.l #"CHRS",8(a5)
+      BNE 'c1
+        SUBQ.l #4,d6
+        CMP.b #0,12(a5)
+        BNE 'c1
+        SUBQ.l #4,d6
+        ADD.w # 16,a5
  'c1
   MOVEQ.l #$00,D0
   MOVEQ.l #-$01,D4
 
   JL_0_4F8E:
   MOVE.b D0,(A0)+
-   BEQ.w JL_0_5002
+  BEQ.w JL_0_5002
+
   CMP.b #$9,D0
-   BNE.w JL_0_4FB6
+  BNE.w JL_0_4FB6
+
   SUBQ.w #1,A0
   MOVE.l A0,D0
   SUB.l comPtr_Temp_TokenString2,D0
@@ -11316,7 +11424,7 @@ JL_0_55A2:
   ADDI.w #$9,D0
   MOVEQ.l #$01,D1
   MOVEA.l _execbase,A6
-  JSR JL_0_492E
+  JSR AllocPoolMem
   MOVEA.l D0,A0
   MOVEA.l comPtr_Temp_TokenString1,A1
   MOVE.b comByte_LabelIdentifier,D0
@@ -11623,9 +11731,9 @@ RTS
     RTS
   JL_0_58B6:
 
-  CNIF #hardfold = 1
+CNIF #hardfold = 1
   JSR getfoldstatus
-  CEND
+CEND
 
   MOVE.l comLong_DisplayLine,D1
 
@@ -11756,9 +11864,10 @@ JL_0_58C6:
     JSR print_sourceline
     JSR update_modifiermark
     MOVE.l (A7)+,D0
+
     BEQ.w JL_0_5902
     MOVEA.l D0,A2
-    JSR JL_0_640C
+    JSR increase_DisplayLine
   DBF D7,JL_0_58E8
 
   JL_0_5902:
@@ -12011,7 +12120,7 @@ RTS
 
 JL_0_5B24:
   MOVEA.l comPtr_CurrentSourceLine,A2
-   JSR save_cursorposition
+  JSR save_cursorposition
 ;  CLR.l comLong__AL_0_868A
   CLR.w comWord_TextBufferOffset
   MOVE.l comLong_DisplayLine,D1
@@ -12023,10 +12132,10 @@ JL_0_5B24:
     MOVEA.l D0,A2
     SUBQ.w #1,D1
   BRA.b JL_0_5B3C
-
-JL_0_5B4E:                           ;Print 1 Line down
+  JL_0_5B4E:                           ;Print 1 Line down
   MOVE.w D1,comLong_DisplayLine+2
   JSR print_sourceline
+
   JL_0_5B58:
   JSR restore_cursorposition
 BRA.w JL_0_612C
@@ -12042,7 +12151,7 @@ JL_0_5B60:
       MOVE.l (A2),D0
       BEQ.w JL_0_5B88
         MOVEA.l D0,A2
-        JSR JL_0_640C
+        JSR increase_DisplayLine
   BRA.b JL_0_5B68
 
   JL_0_5B84:                         ;print 1 line up
@@ -12061,7 +12170,7 @@ AL_0_5BA2:    Ds.l 1
 AL_0_5BA6:    Ds.l 1
 AL_0_5BAA:    Ds.l 1
 expandstore:  Ds.l 1
-AL_0_5BB2:    Ds.l 1
+lineundeletestore:    Ds.l 1
 
 JL_0_5BB6:                           ;type text
   TST.w comWord_CursorInMarkedBlock
@@ -12381,16 +12490,17 @@ RTS
 .print_hightlight                    ;a0 = text,d0 = x,d2 = charslen,d3 = color
   MOVEM.l D0-D4/A0-A1/A4/A6,-(A7)
   MOVEA.l _graphicsbase,A6
+
   CMP.l textlinestart,a0
   BGE 'c1
-  MOVE.l textlinestart,d4
-  SUB.l a0,d4
-  SUB.l d4,d2
-  MOVE.l textlinestart,a0
-  MOVEQ #0,d0
-  BRA 'c2
+    MOVE.l textlinestart,d4
+    SUB.l a0,d4
+    SUB.l d4,d2
+    MOVE.l textlinestart,a0
+    MOVEQ #0,d0
+    BRA 'c2
  'c1
-  SUB.w comWord_ColumnsOffset,d0
+    SUB.w comWord_ColumnsOffset,d0
  'c2
   MOVE.l A0,-(A7)
   MOVE.l comLong_DisplayLine,D1
@@ -12418,22 +12528,20 @@ RTS
   MOVEA.l (A7)+,A0
   MOVE.l D2,D0
   BMI 'x1
-  MOVE.l d4,d3
-  ADD.l d0,d4
-  CMP.w visiblecolumns,D4
-  BLE.w 'l1
- 'l2
-  MOVE.w visiblecolumns,D0
-  SUB.l d3,d0
-  BMI 'x1
- 'l1
-  JSR _Text(A6)
-  ;
-;  MOVEA.l rp_sourcewindow,A1
-;  MOVE.l #0,D0
-;  MOVE.l #0,d1
-;  JSR _SetSoftStyle(A6)
-
+    MOVE.l d4,d3
+    ADD.l d0,d4
+    CMP.w visiblecolumns,D4
+    BLE.w 'l1
+   'l2
+    MOVE.w visiblecolumns,D0
+    SUB.l d3,d0
+    BMI 'x1
+   'l1
+    JSR _Text(A6)
+    ;MOVEA.l rp_sourcewindow,A1
+    ;MOVE.l #0,D0
+    ;MOVE.l #0,d1
+    ;JSR _SetSoftStyle(A6)
  'x1
   MOVEM.l (A7)+,D0-D4/A0-A1/A4/A6
 RTS
@@ -13568,23 +13676,24 @@ checkd7
   MOVE.l viewablelines,D6
   SUB.l D7,D6
   SUBQ.l #1,D6
-   BEQ.w fill
-  MOVE.w comWord_MaxColumns,D1
-  MOVE.w D1,D0
-  MULU viewablelines+2,D0
-  MOVEA.l textbufferaddr,A0
-  ADDA.l D0,A0
-  SUBQ.w #2,A0
-  MOVE.l A0,a1          ;destaddr
-  SUBA.w D1,A1
-  MOVE.l d6,d0
-  MULS d1,d0
-  ASR.l #1,d0
- 'loop
-    MOVE.w -(a1),-(a0)
-    SUBQ.l #1,d0
-  BNE 'loop
+  BEQ.w fill
+    MOVE.w comWord_MaxColumns,D1
+    MOVE.w D1,D0
+    MULU viewablelines+2,D0
+    MOVEA.l textbufferaddr,A0
+    ADDA.l D0,A0
+    SUBQ.w #2,A0
+    MOVE.l A0,a1          ;destaddr
+    SUBA.w D1,A1
+    MOVE.l d6,d0
+    MULS d1,d0
+    ASR.l #1,d0
+   'loop
+      MOVE.w -(a1),-(a0)
+      SUBQ.l #1,d0
+    BNE 'loop
   fill
+
   MULU comWord_MaxColumns,D7
   MOVEA.l textbufferaddr,A0
   ADDA.l D7,A0
@@ -13597,7 +13706,7 @@ checkd7
 RTS
 
 
-JL_0_640C:
+increase_DisplayLine:
   ADDQ.l #1,comLong_DisplayLine
   MOVEQ.l #$00,D0
 ;  MOVE.w comWord__AL_0_86CC,D0
@@ -13606,7 +13715,11 @@ JL_0_640C:
   ADD.w D0,comWord_TextBufferOffset
 RTS
 
-JL_0_642A:
+decrease_DisplayLine:
+  ; decrease DisplayLine
+  ;Poke.l ?comLong_DisplayLine, Peek.l(?comLong_DisplayLine)-1
+  ;Poke.w ?comWord_TextBufferOffset, Peek.w(?comWord_TextBufferOffset)-Peek.w(?comWord_MaxColumns)
+
   SUBQ.l #1,comLong_DisplayLine
   MOVEQ.l #$00,D0
 ;  MOVE.w comWord__AL_0_86CC,D0
@@ -13623,28 +13736,30 @@ JL_0_6448:
   ADD.l comLong_DisplayLineOffset,D1
 
   TST.l comLong_BlockEndY
-   BMI.w source_scroll_line_to_right
+  BMI.w source_scroll_line_to_right
+
   CMP.l comLong_BlockEndY,D1
-   BGT.w source_scroll_line_to_right
+  BGT.w source_scroll_line_to_right
+
   CMP.l comLong_BlockStartY,D1
-   BLT.w source_scroll_line_to_right
-   BNE.w JL_0_6498
-  CMP.w comLong_BlockStartX,D0
-   BGE.w JL_0_6498
-  SUBQ.w #1,comLong_BlockStartX
-
+  BLT.w source_scroll_line_to_right
+  BNE.w JL_0_6498
+    CMP.w comLong_BlockStartX,D0
+    BGE.w JL_0_6498
+      SUBQ.w #1,comLong_BlockStartX
   JL_0_6498:
-  CMPI.w #MAX_Columns-1,comLong_BlockEndX
-   BEQ.w JL_0_64CA
-  CMP.w comLong_BlockEndX,D0
-   BGT.w source_scroll_line_to_right
-  SUBQ.w #1,comLong_BlockEndX
-  MOVE.w visiblecolumns,D1
-  ADD.w comWord_ColumnsOffset,D1
-  CMP.w comLong_BlockEndX,D1
-   BGT.w source_scroll_line_to_right
 
+  CMPI.w #MAX_Columns-1,comLong_BlockEndX
+  BEQ.w JL_0_64CA
+    CMP.w comLong_BlockEndX,D0
+    BGT.w source_scroll_line_to_right
+      SUBQ.w #1,comLong_BlockEndX
+      MOVE.w visiblecolumns,D1
+      ADD.w comWord_ColumnsOffset,D1
+      CMP.w comLong_BlockEndX,D1
+      BGT.w source_scroll_line_to_right
   JL_0_64CA:
+
   MOVEM.l D0-D1/A0-A1,-(A7)
   MOVEA.l rp_sourcewindow,A1
   MOVEQ.l #$03,D0
@@ -13654,16 +13769,14 @@ JL_0_6448:
 
   source_scroll_line_to_right:
   MOVE.w D7,-(A7)
-  ;MOVEQ.l #$08,D0
   MOVEQ #0,d0
   MOVE.w fontwidth,d0
-   JSR source_scroll_line
+  JSR source_scroll_line
   MOVE.w (A7)+,D7
 RTS
 
 .source_scroll_line_to_left:
   MOVE.w D7,-(A7)
-  ;MOVEQ.l #-$08,D0
   MOVEQ #0,d0
   SUB.w fontwidth,d0
   EXT.l d0
@@ -13694,38 +13807,40 @@ RTS
   MOVEA.l _graphicsbase,A6
   JSR _ScrollRaster(A6)              ;A1:rp, D0:dx D1:dy D2:xmin D3:ymin D4:xmax D5:ymax
   JSR _WaitBlit(A6)
-  JSR delay
+  ;JSR delay
 RTS
 
-JL_0_653C:
-  TST.l comLong_BlockEndY
-   BMI.w JL_0_65A4
-  MOVEQ.l #$00,D0
-  MOVE.w comWord_Column,D0
-  MOVE.l comLong_DisplayLine,D1
-  ADD.w comWord_ColumnsOffset,D0
-  ADD.l comLong_DisplayLineOffset,D1
-  CMP.l comLong_BlockStartY,D1
-   BLT.w JL_0_65A4
-  CMP.l comLong_BlockEndY,D1
-   BGT.w JL_0_65A4
-  CMP.w comLong_BlockStartX,D0
-   BLT.w JL_0_65A4
-  CMP.w comLong_BlockEndX,D0
-   BGT.w JL_0_65A4
-  MOVEA.l comPtr_SourceAreaRastPort,A1
-  ;ASL.w #3,D0
-  MULU fontwidth,d0
-  MOVE.l D0,D2
-  ADDQ.w #7,D2
-;ADD.w #fontwidth,D2
-  MULU fontheight,D1
-  MOVE.l D1,D3
-  ADD.w font_Heightm1,D3
-  JSR _RectFill(A6)                  ;A1:rp, D0:xmin, D1:ymin, D2:xmax, D3:ymax  d0-d3:16
 
-  JL_0_65A4:
-RTS
+; not used anymore ...
+;JL_0_653C:
+;  TST.l comLong_BlockEndY
+;  BMI.w JL_0_65A4
+;
+;  MOVEQ.l #$00,D0
+;  MOVE.w comWord_Column,D0
+;  MOVE.l comLong_DisplayLine,D1
+;  ADD.w comWord_ColumnsOffset,D0
+;  ADD.l comLong_DisplayLineOffset,D1
+;  CMP.l comLong_BlockStartY,D1
+;  BLT.w JL_0_65A4
+;    CMP.l comLong_BlockEndY,D1
+;    BGT.w JL_0_65A4
+;      CMP.w comLong_BlockStartX,D0
+;      BLT.w JL_0_65A4
+;        CMP.w comLong_BlockEndX,D0
+;        BGT.w JL_0_65A4
+;          MOVEA.l comPtr_SourceAreaRastPort,A1
+;          ;ASL.w #3,D0
+;          MULU fontwidth,d0
+;          MOVE.l D0,D2
+;          ADDQ.w #7,D2
+;          ;ADD.w #fontwidth,D2
+;          MULU fontheight,D1
+;          MOVE.l D1,D3
+;          ADD.w font_Heightm1,D3
+;          JSR _RectFill(A6)                  ;A1:rp, D0:xmin, D1:ymin, D2:xmax, D3:ymax  d0-d3:16
+;  JL_0_65A4:
+;RTS
 
 
 .scroll_right:
@@ -14176,7 +14291,7 @@ RTS
 .allocnewline:
   MOVEQ.l #$0A,D0
   ;MOVEQ.l #$01,D1               ; not needed with AllocPooled
-  ;MOVEA.l _execbase,A6
+  ;MOVEA.l _execbase,A6          ; execbase is set in macro
   ;MOVE.w #$FFFF,comWord__AL_0_86C0
   !newalloc                      ; d0= AllocPooled(A0:poolHeader,D0:memSize)
   TST.l D0
@@ -14210,22 +14325,21 @@ clear_sourcebuffer:
   MOVEQ.l #-$01,D0
 RTS
 
-JL_0_6BD2:
+.StoreCurrentSourceLine:
   MOVEA.l comPtr_CurrentSourceLine,A1
   MOVE.b comByte_LabelIdentifier,D0
   MOVEM.l D0/A0-A2,-(A7)
-  LEA $9(A1),A2
-  MOVEA.l AL_0_5BB2,A0
+  LEA $9(A1),A2                           ; save current source line to undeletestore
+  MOVEA.l lineundeletestore,A0
   TST.b (A2)
-   BEQ.b JL_0_6BFE
-  MOVEQ.l #$00,D0
-  MOVE.b $8(A1),D0
-  MOVE.w D0,comWord__AL_0_8A6A
-  SUBQ.w #1,D0
-
-  JL_0_6BF8:
-    MOVE.b (A2)+,(A0)+
-  DBF D0,JL_0_6BF8
+  BEQ.b JL_0_6BFE
+    MOVEQ.l #$00,D0
+    MOVE.b $8(A1),D0                      ; stringlength of source line
+    MOVE.w D0,comWord_UndeleteStoreStrLen
+    SUBQ.w #1,D0
+    JL_0_6BF8:
+      MOVE.b (A2)+,(A0)+
+    DBF D0,JL_0_6BF8
   JL_0_6BFE:
   MOVEM.l (A7)+,D0/A0-A2
   BRA.b JL_0_6C0C
@@ -14235,33 +14349,32 @@ JL_0_6BD2:
   MOVE.b comByte_LabelIdentifier,D0
 
   JL_0_6C0C:
-  MOVE.l A1,-(A7)
-  LEA $9(A1),A1
+  MOVE.l A1,-(A7)                      ; currentsoureline struct
+  LEA $9(A1),A1                        ; begin of string
   JL_0_6C12:
-  CMPI.b #$20,(A1)+
-   BEQ.b JL_0_6C12
-  CMP.b -(A1),D0
-   ;BNE.w JL_0_6C24
-  BEQ 'l10
- 'l20
-  MOVE.b (a1),d0                       ;pre clicksort
-  BEQ JL_0_6C24
-  CMP.b #";",d0
-  BEQ 'l10
-  CMP.b #$80,d0
-  BNE 'l15
-  CMP.b #$2d,1(a1)
-  BEQ 'l10
- 'l15
-  ADDQ.l #1,a1
-  BRA 'l20
+    CMPI.b #$20,(A1)+                  ; skip spaces
+  BEQ.b JL_0_6C12
 
+  CMP.b -(A1),D0                       ; first character to d0
+  BEQ 'l10                             ; if not null ...
+ 'l20
+    MOVE.b (A1),D0
+    BEQ JL_0_6C24                      ; if null free memory and return
+    CMP.b #";",d0                      ; stop if comment found
+
+    BEQ 'l10
+      CMP.b #$80,d0                    ; 128 ? why this check?
+      BNE 'l15
+        CMP.b #$2d,1(a1)               ; "-" as second character?
+        BEQ 'l10
+     'l15
+      ADDQ.l #1,a1
+      BRA 'l20
  'l10
-  JSR JL_0_472A
+  JSR JL_0_472A                        ; set LabelListchanged-Flag
 
   JL_0_6C24:
   MOVEA.l (A7)+,A1
-  MOVEA.l _execbase,A6
   ;ST comWord__AL_0_86C0
   !newfree
 RTS
@@ -14271,14 +14384,12 @@ RTS
   MOVEA.l comPtr_FirstSourceLine,A2
   MOVE.l comLong_TotalLines,D2
   BEQ skip_freesource
-  SUBQ.l #1,D2
-
-  JL_0_6C40:
-    MOVEA.l A2,A1
-    MOVEA.l (A1),A2
-    !newfree
-  DBF D2,JL_0_6C40
-
+    SUBQ.l #1,D2
+    JL_0_6C40:
+      MOVEA.l A2,A1
+      MOVEA.l (A1),A2
+      !newfree
+    DBF D2,JL_0_6C40
   skip_freesource:
   ;ST comWord__AL_0_86C0
   JSR clear_labellist
@@ -15237,14 +15348,19 @@ JL_0_76E8:
 RTS
 
 .delay:
-  TST.b old_scrolling
-  BNE 'old
+  TST.b no_scrollrate
+  BNE 'skipwait
     !basic
     vvblank_Wait{}
     ;vvblank_WaitSync{1}
     ;vvblank_ResetSync{}
     !asm
- 'old
+    BRA 'exitdelay
+ 'skipwait
+    !basic
+    Delay_ 1
+    !asm
+ 'exitdelay
 RTS
 
 JL_0_76EA:
@@ -15695,19 +15811,19 @@ RTS
     BNE.w key_cursorright
 
   MOVE.w message_qualifier,d1                  ; added to support ALT+CURSOR LEFT to jump back in history  tomsmart1
-  AND.w #$30,d1                                ; test for ALT-Key (left and right)
+  ANDI.w #$30,d1                               ; #IEQUALIFIER_LALT | #IEQUALIFIER_RALT
   BEQ 'noalt
     ; -- alt-key pressed aswell
     JSR jump_historyup
     RTS
  'noalt:
   MOVE.w message_qualifier,d1
-  AND.w #$8,d1
+  ANDI.w ##IEQUALIFIER_CONTROL,d1              ; $8
   BEQ 'noctrl
     ; -- ctrl-key pressed aswell
     !regs2stack
     JSR cursor_off
-    JSR menu_blockuntab                          ;call untab
+    JSR menu_blockuntab
     !stack2regs
     RTS
  'noctrl
@@ -16316,7 +16432,7 @@ BRA deletekey
  'noalt:
 
   MOVE.w message_qualifier,d1
-  AND.w #$8,d1
+  AND.w ##IEQUALIFIER_CONTROL,d1          ; $8
   BEQ 'noctrl
     ; -- ctrl-key pressed aswell
     !regs2stack
@@ -16586,8 +16702,9 @@ deletekey:
   MOVE.b #2,doedit2
   MOVE.w D7,comWord_KeyBeforeReturn
   JSR checkedit2
+
   TST.b nodelete
-   BNE JL_0_7AA0
+  BNE JL_0_7AA0
 
   MOVEM.l D1/A0-A2,-(A7)
   JSR JL_0_6448
@@ -16596,14 +16713,14 @@ deletekey:
   MOVE.w comWord_Column,D0
   ADD.w comWord_ColumnsOffset,D0
 
- JL_0_7E3A:
+  JL_0_7E3A:
     ADDQ.w #1,D0
     CMP.w comWord_MaxColumns,D0
-     BCC.w JL_0_7E4C
-    MOVE.b $0(A2,D0.W),-$1(A2,D0.W)
+    BCC.w JL_0_7E4C
+      MOVE.b $0(A2,D0.W),-$1(A2,D0.W)
   BRA.b JL_0_7E3A
 
- JL_0_7E4C:
+  JL_0_7E4C:
   MOVE.b #$20,-$1(A2,D0.W)
   MOVE.w comWord_Column,-(A7)
   MOVE.w visiblecolumns,D0
@@ -16619,7 +16736,7 @@ deletekey:
  'l2
     CMP.b #$22,0(a2,d1.w)      ;hack
     BNE 'l1
-    ADDQ.b #1,d0
+      ADDQ.b #1,d0
    'l1
   DBF d1,'l2
 
@@ -16628,41 +16745,40 @@ deletekey:
   MOVE.b $0(A2,D0.W),D0
   CLR.w instru
   BTST #0,d1
-   BNE 'l3
-  MOVE.w #1,instru
-
+  BNE 'l3
+    MOVE.w #1,instru
  'l3
   JSR JL_0_76EA
   CLR.w instru
   MOVE.w (A7)+,comWord_Column
 
   TST.w comWord_Column
-   BNE 'x1
-  TST.w comWord_ColumnsOffset
+  BNE 'x1
+   TST.w comWord_ColumnsOffset
    BEQ 'x5
-
  'x1
   ; -- check if shift-backspace is pressed
   MOVE.w message_qualifier,d1
   AND.w #$3,d1
-   BEQ JL_0_7AA0
+  BEQ JL_0_7AA0
+
   ; test for BACKSPACE-KEY
-  CMP.b #$08,d7                             ; add to fix SHIFT+DEL Key( befor it act like SHIFT+BACKSPACE KEY)  tomsmart1
+  CMP.b #$08,d7                ; add to fix SHIFT+DEL Key (before it acts like SHIFT+BACKSPACE KEY)
   BNE 'x5
 
   ; -- ok, delete all left of cursor ...
   TST.w comWord_Column
-   BEQ 'x4
-  SUBQ.w #1,comWord_Column
-  BRA deletekey
-
+  BEQ 'x4
+    SUBQ.w #1,comWord_Column
+    BRA deletekey
  'x4
-  TST.w comWord_ColumnsOffset
-   BEQ 'x5
-  SUBQ.w #1,comWord_ColumnsOffset
-  BRA.w deletekey
 
+  TST.w comWord_ColumnsOffset
+  BEQ 'x5
+    SUBQ.w #1,comWord_ColumnsOffset
+    BRA.w deletekey
  'x5
+
   JSR JL_0_7962
   JSR cursor_on
 ;BRA JL_0_7AA8
@@ -17243,6 +17359,8 @@ RTS
   *intuimessage.IntuiMessage = Peek.l(?messagestore)
   If *intuimessage\Class<>$400000
     log_Print{"source window event: " +Hex$(*intuimessage\Class) + ", " + Hex$(*intuimessage\Qualifier)+ ", " + Hex$(*intuimessage\Code)}
+;    log_Print{"dloffset" + Str$(Peek.l(?comLong_DisplayLineOffset)) + " - displayline " + Str$(Peek.l(?comLong_DisplayLine))}
+;    log_Print{"string >> " + Peek$(Peek.l(?comPtr_CurrentSourceLine)+9)}
   EndIf
 
   Select *intuimessage\Class
@@ -17260,6 +17378,7 @@ RTS
     Pop Select
     !asm
     BRA.w handle_event_activewindow
+
 
   Case #IDCMP_INACTIVEWINDOW
     Pop Select
@@ -17316,7 +17435,7 @@ RTS
     log_Print{"byte type " + Str$(*gadget\GadgetType AND $00FF)}
 
   Case #IDCMP_MENUVERIFY
-    ; do nothing
+  ; do nothing
 
   Case #IDCMP_CLOSEWINDOW
     Pop Select
@@ -17473,8 +17592,8 @@ BRA.w JL_0_844C
 BRA.w JL_0_844C
 
 .handle_event_closewindow
-  MOVEQ.l #$6C,D6
-  MOVEQ.l #-$02,D7
+  MOVEQ.l ##MENU_CLOSE,D6
+  MOVEQ.l #-$02,D7                    ; Keytable action: event_shortcut
 BRA.w reply_idcmp_message
 
 .handle_event_menupick
@@ -17745,7 +17864,7 @@ BRA handle_event_vanillakey
       !asm
    'noctrl_e
 
-    ; begin PC standart copy, paste, cut keys added  tomsmart1
+    ; begin PC standard copy, paste, cut keys added  tomsmart1
     CMP.w #$3,d7                         ; check for "CTRL_C"
     BNE 'noctrl_c
       MOVE.l #1,VerticalCopyMode           ; set it for column copy
@@ -21282,7 +21401,7 @@ Return
 Return
 
 
-JL_0_FBDE:
+init_sourceline:
   MOVEA.l D0,A0
   CLR.l (A0)
   CLR.l $4(A0)
@@ -25602,7 +25721,7 @@ no_welcome            Ds.b 1
 tokenbackground       Ds.l 1
 use_wbscreen          Ds.b 1
 clipbuf               Ds.b 300
-old_scrolling         Ds.b 1
+no_scrollrate         Ds.b 1
 loadmode              Ds.w 1
 filebuff              Ds.b 256
 nodelete              Ds.w 1
@@ -25703,3 +25822,4 @@ use_intellisense      Dc.b 0
 auto_constructs       Dc.b 0
 wheelstep             Ds.l 1        ; moved to BSS section because it is now set by init with a default of 6 if it not set in the Icontooltypes  tomsmart1
 use_commandsintellisens      Dc.b 0      ; added   tomsmart1
+ask_before_quit       Dc.b 0
