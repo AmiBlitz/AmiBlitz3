@@ -65,7 +65,7 @@ CONST
 CONST
 ;
 MSG_TOGGLE_653_HELP (15//)
-the browser searches for matching constants.
+search for matching constants.
 Sucht nach passenden Konstanten.\x00
 ;
 MSG_TOGGLE_654_NAME (18//)
@@ -86,11 +86,11 @@ Sucht nach passenden NewTypes (Strukturen).\x00
 ;
 MSG_BUTTON_16_NAME (22//)
 _Parent
-_Vorher\x00
+_Übergeordnet\x00
 ;
 MSG_BUTTON_16_HELP (21//)
 one level up of the current item.
-Eine Ebene aufwärte in der aktuellen Elementstruktur.\x00
+Eine Ebene aufwärts in der aktuellen Elementstruktur.\x00
 ;
 MSG_ARGS_539_NAME (24//)
 %s
@@ -766,7 +766,7 @@ _Nächster\x00
 ;
 MSG_BUTTON_247_NAME (191//)
 _previous
-_Zurück\x00
+_Vorheriger\x00
 ;
 MSG_BUTTON_251_NAME (192//)
 _Replace
