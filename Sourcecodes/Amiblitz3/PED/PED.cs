@@ -118,7 +118,7 @@ Quellcode\nBibliotheken\x00
 ;
 MSG_BUTTON_43_NAME (30//)
 Reset
-Abbrechen
+Reset
 ;
 MSG_BUTTON_43_HELP (29//)
 This button will reset the window content.
