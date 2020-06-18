@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.7.4
-; NumberOfBuilds  = 135
+; NumberOfBuilds  = 165
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -31,8 +31,8 @@
 ; Editor
 ; -------------------------------------------------------
 ; CursorLine      = 140
-; CursorColumn    = 21
-; LabelSearch     = "log_deb"
+; CursorColumn    = 3
+; LabelSearch     = "log"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -220,7 +220,7 @@ Macro log_Mem
   memstr$ = Str$(availc) + "/" + Str$(availf) + old$ + " : " + `1
   log_Print{memstr$,#log_debug}
 End Macro
-log_SetLevel{#log_nothing} ;debug}
+log_SetLevel{#log_debug} ;debug}
 log_SetDestination{#log_toconsole,"System/PED.log"}
 log_Print{"===================================================================",#log_debug}
 !log_Mem{"BEGIN"}
@@ -574,6 +574,7 @@ Statement Show_Helpfile{libname$,node$,pubscreen$}
   If libname$<>"" Then commandlineStr + " -l " + dos_RemExt{libname$}
   If helpdir$<>"" Then commandlineStr + " -d " + helpdir$
 
+  log_Print{"seaching for <" + commandlineStr + ">"}
   If pubscreen$<>"" AND Peek.b(?use_wbscreen)=0
     commandlineStr + " -s " + Peek$(?str_defaultpubscreen)
   Else
@@ -958,6 +959,24 @@ Statement window_welcome{txt0$,@txt1$,@txt2$,@txt3$,@txt4$}
 End Statement
 
 
+Function.w getLineLength{lineaddr.l}
+  _length.w = #MAX_Columns - 1
+  exit_loop.b = False
+  ;log_Print{"**" + Peeks$(lineaddr,_length) + "**"}
+  Repeat
+    char.b = Peek.b(lineaddr + _length)
+    If char<>$20
+      exit_loop = True
+    Else
+      _length - 1
+    EndIf
+  Until exit_loop OR _length < 1
+  _length + 1
+  ;log_Print{Str$(_length)}
+  ;!log_memhex{lineaddr,255}
+  Function Return _length
+End Function
+
 Function.b cutLine{*sl.sourceLine}
     *prevLine.sourceLine = *sl\previousLine
     *nextLine.sourceLine = *sl\nextLine
@@ -1051,9 +1070,9 @@ Function.w preparseline{columnpos.w,lineaddr.l,auto_format.b,correct_funcnames.b
   ; clear highlight info but dont trash strings
   ;If (lineaddr MOD 2) <> 0 Then !cout{"alert: odd address " + Hex$(lineaddr)}
   If (lineaddr & $1) <> 0 Then !cout{"alert: odd address " + Hex$(lineaddr)}
-  nostring.l = 0
+  nostring.b = 0
   For i.l = lineaddr To lineaddr + #MAX_Columns
-    If nostring.l = 0
+    If nostring = 0
       Poke.b i,Peek.b(i) AND $7f
     Else
       If Peek.b(i) = $22 Then nostring = 0
@@ -5197,7 +5216,7 @@ RTS
   MOVEA.l comPtr_CurrentSourceLine,A4
   JSR sub_gotoline
   MOVE.l (A7)+,D1
-  JSR JL_0_7ED2
+  JSR moveCursorToX
 JMP update_horizscroller
 
 .menu_previous:
@@ -15000,8 +15019,9 @@ RTS
   !basic
   availchip.l = AvailMem_(#MEMF_CHIP) / 1024
   availfast.l = AvailMem_(#MEMF_FAST) / 1024
-  Format "##0,000"
-  availmem$ = "CHIP" + Str$(availchip) + "kb | FAST " + Str$(availfast) + "kb"
+  Format "###0,000"
+  availmem$ = "CHIP " + StrPack(Str$(availchip)) + "kb"
+  availmem$ + " | FAST " + StrPack(Str$(availfast)) + "kb"
   Format ""
 
   *rastp.RastPort = Peek.l(?rp_sourcewindow)
@@ -15381,7 +15401,7 @@ BRA cursor_onoff_force
 
   Case #AB3_cursorStyle_underline
     xmin.w = Peek.w(?comWord_Column) * Peek.w(?fontwidth)
-    ymin.w = Peek.l(?comLong_DisplayLine) * Peek.w(?fontheight) + Peek.w(?font_Heightm1)
+    ymin.w = Peek.l(?comLong_DisplayLine) * Peek.w(?fontheight) + Peek.w(?font_Heightm1) - 1
     xmax.w = xmin + Peek.w(?fontwidth) - 1
     ymax.w = ymin + 1
 
@@ -15748,7 +15768,7 @@ BRA.w JL_0_7AA0
   MOVE.w D7,D0
   JSR JL_0_76EA
   MOVE.w comWord_Column,D0
-  JSR JL_0_7F70
+  JSR moveCursorRight
 RTS
 
 
@@ -15767,29 +15787,45 @@ RTS
   ANDI.w ##IEQUALIFIER_CONTROL,d1              ; $8
   BEQ 'noctrl
     ; -- ctrl-key pressed aswell
-    !regs2stack
-    JSR cursor_off
-    JSR menu_blockuntab
-    !stack2regs
-    RTS
+    CMPI.l #$ffffFFFF,comLong_BlockEndY
+    BEQ.w 'noblock
+      !regs2stack
+      JSR cursor_off
+      JSR menu_blockuntab
+      !stack2regs
+      RTS
+   'noblock
+    !basic
+    Gosub moveCursorToBeginOfWord
+    !asm
+    MOVE.w D0,D1
+    JSR moveCursorToX
+    BRA.w JL_0_7AA0
  'noctrl
   MOVE.w comWord_QualifierStore,D1
-  ANDI.w #$3,D1
-  BEQ.w JL_0_7C1C
+  ANDI.w #$3,D1                               ; check for lshsift/rshift
+  BEQ.w 'noshift
     MOVE.w D0,D1
     ADD.w comWord_ColumnsOffset,D1
     BEQ.w JL_0_7BE6
-    MOVEQ.l #$00,D1
-BRA.w JL_0_7C5C
+      MOVEQ.l #$00,D1
+      JSR moveCursorToX
+      BRA.w JL_0_7AA0
+ 'noshift
+  MOVE.b #1,doedit2
+  JSR moveCursorLeft
+BRA.w JL_0_7AA0
+
+
 
 .getactualword:
-  nostring.l = 0
+  nostring.b = 0
   lastcolumn.w = Peek.w(?comWord_Column)
   MOVE.l textbufferaddr,a0
   ADD.w comWord_TextBufferOffset,a0
   MOVE.l a0,d0:lineaddr = PutD0
   For i.l = lineaddr To lineaddr + #MAX_Columns    ;clear highlight info but dont trash strings
-    If nostring.l = 0
+    If nostring = 0
       Poke.b i,Peek.b(i) AND $7f
        If Peek.b(i) = $22 Then nostring = 1
     Else
@@ -15808,7 +15844,7 @@ BRA.w JL_0_7C5C
   JSR getwordnodetoke
   MOVE.l a0,d0 : i = PutD0
   actualword$ = Peek$(i)
-  cursorposition.l = Peek.w(?comWord_Column)+1
+  cursorposition.w = Peek.w(?comWord_Column)+1
   Poke.w ?comWord_Column,lastcolumn
 RTS
 
@@ -15819,7 +15855,7 @@ RTS
   ADD.w comWord_TextBufferOffset,a0
   MOVE.l a0,d0 : lineaddr = PutD0
   For i.l = lineaddr To lineaddr + #MAX_Columns    ;clear highlight info but dont trash strings
-    If nostring.l = 0
+    If nostring = 0
       Poke.b i,Peek.b(i) AND $7f
        If Peek.b(i) = $22 Then nostring = 1
     Else
@@ -15828,14 +15864,14 @@ RTS
   Next
   mytext$ = Peeks$(lineaddr,#MAX_Columns)
 
-  cursorpos.l = Peek.w(?comWord_Column) + 1
+  cursorpos.w = Peek.w(?comWord_Column) + 1
   aword$ = "" : char$ =""
-  tlen.l = FLen(mytext$)
+  tlen.w = FLen(mytext$)
   strhelp$ = ""
   If tlen
     token.l = False
-    nextpos.l = cursorpos
-    backpos.l = cursorpos - 1
+    nextpos.w = cursorpos
+    backpos.w = cursorpos - 1
 
     ; -- get everything right of cursor
     Repeat
@@ -15865,6 +15901,91 @@ RTS
 ;    Poke.w ?comWord_Column,lastcolumn
   EndIf
 RTS
+
+.moveCursorToBeginOfWord:
+  ; get lineaddress in textbuffer (detokenized text!)
+  lineaddr = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
+  ; get length of source line
+  textlen.w = getLineLength{lineaddr}
+
+  ;clear highlight info but dont trash strings
+  nostring.b = 0
+  For i.l = lineaddr To lineaddr + textlen
+    If nostring = 0
+      Poke.b i,Peek.b(i) AND $7f
+      If Peek.b(i) = $22 Then nostring = 1
+    Else
+      If Peek.b(i) = $22 Then nostring = 0
+    End If
+  Next
+
+  cursorpos.w = Peek.w(?comWord_Column)
+  If cursorpos > 1
+    cursorpos - 1
+    skip_spaces.b = False
+    If Peek.b(lineaddr+cursorpos) = 32 Then skip_spaces = True ; check if current char is a space
+
+    exit_loop.b = False
+    Repeat
+      cursorpos - 1
+      char.b = Peek.b(lineaddr+cursorpos)
+      log_Print{Peeks$(lineaddr,textlen)}
+      log_Print{Str$(char) + "  " + Chr$(char) + "  "+Str$(cursorpos)}
+      If skip_spaces
+        If char <> 32 Then skip_spaces = False
+      Else
+        If (char < 48) OR (char = Asc("{")) OR (char = Asc("}"))
+          exit_loop = True
+        EndIf
+      EndIf
+    Until exit_loop OR (cursorpos < 1)
+
+  EndIf
+  GetD0 cursorpos
+RTS
+
+
+.moveCursorToEndOfWord:
+  ; get lineaddress in textbuffer (detokenized text!)
+  lineaddr = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
+  ; get length of source line
+  textlen.w = getLineLength{lineaddr}
+
+  ;clear highlight info but dont trash strings
+  nostring.b = 0
+  For i.l = lineaddr To lineaddr + textlen
+    If nostring = 0
+      Poke.b i,Peek.b(i) AND $7f
+      If Peek.b(i) = $22 Then nostring = 1
+    Else
+      If Peek.b(i) = $22 Then nostring = 0
+    End If
+  Next
+
+  cursorpos.w = Peek.w(?comWord_Column)
+  If cursorpos < textlen
+    cursorpos + 1
+    skip_spaces.b = False
+    If Peek.b(lineaddr+cursorpos) = 32 Then skip_spaces = True ; check if current char is a space
+
+    exit_loop.b = False
+    Repeat
+      cursorpos + 1
+      char.b = Peek.b(lineaddr+cursorpos)
+
+      If skip_spaces
+        If char <> 32 Then skip_spaces = False
+      Else
+        If (char < 48) OR (char = Asc("{")) OR (char = Asc("}"))
+          exit_loop = True
+        EndIf
+      EndIf
+    Until exit_loop OR (cursorpos => textlen)
+    ;If cursorpos > 1 Then cursorpos - 1     ; internal counter starts at 0!
+  EndIf
+  GetD0 cursorpos
+RTS
+
 
 .startguide:
   !basic
@@ -16291,22 +16412,23 @@ JL_0_7BE6:
   JL_0_7C02:
     TST.b (A0)
     BEQ.w JL_0_7C16
-    ADDQ.w #1,D1
-    CMPI.b #$20,(A0)+
+      ADDQ.w #1,D1
+      CMPI.b #$20,(A0)+
   BEQ.b JL_0_7C02
-
   MOVEA.l (A7)+,A0
-  BRA.w JL_0_7C5C
+  ;BRA.w JL_0_7C5C
+  JSR moveCursorToX
+  BRA.w JL_0_7AA0
 
   JL_0_7C16:
   MOVEA.l (A7)+,A0
 BRA.w JL_0_7AA0
 
-JL_0_7C1C:
-  MOVE.b #1,doedit2
-  JL_0_7C1Cb:
-  JSR JL_0_7F40
-BRA.w JL_0_7AA0
+;JL_0_7C1C:
+;  MOVE.b #1,doedit2
+;  ;JL_0_7C1Cb:
+;  JSR moveCursorLeft
+;BRA.w JL_0_7AA0
 
 
 
@@ -16379,46 +16501,44 @@ BRA deletekey
  'noalt:
 
   MOVE.w message_qualifier,d1
-  AND.w ##IEQUALIFIER_CONTROL,d1          ; $8
+  AND.w ##IEQUALIFIER_CONTROL,d1          ; $8 tab the marked block
   BEQ 'noctrl
     ; -- ctrl-key pressed aswell
-    !regs2stack
-    JSR cursor_off
-    JSR menu_blocktab
-    !stack2regs
-    RTS
- 'noctrl:
+    CMPI.l #$ffffFFFF,comLong_BlockEndY
+    BEQ.w 'noblock
+      !regs2stack
+      JSR cursor_off
+      JSR menu_blocktab
+      !stack2regs
+      RTS
+   'noblock
+    !basic
+    Gosub moveCursorToEndOfWord
+    !asm
+    MOVE.w D0,D1
+    JSR moveCursorToX
+    BRA.w JL_0_7AA0
+  'noctrl:
 
   MOVE.w comWord_QualifierStore,D1
   ANDI.w #$3,D1                           ; $3 #IEQUALIFIER_LSHIFT | #IEQUALIFIER_RSHIFT
-  BEQ.w noshift
-   ; -- shift-key pressed aswell
-    MOVE.w comWord_MaxColumns,D1
-
-    ; -- search for rightmost character in actual line
-    JL_0_7C3C:
-      SUBQ.w #1,D1
-      BPL.w JL_0_7C48
-      MOVEQ.l #$00,D1
-      BRA.w JL_0_7C5C
-      JL_0_7C48:
-    CMPI.b #$20,$0(A2,D1.W)
-    BEQ.b JL_0_7C3C
-
-    ADDQ.w #1,D1
-    CMP.w comWord_MaxColumns,D1
-    BCS.w JL_0_7C5C
-    SUBQ.w #1,D1
-    JL_0_7C5C:
-
-    JSR JL_0_7ED2
+  BEQ.w 'noshift
+    ; -- shift-key pressed aswell
+    !basic
+    lineaddr = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
+    textlen.w = getLineLength{lineaddr}
+    GetD0 textlen
+    !asm
+    MOVE.w d0,d1
+    ;JL_0_7C5C:
+    JSR moveCursorToX
     BRA.w JL_0_7AA0
-  noshift:
+ 'noshift:
 
   ; -- normal cursor_right function
   MOVE.b #1,doedit2
-  JL_0_7C64b:
-  JSR JL_0_7F70
+  ;JL_0_7C64b:
+  JSR moveCursorRight
 BRA.w JL_0_7AA0
 
 
@@ -16469,7 +16589,7 @@ BRA.w JL_0_7AA0
 
  'l1
   MOVEM.l A0-A2,-(A7)
-  JSR JL_0_7F40
+  JSR moveCursorLeft
   MOVEM.l (A7)+,A0-A2
   MOVE.w comWord_Column,D0
   MOVEQ.l #$08,D7
@@ -16605,7 +16725,9 @@ BRA.b JL_0_7D72
   ADD.w D0,comWord_Column
   MOVE.w D0,D1
   MOVE.w (A7)+,D7
-BRA.w JL_0_7C5C
+  ;BRA.w JL_0_7C5C
+  JSR moveCursorToX
+  BRA.w JL_0_7AA0
 
  JL_0_7DDC:
   MOVE.w comWord_Column,-(A7)
@@ -16623,7 +16745,9 @@ BRA.w JL_0_7C5C
    DBF D7,JL_0_7DF0
   MOVE.w (A7)+,comWord_Column
   MOVE.w (A7)+,D1
-BRA.w JL_0_7C5C
+  ;BRA.w JL_0_7C5C
+  JSR moveCursorToX
+  BRA.w JL_0_7AA0
 
  exit_key_tab:
 BRA.w JL_0_7ED0
@@ -16747,7 +16871,7 @@ BRA JL_0_7AA0
     Poke.l ?pos_horizprop,pos_hprop
     !asm
     MOVE.l pos_horizprop,D1
-    JSR JL_0_7ED2                                  ; calculate new column ?
+    JSR moveCursorToX                                  ; calculate new column ?
 
     MOVE.l a2,-(a7)
     MOVE.l ptr_sourcewindow,a2
@@ -16828,21 +16952,21 @@ BRA.w horiz_loop
   JL_0_7ED0:
 RTS
 
-JL_0_7ED2:
+moveCursorToX:                            ; D1: X-position
   MOVE.w comWord_ColumnsOffset,D4
   MOVE.w visiblecolumns,D2
   SUB.w comLong_BoundLinesX,D2
   CMP.w D2,D1
   BCC.w JL_0_7EFC
-  CLR.w comWord_ColumnsOffset
-  MOVE.w D1,comWord_Column
+    CLR.w comWord_ColumnsOffset
+    MOVE.w D1,comWord_Column
 
-  JL_0_7EF0:
-  CMP.w comWord_ColumnsOffset,D4
-  BEQ.w JL_0_7F3E
-  BRA.w JL_0_7962
-
+    JL_0_7EF0:
+    CMP.w comWord_ColumnsOffset,D4
+    BEQ.w JL_0_7F3E
+      BRA.w JL_0_7962
   JL_0_7EFC:
+
   MOVE.w visiblecolumns,D2
   LSR.w #1,D2
   MOVE.w D1,D0
@@ -16851,77 +16975,75 @@ JL_0_7ED2:
   SUB.w visiblecolumns,D3
   CMP.w D3,D0
   BGT.w JL_0_7F2E
-  BTST #$0,D0
-  BEQ.w JL_0_7F20
-  ADDQ.w #1,D0
-  SUBQ.w #1,D2
-
-  JL_0_7F20:
-  MOVE.w D0,comWord_ColumnsOffset
-  MOVE.w D2,comWord_Column
-  BRA.b JL_0_7EF0
-
+    BTST #$0,D0
+    BEQ.w JL_0_7F20
+      ADDQ.w #1,D0
+      SUBQ.w #1,D2
+    JL_0_7F20:
+    MOVE.w D0,comWord_ColumnsOffset
+    MOVE.w D2,comWord_Column
+    BRA.b JL_0_7EF0
   JL_0_7F2E:
+
   MOVE.w D3,comWord_ColumnsOffset
   SUB.w D3,D1
   MOVE.w D1,comWord_Column
   BRA.b JL_0_7EF0
+
   JL_0_7F3E:
 RTS
 
-JL_0_7F40:
+moveCursorLeft:
   CMP.w comLong_BoundLinesX,D0
   BCS.w JL_0_7F50
-  JL_0_7F48:
-  SUBQ.w #1,comWord_Column
-RTS
+    JL_0_7F48:
+    SUBQ.w #1,comWord_Column
+    RTS
+  JL_0_7F50:
 
-JL_0_7F50:
   MOVE.w comWord_ColumnsOffset,D1
   CMP.w #1,d1
   ;BNE.w JL_0_7F5E
   BGT.w JL_0_7F5E
-  TST.w d1
-  BEQ 'l10
-  MOVE.w #0,comWord_ColumnsOffset
-  JSR scroll_right
-  JSR _redraw
- 'l10
-  TST.w D0
-  BNE.b JL_0_7F48
-RTS
-
-JL_0_7F5E:
+    TST.w d1
+    BEQ 'l10
+      MOVE.w #0,comWord_ColumnsOffset
+      JSR scroll_right
+      JSR _redraw
+   'l10
+    TST.w D0
+    BNE.b JL_0_7F48
+      RTS
+  JL_0_7F5E:
   SUBQ.w #2,comWord_ColumnsOffset
   JSR scroll_right
   ADDQ.w #1,comWord_Column
 RTS
 
-JL_0_7F70:
+moveCursorRight:
   MOVE.w comWord_ColumnsOffset,D1
   MOVE.w visiblecolumns,D2
   ADD.w D2,D1
   CMP.w comWord_MaxColumns,D1
   BCS.w JL_0_7F8C
-  SUBQ.w #1,D2
-  CMP.w D2,D0
-  BCS.w JL_0_7F9E
-RTS
+    SUBQ.w #1,D2
+    CMP.w D2,D0
+    BCS.w JL_0_7F9E
+      RTS
+  JL_0_7F8C:
 
-JL_0_7F8C:
   CMP.w comLong_BoundLinesX,D0
   BCS.w JL_0_7F9E
-  SUB.w comLong_BoundLinesX,D2
-  CMP.w D2,D0
-  BCC.w JL_0_7FA6
+    SUB.w comLong_BoundLinesX,D2
+    CMP.w D2,D0
+    BCC.w JL_0_7FA6
   JL_0_7F9E:
-  ADDQ.w #1,comWord_Column
-RTS
-
-JL_0_7FA6:
-  ADDQ.w #2,comWord_ColumnsOffset
-  JSR scroll_left
-  SUBQ.w #1,comWord_Column
+    ADDQ.w #1,comWord_Column
+    RTS
+  JL_0_7FA6:
+    ADDQ.w #2,comWord_ColumnsOffset
+    JSR scroll_left
+    SUBQ.w #1,comWord_Column
 RTS
 
 AJL_0_7FCC:
@@ -17592,9 +17714,10 @@ BRA.w reply_idcmp_message
       SMicros = *intuimessage\Micros
       If isDoubleClick
         Gosub getstring_new2
-        log_Print{"doubleclick on ==>" + actualword$}
+        ;log_Print{"doubleclick on ==>" + actualword$}
         If WZ_CheckOpen{"WIN_LABELS"}
           search_label$ = LCase$(actualword$)
+          If StrLeft(search_label$,1)="." Then search_label$ = StrRight(search_label$,-1)
           Use Window WZID("WIN_LABELS")
           WZPrint "STRING_LABEL",search_label$
           MOVE.w #$FFFF,comWord_LabelListChanged
@@ -20746,21 +20869,19 @@ RTS
   *textline.l = TEDGetCurrentLine{} + 9
   *detokened.l = TEDDetoke{*textline}
   text$ = Peek$(*detokened)
-  cursorpos.l = Peek.w(?comWord_Column)
+  cursorpos.w = Peek.w(?comWord_Column)
   actualword$ = preproc_CropToken{*PreProcessor,text$,cursorpos}
 RTS
-
-
 
 .getstring_new
   *textline.l = TEDGetCurrentLine{} + 9
   *detokened.l = TEDDetoke{*textline}
   text$ = Peek$(*detokened)
-  cursorpos.l = Peek.w(?comWord_Column)+1
+  cursorpos.w = Peek.w(?comWord_Column)+1
   aword$ = "" : char$ =""
   tlen = FLen(text$)
-  nextpos.l = cursorpos
-  backpos.l = cursorpos - 1
+  nextpos.w = cursorpos
+  backpos.w = cursorpos - 1
   Repeat
     aword$ = char$ + aword$
     char$ = Mid$(text$,backpos,1)
@@ -24238,10 +24359,10 @@ Return                                                                        ; 
     stylestate.w = #FSF_BOLD
     CMP.l actualfile,a0
     BEQ 'l1
-    fcol.w = AB3Pen(#AB3_screentext)  ; unselected
-    bcol.w = AB3Pen(#AB3_screenback)
-    bevel_recessed.b = False
-    stylestate.w = #FS_NORMAL
+      fcol.w = AB3Pen(#AB3_screentext)  ; unselected
+      bcol.w = AB3Pen(#AB3_screenback)
+      bevel_recessed.b = False
+      stylestate.w = #FS_NORMAL
    'l1
     MOVEM.l a0/a1,-(a7)
 
@@ -24270,32 +24391,25 @@ Return                                                                        ; 
     BNE 'nom2
 
     MOVEM.l d0/a0/a1,-(a7)
-    ;MOVEQ #1,d0
-    ;LEA modifymark,a0
-    ;JSR _Text(a6)
     Text_ *rastp,?modifymark, 1
     MOVEM.l (a7)+,d0/a0/a1
-    SUB.l #1,d0 ; we show the modify mark, so 1 letter less in text
+    SUB.l #1,d0               ; we show the modify mark, so 1 letter less in text
     BRA 'nom2
 
    'nom
     CMP.l #$4D4F4449,$1e6(a0)     ; "MODI"
     BNE 'nom2
-    MOVEM.l d0/a0/a1,-(a7)
-;    MOVEQ #1,d0
-;    LEA modifymark,a0
-;    JSR _Text(a6)
-    Text_ *rastp,?modifymark, 1
-    MOVEM.l (a7)+,d0/a0/a1
-    SUB.l #1,d0 ; we show the modify mark, so 1 letter less in text
-
+      MOVEM.l d0/a0/a1,-(a7)
+      Text_ *rastp,?modifymark, 1
+      MOVEM.l (a7)+,d0/a0/a1
+      SUB.l #1,d0             ; we show the modify mark, so 1 letter less in text
    'nom2
 
     MOVE.l a0,-(a7)
     LEA $de(a0),a0
     TST.b (a0)
     BNE 'sk1
-    LEA none,a0
+      LEA none,a0
    'sk1
     MOVE.l a1,-(a7)
     CLR.l d4
@@ -24322,14 +24436,13 @@ Return                                                                        ; 
 
     CMP.l D0,D4
     BLE 'nodots
-
-    MOVEM.l d1-d7,-(a7)
-    WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y-4-*rastp\TxBaseline +*rastp\TxHeight/2
-    WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y-2-*rastp\TxBaseline +*rastp\TxHeight/2
-    WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y  -*rastp\TxBaseline +*rastp\TxHeight/2
-    WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y+2-*rastp\TxBaseline +*rastp\TxHeight/2
-    WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y+4-*rastp\TxBaseline +*rastp\TxHeight/2
-     MOVEM.l (a7)+,d1-d7
+      MOVEM.l d1-d7,-(a7)
+      WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y-4-*rastp\TxBaseline +*rastp\TxHeight/2
+      WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y-2-*rastp\TxBaseline +*rastp\TxHeight/2
+      WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y  -*rastp\TxBaseline +*rastp\TxHeight/2
+      WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y+2-*rastp\TxBaseline +*rastp\TxHeight/2
+      WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y+4-*rastp\TxBaseline +*rastp\TxHeight/2
+      MOVEM.l (a7)+,d1-d7
    'nodots:
 
 ;    MOVE.l d2,-(a7)
@@ -24346,9 +24459,6 @@ Return                                                                        ; 
     MOVE.l (a0),d0
   BNE 'again
  'skip_filenames
-;  MOVEA.l rp_sourcewindow,A1
-;  MOVE.l backgroundcolor,D0
-;  JSR _SetBPen(A6)
   SetBPen_ *rastp,Peek.l(?backgroundcolor)
   SetFont_ *rastp,Peek.l(?ptr_sourcefont)
   SetSoftStyle_ *rastp,#FS_NORMAL,#FSF_BOLD
