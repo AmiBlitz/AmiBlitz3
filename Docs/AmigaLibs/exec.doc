@@ -5,6 +5,7 @@ exec.library/AddDevice
 exec.library/AddHead
 exec.library/AddIntServer
 exec.library/AddLibrary
+exec.library/AddMemHandler
 exec.library/AddMemList
 exec.library/AddPort
 exec.library/AddResource
@@ -16,10 +17,12 @@ exec.library/AllocAbs
 exec.library/Allocate
 exec.library/AllocEntry
 exec.library/AllocMem
+exec.library/AllocPooled
 exec.library/AllocSignal
 exec.library/AllocTrap
 exec.library/AllocVec
 exec.library/AttemptSemaphore
+exec.library/AttemptSemaphoreShared
 exec.library/AvailMem
 exec.library/CacheClearE
 exec.library/CacheClearU
@@ -35,10 +38,12 @@ exec.library/CopyMem
 exec.library/CopyMemQuick
 exec.library/CreateIORequest
 exec.library/CreateMsgPort
+exec.library/CreatePool
 exec.library/Deallocate
 exec.library/Debug
 exec.library/DeleteIORequest
 exec.library/DeleteMsgPort
+exec.library/DeletePool
 exec.library/Disable
 exec.library/DoIO
 exec.library/Enable
@@ -51,6 +56,7 @@ exec.library/FindTask
 exec.library/Forbid
 exec.library/FreeEntry
 exec.library/FreeMem
+exec.library/FreePooled
 exec.library/FreeSignal
 exec.library/FreeTrap
 exec.library/FreeVec
@@ -63,6 +69,7 @@ exec.library/InitStruct
 exec.library/Insert
 exec.library/MakeFunctions
 exec.library/MakeLibrary
+exec.library/ObtainQuickVector
 exec.library/ObtainSemaphore
 exec.library/ObtainSemaphoreList
 exec.library/ObtainSemaphoreShared
@@ -80,6 +87,7 @@ exec.library/RemDevice
 exec.library/RemHead
 exec.library/RemIntServer
 exec.library/RemLibrary
+exec.library/RemMemHandler
 exec.library/Remove
 exec.library/RemPort
 exec.library/RemResource
@@ -106,6 +114,24 @@ exec.library/Vacate
 exec.library/Wait
 exec.library/WaitIO
 exec.library/WaitPort
+SAD/--Overview--
+SAD/ALLOCATE_MEMORY
+SAD/CALL_ADDRESS
+SAD/FREE_MEMORY
+SAD/GET_CONTEXT_FRAME
+SAD/NOP
+SAD/READ_ARRAY
+SAD/READ_BYTE
+SAD/READ_LONG
+SAD/READ_WORD
+SAD/RESET
+SAD/RETURN_TO_SYSTEM
+SAD/TURN_OFF_SINGLE
+SAD/TURN_ON_SINGLE
+SAD/WRITE_ARRAY
+SAD/WRITE_BYTE
+SAD/WRITE_LONG
+SAD/WRITE_WORD
 exec.library/AbortIO                                     exec.library/AbortIO
 
    NAME
@@ -144,7 +170,7 @@ exec.library/WaitPort
 		at least once.  May be active or finished).
 
    SEE ALSO
-	WaitIO, DoIO, SendIO, CheckIO
+	WaitIO(), DoIO(), SendIO(), CheckIO()
 
 exec.library/AddDevice                                 exec.library/AddDevice
 
@@ -166,7 +192,7 @@ exec.library/WaitPort
 	device - pointer to a properly initialized device node
 
    SEE ALSO
-	RemDevice, OpenDevice, CloseDevice, MakeLibrary
+	RemDevice(), OpenDevice(), CloseDevice(), MakeLibrary()
 
 exec.library/AddHead                                     exec.library/AddHead
 
@@ -193,7 +219,7 @@ exec.library/WaitPort
 	node - the node to insert at head
 
    SEE ALSO
-	AddTail, Enqueue, Insert, Remove, RemHead, RemTail
+	AddTail(), Enqueue(), Insert(), Remove(), RemHead(), RemTail()
 
 exec.library/AddIntServer                           exec.library/AddIntServer
 
@@ -256,7 +282,7 @@ exec.library/WaitPort
 	compensate for this by providing the expected value ($DFF000).
 
    SEE ALSO
-	RemIntServer, SetIntVector, hardware/intbits.i,exec/interrupts.i
+	RemIntServer(), SetIntVector(), hardware/intbits.i,exec/interrupts.i
 
 exec.library/AddLibrary                               exec.library/AddLibrary
 
@@ -279,7 +305,76 @@ exec.library/WaitPort
 	library - pointer to a properly initialized library structure
 
    SEE ALSO
-	RemLibrary, CloseLibrary, OpenLibrary, MakeLibrary
+	RemLibrary(), CloseLibrary(), OpenLibrary(), MakeLibrary()
+
+exec.library/AddMemHandler                         exec.library/AddMemHandler
+
+   NAME
+	AddMemHandler - Add a low memory handler to exec                 (V39)
+
+   SYNOPSIS
+	AddMemHandler(memHandler)
+	              A1
+
+	VOID AddMemHandler(struct Interrupt *);
+
+   FUNCTION
+	This function adds a low memory handler to the system.  The handler
+	is described in the Interrupt structure.  Due to multitasking
+	issues, the handler must be ready to run the moment this function
+	call is made.  (The handler may be called before the call returns)
+
+   NOTE
+	Adding a handler from within a handler will cause undefined
+	actions.  It is safe to add a handler to the list while within
+	a handler but the newly added handler may or may not be called
+	for the specific failure currently running.
+
+   EXAMPLE
+	struct Interrupt *myInt;  /* Assume it is allocated */
+
+	myInt->is_Node.ln_Pri=50;  /* Relatively early; before RAMLIB */
+
+	/* Please fill in the name field! */
+	myInt->is_Node.ln_Name="Example Handler";
+
+	myInt->is_Data=(APTR)mydata_pointer;
+	myInt->is_Code=myhandler_code;
+
+	AddMemHandler(myInt);
+	... /* and so on */
+
+	_myhandler_code:
+			; This is the handler code
+			; We are passed a pointer to struct MemHandlerData
+			; in a0, the value of is_Data in a1 and
+			; ExecBase in a6.
+			; We must not break forbid!!!
+	;
+	; Start off assuming we did nothing
+	;
+		moveq.l	#MEM_DID_NOTHING,d0
+		move.l	memh_RequestFlags(a0),d1
+		btst.l	#MEMB_CHIP,d1	; Did the failure happen in CHIP
+		beq.s	handler_nop	; If not, we have nothing to do
+		bsr	DoMyMagic	; Do the magic...
+		; DoMyMagic frees whatever we can and returns d0 set...
+	handler_nop:
+		rts			; Return with d0 set...
+
+   INPUTS
+	memHandler - A pointer to a completely filled in Interrupt structure
+	             The priority field determine the position of the handler
+	             with respect to other handlers in the system.  The higher
+	             the priority, the earlier the handler is called.
+	             Positive priorities will have the handler called before
+	             any of the library expunge vectors are called.  Negative
+	             priority handlers will be called after the library
+	             expunge routines are called.
+	             (Note:  RAMLIB is a handler at priority 0)
+
+   SEE ALSO
+	RemMemHandler(), exec/interrupts.i
 
 exec.library/AddMemList                               exec.library/AddMemList
 
@@ -310,8 +405,12 @@ exec.library/WaitPort
 	       must remain valid for as long as the memory header is in the
 	       system.
 
+   NOTES
+	*DO NOT* add memory to the system with the attribute of MEMF_KICK.
+	EXEC will mark your memory as such if it is of the right type.
+
    SEE ALSO
-	AllocMem, exec/memory.h
+	AllocMem(), exec/memory.h
 
 exec.library/AddPort                                     exec.library/AddPort
 
@@ -336,7 +435,7 @@ exec.library/WaitPort
 	useful during debugging.  If the port will be searched for,
 	the priority field should be at least 1 (to avoid the large number
 	of inactive ports at priority zero).  If the port will be searched
-	for often, set the proritiry in the 50-100 range (so it will be
+	for often, set the priority in the 50-100 range (so it will be
 	before other less used ports).
 
 	Once a port has been added to the naming list, you must be careful
@@ -357,7 +456,7 @@ exec.library/WaitPort
 	port - pointer to a message port
 
    SEE ALSO
-	RemPort, FindPort, amiga.lib/CreatePort, amiga.lib/NewList
+	RemPort(), FindPort(), amiga.lib/CreatePort(), amiga.lib/NewList()
 
 exec.library/AddResource                             exec.library/AddResource
 
@@ -383,7 +482,7 @@ exec.library/WaitPort
 	resource - pointer an initialized resource node
 
    SEE ALSO
-	RemResource, OpenResource, MakeLibrary
+	RemResource(), OpenResource(), MakeLibrary()
 
 exec.library/AddSemaphore                           exec.library/AddSemaphore
 
@@ -433,7 +532,7 @@ exec.library/WaitPort
 	    }
 
    SEE ALSO
-	RemSemaphore, FindSemaphore, InitSemaphore
+	RemSemaphore(), FindSemaphore(), InitSemaphore()
 
 exec.library/AddTail                                     exec.library/AddTail
 
@@ -460,7 +559,7 @@ exec.library/WaitPort
 	node - a pointer to the node to insert at tail of the list
 
    SEE ALSO
-	AddHead, Enqueue, Insert, Remove, RemHead, RemTail
+	AddHead(), Enqueue(), Insert(), Remove(), RemHead(), RemTail()
 
 exec.library/AddTask                                     exec.library/AddTask
 
@@ -468,8 +567,8 @@ exec.library/WaitPort
 	AddTask -- add a task to the system
 
    SYNOPSIS
-	AddTask(task, initialPC, finalPC)
-		A1    A2	 A3
+	result = AddTask(task, initialPC, finalPC)
+	 D0               A1    A2         A3
 
 	APTR AddTask(struct Task *, APTR, APTR);
 
@@ -525,8 +624,8 @@ exec.library/WaitPort
 	See the AmigaDOS CreateProc() for information on Processes.
 
    SEE ALSO
-	RemTask, FindTask, amiga.lib/CreateTask, dos/CreateProc,
-	amiga.lib/NewList
+	RemTask(), FindTask(), amiga.lib/CreateTask(), dos/CreateProc(),
+	amiga.lib/NewList()
 
 exec.library/Alert                                         exec.library/Alert
 
@@ -551,29 +650,33 @@ exec.library/WaitPort
 	If the Alert is a recoverable type, this call MAY return.
 
 	This call may be made at any time, including interrupts.
+	(Well, only in interrupts if it is non-recoverable)
+
+	New, for V39:
+	The alert now times out based on the value in LastAlert[3]
+	This value is transfered accross warm-reboots and thus will let
+	you set it once.  The value is the number of frames that need to
+	be displayed before the alert is auto-answered.  A value of
+	0 will thus make the alert never be displayed.  Note that
+	it is recommended that applications *NOT* change the value in
+	LastAlert[] since the main reason for this is to make
+	unattended operation of the Amiga (in production enviroments)
+	possible.
 
    POST-MORTEM DIAGNOSIS
 	There are several options for determining the cause of a crash.
 	Descriptions of each alert number can be found in the "alerts.h"
-	include file.  Low numbers not mentioned in the include file
-	represent 68000 exceptions, see a 68000 manual for details.  The
-	most common numbers are:
-			$00000003 - Address Error
-			$00000004 - Illegal Instruction
+	include file.
 
 	A remote terminal can be attached to the Amiga's first built-in
 	serial port.  Set the communication parameters to 9600 baud, 8 bits,
 	no parity.  Before resetting the machine, the Alert function will
 	blink the power LED 10 times.  While the power indicator is flashing,
-	pressing DELETE on the remote terminal will invoke the ROMWack
-	debugger.
-
-	For Alerts caused by a 68000 exception, all registers are copied
-	to a magic low memory location (currently 16 longwords at $180).
+	pressing DELETE on the remote terminal will invoke the ROM debugger.
 
    INPUT
 	alertNum   - a number indicating the particular alert.  -1 is
-		not a valid input.
+	             not a valid input.
 
    NOTE
 	Much more needs to be said about this function and its implications.
@@ -623,7 +726,7 @@ exec.library/WaitPort
 	the first 8 bytes of anything you AllocAbs.
 
    SEE ALSO
-	AllocMem, FreeMem
+	AllocMem(), FreeMem()
 
 exec.library/Allocate                                   exec.library/Allocate
 
@@ -713,7 +816,7 @@ exec.library/WaitPort
 	AN_MemCorrupt, $01000005.
 
    SEE ALSO
-	Deallocate, exec/memory.h
+	Deallocate(), exec/memory.h
 
 exec.library/AllocEntry                               exec.library/AllocEntry
 
@@ -744,7 +847,7 @@ exec.library/WaitPort
 	    If enough memory cannot be obtained, then the requirements of
 	    the allocation that failed is returned and bit 31 is set.
 
-	    WARNING: The result is unusual!  Bit 31 indicates faulure.
+	    WARNING: The result is unusual!  Bit 31 indicates failure.
 
    EXAMPLES
 	The user wants five regions of 2, 4, 8, 16, and 32 bytes in size
@@ -867,6 +970,19 @@ exec.library/WaitPort
 				and AllocMem() will then fail.
 
 
+		MEMF_KICK:	This memory is memory that EXEC was able
+				to access during/before the KickMem and
+				KickTags are processed.  This means that
+				if you wish to use these, you should allocate
+				memory with this flag.  This flag is
+				automaticly set by EXEC in V39.  Pre-V39
+				systems may not have this memory type and
+				AllocMem() will then fail.  Also, *DO NOT*
+				ever add memory the system with this flag
+				set.  EXEC will set the flag as needed
+				if the memory matches the needs of EXEC.
+
+
 	    options
 
 		MEMF_CLEAR:	The memory will be initialized to all
@@ -879,7 +995,16 @@ exec.library/WaitPort
 				will be found first.  However, the
 				memory will be allocated from the highest
 				address available in the pool.  This
-				option is new as of V36.
+				option is new as of V36.  Note that this
+				option has a bug in pre-V39 systems.
+
+
+		MEMF_NO_EXPUNGE	This will prevent an expunge to happen on
+				a failed memory allocation.  This option is
+				new to V39 and will be ignored in V37.
+				If a memory allocation with this flag
+				set fails, the allocator will not cause
+				any expunge operations.  (See AddMemHandler())
 
 
    RESULT
@@ -887,6 +1012,7 @@ exec.library/WaitPort
 		If there are no free memory regions large enough to satisfy
 		the request, zero will be returned.  The pointer must be
 		checked for zero before the memory block may be used!
+		The memory block returned is long word aligned.
 
    WARNING
 	The result of any memory allocation MUST be checked, and a viable
@@ -912,7 +1038,72 @@ exec.library/WaitPort
 	ERROR_NO_FREE_STORE if the memory allocation fails.
 
    SEE ALSO
-	FreeMem
+	FreeMem()
+
+exec.library/AllocPooled                             exec.library/AllocPooled
+
+    NAME
+	AllocPooled -- Allocate memory with the pool manager (V39)
+
+    SYNOPSIS
+	memory=AllocPooled(poolHeader,memSize)
+	d0                 a0         d0
+
+	void *AllocPooled(void *,ULONG);
+
+    FUNCTION
+	Allocate memSize bytes of memory, and return a pointer. NULL is
+	returned if the allocation fails.
+
+	Doing a DeletePool() on the pool will free all of the puddles
+	and thus all of the allocations done with AllocPooled() in that
+	pool.  (No need to FreePooled() each allocation)
+
+    INPUTS
+	memSize - the number of bytes to allocate
+	poolHeader - a specific private pool header.
+
+    RESULT
+	A pointer to the memory, or NULL.
+	The memory block returned is long word aligned.
+
+    NOTES
+	The pool function do not protect an individual pool from
+	multiple accesses.  The reason is that in most cases the pools
+	will be used by a single task.  If your pool is going to
+	be used by more than one task you must Semaphore protect
+	the pool from having more than one task trying to allocate
+	within the same pool at the same time.  Warning:  Forbid()
+	protection *will not work* in the future.  *Do NOT* assume
+	that we will be able to make it work in the future.  AllocPooled()
+	may well break a Forbid() and as such can only be protected
+	by a semaphore.
+
+	To track sizes yourself, the following code can be used:
+	Assumes a6=ExecBase
+
+	;
+	; Function to do AllocVecPooled(Pool,memSize)
+	;
+	AllocVecPooled:	addq.l	#4,d0		; Get space for tracking
+			move.l	d0,-(sp)	; Save the size
+			jsr	_LVOAllocPooled(a6)	; Call pool...
+			move.l	(sp)+,d1	; Get size back...
+			tst.l	d0		; Check for error
+			beq.s	avp_fail	; If NULL, failed!
+			move.l	d0,a0		; Get pointer...
+			move.l	d1,(a0)+	; Store size
+			move.l	a0,d0		; Get result
+	avp_fail:	rts			; return
+
+	;
+	; Function to do FreeVecPooled(pool,memory)
+	;
+	FreeVecPooled:	move.l	-(a1),d0	; Get size / ajust pointer
+			jmp	_LVOFreePooled(a6)
+
+    SEE ALSO
+	FreePooled(), CreatePool(), DeletePool()
 
 exec.library/AllocSignal                             exec.library/AllocSignal
 
@@ -951,7 +1142,7 @@ exec.library/WaitPort
 		    are available, this function returns -1.
 
    SEE ALSO
-	FreeSignal
+	FreeSignal()
 
 exec.library/AllocTrap                                 exec.library/AllocTrap
 
@@ -1004,7 +1195,7 @@ exec.library/WaitPort
 		  handler.
 
    SEE ALSO
-	FreeTrap
+	FreeTrap()
 
 exec.library/AllocVec                                   exec.library/AllocVec
 
@@ -1029,7 +1220,7 @@ exec.library/WaitPort
 	been filled.
 
    SEE ALSO
-	FreeVec, AllocMem
+	FreeVec(), AllocMem()
 
 exec.library/AttemptSemaphore                   exec.library/AttemptSemaphore
 
@@ -1055,6 +1246,53 @@ exec.library/WaitPort
 
     NOTE
 	This call does NOT preserve registers.
+
+   SEE ALSO
+	ObtainSemaphore() ObtainSemaphoreShared(), ReleaseSemaphore(),
+	exec/semaphores.h
+
+exec.library/AttemptSemaphoreShared       exec.library/AttemptSemaphoreShared
+
+   NAME
+	AttemptSemaphoreShared -- try to obtain without blocking       (V37)
+
+   SYNOPSIS
+	success = AttemptSemaphoreShared(signalSemaphore)
+	D0			         A0
+
+	LONG AttemptSemaphoreShared(struct SignalSemaphore *);
+
+   FUNCTION
+	This call is similar to ObtainSemaphoreShared(), except that it
+	will not block if the semaphore could not be locked.
+
+   INPUT
+       signalSemaphore -- an initialized signal semaphore structure
+
+   RESULT
+	success -- TRUE if the semaphore was granted, false if some
+	    other task already possessed the semaphore in exclusive mode.
+
+   NOTE
+	This call does NOT preserve registers.
+
+	Starting in V39 this call will grant the semaphore if the
+	caller is already the owner of an exclusive lock on the semaphore.
+	In pre-V39 systems this would not be the case.  If you need this
+	feature you can do the following workaround:
+
+	LONG myAttemptSempahoreShared(struct SignalSemaphore *ss)
+	{
+	LONG result;
+
+		/* Try for a shared semaphore */
+		if (!(result=AttemptSemaphoreShared(ss)))
+		{
+			/* Now try for the exclusive one... */
+			result=AttempSemaphore(ss);
+		}
+		return(result);
+	}
 
    SEE ALSO
 	ObtainSemaphore() ObtainSemaphoreShared(), ReleaseSemaphore(),
@@ -1170,7 +1408,7 @@ exec.library/WaitPort
 	SetFunction().
 
    SEE ALSO
-	exec/execbase.i, CacheControl, CacheClearU
+	exec/execbase.i, CacheControl(), CacheClearU()
 
 exec.library/CacheClearU                             exec.library/CacheClearU
 
@@ -1199,7 +1437,7 @@ exec.library/WaitPort
 			Loading code from disk
 
    SEE ALSO
-	exec/execbase.i, CacheControl, CacheClearE
+	exec/execbase.i, CacheControl(), CacheClearE()
 
 exec.library/CacheControl                           exec.library/CacheControl
 
@@ -1241,7 +1479,7 @@ exec.library/WaitPort
 	As a side effect, this function clears all caches.
 
    SEE ALSO
-	exec/execbase.i, CacheClearU, CacheClearE
+	exec/execbase.i, CacheClearU(), CacheClearE()
 
 exec.library/CachePostDMA                           exec.library/CachePostDMA
 
@@ -1280,8 +1518,16 @@ exec.library/WaitPort
 			thus there is no reason to flush the cache) set
 			this bit.
 
+			DMA_ReadFromRAM - Indicates that this DMA is a
+			read from RAM to the DMA device (ie - a write
+			to the hard drive)  This flag is not required
+			but if used must match in both the PreDMA and
+			PostDMA calls.  This flag *should* be used to
+			help the system provide the best performance.
+			This flag is safe in all versions of CachePostDMA()
+
    SEE ALSO
-	exec/execbase.i, CachePreDMA, CacheClearU, CacheClearE
+	exec/execbase.i, CachePreDMA(), CacheClearU(), CacheClearE()
 
 exec.library/CachePreDMA                             exec.library/CachePreDMA
 
@@ -1327,8 +1573,16 @@ exec.library/WaitPort
 			DMA_Continue - Indicates this call is to complete
 			a prior request that was broken up.
 
+			DMA_ReadFromRAM - Indicates that this DMA is a
+			read from RAM to the DMA device (ie - a write
+			to the hard drive)  This flag is not required
+			but if used must match in both the PreDMA and
+			PostDMA calls.  This flag *should* be used to
+			help the system provide the best performance.
+			This flag is safe in all versions of CachePreDMA()
+
    RESULTS
-	paddress- Physical address that coresponds to the input virtual
+	paddress- Physical address that corresponds to the input virtual
 		  address.
 	&length	- This length value will be updated to reflect the contiguous
 		  length of physical memory present at paddress.  This may
@@ -1343,7 +1597,7 @@ exec.library/WaitPort
 	on overlapping cache lines won't harm data.
 
    SEE ALSO
-	exec/execbase.i, CachePostDMA, CacheClearU, CacheClearE
+	exec/execbase.i, CachePostDMA(), CacheClearU(), CacheClearE()
 
 exec.library/Cause                                         exec.library/Cause
 
@@ -1394,10 +1648,10 @@ exec.library/WaitPort
 	CheckIO -- get the status of an IORequest
 
    SYNOPSIS
-	result = CheckIO(iORequest)
+	result = CheckIO(IORequest)
 	D0		 A1
 
-	BOOL CheckIO(struct IORequest *);
+	struct IORequest *CheckIO(struct IORequest *);
 
    FUNCTION
 	This function determines the current state of an I/O request and
@@ -1426,7 +1680,7 @@ exec.library/WaitPort
 	Instead simply set LN_TYPE to 0.
 
    SEE ALSO
-	DoIO, SendIO, WaitIO, AbortIO
+	DoIO(), SendIO(), WaitIO(), AbortIO()
 
 exec.library/CloseDevice                             exec.library/CloseDevice
 
@@ -1457,7 +1711,7 @@ exec.library/WaitPort
 	iORequest - pointer to an I/O request structure
 
    SEE ALSO
-	OpenDevice
+	OpenDevice()
 
 exec.library/CloseLibrary                           exec.library/CloseLibrary
 
@@ -1487,7 +1741,7 @@ exec.library/WaitPort
 	a return code from CloseLibrary.
 
    SEE ALSO
-	OpenLibrary
+	OpenLibrary()
 
 exec.library/ColdReboot                               exec.library/ColdReboot
 
@@ -1542,7 +1796,7 @@ exec.library/WaitPort
 		zero bytes
 
    SEE ALSO
-	CopyMemQuick
+	CopyMemQuick()
 
 exec.library/CopyMemQuick                           exec.library/CopyMemQuick
 
@@ -1574,7 +1828,7 @@ exec.library/WaitPort
 		zero bytes.
 
    SEE ALSO
-	CopyMem
+	CopyMem()
 
 exec.library/CreateIORequest                     exec.library/CreateIORequest
 
@@ -1583,7 +1837,7 @@ exec.library/WaitPort
 
    SYNOPSIS
 	ioReq = CreateIORequest( ioReplyPort, size );
-	                         A0           D0
+	 D0                       A0           D0
 
 	struct IORequest *CreateIORequest(struct MsgPort *, ULONG);
 
@@ -1602,7 +1856,7 @@ exec.library/WaitPort
 	ioReq - A pointer to the new IORequest block, or NULL.
 
    SEE ALSO
-	DeleteIORequest, CreateMsgPort(), amiga.lib/CreateExtIO()
+	DeleteIORequest(), CreateMsgPort(), amiga.lib/CreateExtIO()
 
 exec.library/CreateMsgPort                         exec.library/CreateMsgPort
 
@@ -1631,6 +1885,44 @@ exec.library/WaitPort
 
    SEE ALSO
 	DeleteMsgPort(), exec/AddPort(), exec/ports.h, amiga.lib/CreatePort()
+
+exec.library/CreatePool                               exec.library/CreatePool
+
+    NAME
+	CreatePool -- Generate a private memory pool header (V39)
+
+    SYNOPSIS
+	newPool=CreatePool(memFlags,puddleSize,threshSize)
+	d0                 d0       d1         d2
+
+	void *CreatePool(ULONG,ULONG,ULONG);
+
+    FUNCTION
+	Allocate and prepare a new memory pool header.	Each pool is a
+	separate tracking system for memory of a specific type.  Any number
+	of pools may exist in the system.
+
+	Pools automatically expand and shrink based on demand.	Fixed sized
+	"puddles" are allocated by the pool manager when more total memory
+	is needed.  Many small allocations can fit in a single puddle.
+	Allocations larger than the threshSize are allocation in their own
+	puddles.
+
+	At any time individual allocations may be freed.  Or, the entire
+	pool may be removed in a single step.
+
+    INPUTS
+	memFlags - a memory flags specifier, as taken by AllocMem.
+	puddleSize - the size of Puddles...
+	threshSize - the largest allocation that goes into normal puddles
+	             This *MUST* be less than or equal to puddleSize
+	             (CreatePool() will fail if it is not)
+
+    RESULT
+	The address of a new pool header, or NULL for error.
+
+    SEE ALSO
+	DeletePool(), AllocPooled(), FreePooled(), exec/memory.i
 
 exec.library/Deallocate                               exec.library/Deallocate
 
@@ -1669,7 +1961,7 @@ exec.library/WaitPort
 		   happens.
 
    SEE ALSO
-	Allocate, exec/memory.h
+	Allocate(), exec/memory.h
 
 exec.library/Debug                                         exec.library/Debug
 
@@ -1684,21 +1976,33 @@ exec.library/WaitPort
 
    FUNCTION
 	This function calls the system debugger.  By default this debugger
-	is "ROM-WACK".  Other debuggers are encouraged to take over this
-	entry point (via SetFunction()) so that when an application calls
-	Debug(), the alternative debugger will get control.  Currently a
-	zero is passed to allow future expansion.
+	is "SAD" in >= V39 and "ROM-WACK" in < V39.  Other debuggers are
+	encouraged to take over this entry point (via SetFunction()) so
+	that when an application calls Debug(), the alternative debugger
+	will get control.  Currently a zero is passed to allow future
+	expansion.
 
    NOTE
 	The Debug() call may be made when the system is in a questionable
 	state; if you have a SetFunction() patch, make few assumptions, be
 	prepared for Supervisor mode, and be aware of differences in the
-	Motorola stack frames on the 68000,'10,'20, and '30.
+	Motorola stack frames on the 68000,'10,'20,'30,'40 (etc.)
+
+   BUGS
+	In ROMWack, calling this function in SUPERVISOR state would have
+	caused the a5 register to be trashed and the user stack pointer to
+	be trashed.  As of V39 (and the instroduction of SAD) this is no
+	longer the case.  However, calling this function in Supervisor
+	state is a bit "tricky" at best...
+
+	Note that due to a bug, pre-V40 SAD had the command
+	codes wrong.  See the SAD autodoc for more details.
 
    SEE ALSO
-	SetFunction
-	your favorite debugger's manual
-	the ROM-WACK chapter of the ROM Kernel Manual
+	SetFunction()
+	your favorite debugger's manual...
+	the SAD autodocs...
+	the ROM-WACK chapter of the ROM Kernel Manual... (pre-V39)
 
 exec.library/DeleteIORequest                     exec.library/DeleteIORequest
 
@@ -1743,6 +2047,27 @@ exec.library/WaitPort
 
    SEE ALSO
 	CreateMsgPort(), amiga.lib/DeletePort()
+
+exec.library/DeletePool                               exec.library/DeletePool
+
+    NAME
+	DeletePool --  Drain an entire memory pool (V39)
+
+    SYNOPSIS
+	DeletePool(poolHeader)
+	           a0
+
+	void DeletePool(void *);
+
+    FUNCTION
+	Frees all memory in all pudles of the specified pool header, then
+	deletes the pool header.  Individual free calls are not needed.
+
+    INPUTS
+	poolHeader - as returned by CreatePool().
+
+    SEE ALSO
+	CreatePool(), AllocPooled(), FreePooled()
 
 exec.library/Disable                                     exec.library/Disable
 
@@ -1795,7 +2120,7 @@ exec.library/WaitPort
 	This call is guaranteed to preserve all registers.
 
     SEE ALSO
-	Forbid, Permit, Enable
+	Forbid(), Permit(), Enable()
 
 exec.library/DoIO                                           exec.library/DoIO
 
@@ -1835,7 +2160,7 @@ exec.library/WaitPort
 		return be checked.
 
    SEE ALSO
-	SendIO, CheckIO, WaitIO, AbortIO, amiga.lib/BeginIO
+	SendIO(), CheckIO(), WaitIO(), AbortIO(), amiga.lib/BeginIO
 
 exec.library/Enable                                       exec.library/Enable
 
@@ -1860,7 +2185,7 @@ exec.library/WaitPort
 	This call is guaranteed to preserve all registers.
 
    SEE ALSO
-	Forbid, Permit, Disable
+	Forbid(), Permit(), Disable()
 
 
 exec.library/Enqueue                                     exec.library/Enqueue
@@ -1887,11 +2212,11 @@ exec.library/WaitPort
 
    INPUTS
 	list - a pointer to the system queue header
-	node - the node to enqueue.  This must be a full featured list
+	node - the node to enqueue.  This must be a full featured node
 	       with type, priority and name fields.
 
    SEE ALSO
-	AddHead, AddTail, Insert, Remove, RemHead, RemTail
+	AddHead(), AddTail(), Insert(), Remove(), RemHead(), RemTail()
 
 exec.library/FindName                                   exec.library/FindName
 
@@ -1993,7 +2318,7 @@ exec.library/WaitPort
 		zero if none found.
 
     SEE ALSO
-	exec/resident.h, InitResident
+	exec/resident.h, InitResident()
 
 exec.library/FindSemaphore                         exec.library/FindSemaphore
 
@@ -2093,7 +2418,7 @@ exec.library/WaitPort
 	This call is guaranteed to preserve all registers.
 
     SEE ALSO
-	Permit, Disable, ObtainSemaphore, ObtainSemaphoreShared
+	Permit(), Disable(), ObtainSemaphore(), ObtainSemaphoreShared()
 
 exec.library/FreeEntry                                 exec.library/FreeEntry
 
@@ -2114,7 +2439,7 @@ exec.library/WaitPort
 		   structures
 
    SEE ALSO
-	AllocEntry
+	AllocEntry()
 
 exec.library/FreeMem                                     exec.library/FreeMem
 
@@ -2145,7 +2470,74 @@ exec.library/WaitPort
 		the system memory chunk size)
 
    SEE ALSO
-	AllocMem
+	AllocMem()
+
+exec.library/FreePooled                               exec.library/FreePooled
+
+    NAME
+	FreePooled -- Free pooled memory  (V39)
+
+    SYNOPSIS
+	FreePooled(poolHeader,memory,memSize)
+		   a0         a1     d0
+
+	void FreePooled(void *,void *,ULONG);
+
+    FUNCTION
+	Deallocates memory allocated by AllocPooled().  The size of the
+	allocation *MUST* match the size given to AllocPooled().
+	The reason the pool functions do not track individual allocation
+	sizes is because many of the uses of pools have small allocation
+	sizes and the tracking of the size would be a large overhead.
+
+	Only memory allocated by AllocPooled() may be freed with this
+	function!
+
+	Doing a DeletePool() on the pool will free all of the puddles
+	and thus all of the allocations done with AllocPooled() in that
+	pool.  (No need to FreePooled() each allocation)
+
+    INPUTS
+	memory - pointer to memory allocated by AllocPooled.
+	poolHeader - a specific private pool header.
+
+    NOTES
+	The pool function do not protect an individual pool from
+	multiple accesses.  The reason is that in most cases the pools
+	will be used by a single task.  If your pool is going to
+	be used by more than one task you must Semaphore protect
+	the pool from having more than one task trying to allocate
+	within the same pool at the same time.  Warning:  Forbid()
+	protection *will not work* in the future.  *Do NOT* assume
+	that we will be able to make it work in the future.  FreePooled()
+	may well break a Forbid() and as such can only be protected
+	by a semaphore.
+
+	To track sizes yourself, the following code can be used:
+	Assumes a6=ExecBase
+
+	;
+	; Function to do AllocVecPooled(Pool,memSize)
+	;
+	AllocVecPooled:	addq.l	#4,d0		; Get space for tracking
+			move.l	d0,-(sp)	; Save the size
+			jsr	_LVOAllocPooled(a6)	; Call pool...
+			move.l	(sp)+,d1	; Get size back...
+			tst.l	d0		; Check for error
+			beq.s	avp_fail	; If NULL, failed!
+			move.l	d0,a0		; Get pointer...
+			move.l	d1,(a0)+	; Store size
+			move.l	a0,d0		; Get result
+	avp_fail:	rts			; return
+
+	;
+	; Function to do FreeVecPooled(pool,memory)
+	;
+	FreeVecPooled:	move.l	-(a1),d0	; Get size / ajust pointer
+			jmp	_LVOFreePooled(a6)
+
+    SEE ALSO
+	AllocPooled(), CreatePool(), DeletePool()
 
 exec.library/FreeSignal                               exec.library/FreeSignal
 
@@ -2219,7 +2611,7 @@ exec.library/WaitPort
 	memoryBlock - pointer to the memory block to free, or NULL.
 
    SEE ALSO
-	AllocVec
+	AllocVec()
 
 exec.library/GetCC                                         exec.library/GetCC
 
@@ -2292,7 +2684,7 @@ exec.library/WaitPort
 		  Callers must be prepared for zero at any time.
 
    SEE ALSO
-	PutMsg, ReplyMsg, WaitPort, Wait, exec/ports.h
+	PutMsg(), ReplyMsg(), WaitPort(), Wait(), exec/ports.h
 
 exec.library/InitCode                                   exec.library/InitCode
 
@@ -2316,7 +2708,7 @@ exec.library/WaitPort
 	together at startup.  Modules are initialized in a prioritized order.
 
 	Modules that do not have a startclass should be of priority -120.
-	RTF_AFTERDOS modues should start at -100 (working down).
+	RTF_AFTERDOS modules should start at -100 (working down).
 
    INPUTS
 	startClass - the class of code to be initialized:
@@ -2391,7 +2783,7 @@ exec.library/WaitPort
 	      then NULL returned in D0.
 
    SEE ALSO
-	exec/resident.i, FindResident
+	exec/resident.i, FindResident()
 
 exec.library/InitSemaphore                         exec.library/InitSemaphore
 
@@ -2431,7 +2823,7 @@ exec.library/WaitPort
 
    SEE ALSO
 	ObtainSemaphore(), ObtainSemaphoreShared(), AttemptSemaphore(),
-	ReleaseSemaphore(), exec/semaphores.h
+	ReleaseSemaphore(), Procure(), Vacate(), exec/semaphores.h
 
 exec.library/InitStruct                               exec.library/InitStruct
 
@@ -2527,7 +2919,7 @@ exec.library/WaitPort
 	listNode - the node after which to insert
 
     SEE ALSO
-	AddHead, AddTail, Enqueue, RemHead, Remove, RemTail
+	AddHead(), AddTail(), Enqueue(), RemHead(), Remove(), RemTail()
 
 exec.library/MakeFunctions                         exec.library/MakeFunctions
 
@@ -2571,7 +2963,7 @@ exec.library/WaitPort
 	tableSize - size of the new table in bytes (for LIB_NEGSIZE).
 
    SEE ALSO
-	exec/MakeLibrary
+	MakeLibrary()
 
 exec.library/MakeLibrary                             exec.library/MakeLibrary
 
@@ -2634,7 +3026,74 @@ exec.library/WaitPort
 		  available, this function will return NULL.
 
    SEE ALSO
-	InitStruct, InitResident, exec/initializers.i
+	InitStruct(), InitResident(), exec/initializers.i
+
+exec.library/ObtainQuickVector                 exec.library/ObtainQuickVector
+
+   NAME
+	ObtainQuickVector -- obtain and install a Quick Interrupt vector (V39)
+
+   SYNOPSIS
+	vector=ObtainQuickVector(interruptCode)
+	d0                       a0
+
+	ULONG ObtainQuickVector(APTR);
+
+   FUNCTION
+	This function will install the code pointer into the quick interrupt
+	vector it allocates and returns to you the interrupt vector that
+	your Quick Interrupt system needs to use.
+
+	This function may also return 0 if no vectors are available.  Your
+	hardware should be able to then fall back to using the shared
+	interrupt server chain should this happen.
+
+	The interrupt code is a direct connect to the physical interrupt.
+	This means that it is the responsibility of your code to do all
+	of the context saving/restoring required by interrupt code.
+
+	Also, due to the performance of the interrupt controller, you may
+	need to also watch for "false" interrupts.  These are interrupts
+	that come in just after a DISABLE.  The reason this happens is
+	because the interrupt may have been posted before the DISABLE
+	hardware access is completed.  For example:
+
+	myInt:		move.l	d0,-(sp)	; Save d0...
+			move.w	_intenar,d0	; Get interrupt enable state
+			btst.l	#INTB_INTEN,d0	; Check if pending disable
+			bne.s	realInt		; If not, do real one...
+	exitInt:	move.l	(sp)+,d0	; Restore d0
+			rte			; Return from int...
+	;
+	realInt:	; Now do your int code...  d0 is already saved
+			; ALL other registers need to be saved if needed
+			; This includes a0/a1/d0/d1 as this is an interrupt
+			; and not a function call...
+			;
+			bra.s	exitInt		; Exit interrupt...
+
+	If your interrupt will not play with system (OS) structures and your
+	own structures are safe to play with you do not need to check for
+	the disable.  It is only needed for when the system is in disable but
+	that "one last interrupt" still got through.
+
+   NOTE
+	This function was not implemented fully until V39.  Due to a mis-cue
+	it is not safe to call in V37 EXEC.  (Sorry)
+
+   INPUTS
+	A pointer to your interrupt code.  This code is not an EXEC interrupt
+	but is dirrectly connected to the hardware interrupt.  Thus, the
+	interrupt code must not modify any registers and must return via
+	an RTE.
+
+   RESULTS
+	The 8-bit vector number used for Zorro-III Quick Interrupts
+	If it returns 0, no quick interrupt was allocatable.  The device
+	should at this point switch to using the shared interrupt server
+	method.
+
+   SEE ALSO
 
 exec.library/ObtainSemaphore                     exec.library/ObtainSemaphore
 
@@ -2683,7 +3142,7 @@ exec.library/WaitPort
 
    SEE ALSO
 	ObtainSemaphoreShared(), InitSemaphore(), ReleaseSemaphore(),
-	AttemptSemaphore(), ObtainSemaphoreList()
+	AttemptSemaphore(), ObtainSemaphoreList(), Procure(), Vacate()
 
 exec.library/ObtainSemaphoreList             exec.library/ObtainSemaphoreList
 
@@ -2719,7 +3178,8 @@ exec.library/WaitPort
        list -- a list of signal semaphores
 
    SEE ALSO
-	InitSemaphore(), ReleaseSemaphoreList()
+	ObtainSemaphoreShared(), InitSemaphore(), ReleaseSemaphore(),
+	AttemptSemaphore(), ObtainSemaphoreShared(), Procure(), Vacate()
 
 exec.library/ObtainSemaphoreShared         exec.library/ObtainSemaphoreShared
 
@@ -2764,6 +3224,25 @@ exec.library/WaitPort
 	A task owning a shared lock must not attempt to get an exclusive
 	lock on the same semaphore.
 
+	Starting in V39, if the caller already has an exclusive lock on the
+	semaphore it will return with another nesting of the lock.  Pre-V39
+	this would cause a deadlock.  For pre-V39 use, you can use the
+	following workaround:
+
+		/* Try to get the shared semaphore */
+		if (!AttemptSemaphoreShared(ss))
+		{
+			/* Check if we can get the exclusive version */
+			if (!AttemptSemaphore(ss))
+			{
+				/* Oh well, wait for the shared lock */
+				ObtainSemaphoreShared(ss));
+			}
+		}
+		:
+		:
+		ReleaseSemaphore(ss);
+
     INPUT
 	signalSemaphore -- an initialized signal semaphore structure
 
@@ -2774,7 +3253,8 @@ exec.library/WaitPort
     RESULT
 
     SEE ALSO
-	InitSemaphore(), ReleaseSemaphore()
+	ObtainSemaphore(), InitSemaphore(), ReleaseSemaphore(),
+	AttemptSemaphore(), ObtainSemaphoreList(), Procure(), Vacate()
 
 exec.library/OldOpenLibrary                       exec.library/OldOpenLibrary
 
@@ -2802,7 +3282,7 @@ exec.library/WaitPort
 	library - a library pointer for a successful open, else zero
 
    SEE ALSO
-	CloseLibrary
+	CloseLibrary()
 
 exec.library/OpenDevice                               exec.library/OpenDevice
 
@@ -2867,7 +3347,7 @@ exec.library/WaitPort
 	Now OpenDevice is protected from tasks.
 
    SEE ALSO
-	CloseDevice, DoIO, SendIO, CheckIO, AbortIO, WaitIO
+	CloseDevice(), DoIO(), SendIO(), CheckIO(), AbortIO(), WaitIO()
 
 exec.library/OpenLibrary                             exec.library/OpenLibrary
 
@@ -2886,8 +3366,8 @@ exec.library/WaitPort
 	if the library version is greater than or equal to the requested
 	version, then the open will succeed.
 
-	The device may exist in memory, or on disk; this is transparent to
-	the OpenDevice caller.  Only Processes are allowed to call
+	The library may exist in memory, or on disk; this is transparent to
+	the OpenLibrary caller.  Only Processes are allowed to call
 	OpenLibrary (since OpenLibrary may in turn call dos.library).
 
 	A full path name for the library name is legitimate.  For example
@@ -2927,7 +3407,7 @@ exec.library/WaitPort
 	match the version number of the library, or V36 may fail to load it.
 
    SEE ALSO
-	CloseLibrary
+	CloseLibrary()
 
 exec.library/OpenResource                           exec.library/OpenResource
 
@@ -2975,50 +3455,54 @@ exec.library/WaitPort
 	This call is guaranteed to preserve all registers.
 
     SEE ALSO
-	Forbid, Disable, Enable
+	Forbid(), Disable(), Enable()
 
 exec.library/Procure                                     exec.library/Procure
 
    NAME
-	Procure -- bid for a message lock (semaphore)
+	Procure -- bid for a semaphore                                   (V39)
 
    SYNOPSIS
-	result = Procure(semaphore, bidMessage)
-	D0		 A0	    A1
+	Procure(semaphore, bidMessage)
+		A0	    A1
 
-	BYTE Procure(struct Semaphore *, struct Message *);
+	VOID Procure(struct SignalSemaphore *, struct SemaphoreMessage *);
 
    FUNCTION
-	This function is used to obtain a message based semaphore lock.  If
-	the lock is immediate, Procure() returns a true result, and the
-	bidMessage is not used.   If the semaphore is already locked,
-	Procure() returns false, and the task must wait for the bidMessage
-	to arrive at its reply port.
+	This function is used to obtain a semaphore in an async manner.
+	Like ObtainSemaphore(), it will obtain a SignalSemaphore for you
+	but unlike ObtainSemaphore(), you will not block until you get
+	the semaphore.  Procure() will just post a request for the semaphore
+	and will return.  When the semaphore is available (which could
+	be at any time) the bidMessage will ReplyMsg() and you will own
+	the semaphore.  This lets you wait on multiple semaphores at once
+	and to continue processing while waiting for the semaphore.
 
-	Straight "Semaphores" use the message system.  They are therefore
-	queueable, and users may wait on several of them at the same time.
-	This makes them more powerful than "Signal Semaphores"
+	NOTE:  Pre-V39, Procure() and Vacate() did not work correctly.
+	They also did not operate on SignalSemaphore semaphores.
+	Old (and broken) MessageSemaphore use as of V39 will no longer work.
 
    INPUT
-	semaphore - a semaphore message port.  This port is used to queue
-	all pending lockers.  This port should be initialized with the
-	PA_IGNORE option, as the MP_SigTask field is used for a pointer to
-	the current locker message (not a task). New semaphore ports must
-	also have the SM_BIDS word initialized to -1.  If the semaphore is
-	public, it should be named, its priority set, and the added with
-	AddPort. Message port priority is often used for anti-deadlock
-	locking conventions.
-
-   RESULT
-	result - true when the semaphore is free.  In such cases no waiting
-	needs to be done.  If false, then the task should wait at its
-	bidMessage reply port.
+	semaphore - The SignalSemaphore that you wish to Procure()
+	bidMessage- The SemaphoreMessage that you wish replied when
+		you obtain access to the semaphore.  The message's
+		ssm_Semaphore field will point at the semaphore that
+		was obtained.  If the ssm_Semaphore field is NULL,
+		the Procure() was aborted via Vacate().
+		The mn_ReplyPort field of the message must point to
+		a valid message port.
+		To obtain a shared semaphore, the ln_Name field
+		must be set to 1.  For an exclusive lock, the ln_Name
+		field must be 0.  No other values are valid.
 
    BUGS
-	Procure() and Vacate() do not have proven reliability.
+	Before V39, Procure() and Vacate() used a different semaphore
+	system that was very broken.  This new system is only available
+	as of V39 even though the LVOs are the same.
 
    SEE ALSO
-	Vacate()
+	ObtainSemaphoreShared(), InitSemaphore(), ReleaseSemaphore(),
+	AttemptSemaphore(), ObtainSemaphoreList(), Vacate(), ObtainSemaphore()
 
 exec.library/PutMsg                                       exec.library/PutMsg
 
@@ -3064,7 +3548,7 @@ exec.library/WaitPort
 	message - pointer to a message
 
    SEE ALSO
-	GetMsg, ReplyMsg, exec/ports.h
+	GetMsg(), ReplyMsg(), exec/ports.h
 
 exec.library/RawDoFmt                                   exec.library/RawDoFmt
 
@@ -3276,7 +3760,7 @@ exec.library/WaitPort
 	device - pointer to a device node
 
    SEE ALSO
-	AddLibrary
+	AddLibrary()
 
 exec.library/RemHead                                     exec.library/RemHead
 
@@ -3305,7 +3789,7 @@ exec.library/WaitPort
 	node - the node removed or zero when empty list
 
    SEE ALSO
-	AddHead, AddTail, Enqueue, Insert, Remove, RemTail
+	AddHead(), AddTail(), Enqueue(), Insert(), Remove(), RemTail()
 
 exec.library/RemIntServer                           exec.library/RemIntServer
 
@@ -3335,7 +3819,7 @@ exec.library/WaitPort
 	cause a problem.
 
    SEE ALSO
-	AddIntServer, hardware/intbits.h
+	AddIntServer(), hardware/intbits.h
 
 exec.library/RemLibrary                               exec.library/RemLibrary
 
@@ -3376,6 +3860,33 @@ exec.library/WaitPort
    INPUTS
 	library - pointer to a library node structure
 
+exec.library/RemMemHandler                         exec.library/RemMemHandler
+
+   NAME
+	RemMemHandler - Remove low memory handler from exec              (V39)
+
+   SYNOPSIS
+	RemMemHandler(memHandler)
+	              A1
+
+	VOID RemMemHandler(struct Interrupt *);
+
+   FUNCTION
+	This function removes the low memory handler from the system.
+	This function can be called from within a handler.  If removing
+	oneself, it is important that the handler returns MEM_ALL_DONE.
+
+   NOTE
+	When removing a handler, the handler may be called until this
+	function returns.  Thus, the handler must still be valid until
+	then.
+
+   INPUTS
+	memHandler - Pointer to a handler added with AddMemHandler()
+
+   SEE ALSO
+	AddMemHandler(), exec/interrupts.i
+
 exec.library/Remove                                       exec.library/Remove
 
    NAME
@@ -3389,7 +3900,7 @@ exec.library/WaitPort
 
    FUNCTION
 	Unlink a node from whatever list it is in.  Nodes that are not part
-	of a list must not be passed to this funcion!  Assembly programmers
+	of a list must not be passed to this function!  Assembly programmers
 	may prefer to use the REMOVE macro from "exec/lists.i".
 
    WARNING
@@ -3400,7 +3911,7 @@ exec.library/WaitPort
 	node - the node to remove
 
    SEE ALSO
-	AddHead, AddTail, Enqueue, Insert, RemHead, RemTail
+	AddHead(), AddTail(), Enqueue(), Insert(), RemHead(), RemTail()
 
 exec.library/RemPort                                     exec.library/RemPort
 
@@ -3422,7 +3933,7 @@ exec.library/WaitPort
 	port - pointer to a message port
 
    SEE ALSO
-	AddPort, FindPort
+	AddPort(), FindPort()
 
 exec.library/RemResource                             exec.library/RemResource
 
@@ -3443,7 +3954,7 @@ exec.library/WaitPort
 	resource - pointer to a resource node
 
    SEE ALSO
-	AddResource
+	AddResource()
 
 exec.library/RemSemaphore                           exec.library/RemSemaphore
 
@@ -3465,7 +3976,7 @@ exec.library/WaitPort
        signalSemaphore -- an initialized signal semaphore structure
 
    SEE ALSO
-	AddSemaphore, FindSemaphore
+	AddSemaphore(), FindSemaphore()
 
 
 exec.library/RemTail                                     exec.library/RemTail
@@ -3495,7 +4006,7 @@ exec.library/WaitPort
 	node - the node removed or zero when empty list
 
    SEE ALSO
-	AddHead, AddTail, Enqueue, Insert, Remove, RemHead, RemTail
+	AddHead(), AddTail(), Enqueue(), Insert(), Remove(), RemHead()
 
 exec.library/RemTask                                     exec.library/RemTask
 
@@ -3529,7 +4040,7 @@ exec.library/WaitPort
 	RemTask() with Forbid()/Permit().
 
    SEE ALSO
-	AddTask, exec/AllocEntry, amiga.lib/DeleteTask
+	AddTask(), AllocEntry(), amiga.lib/DeleteTask()
 
 exec.library/ReplyMsg                                   exec.library/ReplyMsg
 
@@ -3557,10 +4068,10 @@ exec.library/WaitPort
 	1> Places "NT_REPLYMSG" into LN_TYPE.
 	2> Puts the message to the port specified by MN_REPLYPORT
 	   If there is no replyport, sets LN_TYPE to "NT_FREEMSG" (use this
-	   feature only with extreeme care).
+	   feature only with extreme care).
 
    SEE ALSO
-	GetMsg, PutMsg, exec/ports.h
+	GetMsg(), PutMsg(), exec/ports.h
 
 exec.library/SendIO                                       exec.library/SendIO
 
@@ -3586,7 +4097,7 @@ exec.library/WaitPort
 		    extended IORequest.
 
    SEE ALSO
-	DoIO, CheckIO, WaitIO, AbortIO
+	DoIO(), CheckIO(), WaitIO(), AbortIO()
 
 exec.library/SetExcept                                 exec.library/SetExcept
 
@@ -3636,7 +4147,7 @@ exec.library/WaitPort
 	    SetExcept($1374,$1074)
 
    SEE ALSO
-	Signal, SetSignal
+	Signal(), SetSignal()
 
 exec.library/SetFunction                             exec.library/SetFunction
 
@@ -3772,7 +4283,7 @@ exec.library/WaitPort
 		}
 
    SEE ALSO
-	Signal, Wait
+	Signal(), Wait()
 
 exec.library/SetSR                                         exec.library/SetSR
 
@@ -3851,7 +4362,7 @@ exec.library/WaitPort
 	made ready and a reschedule will occur. If the task is not waiting
 	for any of these signals, the signals will be posted to the task
 	for possible later use. A signal may be sent to a task regardless
-	of whether its running, ready, or waiting.
+	of whether it is running, ready, or waiting.
 
 	This function is considered "low level".  Its main purpose is to
 	support multiple higher level functions like PutMsg.
@@ -3863,7 +4374,7 @@ exec.library/WaitPort
 	signals - the signals to be sent
 
    SEE ALSO
-	Wait, SetSignal
+	Wait(), SetSignal()
 
 exec.library/StackSwap                                 exec.library/StackSwap
 
@@ -3903,7 +4414,7 @@ exec.library/WaitPort
 		will effectively do nothing.
 
    SEE ALSO
-	AddTask, RemTask, exec/tasks.h
+	AddTask(), RemTask(), exec/tasks.h
 
 exec.library/SumKickData                             exec.library/SumKickData
 
@@ -3982,7 +4493,7 @@ exec.library/WaitPort
 	A call to CacheClearU will do fine.
 
    SEE ALSO
-	InitResident, FindResident
+	InitResident(), FindResident()
 
 exec.library/SumLibrary                               exec.library/SumLibrary
 
@@ -4011,7 +4522,7 @@ exec.library/WaitPort
 	An alert will occur if the checksum fails.
 
    SEE ALSO
-	SetFunction
+	SetFunction()
 
 exec.library/SuperState                               exec.library/SuperState
 
@@ -4037,7 +4548,7 @@ exec.library/WaitPort
 		      is already in supervisor mode, oldSysStack is zero.
 
    SEE ALSO
-	UserState/Supervisor
+	UserState(), Supervisor()
 
 
 exec.library/Supervisor                               exec.library/Supervisor
@@ -4072,7 +4583,7 @@ exec.library/WaitPort
 	result   - Whatever values the userFunc left in the registers.
 
    SEE ALSO
-	SuperState,UserState
+	SuperState(),UserState()
 
 exec.library/TypeOfMem                                 exec.library/TypeOfMem
 
@@ -4134,34 +4645,50 @@ exec.library/WaitPort
 	This function is broken in V33/34 Kickstart.  Fixed in V1.31 setpatch.
 
    SEE ALSO
-	SuperState/Supervisor
+	SuperState(), Supervisor()
 
 exec.library/Vacate                                       exec.library/Vacate
 
    NAME
-	Vacate -- release a message lock (semaphore)
+	Vacate -- release a bitMessage from Procure()                    (V39)
 
    SYNOPSIS
-	Vacate(semaphore)
-	       A0
+	Vacate(semaphore, bidMessage)
+	       A0         A1
 
-	void Vacate(struct Semaphore *);
+	void Vacate(struct SignalSemaphore *,struct SemaphoreMessage *);
 
    FUNCTION
-	This function releases a previously locked semaphore (see
-	the Procure() function).
-	If another task is waiting for the semaphore, its bidMessage
-	will be sent to its reply port.
+	This function can be used to release a semaphore obtained via
+	Procure().  However, the main purpose for this call is to be
+	able to remove a bid for a semaphore that has not yet responded.
+	This is required when a Procure() was issued and the program
+	no longer needs to get the semaphore and wishes to cancel the
+	Procure() request.  The canceled request will be replied with
+	the ssm_Semaphore field set to NULL.  If you own the semaphore,
+	the message was already replied and only the ssm_Semaphore field
+	will be cleared.
+
+	NOTE:  Pre-V39, Procure() and Vacate() did not work correctly.
+	They also did not operate on SignalSemaphore semaphores.
+	Old (and broken) MessageSemaphore use as of V39 will no longer work.
 
    INPUT
-	semaphore - the semaport message port representing the
-	semaphore to be freed.
+	semaphore - The SignalSemaphore that you wish to Vacate()
+	bidMessage- The SemaphoreMessage that you wish to abort.
+		The message's ssm_Semaphore field will be cleared.
+		The message will be replied if it is still on the waiting
+		list.  If it is not on the waiting list, it is assumed
+		that the semaphore is owned and it will be released.
 
    BUGS
-	Procure() and Vacate() do not have proven reliability.
+	Before V39, Procure() and Vacate() used a different semaphore
+	system that was very broken.  This new system is only available
+	as of V39 even though the LVOs are the same.
 
    SEE ALSO
-	Procure
+	ObtainSemaphoreShared(), InitSemaphore(), ReleaseSemaphore(),
+	AttemptSemaphore(), ObtainSemaphoreList(), Procure(), ObtainSemaphore()
 
 exec.library/Wait                                           exec.library/Wait
 
@@ -4237,7 +4764,7 @@ exec.library/WaitPort
 		(a sign extended copy of io_Error).
 
    SEE ALSO
-	DoIO, SendIO, CheckIO, AbortIO
+	DoIO(), SendIO(), CheckIO(), AbortIO()
 
 exec.library/WaitPort                                   exec.library/WaitPort
 
@@ -4274,6 +4801,465 @@ exec.library/WaitPort
 	message - a pointer to the first available message
 
    SEE ALSO
-	GetMsg
+	GetMsg()
+
+SAD/--Overview--                                             SAD/--Overview--
+
+	Simple Amiga Debugging Kernel, known as "SAD"
+	It is in EXEC starting in V39
+
+
+		-- General description --
+
+ The Simple Amiga Debugging Kernel (SAD) is a set of very simple control
+ routines stored in the Kickstart ROM that would let debuggers control the
+ Amiga's development enviroment from the outside.  These tools would make
+ it possible to do remote machine development/debugging via just the
+ on-board serial port.
+
+ This set of control routines is very simple and yet completely flexible,
+ thus making it possible to control the whole machine.
+
+
+		-- Technical Issues --
+
+ SAD will make use of the motherboard serial port that exists in all
+ Amiga systems.  The connection via the serial port lets the system be
+ able to execute SAD without needing any of the system software up and
+ running. (SAD will play with the serial port directly)
+
+ With some minor changes to the Amiga hardware, an NMI-like line could
+ be hooked up to a pin on the serial port.  This would let external
+ control of the machine and would let the external controller stop the
+ machine no matter what state it is in.  (NMI is that way)
+
+ In order to function correctly, SAD requires the some of the EXEC
+ CPU control functions work and that ExecBase be valid.  Beyond that,
+ SAD does not require the OS to be running.
+
+
+		-- Command Overview --
+
+ The basic commands needed to operate SAD are as follows:
+
+ Read and Write memory as byte, word, and longword.
+ Get the register frame address (contains all registers)
+ JSR to Address
+ Return to system operation  (return from interrupt)
+
+ These basic routines will let the system do whatever is needed.
+ Since the JSR to address and memory read/write routines can be used
+ to download small sections of code that could be used to do more
+ complex things, this basic command set is thus flexible enough
+ to even replace itself.
+
+ Caches will automatically be flushed as needed after each write.
+ (A call to CacheClearU() will be made after the write and before
+ the command done sequence)
+
+
+		-- Technical Command Descriptions --
+
+ Since the communications with SAD is via a serial port, data formats
+ have been defined for minimum overhead while still giving reasonable data
+ reliability.  SAD will use the serial port at default 9600 baud but the
+ external tools can change the serial port's data rate if it wishes.  It
+ would need to make sure that it will be able to reconnect.  SAD sets
+ the baud rate to 9600 each time it is entered.  However, while within
+ SAD, a simple command to write a WORD to the SERPER register would
+ change the baud rate.  This will remain in effect until you exit and
+ re-enter SAD or until you change the register again.  (This can be usefull
+ if you need to transfer a large amount of data)
+
+ All commands have a basic format that they will follow.  All commands have
+ both an ACK and a completion message.
+
+ Basic command format is:
+
+ SENDER:	$AF <command byte> [<data bytes as needed by command>]
+
+ Receive:
+ Command ACK:  $00 <command byte>
+
+ Command Done: $1F <command byte> [<data if needed>]
+
+ Waiting: $53 $41 $44 $BF
+
+ Waiting when called from Debug():	$53 $41 $44 $3F
+
+ Waiting when in dead-end crash:	$53 $41 $44 $21
+
+ The data sequence will be that SAD will emit a $BF and then wait for a
+ command. If no command is received within <2> seconds, it will emit $BF
+ again and loop back.  (This is the "heart beat" of SAD)  When called from
+ Debug() and not the NMI hook, SAD will use $3F as the "heart beat"
+
+ If SAD does not get a responce after <10> heartbeats, it will return to
+ the system.  (Execute an RTS or RTE as needed)  This is to prevent a full
+ hang.  The debugger at the other end can keep SAD happy by sending a
+ NO-OP command.
+
+ All I/O in SAD times out.  During the transmition of a command, if
+ more than 2 seconds pass between bytes of data SAD will time out
+ and return to the prompt.  This is mainly to help make sure that
+ SAD can never get into an i-loop situation.
+
+
+		-- Data Structure Issues --
+
+ While executing in SAD, you may have full access to machine from the CPU
+ standpoint.  However, this could also be a problem.  It is important to
+ understand that when entered via NMI that many system lists may be in
+ unstable state.  (NMI can happen in the middle of the AllocMem routine
+ or task switch, etc)
+
+ Also, since you are doing debugging, it is up to you to determin what
+ operations can be done and what can not be done.  A good example is
+ that if you want to write a WORD or LONG that the address will need to
+ be even on 68000 processors.  Also, if you read or write memory that does
+ not exist, you may get a bus error.  Following system structures may
+ require that you check the pointers at each step.
+
+ When entered via Debug(), you are now running as a "task" so you will
+ be able to assume some things about system structures.  This means that
+ you are in supervisor state and that you can assume that the
+ system is at least not between states.  However, remember that since
+ you are debugging the system, some bad code could cause data structures
+ to be invalid.  Again, standard debugging issues are in play.  SAD just
+ gives you the hooks to do whatever you need.
+
+ Note:  When SAD prompts with $BF you will be in full disable/forbid
+ state.  When $3F prompting, SAD will only do a Forbid().  It is possible
+ for you to then disable interrupts as needed.  This is done such that it
+ is possible to "run" the system from SAD when called with Debug().
+
+
+		-- Data Frames and the Registers --
+
+ SAD generates a special data frame that can be used to read what
+ registers contain and to change the contents of the registers.
+ See the entry for GET_CONTEXT_FRAME for more details
+
+ ----------------------------------------------------------------------------
+-
+
+ BUGS
+	In V39 EXEC, the WRITE_BYTE command was not connected and this
+	caused all of the command numbers to be off-by-one.  For example,
+	the READ_WORD command is listed as command $05 but in V39 is $04.
+	However, the ACK of the commands are still correct.
+
+	Also, in V39 EXEC, the READ_WORD command would return the wrong
+	data.
+
+	To determin if you are in V39 or V40 SAD, you can issue a simple
+	SAD command at the start of the session.  By sending a READ_WORD
+	command, you may either get a READ_WORD (V40) or a READ_LONG (V39)
+	ACK'ed back.  So the data stream for a safe test would be:
+
+	Send: $AF $05 $00 $F8 $00 $00               ; Read start of ROM...
+	Recv: $00 $05 ....   You have V40 SAD
+	Recv: $00 $06 ....   You have V39 SAD
+
+	Note that you should be ready to read either 2 or 4 bytes of
+	result depending on the ACK sent by the system.
+
+SAD/ALLOCATE_MEMORY                                       SAD/ALLOCATE_MEMORY
+
+ ALLOCATE MEMORY
+
+ Command:	$AF $0A
+ Data:		$qq $rr $ss $tt $hh $ii $jj $kk
+
+ Allocate a chunk of memory that is <$qqrrsstt> bytes in size.  Note
+ that this call is only safe when SAD is in $3F prompting mode (called
+ from Debug()) and even then may be unsafe if the system is in bad shape.
+ (You are debugging after all)  The returned address will be available to
+ you until you release it.  (It is obtained via a call to AllocVec())  The
+ type of memory allocated is <$hhiijjkk>.  Note that the allocation may
+ fail. In that case, the address returned will be $00000000.
+
+ Command ACK:	$00 $0A
+ Command DONE:	$1F $0A $ww $xx $yy $zz
+
+
+SAD/CALL_ADDRESS                                             SAD/CALL_ADDRESS
+
+ CALL ADDRESS - JSR to the given address.
+
+ Command:	$AF $07
+ Data:		$ww $xx $yy $zz
+
+ Call the following address as a subroutine.  No registers will be
+ set up but the context frame will exist.  Standard calling
+ conventions apply (d0/d1/a0/a1 are available, rest must be saved)
+ The command will be ACK'ed when received.
+ Command ACK:	$00 $07
+ Command DONE:	$1F $07
+
+
+SAD/FREE_MEMORY                                               SAD/FREE_MEMORY
+
+ FREE MEMORY
+
+ Command:	$AF $0B
+ Data:		$ww $xx $yy $zz
+
+ Free the memory allocated with the ALLOCATE MEMORY command.  This command
+ has the same restrictions as ALLOCATE MEMORY.  Memory is released by
+ calling FreeVec() on the address <$wwxxyyzz>
+
+ Command ACK:	$00 $0B
+ Command DONE:	$1F $0B
+
+
+SAD/GET_CONTEXT_FRAME                                   SAD/GET_CONTEXT_FRAME
+
+ GET CONTEXT FRAME
+
+ Command:	$AF $09
+ Data:		<none>
+
+ This command will return a pointer to the saved context.  This will be
+ a pointer to all of the registers that were saved on the stack along
+ with some other details.  Returns frame address <$wwxxyyzz>
+
+ The pointer returned is to the following structure:
+
+ STRUCTURE	SAD_FRAME,0
+	; The first three are READ-ONLY...  Mainly used to make it
+	; easier to understand what is going on in the system.
+	ULONG	SAD_VBR		; Current VBR (always 0 on 68000 CPUs)
+	ULONG	SAD_AttnFlags	; ULONG copy of the flags (UPPER WORD==0)
+	ULONG	SAD_ExecBase	; ExecBase
+	; These fields are the user registers...  The registers are
+	; restored from these fields on exit from SAD...
+	; Note that USP is only valid if SR was *NOT* supervisor...
+	ULONG	SAD_USP		; User stack pointer
+	ULONG	SAD_D0		; User register d0
+	ULONG	SAD_D1		; User register d1
+	ULONG	SAD_D2		; User register d2
+	ULONG	SAD_D3		; User register d3
+	ULONG	SAD_D4		; User register d4
+	ULONG	SAD_D5		; User register d5
+	ULONG	SAD_D6		; User register d6
+	ULONG	SAD_D7		; User register d7
+	ULONG	SAD_A0		; User register a0
+	ULONG	SAD_A1		; User register a1
+	ULONG	SAD_A2		; User register a2
+	ULONG	SAD_A3		; User register a3
+	ULONG	SAD_A4		; User register a4
+	ULONG	SAD_A5		; User register a5
+	ULONG	SAD_A6		; User register a6
+	; This is for SAD internal use...  It is the prompt that
+	; SAD is using...  Changing this will have no effect on SAD.
+	ULONG	SAD_PROMPT	; SAD Prompt Longword...  (internal use)
+	; From here on down is the standard exception frame
+	; The first two entries (SR and PC) are standard on all 680x0 CPUs
+	UWORD	SAD_SR		; Status register (part of exception frame)
+	ULONG	SAD_PC		; Return address (part of exception frame)
+
+
+ Command ACK:	$00 $09
+ Command DONE:	$1F $09 $ww $xx $yy $zz
+
+
+SAD/NOP                                                               SAD/NOP
+
+ NO-OP - Do nothing other than tell SAD you are still there...
+
+ Command:	$AF $00
+ Data:		<none>
+
+ This just tells SAD you are still there.  Required so that timeouts do
+ not exit SAD while you are not doing anything.
+
+ This command will *NOT* be ACK'ed.  It will just cause the timeout to
+ be restarted.
+
+
+SAD/READ_ARRAY                                                 SAD/READ_ARRAY
+
+ READ ARRAY - Read a range of bytes
+
+ Command:	$AF $0F
+ Data:		$ww $xx $yy $zz $qq $rr $ss $tt
+
+ Read a range of bytes from address <$wwxxyyzz> for <$qqrrsstt> bytes
+ Will return that number of bytes...
+
+ Command will be ACK'ed when received.
+ Command ACK:	$00 $0F
+ Command DONE:	$1F $0F $uu [$uu ...]
+
+
+SAD/READ_BYTE                                                   SAD/READ_BYTE
+
+ READ BYTE - Read a byte from the given address
+
+ Command:	$AF $04
+ Data:		$ww $xx $yy $zz
+
+ Read a byte from address <$wwxxyyzz>  Returns <$qq> as result
+
+ Command will be ACK'ed when received.
+ Command ACK:	$00 $04
+ Command DONE:	$1F $04 $qq
+
+
+SAD/READ_LONG                                                   SAD/READ_LONG
+
+ READ LONG - Read a long from the given address
+
+ Command:	$AF $06
+ Data:		$ww $xx $yy $zz
+
+ Read a long from address <$wwxxyyzz>  Returns <$qqrrsstt> as result
+
+ Command will be ACK'ed when received.
+ Command ACK:	$00 $06
+ Command DONE:	$1F $06 $qq $rr $ss $tt
+
+
+SAD/READ_WORD                                                   SAD/READ_WORD
+
+ READ WORD - Read a word from the given address		(V40 SAD)
+
+ Command:	$AF $05
+ Data:		$ww $xx $yy $zz
+
+ Read a word from address <$wwxxyyzz>  Returns <$qqrr> as result
+
+ Command will be ACK'ed when received.
+ Command ACK:	$00 $05
+ Command DONE:	$1F $05 $qq $rr
+
+ BUGS
+	This command does not return correct values in pre-V40 EXEC.
+
+SAD/RESET                                                           SAD/RESET
+
+ RESET - Reset the computer...
+
+ Command:	$AF $10
+ Data:		$FF $FF $FF $FF
+
+ This command will reset the computer.  the $FFFFFFFF value is there
+ mainly to prevent false reset.  This command will only be ACK'ed as
+ the computer will be reset afterwards...
+
+ Command will be ACK'ed when received.
+ Command ACK:	$00 $10
+
+
+SAD/RETURN_TO_SYSTEM                                     SAD/RETURN_TO_SYSTEM
+
+ RETURN TO SYSTEM
+
+ Command:	$AF $08
+ Data:		$00 $00 $00 $00
+
+ This command will return <exit> from SAD back to whatever started it.
+ The 4 $00 are required as a "safty" to this command.  The command
+ will be ACK'ed only as it will have lost control of the system.
+
+ Command ACK:	$00 $08
+
+
+SAD/TURN_OFF_SINGLE                                       SAD/TURN_OFF_SINGLE
+
+ TURN OFF SINGLE STEPPING
+
+ Command:	$AF $0D
+ Data:		$ww $xx $yy $zz
+
+ This command will turn off SAD single stepping mode.  You need to pass
+ to it the address returned from the call to turn on single stepping mode.
+
+ Command ACK:	$00 $0D
+ Command DONE:	$1F $0D
+
+
+SAD/TURN_ON_SINGLE                                         SAD/TURN_ON_SINGLE
+
+ TURN ON SINGLE STEPPING
+
+ Command:	$AF $0C
+ Data:		<none>
+
+ This command will turn on SAD single stepping mode.  This means that SAD
+ will single step (via 68000 trace mode) the system.  SAD will take over
+ the TRACE exception vector during this time.  This command will return
+ the contents of the vector such that you can return this value when
+ you wish to turn off single stepping mode.  Note that turning on single
+ stepping mode while in $BF prompting will cause the step to be taken
+ and then SAD will execute in $3F mode (non-NMI)
+ The command returns <$wwxxyyzz> which you must use when turning off
+ the single-step mode.
+
+ Command ACK:	$00 $0C
+ Command DONE:	$1F $0C $ww $xx $yy $zz
+
+
+SAD/WRITE_ARRAY                                               SAD/WRITE_ARRAY
+
+ WRITE ARRAY - Write a range of bytes
+
+ Command:	$AF $0E
+ Data:		$ww $xx $yy $zz $qq $rr $ss $tt
+
+ Write a range of bytes to address <$wwxxyyzz> for <$qqrrsstt> bytes
+ After the computer sends the ACK, you must then send the byte stream...
+
+ Command will be ACK'ed when received.
+ Command ACK:	$00 $0E
+ Command DONE:	$1F $0E
+
+
+SAD/WRITE_BYTE                                                 SAD/WRITE_BYTE
+
+ WRITE BYTE - Write the given data to the address given	(V40 SAD)
+
+ Command:	$AF $01
+ Data:		$ww $xx $yy $zz $qq
+
+ Write the byte <$qq> to address <$wwxxyyzz>
+
+ Command will be ACK'ed when received.
+ Command ACK:	$00 $01
+ Command DONE:	$1F $01
+
+ BUGS
+	This command does not exists in pre-V40 EXEC.
+	This command can be emulated with the WRITE_ARRAY command with
+	a length of 1.
+
+SAD/WRITE_LONG                                                 SAD/WRITE_LONG
+
+ WRITE LONG - Write the given data to the address given
+
+ Command:	$AF $03
+ Data:		$ww $xx $yy $zz $qq $rr $ss $tt
+
+ Write the long <$qqrrsstt> to address <$wwxxyyzz>
+
+ Command will be ACK'ed when received.
+ Command ACK:	$00 $03
+ Command DONE:	$1F $03
+
+
+SAD/WRITE_WORD                                                 SAD/WRITE_WORD
+
+ WRITE WORD - Write the given data to the address given
+
+ Command:	$AF $02
+ Data:		$ww $xx $yy $zz $qq $rr
+
+ Write the word <$qqrr> to address <$wwxxyyzz>
+
+ Command will be ACK'ed when received.
+ Command ACK:	$00 $02
+ Command DONE:	$1F $02
+
 
 
