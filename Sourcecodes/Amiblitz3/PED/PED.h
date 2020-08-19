@@ -1,4 +1,6 @@
+#define SMALL SIZE 0x2
 #define MY DEFAULT-FONT 0x1
+#define MIDDLE SIZE 0x3
 #define KSERVICES 0x1
 #define AMIBLITZ3_LOGO 0x2
 #define WIN_INSTRUCTIONBROWSER 0x1
@@ -170,11 +172,9 @@
 #define WIN_HELP 0x7
 #define WIN_HELP_GADGETS 0x1
 #define WIN_WELCOME 0x8
-#define WIN_WELCOME_GADGETS 0x26
+#define WIN_WELCOME_GADGETS 0x29
 #define KEYVISUAL 0x2
 #define WELCOME_IMAGE 0x4
-#define LINE 0x8
-#define LINE2 0x11
 #define LDATA 0x16
 #define LCOMPILER 0x17
 #define LPED 0x18
