@@ -22,8 +22,11 @@ Everything you need as of:
 
 ## Where do I get further informations about it all?
 Try the following sources:
+
 https://www.facebook.com/groups/342460143062811 | english facebook-group
+
 https://www.amiblitz.de                         | various documentation about AmiBlitz3 (outdated)
+
 https://www.amiforce.de                         | additional information and fora
 
 
