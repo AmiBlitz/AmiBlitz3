@@ -8,7 +8,7 @@ What we have got here is the complete package of AmiBlitz3 - a BASIC-compiler fo
 - Workbench 2.1 (or, Workbench 2.04 with locale.library)
 
 ## Installation:
-To get started with AB3, just download the [current release](https://github.com/AmiBlitz/AmiBlitz3/releases/tag/v3.7.4) and extract it somewhere on your harddisk.
+To get started with AB3, just download the [current release](https://github.com/AmiBlitz/AmiBlitz3/releases/tag/v3.8.0) and extract it somewhere on your harddisk.
 You may copy the OS-libraries in Libs-Drawer to system's "Libs"-drawer before starting, otherwise the IDE will complain about mission OS-libraries.
 
 ## What this package contains:
@@ -22,8 +22,11 @@ Everything you need as of:
 
 ## Where do I get further informations about it all?
 Try the following sources:
+
 https://www.facebook.com/groups/342460143062811 | english facebook-group
+
 https://www.amiblitz.de                         | various documentation about AmiBlitz3 (outdated)
+
 https://www.amiforce.de                         | additional information and fora
 
 
