@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.8.0
-; NumberOfBuilds  = 371
+; NumberOfBuilds  = 458
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 17711
-; CursorColumn    = 1
-; LabelSearch     = "intuiti"
+; CursorLine      = 14843
+; CursorColumn    = 36
+; LabelSearch     = "print_statustext"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -405,7 +405,8 @@ Function.w cursorStyleGetValue{stylestring.s}
 End Function
 ; -----------------------------------------------------------------------
 
-Dim operators$(32)              ; Feld zum ablegen der Zeichen, die strukturiert werden sollen
+
+Dim operators$(32)                  ; array to store characters to structurize (auto_format-option)
 SHARED num_operators.b
 Restore key_chars
 Repeat
@@ -419,13 +420,12 @@ Until key_char$ = ""
 key_chars:
 Data.s "=",":","<",">","+","-","/","*","&","|",";",""
 
-Dim chartab.b(129)
-For i.l = 1 To 127                                        ; set type to .l to make it Syntax 6 compatible  tomsmart1
-  a$ = Chr$(i)
-  a$ = LCase$(a$)
-  chartab(i) = Asc(a$)
+Dim lowerchars.b(129)                  ; create a chartable with all characters lowercase
+For i.l = 1 To 127
+  a$ = LCase$(Chr$(i))
+  lowerchars(i) = Asc(a$)
 Next
-Poke.l ?comparetab,&chartab(0) ; make it basic!
+Poke.l ?lowerchartable,&lowerchars(0)      ; make it basic!
 Poke.b ?casemode,1
 CaseSense Off
 
@@ -575,11 +575,14 @@ Function.b CheckChr{char$,table$}
   Function Return False
 End Function
 
-Function.s TEDGetWordAtPos{text$, textX.w}
+Function.s PED_GetWordAtPos{text$, textX.w}
   ;*textline.l = TEDGetCurrentLine{} + 9
   ;*detokened.l = TEDDetoke{*textline}
   ;text$ = Peek$(*detokened)
   tlen.w = FLen(text$)
+  If tlen < 2 Then Function Return ""
+
+  If Mid$(text$,textX,1) = "" Then Function Return ""
 
   result$ = "" : char$ =""
   cursorpos.w = textX
@@ -1722,7 +1725,6 @@ End Statement
 ; -------------------------------------------------------------------------------------
 ; START DER PROGRAMM ROUTINE
 ; -------------------------------------------------------------------------------------
-
 .STARTUP_PED
 !log_AvailMem{"at PED start"}
 FindScreen 0
@@ -2091,6 +2093,9 @@ a$ = dos_GetProgIcon{dos_AddPart{default_assign$,"AmiBlitz3"} }   ;  replaces ha
   sourcedir$       = dos_GetToolString{"SOURCEDIR"  ,dos_AddPart{my_maindir$,"Sourcecodes"}} : Poke.l ?ptr_source_dir,&sourcedir$
   addonprefs$      = dos_GetToolString{"WINDOWPREFS",dos_AddPart{my_maindir$,"System/ped_addon.prefs"}} : Poke.l ?ptr_source_dir,&sourcedir$
 
+  pedhistoryfile$ = dos_AddPart{my_systemdir$,"PED.history"}
+  pedmenufile$ = dos_AddPart{my_systemdir$,"PED.menus"}
+
   CLR.l ptr_deflibsfilename
   deflibfile$      = dos_GetToolString{"LIBFILE",dos_AddPart{my_blitzlibsdir$,"DefLibs"}} : Poke.l ?ptr_deflibsfilename,&deflibfile$
   If dos_Exist{deflibfile$}
@@ -2101,11 +2106,6 @@ a$ = dos_GetProgIcon{dos_AddPart{default_assign$,"AmiBlitz3"} }   ;  replaces ha
   End If
   deflibdate$  = StrChg(deflibdate$,"/",".")
   acidlibdate$ = StrChg(dos_GetFileDate{dos_AddPart{my_blitzlibsdir$,"AcidLibs"}},"/",".")
-  Poke$ ?blitzname,my_maindir$
-  Poke$ ?str_pedpalfile,dos_AddPart{my_systemdir$,"PED.pal"}
-  Poke$ ?str_tedhistory_env,dos_AddPart{my_systemdir$,"PED.history"}
-  ;Poke$ ?str_tedmenufile,my_systemdir$ + "PED.menus"
-  tedmenufile$ = dos_AddPart{my_systemdir$,"PED.menus"}
 
   !log_AvailMem{"after tooltypes"}
 
@@ -2185,9 +2185,6 @@ begin1:
     MOVE.l a0,newtypebase
  'l10:
 
-  JSR open_doslibrary
-  BEQ.w exit_PED_nodoslib
-
   ; --
   ; -- initiation of some editor datas
 .begin
@@ -2229,18 +2226,22 @@ begin1:
   !basic
   Poke.l ?comPtr_MemPool, CreatePool_(#MEMF_CLEAR,40000,40000)
   If Peek.l(?comPtr_MemPool) = 0
-    !cout{"Could not allocate enough memory. PED closes down now."}
-    !asm
-    BRA exit_PED_nomem    ; changed to make a clean exit  tomsmart1
-    !basic
+     log_Print{"Could not allocate enough memory. PED closes down now.",#log_error}
+     Goto exit_PED_nomem    ; changed to make a clean exit  tomsmart1
   EndIf
+
+  Poke.l ?_dosbase, OpenLibrary_("dos.library",0)
+  If Peek.l(?_dosbase) = 0 Then !asm : BRA.w exit_PED_nodoslib
+
   Poke.l ?_graphicsbase, OpenLibrary_("graphics.library",0)
   If Peek.l(?_graphicsbase) = 0 Then !asm : BRA.w exit_PED_closelibraries
-  Poke.l ?_intuibase, OpenLibrary_("intuition.library",0)
-  If Peek.l(?_intuibase)    = 0 Then !asm : BRA.w exit_PED_closelibraries
-  Poke.l ?comPtr_IntuiBase,Peek.l(?_intuibase)
-  Poke.l ?_gadtoolsbase, OpenLibrary_("gadtools.library",0)
-  If Peek.l(?_gadtoolsbase) = 0 Then !asm : BRA.w exit_PED_closelibraries
+
+  ;Poke.l ?_intuibase, OpenLibrary_("intuition.library",0)
+  ;If Peek.l(?_intuibase)    = 0 Then !asm : BRA.w exit_PED_closelibraries
+  ;Poke.l ?comPtr_IntuiBase,Peek.l(?_intuibase)
+
+  ;Poke.l ?_gadtoolsbase, OpenLibrary_("gadtools.library",0)                 not needed anymore was used for DrawBevelBox
+  ;If Peek.l(?_gadtoolsbase) = 0 Then !asm : BRA.w exit_PED_closelibraries
 
   If ted_OpenLib{0}
     TEDSetJumpTable  {?COMDATABASE}
@@ -2261,7 +2262,7 @@ begin1:
     JSR show_errorrequester
   clipboard_ok:
 
-  JSR make_MsgPort
+  JSR open_WBlibrary
 
   MOVEA.w #$2000,A0
   ADDA.w comWord_MaxColumns,A0
@@ -2373,7 +2374,10 @@ begin1:
   ; --
   ; -- if ptr_source_dir <> NULL then fill str_currentdir with this string
   ; -- and set it as the default directory
-  JSR get_currentdir
+  !basic
+  GetCurrentDirName_ ?comStr_CurrentDir,$40
+  !asm
+
   TST.l ptr_source_dir
     BEQ 'l2
     MOVE.l #comStr_CurrentDir,a1
@@ -2384,7 +2388,6 @@ begin1:
     BNE 'l3
     BRA 'l1
  'l2
-    MOVE.l #comStr_CurrentDir,D0
     JSR set_currentdir
  'l1
   MOVE.l lock_currentdir,lock_defaultdirectory
@@ -2448,14 +2451,15 @@ begin1:
   ; -- jump to main loop
   JSR main_loop
 
+; ---------------------------------------------------------------------------------------------------
 Exit_main:                                           ; insert to remove the evil stackmagic by/for
                                                      ; quit and have a clean way to exit the endless
                                                      ; main_loop without modifing it  tomsmart1
-  ; --
-  ; -- shutdown PED after return of the mainloop
+; --
+; -- shutdown PED after return of the mainloop
   JSR close_gui
 
- exit_PED_closeall:
+exit_PED_closeall:
   CLR.w comWord_PEDIsAvailable        ; moved to clear to clear it if a error happend too  tomsmart1
   !basic
   ; replace close of Sourcefonts here by a subroutine call because we need it more then once  tomsmart1
@@ -2476,39 +2480,39 @@ Exit_main:                                           ; insert to remove the evil
   !basic
   If *MyCatalog             Then CloseCatalog_ *MyCatalog ; If we used a Catalog so close it
 
-  If Peek.l(?_gadtoolsbase) Then CloseLibrary_ Peek.l(?_gadtoolsbase)  : CLR.l _gadtoolsbase
-  If Peek.l(?_intuibase)    Then CloseLibrary_ Peek.l(?_intuibase)     : CLR.l _intuibase
+  ;If Peek.l(?_gadtoolsbase) Then CloseLibrary_ Peek.l(?_gadtoolsbase)  : CLR.l _gadtoolsbase
+  ;If Peek.l(?_intuibase)    Then CloseLibrary_ Peek.l(?_intuibase)     : CLR.l _intuibase
   If Peek.l(?_graphicsbase) Then CloseLibrary_ Peek.l(?_graphicsbase)  : CLR.l _graphicsbase
 
   ted_CloseLib{}
   !asm
 
-  MOVEA.l _execbase,A6
   JSR free_historyfilelist
 
-; removed old unfunctionly part of freeing mem because it is freed with deleting the pool later  tomsmart1
-  JSR kill_MsgPort
+  JSR close_WBlibrary
 
-  MOVE.l lock_defaultdirectory,D1
-  MOVEA.l _dosbase,A6
-  JSR _CurrentDir(A6)
+  ;MOVE.l lock_defaultdirectory,D1
+  ;MOVEA.l _dosbase,A6
+  ;JSR _CurrentDir(A6)
 
-  MOVE.l lock_currentdir,D1
-  BEQ.w exit_PED_nomem ; jump if we had no lock
-  JSR _UnLock(A6)
+  ;MOVE.l lock_currentdir,D1
+  ;BEQ.w exit_PED_nomem ; jump if we had no lock
+  ;  JSR _UnLock(A6)
 
- exit_PED_nomem:       ; free all alloced mem of the pool and remove it
-  MOVEA.l _execbase,A6
-  MOVE.l comPtr_MemPool,a0
-  JSR _DeletePool(a6)
+  ;exit_PED_nomem:       ; free all alloced mem of the pool and remove it
+  ;MOVEA.l _execbase,A6
+  ;MOVE.l comPtr_MemPool,a0
+  ;JSR _DeletePool(a6)
 
-  !basic               ; moved to prevent a access after close  tomsmart1
-  If Peek.l(?_dosbase) Then CloseLibrary_ Peek.l(?_dosbase) : CLR.l _dosbase
-  !asm
-
-  exit_PED_nodoslib:    ; moved because it will exit if open dos.libary failed  tomsmart1
-                       ; removed  unused code
   !basic
+  CurrentDir_(Peek.l(?lock_defaultdirectory))
+  If Peek.l(?lock_currentdir)
+    UnLock_ Peek.l(?lock_currentdir)
+  EndIf
+
+  If Peek.l(?_dosbase) Then CloseLibrary_ Peek.l(?_dosbase) : CLR.l _dosbase
+
+  exit_PED_nodoslib:
   preproc_Free{*PreProcessor} : *PreProcessor = Null
   If *rc_fib Then FreeDosObject_ #DOS_FIB,*rc_fib  : *rc_fib = Null
   rc_cacheptr.l = Peek.l(?readcache_cacheptr)
@@ -2518,6 +2522,10 @@ Exit_main:                                           ; insert to remove the evil
     Poke.l ?readcache_cachelen,0
     Poke.l ?readcache_readlen ,0
   End If
+
+  exit_PED_nomem:
+  DeletePool_ Peek.l(?comPtr_MemPool)
+
   !asm
   !exitasm             ; exitasm jumps into basic mode
   Gosub coutclose      ; move to the real end  tomsmart1
@@ -2529,8 +2537,8 @@ End
 .abnormal_exit:
   !asm
   CLR.w comWord_PEDIsAvailable
-  MOVEA.l comdata,A1                 ; its now indirect, was #comdata before
-  !exitasm ; exitasm jumps into basic mode
+  MOVEA.l comdata,A1            ; its now indirect, was #comdata before
+  !exitasm                      ; exitasm jumps into basic mode
 End
 
 
@@ -2740,83 +2748,130 @@ BRA.w main_loop
 
 
 
-.check_panic
+.check_panic:
+  !regs2stack
   !basic
-  *task.Task = 0
-;  *task.Task = FindTask_(!TRANS{"AB3 Program Process"})
-;  If *task=0 Then *task = FindTask_("AB3 Program Process")
-  If *task=0 Then *task = FindTask_("Blitz ][ Program Proc")
-  Poke.l ?taskaddr,*task
-;  MOVE.l d0,taskaddr
-  dummy.l = ask{!TRANS{"This action is not allowed while executing a program\\nShould PED do a PANIC program kill?"},!TRANS{"Ok|Cancel"},!TRANS{"Error"}}
+  *exeTask.Task = FindTask_("Blitz ][ Program Proc")
+  If *exeTask <> 0
+    dummy.l = ask{!TRANS{"This action is not allowed while executing a program\\nShould PED do a PANIC program kill?"},!TRANS{"Ok|Cancel"},!TRANS{"Error"}}
+    If dummy <> 0
+      log_Print{"found running exe task [" + Hex$(*exeTask) + "], removing all windows, screen and kill task..."}
+      ;-- stop multitasking
+      Forbid_
+
+      ;-- close all windows and the screen of the task
+      *intuibase.IntuitionBase = intuitionbase
+      log_Print{"Intuitionbase: " + Hex$(*intuibase) + ", version " + Str$(*intuibase\LibNode\lib_Version)}
+      *exeScreen.Screen = 0
+      *tmpScreen.Screen = *intuibase\FirstScreen
+      While *tmpScreen
+        log_Print{"... checking Screen: " + Hex$(*tmpScreen) + " >> " + Peek$(*tmpScreen\Title)}
+        *tmpWindow.Window = *tmpScreen\FirstWindow
+        While *tmpWindow
+          *nextWindow.Window = *tmpWindow\NextWindow
+          log_Print{"... checking Window " + Hex$(*tmpWindow) + " >> " + Peek$(*tmpWindow\Title) + " Sigtask: " +  Hex$(*tmpWindow\UserPort\mp_SigTask)}
+          If *tmpWindow\UserPort\mp_SigTask = *exeTask
+            log_Print{"... window belongs to task, closing it!"}
+            *exeScreen = *tmpScreen
+            *tmpWindow\UserPort = 0
+            CloseWindow_ *tmpWindow
+          EndIf
+          *tmpWindow = *nextWindow
+        Wend
+        *tmpScreen = *tmpScreen\NextScreen
+      Wend
+      If *exeScreen <> 0
+        log_Print{"... screen belongs to task window, closing it ..."}
+        CloseScreen_ *exeScreen
+      EndIf
+
+      ;-- kill the exe task
+      log_Print{"... removing task"}
+      RemTask_ *exeTask
+
+      ;-- emable multitasking
+      log_Print{"... enabling multitasking"}
+      Permit_
+
+      Poke.b ?comByte_RunningFlag,0
+    Else
+      !stack2regs
+      !asm
+      BRA JL_0_CE2
+    EndIf
+  Else
+    log_Print{"runningflag is set, but no running task found!"}
+  EndIf
+  !stack2regs
   !asm
-  TST.l d0
-  BEQ 'lexit
-    ; -- panic executable kill
-    MOVE.l a0,-(a7)
-
-    MOVE.l taskaddr,D0
-    BEQ 'exit
-      ; -- close all windows and screens of executable
-      MOVEA.l D0,A1
-      MOVEA.l _execbase,A6
-      JSR _Forbid(a6)
-      MOVE.l taskaddr,a1
-      CLR.l ptr_exescreen
-      MOVE.l _intuibase,a6
-      MOVEM.l a2/a3,-(a7)
-      MOVE.l $3c(a6),d0              ;Intuibase\Firstscreen
-
- 'l4
-        MOVE.l d0,a0
-        MOVE.l $4(a0),d0             ;FirstScreen\Firstwindow
-        BEQ 'l1
-
- 'l3
-        MOVE.l d0,a2
-        MOVE.l $56(a2),a3            ;FirstWindow\UserPort
-        CMP.l $10(a3),a1             ;UserPort\*mp_SigTask = taskaddr ??
-        BNE 'l2
-
-        MOVE.l a0,ptr_exescreen
-        MOVEM.l a0/a1,-(a7)
-        CLR.l $56(a2)
-        MOVE.l _intuibase,a6
-        MOVE.l a2,a0
-        JSR _CloseWindow(a6)         ; Close the window
-        MOVEM.l (a7)+,a0/a1
-        MOVE.l a0,d0
-        BNE 'l4
-
- 'l2
-        MOVE.l (a2),d0
-      BNE 'l3
-
- 'l1
-      MOVE.l (a0),d0
-      BNE 'l4
-      MOVE.l ptr_exescreen,d0
-      BEQ 'l10
-        !basic
-        CloseScreen_ Peek.l(?ptr_exescreen)
-        !asm
-
- 'l10
-      MOVEM.l (a7)+,a2/a3
-      MOVE.l _execbase,A6
-      MOVE.l taskaddr,D0
-      BEQ 'exit
-      MOVEA.l D0,A1              ; remove the executable task
-      JSR _RemTask(A6)
-      JSR _Permit(a6)
-      CLR.b comByte_RunningFlag
-
- 'exit
-    MOVE.l (a7)+,a0
 BRA check_panic_exit
 
- 'lexit
-BRA JL_0_CE2
+;  !asm
+;  TST.l d0
+;  BEQ 'lexit                        ; -- panic executable kill
+;    MOVE.l a0,-(a7)
+;
+;    MOVE.l ptr_runningTask,D0
+;    BEQ 'exit
+;                                    ; -- close all windows and screens of executable
+;      MOVEA.l _execbase,A6
+;      JSR _Forbid(a6)
+;      MOVE.l ptr_runningTask,A1
+;      CLR.l ptr_exescreen
+;      MOVE.l _intuibase,a6
+;
+;      MOVEM.l a2/a3,-(a7)
+;      MOVE.l $3c(a6),d0              ;Intuibase\Firstscreen
+;
+;     'l4
+;        MOVE.l d0,a0
+;        MOVE.l $4(a0),d0             ;FirstScreen\Firstwindow
+;        BEQ 'l1
+;         'l3
+;            MOVE.l d0,a2
+;            MOVE.l $56(a2),a3            ;FirstWindow\UserPort
+;            CMP.l $10(a3),a1             ;UserPort\*mp_SigTask = ptr_runningTask ??
+;            BNE 'l2
+;              MOVE.l a0,ptr_exescreen
+;              MOVEM.l a0/a1,-(a7)
+;              CLR.l $56(a2)
+;              MOVE.l _intuibase,a6
+;              MOVE.l a2,a0
+;              JSR _CloseWindow(a6)         ; Close the window
+;              MOVEM.l (a7)+,a0/a1
+;              MOVE.l a0,d0
+;              BNE 'l4
+;           'l2
+;            MOVE.l (a2),d0
+;          BNE 'l3
+;       'l1
+;        MOVE.l (a0),d0
+;      BNE 'l4
+;      ;MOVE.l ptr_exescreen,d0
+;      ;BEQ 'l10
+;      !basic
+;      If Peek.l(?ptr_exescreen)<>0 Then CloseScreen_ Peek.l(?ptr_exescreen)
+;      ;'l10
+;      ;MOVE.l _execbase,A6
+;      If Peek.l(?ptr_runningTask) <> 0
+;      ;MOVE.l ptr_runningTask,D0
+;      ;BEQ 'exit
+;        ;MOVEA.l D0,A1              ; remove the executable task
+;        ;JSR _RemTask(A6)
+;        ;JSR _Permit(a6)
+;        ;CLR.b comByte_RunningFlag
+;        RemTask_ Peek.l(?ptr_runningTask)
+;        Permit_
+;        Poke.b ?comByte_RunningFlag,0
+;      EndIf
+;      !asm
+;      MOVEM.l (a7)+,a2/a3
+;   'exit:
+;    MOVE.l (a7)+,a0
+;    BRA check_panic_exit
+;
+; 'lexit
+;BRA JL_0_CE2
 
 
 
@@ -2826,67 +2881,48 @@ BRA JL_0_CE2
 
 ; -----------------------------------------------------------------------------------------------
 _graphicsbase:           Dc.l 0
-_intuibase:              Dc.l 0
-;_aslbase:                Dc.l 0
-_gadtoolsbase:           Dc.l 0
-str_libname_dos:         Dc.b "dos.library",0 : Even
+;_intuibase:              Dc.l 0
 _dosbase:                Dc.l 0
-str_libname_workb:       Dc.b "workbench.library",0 : Even
+
 _workbenchbase:          Dc.l 0
+str_libname_workb:       Dc.b "workbench.library",0 : Even
+ptr_AppMenuItem:         Ds.l 1
+
 ptr_sourcefont:          Dc.l 0
 ptr_sourcefonti:         Dc.l 0
 ptr_sourcefontb:         Dc.l 0
-str_libname_diskfont:    Dc.b "diskfont.library",0 : Even
-_diskfontbase:           Dc.l 0
-
-ptr_AppMenuItem:         Ds.l 1
-ptr_thisTask:            Ds.l 1
-;ptr_Message:             Ds.l 1
 str_tempfilename:        Ds.b #MAX_STRINGSIZE
-AL_0_766:                Ds.w 59
+;AL_0_766:                Ds.w 59
 
 str_pedname:             Dc.b "PED ",!versions,0: Even
                          Ds.b #MAX_STRINGSIZE
 Even
 str_screentitle:         Ds.b #MAX_STRINGSIZE  ;"AmiBlitz3 - PED V",!versions," (\\__DATE_GER__)",0
-
-str_pedscreenname:
-                         Dc.b "SCR1_0_AB",0
+Even
+str_pedscreenname:       Dc.b "SCR1_0_AB",0
                          Ds.b 200
 Even
 str_version:             Dc.b "$VER: PED ",!versions,0
 Even
-
-
 
 ;_tedlibbase:            Ds.l 1
 ptr_msgport_clipboard:   Ds.l 1
 ;AL_0_B90:                Ds.l 1
 ptr_iorequest_clipboard: Ds.l 1
 str_devname_clipboard:   Dc.b "clipboard.device",0 : Even
-                         Ds.l 2
-AL_0_802:                Dc.l AL_0_822
-AL_0_806:                Dc.l str_defaultpubscreen
-AL_0_80A:                Dc.l AL_0_838
-AL_0_80E:                Dc.l str_Arexx_PortName
-AL_0_812:                Dc.l AL_0_82C
-AL_0_816:                Dc.l str_defaultpubscreen
-                         Ds.l 2
-AL_0_822:                Dc.b "TEDSCREEN",0
-AL_0_82C:                Dc.b "TEDSSCREEN",0 : Even
-AL_0_838:                Dc.b "TEDSPORT",0 : Even
-                         Ds.l 1
-Even
-
-.open_doslibrary:
-  MOVEA.l _execbase,A6
-  LEA str_libname_dos,A1
-  JSR _OldOpenLibrary(A6)
-  MOVE.l D0,_dosbase
-RTS
-
-
-
+;                         Ds.l 2
+;AL_0_802:                Dc.l AL_0_822
+;AL_0_806:                Dc.l str_defaultpubscreen
+;AL_0_80A:                Dc.l AL_0_838
+;AL_0_80E:                Dc.l str_Arexx_PortName
+;AL_0_812:                Dc.l AL_0_82C
+;AL_0_816:                Dc.l str_defaultpubscreen
+;                         Ds.l 2
+;AL_0_822:                Dc.b "TEDSCREEN",0
+;AL_0_82C:                Dc.b "TEDSSCREEN",0 : Even
+;AL_0_838:                Dc.b "TEDSPORT",0 : Even
+;                         Ds.l 1
+;Even
 
 .init_clipboard:
   MOVEA.l _execbase,A6
@@ -2942,7 +2978,8 @@ RTS
   JSR show_errorrequester
 RTS
 
-.make_MsgPort:
+
+.open_WBlibrary:
   MOVEA.l _execbase,A6
   LEA str_libname_workb,A1
   MOVEQ.l #$24,D0
@@ -2950,20 +2987,19 @@ RTS
   MOVE.l D0,_workbenchbase
 
   JSR _CreateMsgPortA(A6)
-  MOVE.l D0,struct_MsgPort
+  MOVE.l D0,struct_WBMsgPort
 RTS
 
-.kill_MsgPort:
+.close_WBlibrary:
   TST.l _workbenchbase
   BEQ.w JL_0_A80
+    MOVEA.l _execbase,A6
+    MOVEA.l _workbenchbase,A1
+    JSR _CloseLibrary(A6)
+    CLR.l _workbenchbase
 
-  MOVEA.l _execbase,A6
-  MOVEA.l _workbenchbase,A1
-  JSR _CloseLibrary(A6)
-
-  CLR.l _workbenchbase
-  MOVEA.l struct_MsgPort,A0
-  JSR _DeleteMsgPort(A6)
+    MOVEA.l struct_WBMsgPort,A0
+    JSR _DeleteMsgPort(A6)
   JL_0_A80:
 RTS
 
@@ -3129,7 +3165,7 @@ RTS
 
 
  ;-- get asl information
- If Peek.w(?use_asldims) Then WZPrint "SET_asl_DIMENSIONS",On
+ If Peek.w(?use_asldims) Then WZPrint "SET_ASL_DIMENSIONS",On
  WZPrint "SET_ASLX",Peek.l(?aslreq_x)
  WZPrint "SET_ASLY",Peek.l(?aslreq_y)
  WZPrint "SET_ASLW",Peek.l(?aslreq_width)
@@ -3558,7 +3594,6 @@ RTS
    helpdir$    = thelpdir$
 
    Poke.l ?ptr_source_dir      ,&sourcedir$
-   ;Poke$  ?comStr_CurrentDir   ,sourcedir$               ; deactive to prevent a override (change) of the sourcedir of the allready loaded code, to prevent include errors if a relative path is used like in PED  tomsmart1
    Poke.l ?ptr_incdirname      ,&includedir$
    Poke.l ?ptr_deflibsfilename ,&deflibfile$
 
@@ -3911,17 +3946,17 @@ Return
     MOVEQ.l #$00,D0
     MOVEQ.l #$00,D1
     LEA str_defaultpubscreen,A0
-    MOVEA.l struct_MsgPort,A1
+    MOVEA.l struct_WBMsgPort,A1
     SUBA.l A2,A2
     JSR _AddAppMenuItemA(A6)
     MOVE.l D0,ptr_AppMenuItem
 
     ; wait until AppMenuItem was called
     MOVEA.l _execbase,A6
-    MOVEA.l struct_MsgPort,A0
+    MOVEA.l struct_WBMsgPort,A0
     JSR _WaitPort(A6)
 
-    MOVEA.l struct_MsgPort,A0
+    MOVEA.l struct_WBMsgPort,A0
     JSR _GetMsg(A6)
 
     MOVEA.l D0,A1
@@ -3939,15 +3974,6 @@ RTS
 
 exit_PED_closeall_longjmp:
 JMP exit_PED_closeall
-
-.get_currentdir:
-  MOVE.l #comStr_CurrentDir,D1
-  MOVEQ.l #$40,D2
-  MOVEA.l _dosbase,A6
-  JSR _GetCurrentDirName(A6)
-RTS
-
-
 
 .taglist_mousepointerbusy:
   Dc.b $80,$00,$00,$98               ; #WA_BusyPointer.
@@ -3988,66 +4014,31 @@ RTS
 
 
 ptr_sourcefilename:      Ds.l 1
-ptr_sourcefileextension: Ds.l 1
 str_extentionxtra:       Dc.b ".xtra",0
 str_extentioninfo:       Dc.b ".info",0
 str_bakextention:        Dc.b ".bak",0,0
 
 
-.open_infofile:
-  LEA str_extentioninfo,A1
-  JSR add_extention
-  MOVEQ.l #-$02,D2
-  MOVEA.l _dosbase,A6
-  JSR _Lock(A6)
-  MOVE.l D0,D1
-  BEQ.w JL_0_DEA
-  JSR _UnLock(A6)
-  BRA.w JL_0_DFC
-
-  JL_0_DEA:
-  MOVE.l ptr_sourcefilename,D1
-  MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
-  JSR _Open(A6)
-  MOVE.l D0,D7
-  RTS
-
-  JL_0_DFC:
-  MOVEQ.l #$00,D7
+.write_infofile:
+  *flock.l = Lock_(Peek$(Peek.l(?ptr_sourcefilename)) + Peek$(?str_extentioninfo), #ACCESS_READ)
+  If *flock = 0
+    *fh.l = Open_(Peek$(Peek.l(?ptr_sourcefilename)) + Peek$(?str_extentioninfo),#HUNK_RELOC_8__MODE_NEWFILE)
+    Write_ *fh,Peek.l(?sourceicon_datas),?sourceicondatas_end-?sourceicon_datas
+    Close_ *fh
+  Else
+    UnLock_ *flock
+  EndIf
 RTS
 
 
 .open_xtrafile:
-  LEA str_extentionxtra,A1
-  JSR add_extention
-   MOVEA.l _dosbase,A6
-  JSR _Open(A6)
-  MOVE.l D0,D7
+  !basic
+  MOVE.l d2,d0 ; get accessmode from d2
+  accessmode.l = PutD0
+  *fh.l = Open_(Peek$(Peek.l(?ptr_sourcefilename)) + Peek$(?str_extentionxtra),accessmode)
+  MOVE.l d0,d7
+  !asm
 RTS
-
-.add_extention:
-  MOVEA.l ptr_sourcefilename,A0
-  MOVE.l A0,D1
-
-  JL_0_E16:
-    TST.b (A0)+
-  BNE.b JL_0_E16
-
-  SUBQ.w #1,A0
-  MOVE.l A0,ptr_sourcefileextension
-
-  JL_0_E22:
-    MOVE.b (A1)+,(A0)+
-  BNE.b JL_0_E22
-RTS
-
-JL_0_E28:
-  MOVEA.l ptr_sourcefileextension,A0
-  CLR.b (A0)
-RTS
-
-
-
 
 .menu_load:
   MOVEA.l #str_newfile_req,A0
@@ -4066,7 +4057,7 @@ RTS
     RTS
   JL_0_E78:
 
-  JSR do_aslfilerequest
+  JSR do_aslloadfilerequest
   TST.l D0
   BNE.w load_source
 RTS
@@ -4086,44 +4077,18 @@ RTS
 lock_defaultdirectory:  Ds.l 1
 lock_currentdir:        Ds.l 1
 
+.set_currentdir:
+  !regs2stack
+  !basic
+  If Peek$(?comStr_CurrentDir) = "" Then GetCurrentDirName_ ?comStr_CurrentDir,$40
+  If Peek.l(?lock_currentdir) Then UnLock_ Peek.l(?lock_currentdir)
 
-.set_currentdir:                     ;set default dir
-  MOVE.l d2,-(a7)
-  MOVEA.l _dosbase,A6
-  MOVEA.l D0,A0
-  TST.b (A0)
-  BNE.w JL_0_EC2
-
-  MOVEM.l D0-D3/A0-A1,-(A7)
-  JSR get_currentdir                 ;get current dir name
-  LEA blitzname,a0
-  MOVE.l a0,d0
-  MOVEM.l (A7)+,D0-D3/A0-A1
-
- JL_0_EC2:
-  TST.l lock_currentdir
-  BEQ.w JL_0_EDA
-  MOVE.l D0,-(A7)
-  MOVE.l lock_currentdir,D1
-  MOVEA.l _dosbase,A6
-  JSR _UnLock(A6)
-  MOVE.l (A7)+,D0
-
- JL_0_EDA:
-  MOVE.l D0,D1
-  MOVEQ.l #-$02,D2
-   MOVEA.l _dosbase,A6
-  JSR _Lock(A6)
-  MOVE.l D0,lock_currentdir
-  MOVE.l D0,D1
-  BEQ.w JL_0_EF2
-   MOVEA.l _dosbase,A6
-  JSR _CurrentDir(A6)
-
- JL_0_EF2:
-  MOVE.l (a7)+,d2
+  *flock.l = Lock_(Peek$(?comStr_CurrentDir),#ACCESS_READ)
+  If *flock Then CurrentDir_ *flock
+  Poke.l ?lock_currentdir, *flock
+  !asm
+  !stack2regs
 RTS
-
 
 split_filename:
   ;comStr_SourceFileComplete,A0
@@ -4201,7 +4166,7 @@ RTS
     MOVEA.l actualfile,A0
     JSR delete_tempprefs
     JSR save_tempprefs
-    ;JSR JL_0_E28 ; chop source file extension
+
     JSR update_horizscroller
     JSR update_labelstuff
     JSR StoreXtraData
@@ -4240,11 +4205,13 @@ old_loading_routine:
   JL_0_F50:
 
   MOVEM.l D0-D7/A0-A5,-(A7)
-  MOVE.l D7,D1  ; filehandle nach D1
+
+  MOVE.l D7,D1                                    ; filehandle nach D1
   MOVE.l #comStr_SourceFileComplete,D2
-  MOVE.l #$FE,D3; bufflength nach D3
+  MOVE.l #$FE,D3                                  ; bufflength nach D3
   MOVEA.l _dosbase,A6
   JSR _NameFromFH(A6)
+
   LEA comStr_SourceFileComplete,A0
   TST.b convert
   BEQ 'l1
@@ -4260,8 +4227,8 @@ old_loading_routine:
   LEA comStr_SourceName,A2
   BSR.b split_filename
 
-  MOVE.l #comStr_CurrentDir,D0
   JSR set_currentdir
+
   MOVEM.l (A7)+,D0-D7/A0-A5
   JSR set_pointerbusy
   JSR reset_Blockflag
@@ -4281,14 +4248,13 @@ old_loading_routine:
     MOVE.l comPtr_Temp_TokenString2,tempstore
     JSR JL_0_4F5A
     BMI.w JL_0_FD6
-    JSR newSourcelineFromTempString
-    MOVE.l A0,comPtr_LastSourceLine
-    MOVE.l A0,(A4)
-    ADDQ.l #1,comLong_TotalLines
-    MOVE.l A4,$4(A0)
-BRA.b JL_0_FB4
-
- JL_0_FD6:
+      JSR newSourcelineFromTempString
+      MOVE.l A0,comPtr_LastSourceLine
+      MOVE.l A0,(A4)
+      ADDQ.l #1,comLong_TotalLines
+      MOVE.l A4,$4(A0)
+  BRA.b JL_0_FB4
+  JL_0_FD6:
   ;JSR JL_0_4E4A
   JSR close_sourcefile
 ;  CLR.l comLong__AL_0_868A
@@ -4306,8 +4272,6 @@ BRA.b JL_0_FB4
 
   MOVE.l comFunc_ReadXtraFile,D0
   MOVEA.l D0,A5
-
- L_0_FF2:
   JSR (A5)
 
   MOVE.l d7,d0
@@ -4353,14 +4317,15 @@ BRA.b JL_0_FB4
   changelog$ = ""
   Gosub update_versiongadgets
 
+  Close_ xtrafilehandle
   !asm
-  MOVE.l D7,D1
-   MOVEA.l _dosbase,A6
-  JSR _Close(A6)
+  ;MOVE.l D7,D1
+  ;MOVEA.l _dosbase,A6
+  ;JSR _Close(A6)
 
   !regs2stack
-   !ComData_SetB{comByte_FuncOptimize,#1}                   ; added for compatiblity because it is not stored in the xtra file  tomsmart1
-   !ComData_SetW{comWord_CreateDebugFile,#0}                ; to match the old default settings  tomsmart1
+  !ComData_SetB{comByte_FuncOptimize,#1}                   ; added for compatiblity because it is not stored in the xtra file  tomsmart1
+  !ComData_SetW{comWord_CreateDebugFile,#0}                ; to match the old default settings  tomsmart1
   !stack2regs
 
   ; update Sourcewindow
@@ -4373,7 +4338,6 @@ BRA.b JL_0_FB4
   JSR save_tempprefs
 
  skip_loadingxtrafile:
-  JSR JL_0_E28
 
  JL_0_100C:
   JSR update_horizscroller
@@ -4460,14 +4424,9 @@ Return
   BNE.b 'l2
 
   update_title_sourcewindow:
-  MOVEA.l ptr_sourcewindow,A0
-  MOVEA.l str_windowtitle,A1
-  MOVE.l #-1,a2
-  MOVEA.l _intuibase,A6
-  JSR _SetWindowTitles(a6)
-
   !basic
-  ;error{"New source:" + Peek$(?comStr_SourceFileComplete) + " = "+Peek$(?comStr_CurrentDir)+"::"+Peek$(?comStr_SourceName) }
+  SetWindowTitles_ Peek.l(?ptr_sourcewindow), Peek.l(?str_windowtitle), -1
+
   If Peek.b(?load_last_source)<>0
     last_source$ = Peek$(?comStr_SourceFileComplete)
     If last_source$<>""
@@ -4517,14 +4476,13 @@ RTS
 .delete_tempprefs:
   MOVE.l comFunc_ReadXtraFile,D0
   BEQ.w exit_delete_tempprefs
-
-  MOVE.l A0,D0
-  LEA str_template_tempxtrafile,A0
-  JSR generate_tempfilename
-  MOVEA.l _dosbase,A6
-  MOVE.l #str_temptedprefs,D1
-  JSR _DeleteFile(A6)
-
+    MOVE.l A0,D0
+    LEA str_template_tempxtrafile,A0
+    JSR generate_tempfilename
+    MOVEA.l _dosbase,A6
+    MOVE.l #str_temptedprefs,D1
+    JSR _DeleteFile(A6)
+    ;DeleteFile_ Peek$(?str_temptedprefs)
   exit_delete_tempprefs:
 RTS
 
@@ -4537,45 +4495,42 @@ RTS
   LEA str_template_tempxtrafile,A0
   JSR generate_tempfilename
   MOVE.l comFunc_ReadXtraFile,D0
-  MOVEA.l _dosbase,A6
   MOVEA.l D0,A5
+  MOVEA.l _dosbase,A6
   MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
   MOVE.l #str_temptedprefs,D1
   JSR _Open(A6)
+  ;Open_ Peek$(?str_temptedprefs,#HUNK_RELOC_16__MODE_OLDFILE
   MOVE.l D0,D7
   ;BEQ.w exit_read_tempprefs
   MOVE.l D0,-(A7)
-  L_0_10EA:
   JSR (A5)
   MOVE.l (A7)+,D1
-   MOVEA.l _dosbase,A6
+  MOVEA.l _dosbase,A6
   JSR _Close(A6)
 
- exit_read_tempprefs:
+  exit_read_tempprefs:
 RTS
 
 .save_tempprefs:
   MOVE.l comFunc_WriteXtraFile,D0
   BEQ.w exit_save_tempprefs
-
-  MOVE.l actualfile,D0
-  LEA str_template_tempxtrafile,A0
-  JSR generate_tempfilename
-  MOVE.l comFunc_WriteXtraFile,D0
-  MOVEA.l _dosbase,A6
-  MOVEA.l D0,A5
-  MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
-  MOVE.l #str_temptedprefs,D1
-  JSR _Open(A6)
-  MOVE.l D0,D7
-  BEQ.w exit_save_tempprefs
-  MOVE.l D0,-(A7)
-  L_0_112E:
-  JSR (A5)
-  MOVE.l (A7)+,D1
-   MOVEA.l _dosbase,A6
-  JSR _Close(A6)
-
+    MOVE.l actualfile,D0
+    LEA str_template_tempxtrafile,A0
+    JSR generate_tempfilename
+    MOVE.l comFunc_WriteXtraFile,D0
+    MOVEA.l _dosbase,A6
+    MOVEA.l D0,A5
+    MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
+    MOVE.l #str_temptedprefs,D1
+    JSR _Open(A6)
+    MOVE.l D0,D7
+    BEQ.w exit_save_tempprefs
+    MOVE.l D0,-(A7)
+    JSR (A5)
+    MOVE.l (A7)+,D1
+    MOVEA.l _dosbase,A6
+    JSR _Close(A6)
  exit_save_tempprefs:
 RTS
 
@@ -4591,7 +4546,7 @@ AL_0_1162:    Ds.w 1
   LEA comStr_ASLSaveFile,A2
 
   MOVEM.l D1-D6/A0-A6,-(A7)
-  JSR JL_0_50D2
+  JSR do_aslsavefilerequest
   MOVEM.l (A7)+,D1-D6/A0-A6
 
   TST.l D0
@@ -4608,7 +4563,7 @@ RTS
 JL_0_1164:
   LEA comStr_ASLSaveFile,A2
   MOVEM.l D1-D6/A0-A6,-(A7)
-  JSR JL_0_50D2
+  JSR do_aslsavefilerequest
   MOVEM.l (A7)+,D1-D6/A0-A6
 RTS
 
@@ -4623,10 +4578,9 @@ RTS
   BNE.w JL_0_1196
     BSR.b JL_0_1164
     TST.l D0
-      BNE.w JL_0_1196
-        RTS
-
- JL_0_1196:
+    BNE.w JL_0_1196
+      RTS
+  JL_0_1196:
   !basic
   BB2Filename$ = Peek$(?comStr_SourceFileComplete)
   directory.s = dos_FilePart{dos_PathPart{BB2Filename$}}
@@ -4654,17 +4608,15 @@ RTS
 
   TST.b (A1)
   BEQ.w JL_0_11C6
-
-  JL_0_11B2:
+    JL_0_11B2:
       MOVE.b (A1)+,(A0)+
     BNE.b JL_0_11B2
 
     SUBQ.w #1,A0
     CMPI.b #":",-$1(A0)
     BEQ.w JL_0_11C6
-    MOVE.b #$2F,(A0)+
-
- JL_0_11C6:
+      MOVE.b #$2F,(A0)+
+  JL_0_11C6:
   MOVE.l a0,namesizestore
 
  'l1a
@@ -4699,28 +4651,29 @@ RTS
   MOVEM.l (A7)+,A0-A2
   MOVE.l #comStr_SourceFileComplete,D7
   JSR StoreXtraData
+
   TST.b AL_0_1162
   BEQ.w JL_0_1216
-  MOVEA.l _dosbase,A6
-  MOVE.l D7,D1
-  MOVEQ.l #-$02,D2
-  JSR _Lock(A6)
-  TST.l D0
-  BEQ.w JL_0_1216
-  MOVE.l D0,-(A7)                    ; put lock from d0 to stack
-  LEA easystruct_saveas,A1
-  JSR show_requester
-  MOVE.l (A7)+,D1                    ; get lock from stack to d1 for unlock
-
-  TST.w D0
-  BEQ.w JL_0_1214
     MOVEA.l _dosbase,A6
-    JSR _UnLock(A6)
-    BRA.w JL_0_1216
-  JL_0_1214:
-    RTS
+    MOVE.l D7,D1
+    MOVEQ.l #-$02,D2
+    JSR _Lock(A6)
+    TST.l D0
+    BEQ.w JL_0_1216
+      MOVE.l D0,-(A7)                    ; put lock from d0 to stack
+      LEA easystruct_saveas,A1
+      JSR show_requester
+      MOVE.l (A7)+,D1                    ; get lock from stack to d1 for unlock
 
+      TST.w D0
+      BEQ.w JL_0_1214
+        MOVEA.l _dosbase,A6
+        JSR _UnLock(A6)
+        BRA.w JL_0_1216
+     JL_0_1214:
+        RTS
   JL_0_1216:
+
   MOVE.l D7,ptr_sourcefilename
   MOVEA.l comPtr_DosBuffer,A1
   MOVE.l A1,D1
@@ -4742,57 +4695,57 @@ RTS
   MOVE.l D7,D1
   MOVE.l comPtr_DosBuffer,D2
   JSR _Rename(A6)
+
   !basic
   LockAllOpenWZWin{}
   !asm
   JSR set_pointerbusy
+
   TST.b ab2mode
   BEQ old_saveroutine
-  MOVE.l #comStr_SourceFileComplete,d0
-  CMP.b #1,ab2mode
-  BNE 'saveab3
-  JSR saveab2
+    MOVE.l #comStr_SourceFileComplete,d0
+    CMP.b #1,ab2mode
+    BNE 'saveab3
+      JSR saveab2
 
-  JSR JL_0_1372
-  TST.w remember_saved
-  BEQ.w 'JL_0_1286b
-  JSR AJL_0_B990
+      JSR JL_0_1372
+      TST.w remember_saved
+      BEQ.w 'JL_0_1286b
+        JSR AJL_0_B990
+     'JL_0_1286b:
+      JSR set_pointernormal
+      !basic
+      UnlockAllOpenWZWin{}
+      !asm
+      RTS
+   'saveab3
+    ;!basic
+    ;error{"Save via new code!"}
+    ;a.s = "Ram:Test.ab3"
+    ;GetReg d0,&a.s
+    ;!asm
+    MOVE.l #comStr_SourceFileComplete,d0
+    !ComData_JSR{comFunc_SaveSource}
 
- 'JL_0_1286b:
-  JSR set_pointernormal
-  !basic
-  UnlockAllOpenWZWin{}
-  !asm
-  RTS
+    JSR set_pointernormal
+    JSR analyze_loadedsource
+    CLR.w comWord_SourceModifiedFlag
+    CLR.w comWord_KeyBeforeReturn
+    CLR.w comWord_SourceChanged
+    JSR update_modifiermark
 
- 'saveab3
-  ;!basic
-  ;error{"Save via new code!"}
-  ;a.s = "Ram:Test.ab3"
-  ;GetReg d0,&a.s
-  ;!asm
-  MOVE.l #comStr_SourceFileComplete,d0
-  !ComData_JSR{comFunc_SaveSource}
+    TST.w remember_saved
+    BEQ.w skip_historymenu
+      JSR AJL_0_B990
+    skip_historymenu:
 
-  JSR set_pointernormal
-  JSR analyze_loadedsource
-  CLR.w comWord_SourceModifiedFlag
-  CLR.w comWord_KeyBeforeReturn
-  CLR.w comWord_SourceChanged
-  JSR update_modifiermark
+    JSR set_pointernormal
+    !basic
+    UnlockAllOpenWZWin{}
+    !asm
+    RTS
+  old_saveroutine:
 
-  TST.w remember_saved
-  BEQ.w skip_historymenu
-    JSR AJL_0_B990
-  skip_historymenu:
-
-  JSR set_pointernormal
-  !basic
-  UnlockAllOpenWZWin{}
-  !asm
-  RTS
-
- old_saveroutine:
   MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
   MOVE.b #1,menuload
   JSR open_sourcefile
@@ -4800,66 +4753,67 @@ RTS
   ;JSR set_pointerbusy
 
   MOVEA.l comPtr_FirstSourceLine,A2
-  MOVE.l comLong_TotalLines,D5                 ;save routine
+  MOVE.l comLong_TotalLines,D5
   ;SUBQ.l #1,D5
   TST.w AL_0_B7E0
   BEQ.w JL_0_1288
-  MOVEM.l D1-D7/A0-A6,-(A7)
-  JSR JL_0_12D6                      ;save write raw
-  MOVEM.l (A7)+,D1-D7/A0-A6
-  JSR JL_0_1372
-  TST.w remember_saved
-  BEQ.w JL_0_1286
-  JSR AJL_0_B990
+    MOVEM.l D1-D7/A0-A6,-(A7)
+    JSR JL_0_12D6                      ;save write raw
+    MOVEM.l (A7)+,D1-D7/A0-A6
+    JSR JL_0_1372
+    TST.w remember_saved
+    BEQ.w JL_0_1286
+      JSR AJL_0_B990
+    JL_0_1286:
+    RTS
+  JL_0_1288:
 
- JL_0_1286:
- RTS
-
- JL_0_1288:
   JSR JL_0_1292
   JSR JL_0_1372
- RTS
+RTS
 
- JL_0_1292:
- JL_0_1298:
-  MOVEQ.l #$00,D4
-  MOVE.b $8(A2),D4
-  LEA $9(A2),A3
-  MOVE.w comWord_DoTokenize,D0
-  BNE.w JL_0_12B2
+JL_0_1292:
+  JL_0_1298:
+    MOVEQ.l #$00,D4
+    MOVE.b $8(A2),D4
+    LEA $9(A2),A3
 
-  MOVE.b #$A,-$1(A3,D4.W)
+    MOVE.w comWord_DoTokenize,D0
+    BNE.w JL_0_12B2
+      MOVE.b #$A,-$1(A3,D4.W)
+    JL_0_12B2:
 
- JL_0_12B2:
-  MOVE.l D7,D1
-  MOVE.l A3,D2
-  MOVE.l D4,D3
-  MOVEA.l _dosbase,A6
-  JSR _Write(A6)
-  CLR.b -$1(A3,D4.W)
-  TST.l D0
-  BEQ.w JL_0_1378
-  MOVEA.l (A2),A2
-  SUBQ.l #1,d5
+    MOVE.l D7,D1
+    MOVE.l A3,D2
+    MOVE.l D4,D3
+    MOVEA.l _dosbase,A6
+    JSR _Write(A6)
+    CLR.b -$1(A3,D4.W)
+
+    TST.l D0
+    BEQ.w JL_0_1378
+      MOVEA.l (A2),A2
+      SUBQ.l #1,d5
   BNE JL_0_1298
 
-   ;DBF D5,JL_0_1298
+  ;DBF D5,JL_0_1298
   CLR.w comWord_SourceChanged
   MOVEQ.l #-$01,D0
- RTS
+RTS
 
- JL_0_12D6:
+JL_0_12D6:
   MOVEQ.l #$00,D0
   MOVEQ.l #$00,D1
   MOVE.l D5,D4
 
- JL_0_12Dca:
+  JL_0_12Dca:
     MOVE.b $8(A2),D1
     ADD.l D1,D0
     MOVEA.l (A2),A2
     SUBQ.l #1,d5
   BNE JL_0_12Dca
-   ;DBF D5,JL_0_12Dca
+  ;DBF D5,JL_0_12Dca
+
   MOVEA.l _execbase,A6
   MOVEQ.l #$00,D1
   MOVE.l D0,AL_0_15C0
@@ -4869,10 +4823,8 @@ RTS
   MOVE.l D4,D5
   MOVE.l D0,AL_0_15BC
   BNE.w JL_0_130C
-
- BRA.b JL_0_1298
-
- JL_0_130C:
+    BRA.b JL_0_1298
+  JL_0_130C:
   MOVEA.l _dosbase,A6
 
   JL_0_1312:
@@ -4881,16 +4833,15 @@ RTS
     MOVE.b $8(A2),D4
     SUBQ.w #1,D4
 
-   JL_0_131E:
+    JL_0_131E:
       MOVE.b (A3)+,(A5)+
     DBF D4,JL_0_131E
 
     TST.w comWord_DoTokenize
     BNE.w JL_0_1334
+      MOVE.b #$A,-$1(A5)
+    JL_0_1334:
 
-    MOVE.b #$A,-$1(A5)
-
- JL_0_1334:
     MOVEA.l (A2),A2
     SUBQ.l #1,d5
   BNE JL_0_1312
@@ -4908,64 +4859,47 @@ RTS
   MOVEA.l _dosbase,A6
   CLR.w comWord_SourceChanged
   MOVE.l (A7)+,D0
- RTS
+RTS
 
- JL_0_1372:
+JL_0_1372:
   TST.l D0
   BNE.w JL_0_1380
+    JL_0_1378:
+    LEA comStr_ErrorWriteFile,A0
+    JSR show_errorrequester
+  JL_0_1380:
 
- JL_0_1378:
-  LEA comStr_ErrorWriteFile,A0
-  JSR show_errorrequester
-
- JL_0_1380:
 ;  JSR JL_0_4E4A
   JSR close_sourcefile
   MOVE.l comFunc_WriteXtraFile,D0
   BEQ.w JL_0_13A8
-  MOVEA.l D0,A5
-  MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
-  JSR open_xtrafile          ;write xtra
-  BEQ.w skip_writingxtrafile
+    MOVEA.l D0,A5
+    MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
+    JSR open_xtrafile
+    BEQ.w skip_writingxtrafile
+      JSR (A5)
 
- L_0_139C:
-  JSR (A5)
+      !basic
+      MOVE.l comLong_DisplayLineOffset,d0
+      ADD.l comLong_DisplayLine,d0
+      MOVE.l d0,comLong_CursorPosStore
+      Poke$ ?comStr_LabelSearchString,search_label$
+      MOVE.l LabelList_FirstVisableItemNumber@(a5),comLong_Label1VisableItemStore
+      MOVE.l d7,d0
+      xtrafilehandle.l = PutD0
+      ; moved the write of the 4 extra fill/pad/termination bytes to the Compiler xtra save routine because the Compiler xtra load routine needs it!  tomsmart1
+      Write_ xtrafilehandle,?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin
+      Close_ xtrafilehandle
+      !asm
+    skip_writingxtrafile:
+  JL_0_13A8:
 
+  MOVE.w #1,prefs_source_icon
   !basic
-  MOVE.l comLong_DisplayLineOffset,d0
-  ADD.l comLong_DisplayLine,d0
-  MOVE.l d0,comLong_CursorPosStore
-  Poke$ ?comStr_LabelSearchString,search_label$
-  MOVE.l LabelList_FirstVisableItemNumber@(a5),comLong_Label1VisableItemStore
-  MOVE.l d7,d0
-  xtrafilehandle.l = PutD0
-  Write_ xtrafilehandle,?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin ; moved the write of the 4 extra fill/pad/termination bytes to the Compiler xtra save routine because the Compiler xtra load routine need it!  tomsmart1
+  If Peek.w(?prefs_source_icon)
+    Gosub write_infofile
+  EndIf
   !asm
-  MOVE.l D7,D1
-  MOVEA.l _dosbase,A6
-  JSR _Close(A6)
-
- skip_writingxtrafile:
-  JSR JL_0_E28
-
- JL_0_13A8:
-  TST.w prefs_source_icon
-   BEQ.w JL_0_13D6
-  JSR open_infofile
-  BEQ.w JL_0_13D2
-  MOVE.l #sourceicon_datas,D2
-  MOVE.l #SourceIconDatas_End-sourceicon_datas,D3
-  MOVE.l D7,D1
-  MOVEA.l _dosbase,A6
-  JSR _Write(A6)
-  MOVE.l D7,D1
-  JSR _Close(A6)
-
-  JL_0_13D2:
-  JSR JL_0_E28
-
-  JL_0_13D6:
-  ;JSR set_pointernormal
 
   JSR analyze_loadedsource
   CLR.w comWord_SourceModifiedFlag
@@ -4973,7 +4907,7 @@ RTS
   CLR.w comWord_SourceChanged
   JSR update_modifiermark
   !basic
-    UnlockAllOpenWZWin{}
+  UnlockAllOpenWZWin{}
   !asm
   JSR set_pointernormal
 RTS
@@ -5081,7 +5015,7 @@ RTS
   Dc.b $7A,$33,$00,$00          ;"z3",0,0
   Dc.b $00,$00,$04
 Even
-.SourceIconDatas_End
+.sourceicondatas_end
 
 
 .menu_about:
@@ -5229,9 +5163,12 @@ RTS
  'os1
   !regs2stack
   !basic
-  Gosub getstring_new2               ; set current source word as search phrase
+  ;Gosub getstring_new2               ; set current source word as search phrase
+  *textline.l = TEDGetCurrentLine{} + 9
+  *detokened.l = TEDDetoke{*textline}
+  actualword$ = PED_GetWordAtPos{Peek$(*detokened), Peek.w(?comWord_Column)}
   If actualword$ <> ""
-    oldfindstr$=actualword$
+    oldfindstr$ = actualword$
   EndIf
 
   If WZ_CheckOpen{"WIN_SEARCH"} = False
@@ -5318,6 +5255,7 @@ JMP _redraw
   MOVE.l #$4E657720,(A0)+            ; "New File"
   MOVE.l #$46696C65,(A0)+
   MOVE.b #$0,(A0)+
+
   TST.l D0
   BEQ.w exit_quitall
 
@@ -5328,7 +5266,10 @@ JMP _redraw
     ; --
     MOVEA.l actualfile,A0
     JSR close_actualsource
-    JSR print_filenames
+
+    !basic
+    Gosub draw_tabs
+    !asm
 
     TST.l loadedfilesbase
     BNE.b menu_quitall
@@ -5608,11 +5549,7 @@ RTS
 
 str_hexdigits:             Dc.b "0123456789ABCDEF"
 str_temptedprefs:          Dc.b "T:PED_"
-;                           Ds.b #MAX_STRINGSIZE
 str_template_tempxtrafile: Dc.b "        .xtra",0 : Even
-;                           Ds.b #MAX_STRINGSIZE
-
-
 
 .close_actualsource:
   CLR.w comWord_SourceChanged
@@ -5645,21 +5582,21 @@ RTS
 
 rem_file_from_base:
   TST.l (A0)
-   BEQ.w JL_0_2466
-  MOVEA.l (A0),A1
-  MOVE.l A1,loadedfilesbase
-  MOVE.l A1,actualfile
-  CLR.l $4(A1)
-  MOVEA.l A0,A1
-  !newfree
-  MOVEA.l actualfile,A0
-  JSR GetXtraData
-  JSR read_tempprefs
-  JSR JL_0_2Dca8
-  MOVEA.l (A7)+,A0
-RTS
+  BEQ.w JL_0_2466
+    MOVEA.l (A0),A1
+    MOVE.l A1,loadedfilesbase
+    MOVE.l A1,actualfile
+    CLR.l $4(A1)
+    MOVEA.l A0,A1
+    !newfree
+    MOVEA.l actualfile,A0
+    JSR GetXtraData
+    JSR read_tempprefs
+    JSR JL_0_2Dca8
+    MOVEA.l (A7)+,A0
+    RTS
+  JL_0_2466:
 
- JL_0_2466:
   MOVEA.l A0,A1
   !newfree
   CLR.l loadedfilesbase
@@ -6223,9 +6160,12 @@ RTS
           MOVE.w comLong_BlockStartX,comWord_Column
           TST.b nodisplaybeep
           BNE 'l2
-            MOVEA.l ptr_pedscreen,A0
-            MOVEA.l _intuibase,A6
-            JSR _DisplayBeep(A6)
+            !basic
+            DisplayBeep_ Peek.l(?ptr_pedscreen)
+            !asm
+            ;MOVEA.l ptr_pedscreen,A0
+            ;MOVEA.l _intuibase,A6
+            ;JSR _DisplayBeep(A6)
          'l2
           MOVE.l #$ffffffff,comLong_BlockEndY
           JSR cursor_off
@@ -7088,8 +7028,6 @@ RTS
    LockAllOpenWZWin{}
    Gosub Open_CompileStatus_Window                         ; open Compile status window if we need it
   !asm
-
-  MOVE.l #comStr_CurrentDir,D0                             ;set default dir
   JSR set_currentdir
 
   SUBI.l ##MENU_COMPILERUN,D6                              ; was $50  ; replaced with the constant  tomsmart1  ; compiler only accept ID 0-F so we have to subtract $50 from the menu ID
@@ -7276,7 +7214,6 @@ JL_0_2Dca8:
       JSR update_statusarea
       JSR _redraw
  'l2
-  MOVE.l #comStr_CurrentDir,D0
   JSR set_currentdir
 
   JL_0_2E0E:
@@ -7360,7 +7297,7 @@ BRA JL223
   MOVEM.l (A7)+,D0/A6
   MOVE.l D0,actualfile
   MOVE.l D0,AL_0_84B2
-  MOVE.l d0,loadedfilesbase
+  MOVE.l D0,loadedfilesbase
   MOVEA.l D0,A0
   CLR.l $4(A0)
   CLR.l (A0)
@@ -7575,9 +7512,11 @@ Even
   JSR _DoIO(A6)
 
   MOVEM.l A2-A4,-(A7)
+
   MOVE.l comPtr_CurrentSourceLine,-(A7)
-  JSR JL_0_3318
+  JSR getCountOfMarkedLines
   MOVE.l (A7)+,comPtr_CurrentSourceLine
+
   MOVEA.l A0,A2
   MOVEQ.l #$00,D6
   TST.w D7                                       ; test if more then one line are marked to copy
@@ -7585,9 +7524,9 @@ Even
     JSR JL_0_30E0                                ; no, copy one or part of a line to clipboard
     BRA.w JL_0_3074                              ; jump to end of copy to finish IO
   JL_0_3070:
-  JSR JL_0_319C                                  ; copy more lines to the clipboard
-
+    JSR JL_0_319C                                ; copy more lines to the clipboard
   JL_0_3074:                                     ; end of copy finish IO
+
   BTST #0,d6
   BEQ 'no
     MOVEA.l A4,A1
@@ -7598,6 +7537,7 @@ Even
     MOVE.w #$0003,$1C(A1)
     JSR _DoIO(A6)
  'no
+
   MOVEA.l A4,A1
   MOVE.l D6,AL_0_2FD4
   MOVE.l #AL_0_2FD4,$28(A1)
@@ -7880,13 +7820,13 @@ JL_0_32E6:
 RTS
 
 
-JL_0_3318:
+.getCountOfMarkedLines:                                    ; returns marked lines in D7
   MOVEQ.l #$00,D7
   MOVE.l comLong_DisplayLine,D0
   ADD.l comLong_DisplayLineOffset,D0
   CMP.l comLong_BlockStartY,D0
-   BLT.w JL_0_3348
-   BGT.w JL_0_337C
+  BLT.w JL_0_3348
+    BGT.w JL_0_337C
   MOVEA.l comPtr_CurrentSourceLine,A0
   MOVE.l comLong_BlockEndY,D7
   SUB.l comLong_BlockStartY,D7
@@ -8096,9 +8036,9 @@ BRA saveab
 .menu_saveascii:
   MOVE.l A2,-(A7)
   LEA str_title_ascreq,A2
-  JSR get_filename
+  JSR do_aslfilerequest
   TST.l D0
-   BEQ.w saveascii_exit
+  BEQ.w saveascii_exit
 
  .saveab:
   MOVE.l D0,-(a7)
@@ -8245,7 +8185,7 @@ JMP update_vertscroller
   CMPI.l #$ffffFFFF,comLong_BlockEndY
   BEQ.w setpointer_to_normal
   LEA comStr_ASLSaveBlock,A2
-  JSR get_filename
+  JSR do_aslfilerequest
   TST.l D0
   BEQ.w JL_0_3732
   MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
@@ -8317,10 +8257,10 @@ RTS
 .menu_includeblock:
   CLR.w comWord__AL_0_8AD8
   LEA comStr_ASLLoadBlock,A2
-  JSR get_filename
+  JSR do_aslfilerequest
   TST.l D0
   BNE.b JL_0_3748
-RTS
+    RTS
 
 JL_0_4E4Ab
 ;JMP JL_0_4E4A
@@ -8348,19 +8288,19 @@ JL_0_3748:
   CLR.b instring
 
   JL_0_3790:
-  CMP.w D1,D4
-  BCC.w JL_0_37A2
-    MOVE.b (A2)+,D0
-    CMP.b #$22,d0
-    BNE 'l1
-      NOT.b instring
-   'l1
-    TST.b instring
-    BNE 'l2
-      BCLR #$7,D0                      ;paste mix line
-   'l2
-    MOVE.b D0,(A3)+
-    ADDQ.w #1,D4
+    CMP.w D1,D4
+    BCC.w JL_0_37A2
+      MOVE.b (A2)+,D0
+      CMP.b #$22,d0
+      BNE 'l1
+        NOT.b instring
+     'l1
+      TST.b instring
+      BNE 'l2
+        BCLR #$7,D0                      ;paste mix line
+     'l2
+      MOVE.b D0,(A3)+
+      ADDQ.w #1,D4
   BRA.b JL_0_3790
   JL_0_37A2:
 
@@ -8379,40 +8319,37 @@ JL_0_3748:
  'n10
   TST.w VerticalPasteMode                        ; test PasteMode for normal paste mode if "0" or column paste mode if "1" tomsmart1
   BNE 'l1a
-  MOVE.w #0,d0                                   ; was VerticalPasteMode,d0 tomsmart1
-  BRA 'nc
-
+    MOVE.w #0,d0                                   ; was VerticalPasteMode,d0 tomsmart1
+    BRA 'nc
  'l1a
-  MOVE.l #0,d0                                   ; was VerticalCopyMode,d0 tomsmart1
-  BEQ 'w1
-  ADDQ.l #2,d0
+    MOVE.l #0,d0                                   ; was VerticalCopyMode,d0 tomsmart1
+    BEQ 'w1
+    ADDQ.l #2,d0
 
- 'l1
-  SUBQ.l #1,d0
-  BEQ 'f1
-  SUBQ.w #1,d6
-  CMP.b #32,(a5)+                     ;paste at column
-  BEQ 'l1
+   'l1
+      SUBQ.l #1,d0
+      BEQ 'f1
+        SUBQ.w #1,d6
+    CMP.b #32,(a5)+                     ;paste at column
+    BEQ 'l1
 
- 'f1
-  ADDQ.w #1,d6
-  SUBQ.l #1,a5
+   'f1
+    ADDQ.w #1,d6
+    SUBQ.l #1,a5
 
- 'w1
-  MOVE.w comWord_Column,d0
-  ADD.w comWord_ColumnsOffset,D0
-  BEQ 'nc
+   'w1
+    MOVE.w comWord_Column,d0
+    ADD.w comWord_ColumnsOffset,D0
+    BEQ 'nc
 
- 'w2
-  CMP.w #MAX_Columns-10,d0
-  BLE 'l1b
-  MOVE.w #MAX_Columns-10,d0
-
- 'l1b
-    MOVE.b #32,(a0)+
-    SUBQ.w #1,d0
-  BNE 'l1b
-
+   'w2
+    CMP.w #MAX_Columns-10,d0
+    BLE 'l1b
+      MOVE.w #MAX_Columns-10,d0
+   'l1b
+      MOVE.b #32,(a0)+
+      SUBQ.w #1,d0
+    BNE 'l1b
  'nc
   MOVE.l a0,tempstore
 
@@ -9298,18 +9235,26 @@ JMP _redraw
 
 
 .menu_closewb:
-  MOVEA.l _intuibase,A6
-  JSR _CloseWorkbench(A6)
+  ;MOVEA.l _intuibase,A6
+  ;JSR _CloseWorkbench(A6)
+  !basic
+  CloseWorkBench_
+  !asm
 RTS
 
 .menu_openwb:
-  MOVEA.l _intuibase,A6
-  JSR _OpenWorkbench(A6)
-  MOVEA.l ptr_pedscreen,A0
-  JSR _ScreenToFront(A6)
-  MOVEA.l ptr_sourcewindow,A0
-JMP _ActivateWindow(A6)
-
+;  MOVEA.l _intuibase,A6
+;  JSR _OpenWorkbench(A6)
+;  MOVEA.l ptr_pedscreen,A0
+;  JSR _ScreenToFront(A6)
+;  MOVEA.l ptr_sourcewindow,A0
+;  JMP _ActivateWindow(A6)
+  !basic
+  OpenWorkBench_
+  ScreenToFront_ Peek.l(?ptr_pedscreen)
+  ActivateWindow_ Peek.l(?ptr_sourcewindow)
+  !asm
+RTS
 
 .menu_newshell:
   !basic
@@ -9436,42 +9381,42 @@ RTS
 ;JMP _ActivateWindow(A6)
 RTS
 
-
-
-
-.check_devicelist:
-  MOVEA.l _dosbase,A1
-  MOVEA.l $22(A1),A1
-  MOVEA.l $18(A1),A1
-  ADDA.l A1,A1
-  ADDA.l A1,A1
-  MOVE.l $4(A1),D1
-
- JL_0_434A:
-  MOVEA.l D1,A1
-  ADDA.l A1,A1
-  ADDA.l A1,A1
-  MOVEA.l $28(A1),A2
-  ADDA.l A2,A2
-  ADDA.l A2,A2
-  CMP.b (A2)+,D0
-  BNE.w JL_0_4372
-  MOVEA.l A0,A3
-  MOVE.w D0,D1
-  SUBQ.w #1,D1
-
- JL_0_4364:
-    CMPM.b (A3)+,(A2)+
-    BNE.w JL_0_4372
-  DBF D1,JL_0_4364
-  MOVEQ.l #$00,D0
-RTS
-
- JL_0_4372:
-  MOVE.l (A1),D1
-  BNE.b JL_0_434A
-  MOVEQ.l #-$01,D0
-RTS
+;
+;
+;
+;.check_devicelist:
+;  MOVEA.l _dosbase,A1
+;  MOVEA.l $22(A1),A1
+;  MOVEA.l $18(A1),A1
+;  ADDA.l A1,A1
+;  ADDA.l A1,A1
+;  MOVE.l $4(A1),D1
+;
+; JL_0_434A:
+;  MOVEA.l D1,A1
+;  ADDA.l A1,A1
+;  ADDA.l A1,A1
+;  MOVEA.l $28(A1),A2
+;  ADDA.l A2,A2
+;  ADDA.l A2,A2
+;  CMP.b (A2)+,D0
+;  BNE.w JL_0_4372
+;    MOVEA.l A0,A3
+;    MOVE.w D0,D1
+;    SUBQ.w #1,D1
+;
+;    JL_0_4364:
+;      CMPM.b (A3)+,(A2)+
+;      BNE.w JL_0_4372
+;    DBF D1,JL_0_4364
+;    MOVEQ.l #$00,D0
+;    RTS
+;  JL_0_4372:
+;
+;  MOVE.l (A1),D1
+;  BNE.b JL_0_434A
+;    MOVEQ.l #-$01,D0
+;RTS
 
 
 ;deactivated because it is not called form the compiler anymore  tomsmart1 2013 12 28
@@ -9696,38 +9641,51 @@ RTS
 .click_all
   MOVE.b comByte_LabelIdentifier,D1
   MOVEQ #0,d3
-  MOVE.l comparetab,a3
-'l15  MOVE.b #";",d1
+  MOVE.l lowerchartable,a3
+ 'l15
+  MOVE.b #";",d1
   LEA $9(A0),A1
   TST.b (a1)
   BEQ 'nowrite
-'lc1  CMP.b #" ",(a1)
-  BNE 'l1
-  ADDQ.l #1,a1
+
+ 'lc1
+    CMP.b #" ",(a1)
+    BNE 'l1
+      ADDQ.l #1,a1
   BRA 'lc1
-'l1 MOVE.l a1,straddr2
+ 'l1
+
+  MOVE.l a1,straddr2
   CMP.b #".",(a1)
   BNE 'l1b
-  ADDQ.l #1,a1
-  ;BRA 'addlist
-'l1b  CMP.w ##TOKEN_Stop,(a1)
+    ADDQ.l #1,a1
+    ;BRA 'addlist
+ 'l1b
+
+  CMP.w ##TOKEN_Stop,(a1)
   BEQ 'addstop
-  CMP.w ##TOKEN_TRAP,(a1)
-  BEQ 'addstop
-  MOVE.l straddr,a2
-  CLR.l slen2
-'cok  MOVE.b (a2)+,d2
+    CMP.w ##TOKEN_TRAP,(a1)
+    BEQ 'addstop
+      MOVE.l straddr,a2
+      CLR.l slen2
+ 'cok
+  MOVE.b (a2)+,d2
   BEQ 'addlist
-'cf  MOVE.b (a1)+,d3
+ 'cf
+  MOVE.b (a1)+,d3
   TST.b searchmode
   BEQ 'nopat
-  BRA 'addlist
-'nopat TST.b d3
+    BRA 'addlist
+ 'nopat
+
+  TST.b d3
   BEQ 'nowrite
-   TST.b casemode
-   BEQ 'lca1
-   MOVE.b 0(a3,d3.w),d3
-'lca1 ADD.l #1,slen2
+    TST.b casemode
+    BEQ 'lca1
+      MOVE.b 0(a3,d3.w),d3            ; convert character to lowercase
+ 'lca1
+
+  ADD.l #1,slen2
   CMP.b d2,d3
   BEQ 'cok
   MOVE.l slen2,a2
@@ -9749,7 +9707,7 @@ RTS
   BRA 'nowrite
  'v1
  'addlist
-  CMP.l #maxlabels,numcount          ;reduce this for slow computer
+  CMP.l #maxlabels,numcount          ;reduce this for slower computers
   BGE 'nowrite
   MOVEM.l a0/d0,-(a7)
   MOVE.l a0,d0
@@ -10032,7 +9990,7 @@ RTS
   !stack2regs
 RTS
 
-AJL_0_4A8E:
+copy_A0_to_A1:
   MOVEM.l A0-A1,-(A7)
 
   JL_0_4A92:
@@ -10205,14 +10163,20 @@ JL_0_4E36:
   SUBQ.w #1,A3
 RTS
 
-close_sourcefile:
+.close_sourcefile:
   TST.w comWord_PasteMode
-   BNE.w JL_0_4E64
-  CLR.l comPtr_SourceFileHandle
-  MOVE.l D7,D1
-  MOVEA.l _dosbase,A6
-JMP _Close(A6)
-JL_0_4E64:
+  BNE.w JL_0_4E64
+    CLR.l comPtr_SourceFileHandle
+    MOVE.l D7,D1
+    MOVEA.l _dosbase,A6
+    JMP _Close(A6)
+  JL_0_4E64:
+;  !basic
+;  If Peek.w(?comWord_PasteMode) = 0
+;    Poke.l ?comPtr_SourceFileHandle,0
+;    Close_
+;  EndIf
+;  !asm
 RTS
 
 .open_sourcefile:                    ; D7: filename & Path
@@ -10259,19 +10223,20 @@ RTS
 RTS
 
 .readbyte:
-  SUBQ.w #1,D6
-  BMI.w JL_0_4EA2
-  MOVE.b (A5)+,D0
-  CMP.w D0,D0
-RTS
+    SUBQ.w #1,D6
+    BMI.w JL_0_4EA2
+      MOVE.b (A5)+,D0
+      CMP.w D0,D0
+        RTS
+    JL_0_4EA2:
 
-JL_0_4EA2:
-  JSR source_readin
+    JSR source_readin
   BNE.b readbyte
+
   MOVEQ.l #-$01,D0
 RTS
 
-source_readin:                       ; can be clipboard or file
+.source_readin:                       ; can be clipboard or file
   TST.w comWord_PasteMode
   BEQ.w source_read_from_file_cached ; well, it's from file
   !regs2stack                           ; new line-by-line Code (Thilo)
@@ -10316,113 +10281,28 @@ source_readin:                       ; can be clipboard or file
   TST.l D6
   RTS
 
-clipboard_dummystr
-Dc.l 0
-
-;  MOVE.l A6,-(A7)
-
-;  MOVEA.l _execbase,A6                  ; original BlitzBasic2 Code
-;  MOVEA.l ptr_iorequest_clipboard,A1
-;  MOVE.l comPtr_DosBuffer,$28(A1)
-;  MOVE.l #$2000,$24(A1)
-;  MOVE.w #$0002,$1C(A1)
-;  JSR _DoIO(A6)
-;  MOVEA.l ptr_iorequest_clipboard,A1
-;  MOVE.l $20(A1),D6
-;  MOVE.l (a7)+,a6
-;  MOVEA.l comPtr_DosBuffer,A5
-;  TST.l D6 TST
-;  RTS
-
-;  !regs2stack                           ; all-in-one block Code (Thilo)
-;  !basic
-;  If clipboard_tmpP.l = Null
-;    clipboard_length.l = clipboard_GetTextLength{}
-;    ;error{"Got clipboard =>"+Str$(clipboard_length)+" bytes!"}
-;    If clipboard_length>0
-;      clipboard_tmpP.l = AllocVec_(clipboard_length+8,#MEMF_ANY)
-;      If clipboard_tmpP
-;        clipboard_length = clipboard_GetText{clipboard_tmpP,clipboard_length+1}
-;        If clipboard_length>0
-;
-;          ccount.l     = 0
-;          seenReturn.l = False
-;          For n.l=0 To clipboard_length-1
-;            cchar.w = Peek.b(clipboard_tmpP+n) & $FF
-;            If cchar = $0a Then seenReturn=True : ccount=0
-;            If cchar = $a0 Then cchar = $20
-;            If cchar > 127 Then cchar = Asc("?")
-;            ccount+1
-;            If ccount>249 Then cchar=$0A : ccount=0 : seenReturn=True
-;            Poke.b clipboard_tmpP+n,cchar
-;          Next
-;          If seenReturn
-;            If Peek.b(clipboard_tmpP+clipboard_length-1)><$0a
-;              Poke.b clipboard_tmpP+clipboard_length,$0A
-;              clipboard_length+1
-;            End If
-;          End If
-;          Poke.b clipboard_tmpP+clipboard_length,$0
-;        Else
-;          error{"Clipboard read error!"} : clipboard_length=0
-;        End If
-;      Else
-;        error{"Not enough memory for clipboard operation!"}
-;        clipboard_length=0
-;      End If
-;    Else
-;      clipboard_length=0
-;    End If ; nothing in clip!
-;  Else
-;    clipboard_length = 0
-;  End If
-;
-;  If clipboard_length<=0
-;   ; error{"Free clipboard buffer!"}
-;    If clipboard_tmpP Then FreeVec_ clipboard_tmpP
-;    clipboard_tmpP   = Null
-;    clipboard_length = 0
-;  Else
-;    ;error{"Got clipboard!"+Str$(clipboard_length)+" bytes!"}
-;    fid.l = file_Open{"ram:cliptest.txt",#file_forcewrite}
-;    If fid>=0
-;      file_WriteMem{fid,clipboard_tmpP ,clipboard_length+1}
-;      file_Close{fid}
-;    End If
-;  End If
-
-;  Poke.l ?clipboard_copylen,clipboard_length
-;  Poke.l ?clipboard_copybuffer,clipboard_tmpP
-;
-;  !asm
-;  !stack2regs
-; ; MOVEA.l (A7)+,A6
-;  MOVE.l  clipboard_copylen,D6
-;  MOVEA.l clipboard_copybuffer,A5
-;  TST.l D6
-;  RTS
-
-clipboard_copylen: Dc.l 0
+clipboard_dummystr:   Dc.l 0
+clipboard_copylen:    Dc.l 0
 clipboard_copybuffer: Dc.l 0
 
-source_read_from_file:
+.source_read_from_file:
   MOVE.l D7,D1                       ; file handle
   MOVEA.l comPtr_DosBuffer,A5
   MOVE.l A5,D2                       ; membuffer
   MOVE.l #$2000,D3                   ; length
   MOVEA.l _dosbase,A6
-   JSR _Read(A6)
+  JSR _Read(A6)
   MOVE.l D0,D6
-   BPL.w JL_0_4F18
-  SUBA.l A0,A0
-  MOVEA.l #comStr_ErrorReadFile,A0
-   JSR show_errorrequester
-  MOVEQ.l #$00,D6
+  BPL.w JL_0_4F18
+    SUBA.l A0,A0
+    MOVEA.l #comStr_ErrorReadFile,A0
+    JSR show_errorrequester
+    MOVEQ.l #$00,D6
   JL_0_4F18:
 RTS
 
 
-source_read_from_file_cached:
+.source_read_from_file_cached:
   MOVE.l D7,readcache_fp
   MOVEA.l comPtr_DosBuffer,A5
   MOVE.l A5,readcache_destptr        ; membuffer
@@ -10919,7 +10799,7 @@ RTS
 JL_0_5054:
   MOVE.l A3,-(A7)
   MOVEA.l A0,A3
-  JSR AJL_0_4A8E
+  JSR copy_A0_to_A1
   MOVEA.l (A7)+,A3
 RTS
 
@@ -11013,16 +10893,16 @@ RTS
 RTS
 
 
-.get_filename:
+.do_aslfilerequest:
   LEA comStr_ASLDummyPath,A0
   LEA comStr_ASLDummyDir,A1
   LEA comStr_FilePattern_NoInfo,A3
 BRA.w aslrequest_file
 
 
-.do_aslfilerequest:
+.do_aslloadfilerequest:
   LEA comStr_ASLLoadFile,A2          ; asl title
-  JL_0_50D2:
+  do_aslsavefilerequest:
   LEA comStr_CurrentDir,A0           ; asl dir
   LEA comStr_SourceName,A1           ; asl path
   LEA comStr_FilePattern,A3          ; file pattern (*.bb2 etc.)
@@ -11110,7 +10990,7 @@ RTS
 
   MOVE.l A0,ptr_errortext
   CMP.l #0,a5
-  BNE 'l4
+    BNE 'l4
   LEA dummystr + 1,a5
  'l4
   MOVEQ #20,d0
@@ -11145,11 +11025,12 @@ RTS
   LEA helpstring,a0
   TST.b (a0)
   BNE 'l1b
-  ADDQ.l #4,a0
+    ADDQ.l #4,a0
  'l1b
   MOVE.l expandstore,a1
   JSR detokenize_line
   MOVE.l expandstore,a1
+
   MOVE.l a1,ptr_errortitle
   ;MOVE.b #">",(a1)
  'l8
@@ -11159,15 +11040,8 @@ RTS
   BNE 'l8
   ;MOVE.b #"<",-1(a1)
  'l9
-  ;LEA easystruct_error,A1
-  ;JSR show_requester
   !regs2stack
   !basic
-;  MOVE.l D7,d0 : i.l = PutD0    ; if a error in a include then it holds the line number ; deactived because is not needed anymore  tomsmart1
-;  Format "####"
-;  Poke$ ?helpstring,Str$(i)
-;  Format ""
-
   fid.l = file_Open{dos_AddPart{my_systemdir$,"ab_compileerror.txt"},#file_read}
   If fid <> -1
     errormessage$  = file_ReadLine{fid}
@@ -11176,7 +11050,7 @@ RTS
     l$             = file_ReadLine{fid}
     compilestatus$ = file_ReadLine{fid}
     file_Close{fid}
-    If sourcename$ <>"none"
+    If sourcename$ <> "none"
      GetD0 &sourcename$
       If Exists (sourcename$)
         GetD0 &sourcename$
@@ -11190,26 +11064,13 @@ RTS
   Else
     sourceline$ = ""
   End If
-; building the inforequester:
-;  *easystruct.EasyStruct = ?easystruct_error
 
+  ; building the inforequester:
   errortitle$ = !TRANS{"Compile Error"}
-  errortext$ = Peek.s(Peek.l(?ptr_errortext) ) ; Peek$(*easystruct\es_TextFormat)
-;  errorhelp$ = Peek.s(?helpstring)
-
+  errortext$ = Peek.s(Peek.l(?ptr_errortext))
   If sourceline$<>""
     errortext$ = !TRANS{"Compile error in line"} + " " + sourceline$ + ":\\n\\n" + errortext$
-    ; removed !TRANS{} for the errortext$ because i transfer it to the compiler to prevent a possible transltion of programcode  tomsmart1
   EndIf
-;   errortext$ + "Status: " + compilestatus$
-
-;  If Len(errorhelp$) > 5
-;    errortext$ + "\\n" + errorhelp$
-;  EndIf
-;  If Len(Peek$( * easystruct\es_Title)) > 3
-;    errortext$ + "\\nadditional info for macros:\\n" + Peek$( * easystruct\es_Title)
-;  EndIf
-
   dummy.l = ask{errortext$,!TRANS{"OK"},errortitle$}
   !asm
   !stack2regs
@@ -11872,34 +11733,42 @@ CEND
   DBF D7,JL_0_58E8
   JL_0_5902:
 
-  ; better refresh: clear bottom
+  ; -- better refresh: clear bottom
   MOVE.l #0,ClearEndOfLine
-  MOVEA.l _graphicsbase,A6
-  MOVEA.l rp_sourcewindow,A1
-  MOVE.l backgroundcolor,d0
-  JSR _SetAPen(A6)
+  ;  MOVEA.l _graphicsbase,A6
+  ;  MOVEA.l rp_sourcewindow,A1
+  ;  MOVE.l backgroundcolor,d0
+  ;  JSR _SetAPen(A6)
+  ;  MOVEA.l rp_sourcewindow,A1
+  ;  MOVE.w source_BoxLeft,D0
+  ;  MOVE.l comLong_DisplayLine,D1
+  ;  MULU fontHeight,D1
+  ;  ADD.w  fontHeight,D1
+  ;  MOVE.w source_BoxWidth,D2
+  ;  MOVE.w ypos_statusarea ,D3
+  ;  CMP.w d0,d2                        ; d2-d0
+  ;  BMI 'skip
+  ;    CMP.w d1,d3
+  ;    BMI 'skip
+  ;      JSR _RectFill(A6)                  ;A1:rp, D0:x min, D1:ymin, D2:xmax, D3:ymax  d0-d3:16
+  ; 'skip:
+  !basic
+  SetAPen_  Peek.l(?rp_sourcewindow), Peek.l(?backgroundcolor)
+  rectx.w = Peek.w(?source_BoxLeft)
+  recty.w = Peek.l(?comLong_DisplayLine) * Peek.w(?fontHeight) + Peek.w(?fontHeight)
+  rectw.w = Peek.w(?source_BoxWidth)
+  recth.w = Peek.w(?ypos_statusarea)
+  If rectw > rectx Then RectFill_ Peek.l(?rp_sourcewindow), rectx, recty, rectw, recth
+  !asm
 
-  MOVEA.l rp_sourcewindow,A1
-  MOVE.w source_BoxLeft,D0
-  MOVE.l comLong_DisplayLine,D1
-  MULU fontHeight,D1
-  ADD.w  fontHeight,D1
-  MOVE.w source_BoxWidth,D2
-  MOVE.w ypos_statusarea ,D3
-  CMP.w d0,d2                        ; d2-d0
-  BMI 'skip
-    CMP.w d1,d3
-    BMI 'skip
-      JSR _RectFill(A6)                  ;A1:rp, D0:x min, D1:ymin, D2:xmax, D3:ymax  d0-d3:16
- 'skip:
   JSR restore_cursorposition
   MOVE.l (A7)+,comLong_BlockEndY
 
   JL_0_590C:
   TST.l comLong_BlockEndY
   BMI.w JL_0_59BA
-    MOVEA.l _graphicsbase,A6
-    MOVEA.l comPtr_SourceAreaRastPort,A1
+    ;MOVEA.l _graphicsbase,A6
+    ;MOVEA.l comPtr_SourceAreaRastPort,A1
     MOVE.w comLong_BlockStartX,D0
     MOVE.w comLong_BlockEndX,D2
     MOVE.l comLong_BlockEndY,D3
@@ -11933,22 +11802,23 @@ CEND
       MOVE.l viewablelines,D5
       CMP.l D5,D1
       BGE.w JL_0_59BA
-      CMP.l D5,D3
-      BLE.w JL_0_5998
-        MOVE.l viewablelines_m1,D3
-      JL_0_5998:
+        CMP.l D5,D3
+        BLE.w JL_0_5998
+          MOVE.l viewablelines_m1,D3
+        JL_0_5998:
 
-      CMP.w visiblecolumns,D2
-      BLT.w JL_0_59AA
-        MOVE.w visiblecolumns,D2
-        SUBQ.w #1,D2
-      JL_0_59AA:
+        CMP.w visiblecolumns,D2
+        BLT.w JL_0_59AA
+          MOVE.w visiblecolumns,D2
+          SUBQ.w #1,D2
+        JL_0_59AA:
 
-      ADD.w comWord_ColumnsOffset,D0
-      ADD.w comWord_ColumnsOffset,D2
-      BRA.w JL_0_59C0
+        ADD.w comWord_ColumnsOffset,D0
+        ADD.w comWord_ColumnsOffset,D2
+        BRA.w JL_0_59C0
   JL_0_59BA:
 RTS
+
 
 JL_0_59BC:                           ;redraw blockmark
   JSR AbsDimensions
@@ -12217,7 +12087,7 @@ RTS
     CLR.l (A2)+
   DBF D2,JL_0_5C20
 
-  MOVEA.l _intuibase,A6
+  ;MOVEA.l _intuibase,A6
 
   TST.w comWord_DoTokenize
   BNE.w tokenized_text
@@ -12237,30 +12107,48 @@ RTS
     JSR print_tokenized_text
   exit_print_complete_line:
 
-  TST.l ClearEndOfLine
-  BEQ skip_clearendofline
-    ; better refresh: clear line at the end
-    !regs2stack
-    MOVEA.l rp_sourcewindow,A1
-    MOVE.l backgroundcolor,D0
-    MOVEA.l _graphicsbase,A6
-    JSR _SetAPen(A6)
+;  TST.l ClearEndOfLine
+;  BEQ skip_clearendofline
+;    ;--  better refresh: clear line at the end
+;    !regs2stack
+;    MOVEA.l rp_sourcewindow,A1
+;    MOVE.l backgroundcolor,D0
+;    MOVEA.l _graphicsbase,A6
+;    JSR _SetAPen(A6)
+;
+;    MOVEA.l rp_sourcewindow,A1
+;    MOVE.w $24(A1),D0                 ; cp_x : current pen position
+;    MOVE.l comLong_DisplayLine,D1     ; calculate line y
+;    MULU fontHeight,D1
+;    MOVE.w source_BoxWidth,D2
+;    MOVE.w D1,D3
+;    ADD.w  fontHeightm1,D3
+;    CMP.w d0,d2                       ; d2-d0
+;    BMI 'skip
+;      CMP.w d1,d3
+;      BMI 'skip
+;        JSR _RectFill(A6)             ; A1:rp, D0:x min, D1:ymin, D2:xmax, D3:ymax  d0-d3:16
+;   'skip:
+;    !stack2regs
+;  skip_clearendofline:
 
-    MOVEA.l rp_sourcewindow,A1
-    MOVE.l comLong_DisplayLine,D1     ; calculate line y
-    MULU fontHeight,D1
-    MOVE.w $24(A1),D0                 ; cp_x : current pen position
-    MOVE.w source_BoxWidth,D2
-    MOVE.w D1,D3
-    ADD.w  fontHeightm1,D3
-    CMP.w d0,d2                       ; d2-d0
-    BMI 'skip
-      CMP.w d1,d3
-      BMI 'skip
-        JSR _RectFill(A6)             ; A1:rp, D0:x min, D1:ymin, D2:xmax, D3:ymax  d0-d3:16
-   'skip:
+  !basic
+  If Peek.l(?ClearEndOfLine)
+    !regs2stack
+    *rastp.RastPort = Peek.l(?rp_sourcewindow)
+    SetAPen_  *rastp, Peek.l(?backgroundcolor)
+
+    rectx.w = *rastp\cp_x
+    recty.w = Peek.l(?comLong_DisplayLine) * Peek.w(?fontHeight)
+    rectw.w = Peek.w(?source_BoxWidth)
+    recth.w = recty + Peek.w(?fontHeightm1)
+    If (rectw > rectx) AND (recth > recty) Then RectFill_ *rastp, rectx, recty, rectw, recth
     !stack2regs
-  skip_clearendofline:
+  EndIf
+  !asm
+
+
+
 
   MOVE.l (A7)+,D2
   CLR.w comWord__AL_0_8660
@@ -12413,43 +12301,62 @@ Dc.l 0
  'no2
   MOVEM.l (a7)+,d0/d1/a0/a1
 
-  MOVEM.l a6/d0-d1/a0/a1,-(a7)       ; set tokenbackground
-  MOVEA.l _graphicsbase,A6
-  MOVEA.l rp_sourcewindow,A1
-  MOVE.l tokenbackground,D0
-  JSR _SetBPen(A6)
+  MOVEM.l a6/d0-d1/a0/a1,-(a7)
 
-  TST.b bold_tokens
-  BEQ.b 'no_bold                     ; optional set bold style
-    MOVEA.l rp_sourcewindow,A1
-    MOVEA.l ptr_sourcefontb,A0
-    JSR _SetFont(A6)
+  ;MOVEA.l _graphicsbase,A6
+  ;MOVEA.l rp_sourcewindow,A1
+  ;MOVE.l tokenbackground,D0
+  ;JSR _SetBPen(A6)
 
-    MOVEA.l rp_sourcewindow,A1
-    MOVE.l #FSF_BOLD,D0
-    MOVE.l #FSF_BOLD,D1
-    JSR _SetSoftStyle(A6)
- 'no_bold
+  ;TST.b bold_tokens
+  ;BEQ.b 'no_bold                     ; optional set bold style
+  ;  MOVEA.l rp_sourcewindow,A1
+  ;  MOVEA.l ptr_sourcefontb,A0
+  ;  JSR _SetFont(A6)
+
+  ;  MOVEA.l rp_sourcewindow,A1
+  ;  MOVE.l #FSF_BOLD,D0
+  ;  MOVE.l #FSF_BOLD,D1
+  ;  JSR _SetSoftStyle(A6)
+ ;'no_bold
+  !basic
+  SetBPen_ Peek.l(?rp_sourcewindow), Peek.l(?tokenbackground)
+
+  If Peek.b(?bold_tokens)
+    SetFont_ Peek.l(?rp_sourcewindow), Peek.l(?ptr_sourcefontb)
+    SetSoftStyle_ Peek.l(?rp_sourcewindow),#FSF_BOLD,#FSF_BOLD
+  EndIf
+  !asm
+                                                                                                                                                                                                                                                         
   MOVEM.l (a7),a6/d0-d1/a0/a1
 
   JSR print_text                     ; A0: string, D0: x-pos, D1: y-pos, D2: textlength, D3: foregroundcolor
 
-  MOVEA.l _graphicsbase,A6           ; set backgroundcolour
-  MOVEA.l rp_sourcewindow,A1
-  MOVE.l backgroundcolor,d0
-  JSR _SetBPen(A6)
+  ;MOVEA.l _graphicsbase,A6           ; set backgroundcolour
+  ;MOVEA.l rp_sourcewindow,A1
+  ;MOVE.l backgroundcolor,d0
+  ;JSR _SetBPen(A6)
 
-  TST.b bold_tokens                  ; optional set back to normal style
-  BEQ.b 'no_bold2
-    MOVEA.l rp_sourcewindow,A1
-    MOVEA.l ptr_sourcefont,A0
-    JSR _SetFont(A6)
+;  TST.b bold_tokens                  ; optional set back to normal style
+;  BEQ.b 'no_bold2
+;    MOVEA.l rp_sourcewindow,A1
+;    MOVEA.l ptr_sourcefont,A0
+;    JSR _SetFont(A6)
+;
+;    MOVEA.l rp_sourcewindow,A1
+;    MOVE.l #FS_NORMAL,D0
+;    MOVE.l #FSF_BOLD,D1
+;    JSR _SetSoftStyle(A6)
+; 'no_bold2
 
-    MOVEA.l rp_sourcewindow,A1
-    MOVE.l #FS_NORMAL,D0
-    MOVE.l #FSF_BOLD,D1
-    JSR _SetSoftStyle(A6)
- 'no_bold2
+  !basic
+  SetBPen_ Peek.l(?rp_sourcewindow), Peek.l(?backgroundcolor)
+
+  If Peek.b(?bold_tokens)
+    SetFont_ Peek.l(?rp_sourcewindow), Peek.l(?ptr_sourcefont)
+    SetSoftStyle_ Peek.l(?rp_sourcewindow),#FS_NORMAL,#FSF_BOLD
+  EndIf
+  !asm
 
   MOVEM.l (a7)+,a6/d0-d1/a0/a1
 
@@ -12920,14 +12827,14 @@ BRA ready
     MOVE.b (a2),d0
     CMP.b #$22,d0
     BNE 'ls1
-    NOT.b instring
+      NOT.b instring
    'ls1
     TST.b instring
     BNE 'l1
-    CMP.b #"\",d0
-    BEQ 'l1
-    TST.b 0(a1,d0)
-    BNE 'l3
+      CMP.b #"\",d0
+      BEQ 'l1
+        TST.b 0(a1,d0)
+        BNE 'l3
    'l1
     ADDQ #1,d2
     CMP.w #MAX_Columns,d2
@@ -12959,23 +12866,23 @@ BRA ready
     MOVE.b (a2),d0
     CMP.b #$22,d0
     BNE 'ls1
-    NOT.b instring
+      NOT.b instring
    'ls1
     TST.b instring
     BNE 'l1
-    CMP.b #"$",d0
-    BEQ 'l1
-    CMP.b #"%",d0
-    BEQ 'l1
-    CMP.b #"-",d0
-    ;BEQ 'l1
-    TST.b 0(a1,d0)
-    BNE 'l3
+      CMP.b #"$",d0
+      BEQ 'l1
+        CMP.b #"%",d0
+        BEQ 'l1
+          CMP.b #"-",d0
+          ;BEQ 'l1
+          TST.b 0(a1,d0)
+          BNE 'l3
    'l1
     ADDQ #1,d2
     CMP.w #MAX_Columns,d2
     BEQ 'r1
-    ADDQ #1,a2
+      ADDQ #1,a2
   BRA 'l2b
  'l3
   SUB.l d1,d2
@@ -13009,21 +12916,21 @@ BRA ready
     MOVE.b (a2),d0
     CMP.b #"!",d0
     BEQ dofr1
-    TST.b 0(a0,d0)
-    BNE 'l3
-    SUBQ #1,d2
-    BEQ 'l3b
-    SUBQ #1,a2
+      TST.b 0(a0,d0)
+      BNE 'l3
+        SUBQ #1,d2
+        BEQ 'l3b
+          SUBQ #1,a2
   BRA 'l2b
  'l3
   ADDQ #1,a2
  'l3b
   CMP.b #$21,d0
   BEQ dofr1
-  SUB.l d2,d1
-  MOVE.l d2,d0
-  MOVE.l d1,d2
-  MOVE.l a2,a0
+    SUB.l d2,d1
+    MOVE.l d2,d0
+    MOVE.l d1,d2
+    MOVE.l a2,a0
 ;  !basic
 ;  tempd0.l = PutD0
 ;  MOVE.l a2,d0
@@ -13036,9 +12943,9 @@ BRA ready
 ;  If functionstr$<>"" Then poke.s faddr,functionstr$,clen
 ;  GetD0 tempd0
 ;  !asm
-  MOVE.l functioncolor,d3
-  MOVE.l #0,D5
-  BSR print_hightlight
+    MOVE.l functioncolor,d3
+    MOVE.l #0,D5
+    BSR print_hightlight
   dofr1:
   MOVEM.l (a7)+,d2/a2
 BRA ready
@@ -14370,10 +14277,10 @@ JUMP_exit_PED_closeall:
 JMP exit_PED_closeall
 
 
-ptr_visualinfo: Ds.l 1
+;ptr_visualinfo: Ds.l 1
 
 
-.SetGuiFontToWBScreenFont:                               ;Subroutine to get the used Screenfont of the WB an set it as guifont  tomsmart1
+.SetGuiFontToWBScreenFont:                            ;Subroutine to get the used Screenfont of the WB an set it as guifont  tomsmart1
     WbToScreen 0                                      ; set WB to screen 0
     *scr.Screen=Peek.l(Addr Screen(0))                ; get pointer of this screen
     If *scr<>0                                        ; check if we get a screenstructure
@@ -14511,16 +14418,17 @@ Return
   EndIf
   log_Print{"setting colors..."}
   Gosub set_storedcolors
+
+  ; -- get the visualinfo-data
+  ;MOVE.l ptr_pedscreen,D0
+  ;MOVEA.l _gadtoolsbase,A6
+  ;MOVEA.l D0,A0
+  ;MOVEA.l #0,A1
+  ;JSR _GetVisualInfoA(A6)
+  ;MOVE.l D0,ptr_visualinfo
+  ;Poke.l ?ptr_visualinfo = GetVisualInfoA_(?ptr_pedscreen,0)
+
   !asm
-
-  ; -- get the visualinfo-datas
-  MOVE.l ptr_pedscreen,D0
-  MOVEA.l _gadtoolsbase,A6
-  MOVEA.l D0,A0
-  MOVEA.l #0,A1
-  JSR _GetVisualInfoA(A6)
-  MOVE.l D0,ptr_visualinfo
-
   ; -- inform via arexx
   ; -- that the window is opened
   JSR arexx_send_openwindow
@@ -14856,7 +14764,7 @@ win_Height:   Dc.w 200
   ; attach sourcewindow to peds process
   log_Print{"find current task"}
   *this_process.Process = FindTask_("")
-  Poke.l ?AL_0_7356, *this_process\pr_WindowPtr
+  Poke.l ?ptr_windowPtrTemp, *this_process\pr_WindowPtr
   *this_process\pr_WindowPtr = ?ptr_sourcewindow
   !asm
   MOVE.w #$FFFF,comWord_LabelListChanged     ; indicate that label window has to be updated too
@@ -14864,7 +14772,7 @@ win_Height:   Dc.w 200
   ;SUBA.l A1,A1
   ;JSR _FindTask(A6)
   ;MOVEA.l D0,A0
-  ;MOVE.l $B8(A0),AL_0_7356
+  ;MOVE.l $B8(A0),ptr_windowPtrTemp
   ;MOVE.l ptr_sourcewindow,$B8(A0)
 
   win_already_open:
@@ -14961,8 +14869,8 @@ RTS
   JSR error_unable_window
 
   JL_0_7334:
-  MOVEA.l ptr_pedscreen,A0
-  MOVEA.l _intuibase,A6
+  ;MOVEA.l ptr_pedscreen,A0
+  ;MOVEA.l _intuibase,A6
   !basic
   !coutclose
   CloseAllWZWindows{}
@@ -14979,7 +14887,7 @@ JMP exit_PED_closeall
   MOVEQ.l #-$01,D0
 RTS
 
-AL_0_7356:    Ds.l 1
+ptr_windowPtrTemp:    Ds.l 1
 
 .print_actualsourceline:
   MOVE.l #$20202020,str_actualline
@@ -15008,6 +14916,10 @@ RTS
 RTS
 
 
+Function PED_PrintStatus{text$,xpos}
+  SHARED *rpSourceWin *SourceWin, *
+End Function
+
 
 
 text_ptr:   Ds.l 1
@@ -15034,7 +14946,7 @@ text_ptr:   Ds.l 1
     SetAPen_ *rastp, AB3Pen(#AB3_screenshine)
     SetBPen_ *rastp, AB3Pen(#AB3_screenfill)
     Move_ *rastp, xpos_text, ypos_text
-    If Vallong(txt$)> 0
+    If Vallong(txt$)> 0                                   ; boldtext for numbers
       SetFont_ *rastp,Peek.l(?ptr_sourcefontb)
       SetSoftStyle_ *rastp,#FSF_BOLD,#FSF_BOLD
     EndIf
@@ -15078,8 +14990,6 @@ RTS
 RTS
 
 
-
-
 .update_statusarea:               ; d0:xpos, a0: textpointer
   ; X-Position ermitteln
   !basic
@@ -15087,32 +14997,19 @@ RTS
   *swin.Window    = Peek.l(?ptr_sourcewindow)
   *tfont.TextFont = Peek.l(?ptr_sourcefont)
   ypos_sa.w = Peek.w(?ypos_statusarea) + 1
-  Poke.w ?yposlow, ypos_text
 
+  ;-- clear area
   SetAPen_ *rastp,AB3Pen(#AB3_screenfill)
   RectFill_ *rastp,0,ypos_sa + 2,*swin\Width-1,*swin\Height-12
 
   ;-- Draw separation lines
-  SetAPen_ *rastp, AB3Pen(#AB3_screenshine)
-  Move_ *rastp,0,ypos_sa
-  Draw_ *rastp,*swin\Width-1,ypos_sa
-  SetAPen_ *rastp, AB3Pen(#AB3_screentext)
-  Move_ *rastp,0,ypos_sa + 1
-  Draw_ *rastp,*swin\Width-1,ypos_sa + 1
-  SetAPen_ *rastp, AB3Pen(#AB3_screentext)
-  SetBPen_ *rastp, AB3Pen(#AB3_screenfill)
+  SetAPen_ *rastp, AB3Pen(#AB3_screenshine) : Move_ *rastp,0,ypos_sa     : Draw_ *rastp,*swin\Width-1,ypos_sa
+  SetAPen_ *rastp, AB3Pen(#AB3_screentext)  : Move_ *rastp,0,ypos_sa + 1 : Draw_ *rastp,*swin\Width-1,ypos_sa + 1
 
-  ;xpos_text.l = (#filenamepos-1) * *tfont\tf_XSize - (*tfont\tf_XSize/2)
-  ;SetAPen_ *rastp, AB3Pen(#AB3_screenshine)
-  ;Move_ *rastp,xpos_text+1,ypos_sa + 2
-  ;Draw_ *rastp,xpos_text+1,ypos_sa + 2 + *tfont\tf_YSize*3
-  ;SetAPen_ *rastp, AB3Pen(#AB3_screentext)
-  ;Move_ *rastp,xpos_text,ypos_sa + 2
-  ;Draw_ *rastp,xpos_text,ypos_sa + 2 + *tfont\tf_YSize*3
+  ; update EACH TIME ??? WHY??
+  Gosub draw_tabs
+
   !asm
-
-  JSR print_filenames
-
   MOVEQ.l #24,D0                        ; x postion to print the Line string on the screen
   LEA comStr_StatusString,A0             ; "Line"
   JSR print_statustext
@@ -15168,28 +15065,38 @@ RTS
   JSR close_sourcewindow
   JSR arexx_send_closewindow
 
-  MOVEA.l ptr_visualinfo,A0
-  MOVEA.l _gadtoolsbase,A6
-  JSR _FreeVisualInfo(A6)
-  CLR.l ptr_visualinfo
+  ;MOVEA.l ptr_visualinfo,A0
+  ;MOVEA.l _gadtoolsbase,A6
+  ;JSR _FreeVisualInfo(A6)
+  ;CLR.l ptr_visualinfo
+  ;!basic
+  ;FreeVisualInfo_ (?ptr_visualinfo)
+  ;!asm
 
-  MOVEA.l _execbase,A6
-  SUBA.l A1,A1
-  JSR _FindTask(A6)
-  MOVEA.l D0,A0
-  MOVE.l AL_0_7356,$B8(A0)
+;  MOVEA.l _execbase,A6
+;  SUBA.l A1,A1
+;  JSR _FindTask(A6)
+;  MOVEA.l D0,A0
+;  MOVE.l ptr_windowPtrTemp,$B8(A0)
+  !basic
+  *this_process.Process = FindTask_("")
+  *this_process\pr_WindowPtr = ?ptr_windowPtrTemp
+  !asm
 
   BSR.b free_textbuffer
 
-  TST.w use_pubscreen
-   BEQ.w JL_0_7518
-  MOVEA.l _intuibase,A6
-  MOVEA.l ptr_pedscreen,A0
-  MOVEQ.l #$01,D0
-  JSR _PubScreenStatus(A6)
-
- JL_0_7518:
+  ;TST.w use_pubscreen
+  ;BEQ.w JL_0_7518
+  ;  MOVEA.l _intuibase,A6
+  ;  MOVEA.l ptr_pedscreen,A0
+  ;  MOVEQ.l #$01,D0
+  ;  JSR _PubScreenStatus(A6)
+  ;JL_0_7518:
   !basic
+  If Peek.b(?use_pubscreen)
+    PubScreenStatus_ Peek.l(?ptr_pedscreen),#PSNF_PRIVATE
+  EndIf
+
   vvblank_Free{}
   screen_Close{}   ; this release all pens for us  and close the used font
   !asm
@@ -17745,12 +17652,11 @@ BRA.w JL_0_844C
 
     ; -- check sourcearea
     *swin.Window = Peek.l(?ptr_sourcewindow)
-    If *intuimessage\MouseX = ocmousex.w Then Goto skip_this
-    If *intuimessage\MouseY = ocmousey.w Then Goto skip_this
     If *intuimessage\MouseX - *swin\BorderLeft<0 Then Goto skip_this
     If *intuimessage\MouseY - *swin\BorderTop <0 Then Goto skip_this
-    If *intuimessage\MouseX - (*swin\Width - *swin\BorderRight) > 0 Then Goto skip_this
     If *intuimessage\MouseY - *swin\BorderTop - Peek.w(?ypos_statusarea) > 0 Then Goto skip_this
+    If *intuimessage\MouseX - *swin\BorderRight - *swin\Width > 0 Then Goto skip_this
+    If (*intuimessage\MouseX = ocmousex.w) AND (*intuimessage\MouseY = ocmousey.w) Then Goto skip_this
 
     ; -- check mouseposition in source area
     textX.w = (*intuimessage\MouseX - *swin\BorderLeft) / Peek.w(?fontWidth) + Peek.w(?comWord_ColumnsOffset) + 1
@@ -17777,21 +17683,28 @@ BRA.w JL_0_844C
       ; -- check out the help and display it
       If *tempLine
         *detokened.l = TEDDetoke{*tempLine + 9}
-        helptext$ = TEDGetWordAtPos{Peek$(*detokened),textX}
-        If helptext$
+        helptext$ = PED_GetWordAtPos{Peek$(*detokened),textX}
+        If helptext$ <> ""
           helpvalue.l = 0 : msg$ = ""
+          ;-- check for a constant
           If Left$(helptext$,1) = "#"
             helptext$ = UnRight$(helptext$,1)
-            helpvalue.l = TEDGetConstantValue{Peek.l(?constantbase),helptext$}
+            helpvalue = TEDGetConstantValue{Peek.l(?constantbase),helptext$}
+          Else
+            ;-- check for a newtype
           EndIf
-          ;PrintScreenTitle{helptext$}
-          If helpvalue = 0 Then helpvalue.l = Val(helptext$)
+          ;            $45464748
+          PrintScreenTitle{helptext$}
+          If helpvalue = 0 Then helpvalue = Vallong(helptext$)
           If helpvalue <> 0
             msg$ = helptext$
+            ;log_Print{ Str$(helpvalue) }
             helpvaluestr.s = Str$(helpvalue)
             msg$ + Chr$(10) + Chr$(10) + "# " + helpvaluestr
             msg$ + Chr$(10) + "$ " + Hex$(helpvalue)
             msg$ + Chr$(10) + "% " + Bin$(helpvalue)
+
+            msg$ + Chr$(10) + Chr$(34) + Mkl$(helpvalue) + Chr$(34)
           EndIf
           If msg$ <> ""
             WZ_ShowHelp{msg$}
@@ -17818,14 +17731,18 @@ BRA.w reply_idcmp_message
   CMP.w #-$1,D0
   BEQ.w JL_0_844C
 
-  JSR set_tedlibbase
-  MOVE.l A1,-(A7)
-  ANDI.l #MaxWord,D0
-  MOVEA.l addr_menustrip,A0
-  MOVEA.l _intuibase,A6
-  JSR _ItemAdress(A6)
+  JSR set_tedlibbase                          ; why ??
 
-  MOVEA.l _execbase,A6
+  MOVE.l A1,-(A7)
+  ;ANDI.l #MaxWord,D0
+  ;MOVEA.l addr_menustrip,A0
+  ;MOVEA.l _intuibase,A6
+  ;JSR _ItemAdress(A6)                         ; returns struct MenuItem in D0
+  !basic
+  _menuNumber.w = PutD0
+  _menuItem.l = ItemAddress_(Peek.l(?addr_menustrip),_menuNumber AND #MaxWord)
+  GetD0 _menuItem
+  !asm
   MOVEA.l D0,A0
   MOVE.l $22(A0),D6
 
@@ -17923,12 +17840,10 @@ BRA.w reply_idcmp_message
 
 
   ;-- F-keys
-  CMP.w #$50,D7                   ; "F1"
-   BLT.w JL_0_831E
-  CMP.w #$59,D7                   ; "F10"
-   BGT.w JL_0_831E
-  ADDI.w #$31,D7
-  BRA.w JL_0_8346
+  CMP.w #$50,D7 : BLT.w JL_0_831E ; "F1"
+  CMP.w #$59,D7 : BGT.w JL_0_831E ; "F10"
+    ADDI.w #$31,D7
+    BRA.w JL_0_8346
   JL_0_831E:
 
   ;-- Mousewheel Rawkey events from the newmouse definition   tomsmart1
@@ -18337,14 +18252,14 @@ RTS
 .wheel_down:
   BSR reply_idcmp_message
   JSR storeline                                            ; added to save the changes of the corrent line
-  BSR cursor_off
+  JSR cursor_off
   MOVE.l comLong_DisplayLineOffset,d0
   ADD.l comLong_DisplayLine,d0
   ADD.l wheelstep,d0
   MOVEA.l comPtr_CurrentSourceLine,A4
   JSR gotoline                                             ; scroll the sourcetext
   BSR update_vertscroller                                  ; update position of the vertical scroller
-  BSR cursor_on
+  JSR cursor_on
   MOVEQ.l #0,d7                                            ; clear it to prevent a false detected Key press
   MOVEQ.l #0,d0
 RTS
@@ -18353,7 +18268,7 @@ RTS
 .wheel_up:
   BSR reply_idcmp_message
   JSR storeline                                            ; added to save the changes of the corrent line
-  BSR cursor_off
+  JSR cursor_off
   MOVE.l comLong_DisplayLineOffset,d0
   ADD.l comLong_DisplayLine,d0
   SUB.l wheelstep,d0
@@ -18432,12 +18347,12 @@ AL_0_84B2:              Dc.l 0  ; some other file, maybe last file
  source_BoxWidth:       Dc.w 0
  source_BoxHeight:      Dc.w 0
 
- fontHeightm1:         Dc.w $0005
+ fontHeightm1:          Dc.w 5
  font_Baseline:         Ds.l 1
  ptr_sourcewindow:      Dc.l 0
  rp_sourcewindow:       Dc.l 0
  ptr_pedscreen:         Dc.l 0
- ptr_exescreen:         Dc.l 0
+; ptr_exescreen:         Dc.l 0
  textbufferaddr:        Dc.l 0
 
 
@@ -18503,14 +18418,14 @@ RTS
 
 
 .menu_helpbuildindex
-   JSR set_pointerbusy
+  JSR set_pointerbusy
   !basic
   LockAllOpenWZWin{}
   BuildHelpIndexWinTitle$ = "Rebuilding"                         ;added so the window title match the function  tomsmart1 ; remove !TRANS{} because it will translated with befor it will displayed  tomsmart1
   Gosub build_HelpIndexFile
   UnlockAllOpenWZWin{}
   !asm
-   JSR set_pointernormal
+  JSR set_pointernormal
   !setregsformenuexit
 RTS
 
@@ -18523,12 +18438,6 @@ RTS
   End If
 RTS
 
-ptr_tempmsgport:        Ds.l 1
-ptr_colormap:           Ds.l 1
-str_title_palreq:       Dc.b "Choose a colour palette...",0
-str_tedhistory_env:     Dc.b "ENV:Ted.history",0
-                        Dc.b "ENVARC:TED.history",0
-
 Even                   ; make sure to have enough space reserved
 .PREFSFORMAT
  use_wbcolors:          Dc.b $00,$00        ; OBSOLETE
@@ -18538,7 +18447,7 @@ Even                   ; make sure to have enough space reserved
  aslreq_y:              Dc.l $18
  aslreq_width:          Dc.l $17C
  aslreq_height:         Dc.l $17C
- flag_tokenization:     Dc.b $FF,$FF
+ flag_tokenization:     Dc.w $FF,$FF
  prefs_source_icon:     Ds.w 3
  ownscreen_modeid:      Dc.l 0              ; TOOLTYPE
  ;myscreen_Width:
@@ -18588,15 +18497,11 @@ Even                   ; make sure to have enough space reserved
 
 
 
-.update_tedhistoryfiles:
-  CMP.w #$10,D6
-   BEQ.w JL_0_B902
-  CMP.w #$C,D6
-   BEQ.w JL_0_B8A8
-  CMP.w #$8,D6
-   BEQ.w JL_0_B862
-  CMP.w #$4,D6
-   BEQ.w JL_0_B830
+.update_pedhistoryfiles:
+  CMP.w #$10,D6 : BEQ.w JL_0_B902
+  CMP.w #$C,D6  : BEQ.w JL_0_B8A8
+  CMP.w #$8,D6  : BEQ.w JL_0_B862
+  CMP.w #$4,D6  : BEQ.w JL_0_B830
   RTS
 
   JL_0_B830:
@@ -18651,7 +18556,7 @@ Even                   ; make sure to have enough space reserved
   JSR update_historymenu
 RTS
 
-free_historyfilelist:
+.free_historyfilelist:
   TST.w remember_saved
   BEQ.w JL_0_B98E
     TST.l ptr_historyfilelist
@@ -18661,7 +18566,7 @@ free_historyfilelist:
   JL_0_B98E:
 RTS
 
-AJL_0_B990:
+.AJL_0_B990:
   MOVEQ.l #$00,D6
   MOVEA.l #AL_0_BE10,A0
   ANDI.l #MaxWord,D6
@@ -18698,141 +18603,98 @@ AJL_0_B990:
   MOVEA.l $0(A0,D6.W),A1
   MOVEA.l (A1),A1
   JSR compare_strings
-   BNE.w JL_0_BA0E
-  SUBQ.w #4,D6
-   BPL.b JL_0_B9F4
-  MOVEQ.l #$10,D6
-  BRA.w JL_0_BA1C
-
+  BNE.w JL_0_BA0E
+    SUBQ.w #4,D6
+    BPL.b JL_0_B9F4
+    MOVEQ.l #$10,D6
+    BRA.w JL_0_BA1C
   JL_0_BA0E:
-  ADDQ.l #4,D6
-  CMP.l #$10,D6
-   BLE.w JL_0_BA1C
-  MOVEQ.l #$10,D6
-
+    ADDQ.l #4,D6
+    CMP.l #$10,D6
+    BLE.w JL_0_BA1C
+      MOVEQ.l #$10,D6
   JL_0_BA1C:
+
   MOVEA.l $0(A0,D6.W),A1
   MOVEA.l (A1),A1
   LEA comStr_SourceName,A0
   MOVEA.l $0(A2,D6.W),A2
-  JSR AJL_0_4A8E
+  JSR copy_A0_to_A1
   LEA comStr_CurrentDir,A0
   MOVEA.l (A2),A1
-  JSR AJL_0_4A8E
+  JSR copy_A0_to_A1
 
   JL_0_BA3C:
-   JSR update_tedhistoryfiles
-   JSR write_tedhistoryfiles
+   JSR update_pedhistoryfiles
+   JSR write_pedhistoryfiles
 RTS
 
 .add_history_to_menu:
   TST.w remember_saved
   BEQ.w JL_0_BA58
-    JSR load_tedhistoryfile
+    JSR load_pedhistoryfile
     BRA.w JL_0_BA5C
   JL_0_BA58:
     JSR update_historymenu
   JL_0_BA5C:
 RTS
 
-.write_tedhistoryfiles:
-  MOVE.l #str_tedhistory_env,D1
-  JSR write_historyfile
+.write_pedhistoryfiles:
+  !basic
+  *tedfile.l = Open_(pedhistoryfile$,#HUNK_RELOC_8__MODE_NEWFILE)
+  If *tedfile = 0 Then Return
+  Write_ *tedfile,Peek.l(?AL_0_BFE6), $100
+  Write_ *tedfile,Peek.l(?AL_0_BFFA), $100
+  Write_ *tedfile,Peek.l(?AL_0_C00E), $100
+  Write_ *tedfile,Peek.l(?AL_0_C022), $100
+  Write_ *tedfile,Peek.l(?AL_0_C036), $100
+  Close_ *tedfile
+  !asm
 RTS
 
-.write_historyfile:
-  MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
-  MOVEA.l _dosbase,A6
-   JSR _Open(A6)
-  MOVE.l D0,D7
-   BEQ.w JL_0_BAE0      ; if open not possible, exit
-  MOVE.l D7,D1
-  MOVE.l AL_0_BFE6,D2
-  MOVE.l #$100,D3
-   JSR _Write(A6)
-  MOVE.l D7,D1
-  MOVE.l AL_0_BFFA,D2
-  MOVE.l #$100,D3
-   JSR _Write(A6)
-  MOVE.l D7,D1
-  MOVE.l AL_0_C00E,D2
-  MOVE.l #$100,D3
-   JSR _Write(A6)
-  MOVE.l D7,D1
-  MOVE.l AL_0_C022,D2
-  MOVE.l #$100,D3
-   JSR _Write(A6)
-  MOVE.l D7,D1
-  MOVE.l AL_0_C036,D2
-  MOVE.l #$100,D3
-   JSR _Write(A6)
-  MOVE.l D7,D1
-   JSR _Close(A6)
-  JL_0_BAE0:
-RTS
-
-.load_tedhistoryfile:
+.load_pedhistoryfile:
   MOVE.l ptr_historyfilelist,D0
-   BNE.w load_historyfile
-  MOVEA.l _execbase,A6
-  MOVE.l #$500,D0
-  MOVE.l #$10000,D1
-  !newalloc;JSR _AllocVec(A6)
-  MOVE.l D0,ptr_historyfilelist
-
+  BNE.w load_historyfile
+    MOVEA.l _execbase,A6
+    MOVE.l #$500,D0
+    MOVE.l #$10000,D1
+    !newalloc;JSR _AllocVec(A6)
+    MOVE.l D0,ptr_historyfilelist
 .load_historyfile:
   MOVEA.l D0,A0
   MOVE.l A0,AL_0_BFE6
-  LEA $40(A0),A0
-  MOVE.l A0,AL_0_BE38
+  LEA $40(A0),A0 : MOVE.l A0,AL_0_BE38
+  LEA $C0(A0),A0 : MOVE.l A0,AL_0_BFFA
+  LEA $40(A0),A0 : MOVE.l A0,AL_0_BE3C
+  LEA $C0(A0),A0 : MOVE.l A0,AL_0_C00E
+  LEA $40(A0),A0 : MOVE.l A0,AL_0_BE40
+  LEA $C0(A0),A0 : MOVE.l A0,AL_0_C022
+  LEA $40(A0),A0 : MOVE.l A0,AL_0_BE44
+  LEA $C0(A0),A0 : MOVE.l A0,AL_0_C036
+  LEA $40(A0),A0 : MOVE.l A0,AL_0_BE48
   LEA $C0(A0),A0
-  MOVE.l A0,AL_0_BFFA
-  LEA $40(A0),A0
-  MOVE.l A0,AL_0_BE3C
-  LEA $C0(A0),A0
-  MOVE.l A0,AL_0_C00E
-  LEA $40(A0),A0
-  MOVE.l A0,AL_0_BE40
-  LEA $C0(A0),A0
-  MOVE.l A0,AL_0_C022
-  LEA $40(A0),A0
-  MOVE.l A0,AL_0_BE44
-  LEA $C0(A0),A0
-  MOVE.l A0,AL_0_C036
-  LEA $40(A0),A0
-  MOVE.l A0,AL_0_BE48
-  LEA $C0(A0),A0
-  JSR JL_0_BBCC
-  MOVE.l #str_tedhistory_env,D1
-  MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
-  MOVEA.l _dosbase,A6
-  JSR _Open(A6)
-  MOVE.l D0,D7
-  BEQ.w JL_0_BBA6
-    MOVE.l D7,D1
-    MOVE.l AL_0_BFE6,D2
-    MOVE.l #$500,D3
-    JSR _Read(A6)
-    MOVE.l D7,D1
-    JSR _Close(A6)
+  JSR reset_rememberedlist
+
+  !basic
+  *tedfile.l = Open_(pedhistoryfile$,#HUNK_RELOC_16__MODE_OLDFILE)
+  If *tedfile <> 0
+    Read_ *tedfile,Peek.l(?AL_0_BFE6),$500
+    Close_ *tedfile
+    !asm
     JSR update_historymenu
- JL_0_BBA6:
+    !basic
+  EndIf
+  !asm
+
 RTS
 
-
-
-JL_0_BBCC:
+reset_rememberedlist:
   MOVEA.l #str_unnamed,A0
-  MOVEA.l AL_0_BFE6,A1
-  JSR AJL_0_4A8E
-  MOVEA.l AL_0_BFFA,A1
-  JSR AJL_0_4A8E
-  MOVEA.l AL_0_C00E,A1
-  JSR AJL_0_4A8E
-  MOVEA.l AL_0_C022,A1
-  JSR AJL_0_4A8E
-  MOVEA.l AL_0_C036,A1
-  JSR AJL_0_4A8E
+  MOVEA.l AL_0_BFE6,A1 : JSR copy_A0_to_A1
+  MOVEA.l AL_0_BFFA,A1 : JSR copy_A0_to_A1
+  MOVEA.l AL_0_C00E,A1 : JSR copy_A0_to_A1
+  MOVEA.l AL_0_C022,A1 : JSR copy_A0_to_A1
+  MOVEA.l AL_0_C036,A1 : JSR copy_A0_to_A1
 RTS
 
 .update_historymenu:
@@ -18849,17 +18711,19 @@ RTS
   BNE.w JL_0_BCD6
     RTS
   JL_0_BCD6:
-   SUBI.w #$78,D6
-   LEA AL_0_BE10,A0
-   ASL.w #2,D6
-   ANDI.l #MaxWord,D6
-   MOVEA.l $0(A0,D6.W),A1
-   MOVEA.l (A1),A1
 
-   ; check if unused, <unnamed> entry in menu item
-   LEA str_unnamed,A3
-   JSR compare_strings
-   BNE.w no_source_loaded
+  SUBI.w #$78,D6
+  LEA AL_0_BE10,A0
+  ASL.w #2,D6
+  ANDI.l #MaxWord,D6
+  MOVEA.l $0(A0,D6.W),A1
+  MOVEA.l (A1),A1
+
+  ; check if unused, <unnamed> entry in menu item
+  LEA str_unnamed,A3
+  JSR compare_strings
+  BNE.w no_source_loaded
+
   ; check if source already loaded.
   MOVEA.l loadedfilesbase,A2
   JL_0_BCFC:
@@ -18910,7 +18774,7 @@ RTS
    MOVE.w (A7)+,D6
    JSR set_remembered_filename
    JSR update_statusarea
-   JSR write_tedhistoryfiles
+   JSR write_pedhistoryfiles
   RTS
 
   JL_0_BD5A:
@@ -18922,12 +18786,12 @@ RTS
   MOVEA.l $0(A1,D6.W),A1
   MOVEA.l (A1),A1
   LEA comStr_SourceName,A0
-  JSR AJL_0_4A8E
+  JSR copy_A0_to_A1
   LEA AL_0_BE24,A1
   MOVEA.l $0(A1,D6.W),A1
   MOVEA.l (A1),A1
   LEA comStr_CurrentDir,A0
-  JSR AJL_0_4A8E
+  JSR copy_A0_to_A1
 RTS
 
 .get_remembered_filename:
@@ -19205,8 +19069,8 @@ Return
 
 
 .load_custommenus:
-  If dos_Exist{tedmenufile$}
-    fid.l = file_Open{tedmenufile$,#file_read}
+  If dos_Exist{pedmenufile$}
+    fid.l = file_Open{pedmenufile$,#file_read}
     If fid >= 0
       ClearList custommenu()
       While file_EOF{fid} = False
@@ -19487,20 +19351,20 @@ Even
 
 str_unable_screen:      Dc.b "Unable to open screen!",0 : Even
 str_unable_window:      Dc.b "Unable to open window!",0 : Even
-str_no_asl_library:     Dc.b "Unable to open asl.library V36 or newer",0 : Even
+;str_no_asl_library:     Dc.b "Unable to open asl.library V36 or newer",0 : Even
 str_no_clipboard_device:Dc.b "Unable to open clipboard.device",0 : Even
 Even
 
-easystruct_closescreen: Ds.w 1
-                        Dc.b $00,$14,$00,$00
-                        Ds.w 1
-  AL_0_D3D0:            Dc.l AL_0_D3Dca
-  AL_0_D3D4:            Dc.l AL_0_D3EA
-  AL_0_D3D8:            Dc.l AL_0_D430
-
-  AL_0_D3Dca:           Dc.b "Public Screen",0 : Even
-  AL_0_D3EA:            Dc.b "I'm attempting to close my screen.",10,"Please close all visitor windows.",0 : Even
-  AL_0_D430:            Dc.b "Retry",0 :Even
+;easystruct_closescreen: Ds.w 1
+;                        Dc.b $00,$14,$00,$00
+;                        Ds.w 1
+;  AL_0_D3D0:            Dc.l AL_0_D3Dca
+;  AL_0_D3D4:            Dc.l AL_0_D3EA
+;  AL_0_D3D8:            Dc.l AL_0_D430
+;
+;  AL_0_D3Dca:           Dc.b "Public Screen",0 : Even
+;  AL_0_D3EA:            Dc.b "I'm attempting to close my screen.",10,"Please close all visitor windows.",0 : Even
+;  AL_0_D430:            Dc.b "Retry",0 :Even
 
 
 easystruct_saveas:      Ds.w 1
@@ -19538,8 +19402,8 @@ str_newfile_req:        Dc.b "New File ",0 : Even
   AL_0_D63C:            Dc.b "Continue|Cancel",0 : Even
 Even
 
-AL_0_D68E:              Dc.b "topaz.font",0 : Even
-topaz_font:             Dc.l AL_0_D68E
+str_AL_0_D68E:          Dc.b "topaz.font",0 : Even
+topaz_font:             Dc.l str_AL_0_D68E
                         Dc.b $00,$08,$00,$00
 str_unnamed:            Dc.b "<unnamed>",0 : Even
 Even
@@ -19556,7 +19420,7 @@ screen_number:          Dc.b 0,0,0                     ; Screennumber, max 3 cha
                         Dc.b 0                         ; string termination
 Even
 str_windowtitle:        Ds.l 1
-struct_MsgPort:         Ds.l 1
+struct_WBMsgPort        Ds.l 1
 ptr_tempstring:         Ds.l 1
 
 
@@ -20470,14 +20334,19 @@ ptr_arexxcmd_list:
 ; -- funtions to be executed by appropriate arexx-command
 ; --
 .arexxfunc_activate:
-  TST.l ptr_sourcewindow
-  BEQ.w JL_0_E826
-    MOVEA.l ptr_sourcewindow,A0
-    MOVE.l A6,-(A7)
-    MOVEA.l _intuibase,A6
-    JSR _ActivateWindow(A6)
-    MOVEA.l (A7)+,A6
-  JL_0_E826:
+;  TST.l ptr_sourcewindow
+;  BEQ.w JL_0_E826
+;    MOVEA.l ptr_sourcewindow,A0
+;    MOVE.l A6,-(A7)
+;    MOVEA.l _intuibase,A6
+;    JSR _ActivateWindow(A6)
+;    MOVEA.l (A7)+,A6
+;  JL_0_E826:
+  !basic
+  If Peek.l(?ptr_sourcewindow)
+    ActivateWindow_ Peek.l(?ptr_sourcewindow)
+  EndIf
+  !asm
   MOVEQ.l #$00,D0
   SUBA.l A0,A0
 RTS
@@ -20863,17 +20732,23 @@ RTS
 RTS
 
 .arexxfunc_screentoback:
-  MOVEA.l _intuibase,A6
-  MOVEA.l ptr_pedscreen,A0
-  JSR _ScreenToBack(A6)
+  ;MOVEA.l _intuibase,A6
+  ;MOVEA.l ptr_pedscreen,A0
+  ;JSR _ScreenToBack(A6)
+  !basic
+  ScreenToBack_ Peek.l(?ptr_pedscreen)
+  !asm
   SUBA.l A0,A0
   MOVEQ.l #$00,D0
 RTS
 
 .arexxfunc_screentofront:
-  MOVEA.l _intuibase,A6
-  MOVEA.l ptr_pedscreen,A0
-  JSR _ScreenToFront(A6)
+  ;MOVEA.l _intuibase,A6
+  ;MOVEA.l ptr_pedscreen,A0
+  ;JSR _ScreenToFront(A6)
+  !basic
+  ScreenToFront_ Peek.l(?ptr_pedscreen)
+  !asm
   SUBA.l A0,A0
   MOVEQ.l #$00,D0
 RTS
@@ -21329,13 +21204,23 @@ RTS
 RTS
 
 .printout_source:
+;  !basic
+;  *prthandle.l = Open_ (?str_printerdevice,#HUNK_RELOC_8__MODE_NEWFILE)
+;  If *prthandle = 0
+;    Pop If
+;    error{"Couldnot open Printer."}
+;    !asm
+;    RTS
+;  EndIf
+;  !asm
   MOVE.l #str_printerdevice,D1
   MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
   MOVEA.l _dosbase,A6
-   JSR _Open(A6)
+  JSR _Open(A6)
   MOVE.l D0,D7
-   BEQ.w JL_0_F5F4
-   CLR.b instring
+  BEQ.w JL_0_F5F4
+
+  CLR.b instring
   MOVE.l comLong_TotalLines,D6
   MOVEA.l comPtr_FirstSourceLine,A4
 
@@ -21381,9 +21266,13 @@ RTS
     SUB.l D2,D3
     MOVE.l D7,D1
     JSR _Write(A6)
+    ; write_ (d1:buffer, d2:buffer, d3:length)
     MOVEA.l (A4),A4
     SUBQ.l #1,D6
   BNE.b JL_0_F58E
+;  !basic
+;  Close_ *prthandle
+;  !asm
   MOVE.l D7,D1
   JSR _Close(A6)
   JL_0_F5F4:
@@ -21605,7 +21494,7 @@ Return
 
           Case "MENUED_SAVE"
             ; removed code to fix Hits if entrys are deleted  tomsmart1
-            fid.l = file_Open{tedmenufile$,#file_forcewrite}
+            fid.l = file_Open{pedmenufile$,#file_forcewrite}
             If fid >= 0
               If FirstItem(custommenu())
                 Repeat
@@ -22033,11 +21922,11 @@ nopeek:  InitArgParse res$
  EndIf
 RTS
 
-.newhelp:
-  !basic
-  ask{!TRANS{"old newhelp routine called"},!TRANS{"Ok","debug"}}
-  !asm
-RTS
+;.newhelp:
+;  !basic
+;  ask{!TRANS{"old newhelp routine called"},!TRANS{"Ok","debug"}}
+;  !asm
+;RTS
 
 .help_checkfortype:
   MOVE.w comWord_Column,d1
@@ -22156,21 +22045,22 @@ RTS
   MOVEQ #0,d0
   SUBQ.l #1,a1
  'n2
-  MOVE.b (a1)+,d0
-  CMP.b #"*",d0
-  BEQ 'do2
-  TST.b 0(a2,d0)
-  BNE 'n1
- 'do2
-  MOVE.b d0,(a0)+
+    MOVE.b (a1)+,d0
+    CMP.b #"*",d0
+    BEQ 'do2
+      TST.b 0(a2,d0)
+      BNE 'n1
+   'do2
+    MOVE.b d0,(a0)+
   BRA 'n2
  'n1
   CLR.b (a0)+
   MOVE.l (a7)+,a0
+
   JSR gettype
   TST.l d0
   BNE 'found2
-  JSR findvar
+    JSR findvar
  'found2
   MOVE.l (a7)+,a2
   LEA typestr,a0
@@ -22209,46 +22099,51 @@ RTS
   BEQ 'bg1
   CMP.b #" ",-2(a1)
   BNE 'l1
- 'bg1 ADDQ.l #1,a2
- 'l2 MOVE.b (a2)+,d0
+ 'bg1
+  ADDQ.l #1,a2
+ 'l2
+  MOVE.b (a2)+,d0
   BEQ 'f1
   CMP.b (a1)+,d0
   BEQ 'l2
   LEA typestr,a2
   BRA 'l1
  'f1
- 'r1 CMP.b #$20,(a1)+
+ 'r1
+  CMP.b #$20,(a1)+
   BEQ 'r1
 
   SUBQ.l #1,a1
   TST.b deftypefound
   BEQ 'nod
-  LEA 9(a0),a1
- 'lop MOVE.b (a1)+,d0
-  BEQ 'nl
-  CMP.b #".",d0
-  BNE 'lop
-  SUBQ.l #1,a1
+    LEA 9(a0),a1
+   'lop
+      MOVE.b (a1)+,d0
+      BEQ 'nl
+    CMP.b #".",d0
+    BNE 'lop
+    SUBQ.l #1,a1
  'nod
   CMP.b #".",(a1)+
   BEQ 'c1
-  LEA typestr,a2
-  BRA 'l1
+    LEA typestr,a2
+    BRA 'l1
  'c1
   LEA typestr,a2
   LEA chartab,a0
   MOVEQ #0,d0
  'loop
-  MOVE.b (a1)+,d0
-  TST.b 0(a0,d0)
-  BNE 'e1
-  MOVE.b d0,(a2)+
+    MOVE.b (a1)+,d0
+    TST.b 0(a0,d0)
+    BNE 'e1
+      MOVE.b d0,(a2)+
   BRA 'loop
  'e1
   CLR.b (a2)+
   MOVEM.l (a7)+,a0-a1
   MOVEQ #1,d0
   RTS
+
  'nl
   BRA 'nl2
  'exit
@@ -22774,6 +22669,7 @@ RTS
 
         Case "add" ;addcode
           a$ = bstr$
+          log_Print{"adding to code: " + a$}
           !asm
           MOVE.l textbufferaddr,a0
           ADD.w comWord_TextBufferOffset,a0
@@ -22781,22 +22677,20 @@ RTS
           ADD.w comWord_Column,a0
           CMP.b #" ",(a0)
           BEQ nocharunder
-          MOVEQ #-1,d0
-
-         'loop
-          ADDQ.l #1,d0
-          CMP.b #" ",(a0)+
-          BNE 'loop
-          i2 = PutD0
-          JSR cursor_off
-          !basic
-          For i = 1 To i2
-            JSR deletechar
-          Next
-          !asm
-          JSR cursor_on
-
-         nocharunder:
+            MOVEQ #-1,d0
+           'loop
+              ADDQ.l #1,d0
+            CMP.b #" ",(a0)+
+            BNE 'loop
+            i2 = PutD0
+            JSR cursor_off
+            !basic
+            For i = 1 To i2
+              JSR deletechar
+            Next
+            !asm
+            JSR cursor_on
+          nocharunder:
           !basic
           Gosub insertstring
           Gosub activatesourcewindow
@@ -22962,13 +22856,12 @@ Return
  'l1
     MOVE.b (a2)+,d7
     BEQ 'e1
-    CMP.w #$7d,comWord_Column
-    BGE 'e1
-    MOVEM.l a2/a5,-(a7)
-    JSR insertchar
-    MOVEM.l (a7)+,a2/a5
-BRA 'l1
-
+      CMP.w #$7d,comWord_Column
+      BGE 'e1
+        MOVEM.l a2/a5,-(a7)
+        JSR insertchar
+        MOVEM.l (a7)+,a2/a5
+  BRA 'l1
  'e1
   MOVE.l (a7)+,d7
 Return
@@ -22977,8 +22870,7 @@ Return
 .instructionbrowser_startguide   ;actualword$: zu suchende Funktion
   MOVE.l comPtr_TokenBase,token@(a5)
 
-
-  b$=actualword$
+  b$ = actualword$
   While token
     If b$ = Peek$(token+6) Then Pop While:Goto found
     token = Peek.l(token)
@@ -23462,15 +23354,9 @@ Return
 
         Case "typeadd"
           a$ = typestr$
-          If Instr(a$,"\",StrLen(a$)-1)<>0
-            a$ = Left$(a$,StrLen(a$)-1)
-          End If
-          If quicktype
-            a$ = Mid$(typestr$,Instr (typestr$,"\")+1)
-          End If
-          If newtype_mode <> 1
-            a$ = Replace$(a$,"*","")
-          End If
+          If Instr(a$,"\",StrLen(a$)-1)<>0 Then a$ = Left$(a$,StrLen(a$)-1)
+          If quicktype Then a$ = Mid$(typestr$,Instr (typestr$,"\")+1)
+          If newtype_mode <> 1 Then a$ = Replace$(a$,"*","")
           Gosub insertstring
           Gosub activatesourcewindow
 
@@ -23808,32 +23694,30 @@ Return
 ;    *nt = Peek.l(*nt)
 ;    i = i + 1
 ;  Wend
-MOVE.l newtypebase,d0
-*nt = PutD0
-If *nt
-       *nt = Peek.l(*nt)
+  MOVE.l newtypebase,d0
+  *nt = PutD0
+  If *nt
+    *nt = Peek.l(*nt)
     While *nt
-          b$ = Peek$(*nt+11)
-          If postype$(lev) = b$
-                    *nt3.l = Peek.l(*nt+4):
-                    While *nt3
-                    If Peek.w(*nt3+6) = 1 Then b$ = "*" Else b$ = ""
-                      b$ = b$ + Peek$(*nt3+15)
-                      c$ = Peek$(Peek.l(*nt3+10)+11)
-                      ;If Instr(b$,word1$) Then If Instr(b$,word2$)
-                      WZ_AddRow{"TYPETABLE",b$,c$,"$"+Right$(Hex$(Peek.w(*nt3+4)),4)}
-                      ;End If
-                   b$ + "  ."+c$
-                   *nt3 = Peek.l(*nt3)
-                   Wend
-
-          EndIf
-          *nt = Peek.l(*nt)
+      b$ = Peek$(*nt+11)
+      If postype$(lev) = b$
+        *nt3.l = Peek.l(*nt+4):
+        While *nt3
+          If Peek.w(*nt3+6) = 1 Then b$ = "*" Else b$ = ""
+          b$ = b$ + Peek$(*nt3+15)
+          c$ = Peek$(Peek.l(*nt3+10)+11)
+          ;If Instr(b$,word1$) Then If Instr(b$,word2$)
+          WZ_AddRow{"TYPETABLE",b$,c$,"$"+Right$(Hex$(Peek.w(*nt3+4)),4)}
+          ;End If
+          b$ + "  ." + c$
+          *nt3 = Peek.l(*nt3)
+        Wend
+      EndIf
+      *nt = Peek.l(*nt)
     Wend
-
-  WZ_TableSort{"TYPETABLE",3}
-  WZ_UpdateTable{"TYPETABLE"}
-End If
+    WZ_TableSort{"TYPETABLE",3}
+    WZ_UpdateTable{"TYPETABLE"}
+  End If
 Return
 
 
@@ -24267,20 +24151,15 @@ Return
 Return
 
 
-
-
-
-
 JL_0_46D6:
   MOVE.l d0,-(a7)
   MOVEM.l a0-a1,-(a7)
   MOVE.l a1,a0
   CMP.b #".",-1(a0)
-   BEQ 'sk1
-  CMP.b #";",-1(a0)
-   BEQ 'sk1
-  SUBQ.l #1,a0
-
+  BEQ 'sk1
+    CMP.b #";",-1(a0)
+    BEQ 'sk1
+      SUBQ.l #1,a0
  'sk1
   MOVE.l expandstore,a1
   JSR detokenize_line
@@ -24294,17 +24173,15 @@ JL_0_46D6:
   If i Then s$ = Peek$(i) : Else s$=""
   If Instr(s$,"Stop") OR Instr(s$,"Trap")
     MOVE.l temp,a0
-
    'l1
     MOVE.b (a0)+,d0
-     BEQ no_breakpoint
-    CMP.b #$80,d0
-     BNE 'l1
-    CMP.b #$ae,(a0)
-     BEQ 'l2
-    CMP.b #$2d,(a0)
-     BNE 'l1
-
+    BEQ no_breakpoint
+      CMP.b #$80,d0
+      BNE 'l1
+        CMP.b #$ae,(a0)
+        BEQ 'l2
+          CMP.b #$2d,(a0)
+          BNE 'l1
    'l2
     WZTags #WENTRYA_TextPen,2
     If sort_labels = -1
@@ -24317,7 +24194,7 @@ JL_0_46D6:
     Goto nostr
   End If
 
- no_breakpoint:
+  no_breakpoint:
   Select Peek.b(?is_stat_func_macro)                                          ; replaced IF... with Select... to support Macros  tomsmart1
     Case 1 : s$ = Mid$(s$,2) : WZTags #WENTRYA_TextPen,Peek.l(?functioncolor)
     Case 2 : s$ = Mid$(s$,2) : WZTags #WENTRYA_TextPen,Peek.l(?macrocolor)
@@ -24342,7 +24219,7 @@ JL_0_46D6:
     End If
   End If
 
- nostr:
+  nostr:
   !asm
   MOVE.l (a7)+,d0
   CLR.b is_stat_func_macro
@@ -24393,28 +24270,26 @@ RTS
 
   JSR JL_0_55AA
   MOVE.w comWord_DoTokenize,D0
-   BEQ.w JL_0_CC6b
-  JSR print_current_sourceline
-  TST.b comByte_StateBlockMark
-   BEQ.w JL_0_CC6b
-  MOVEM.l D0-D3/D7/A0-A2,-(A7)
-  MOVE.w comLong_BlockStartX,D0
-  MOVE.l comLong_BlockStartY,D1
-  MOVE.w comLong_BlockEndX,D2
-  MOVE.l comLong_BlockEndY,D3
-  CMP.l D1,D3
-   BNE.w JL_0_CB2a
-  CMP.w D0,D2
-   BNE.w JL_0_CB2a
-  MOVE.w visiblecolumns,D2
-
-  JL_0_CB2a:
-  SUB.l comLong_DisplayLineOffset,D3
-  SUB.l comLong_DisplayLineOffset,D1
-  JSR JL_0_59BC
-  MOVEM.l (A7)+,D0-D3/D7/A0-A2
-
-  JL_0_CC6b
+  BEQ.w JL_0_CC6b
+    JSR print_current_sourceline
+    TST.b comByte_StateBlockMark
+    BEQ.w JL_0_CC6b
+      MOVEM.l D0-D3/D7/A0-A2,-(A7)
+      MOVE.w comLong_BlockStartX,D0
+      MOVE.l comLong_BlockStartY,D1
+      MOVE.w comLong_BlockEndX,D2
+      MOVE.l comLong_BlockEndY,D3
+      CMP.l D1,D3
+      BNE.w JL_0_CB2a
+        CMP.w D0,D2
+        BNE.w JL_0_CB2a
+          MOVE.w visiblecolumns,D2
+      JL_0_CB2a:
+      SUB.l comLong_DisplayLineOffset,D3
+      SUB.l comLong_DisplayLineOffset,D1
+      JSR JL_0_59BC
+      MOVEM.l (A7)+,D0-D3/D7/A0-A2
+  JL_0_CC6b:
   MOVE.l a4,comPtr_CurrentSourceLine
   !stack2regs
 
@@ -24478,8 +24353,7 @@ RTS
 Return                                                                        ; replaced RTS with Return  tomsmart1
 
 
-.print_filenames
-  !basic
+.draw_tabs:
   *rastp.RastPort = Peek.l(?rp_sourcewindow)
   SetAPen_ *rastp, AB3Pen(#AB3_screenfill)
 
@@ -24491,132 +24365,82 @@ Return                                                                        ; 
   *swin.Window = Peek.l(?ptr_sourcewindow)
   RectFill_ *rastp,xpos_text - 4,ypos_sa + 2,*swin\Width-*swin\BorderRight,ypos_sa + 1 + *tfont\tf_YSize
 
-  MOVEA.l rp_sourcewindow,A1
-  MOVEA.l _graphicsbase,A6
-  MOVE.l ptr_sourcewindow,A0
+  ; -- draw all sourcefilename tabs
+  *loadedfiles.l = Peek(?loadedfilesbase)
+  If *loadedfiles
+    *actualfile.l = Peek.l(?actualfile)
+    *sourcefile.l = Peek.l(?loadedfilesbase)
 
-  MOVE.l loadedfilesbase,d0
-  BEQ 'skip_filenames
+;    xpos_text.l= #filenamepos * Peek.w(?fontWidth)
+    Repeat
+      modifiedFlag.b = False
+      textlen.w = 10                        ; width of tab in characters
 
-  MOVE.l #filenamepos,d2
-  MULS fontWidth,d2
- 'again:
-    MOVE.l d0,a0
-    MOVEQ #0,d1
-    MOVE.l d2,d0 : xpos_text.l = PutD0
-    Move_ *rastp,xpos_text,ypos_text
+      Move_ *rastp, xpos_text, ypos_text
 
-    fcol.w = AB3Pen(#AB3_screentext)    ; selected
-    bcol.w = AB3Pen(#AB3_cbackground)
-    bevel_recessed.b = True
-    stylestate.w = #FSF_BOLD
-    CMP.l actualfile,a0
-    BEQ 'l1
-      fcol.w = AB3Pen(#AB3_screentext)  ; unselected
-      bcol.w = AB3Pen(#AB3_screenback)
-      bevel_recessed.b = False
-      stylestate.w = #FS_NORMAL
-   'l1
-    MOVEM.l a0/a1,-(a7)
+      If *actualfile = *sourcefile
+        fcol.w = AB3Pen(#AB3_screentext)    ; selected
+        bcol.w = AB3Pen(#AB3_cbackground)
+        bevel_recessed.b = True
+        stylestate.w = #FSF_BOLD
+      Else
+        fcol.w = AB3Pen(#AB3_screentext)    ; unselected
+        bcol.w = AB3Pen(#AB3_screenback)
+        bevel_recessed.b = False
+        stylestate.w = #FS_NORMAL
+      EndIf
 
-    MOVE.l d2,-(a7)
-    JSR draw_bevel
-    MOVE.l (a7)+,d2
+      Gosub draw_bevel
 
-    SetDrMd_ *rastp, 1
-    SetAPen_ *rastp, fcol
-    SetBPen_ *rastp, bcol
+      SetDrMd_ *rastp, 1
+      SetAPen_ *rastp, fcol
+      SetBPen_ *rastp, bcol
 
-    If stylestate = #FSF_BOLD
-      SetFont_ *rastp,Peek.l(?ptr_sourcefontb)
-    Else
-      SetFont_ *rastp,Peek.l(?ptr_sourcefont)
-    EndIf
-    SetSoftStyle_ *rastp,stylestate.w,#FSF_BOLD
+      If stylestate = #FSF_BOLD
+        SetFont_ *rastp,Peek.l(?ptr_sourcefontb)
+      Else
+        SetFont_ *rastp,Peek.l(?ptr_sourcefont)
+      EndIf
+      SetSoftStyle_ *rastp,stylestate.w,#FSF_BOLD
 
-    MOVEM.l (a7)+,a1/a0
 
-    MOVE.l #filenameoffs,d0
-    MULS fontWidth,d0
-    ADD.w d0,d2
-    MOVEQ #10,d0
-
-    CMP.l actualfile,a0
-    BNE 'nom
-      CMP.l #$4D4F4449,comStr_Modified     ; "MODI"
-      BNE 'nom2
-        MOVEM.l d0/a0/a1,-(a7)
+      If *actualfile = *sourcefile
+        If Peek.l(?comStr_Modified) = $4D4F4449 Then modifiedFlag = True
+      Else
+        If Peek.l(*sourcefile + $1e6) = $4D4F4449 Then modifiedFlag = True
+      EndIf
+      If modifiedFlag
         Text_ *rastp,?modifymark, 1
-        MOVEM.l (a7)+,d0/a0/a1
-        SUB.l #1,d0               ; we show the modify mark, so 1 letter less in text
-        BRA 'nom2
-   'nom
-      CMP.l #$4D4F4449,$1e6(a0)     ; "MODI"
-      BNE 'nom2
-        MOVEM.l d0/a0/a1,-(a7)
-        Text_ *rastp,?modifymark, 1
-        MOVEM.l (a7)+,d0/a0/a1
-        SUB.l #1,d0             ; we show the modify mark, so 1 letter less in text
-   'nom2
+        textlen - 1
+      EndIf
 
-    MOVE.l a0,-(a7)
-    LEA $de(a0),a0
-    TST.b (a0)
-    BNE 'sk1
-      LEA none,a0
-   'sk1
-    MOVE.l a1,-(a7)
-    CLR.l d4
-    MOVE.l d0,bltlen
-    LEA filebuff,a1
-    MOVE.l #$20202020,(a1)
-    MOVE.l #$20202020,4(a1)
-    MOVE.l #$20202020,8(a1)
-    MOVE.l #$20202020,12(a1)
+      sourcename$ = Peek$(*sourcefile + 222)
+      If sourcename$ = "" Then sourcename$ = Peek$(?none)
+      sourcename_len.w = Len(sourcename$)
 
-   'copy
-      ADD.l #1,d4
-      MOVE.b (a0)+,(a1)+
-    BNE 'copy
-    SUB.l #1,D4
-    MOVE.l d4,reallen
-    MOVE.b #$20,-1(a1)
-    LEA filebuff,a0
-    MOVE.l (a7),a1
-    JSR _Text(a6)
+      sourcename$ = StrLeft(sourcename$,16)
+      Text_  *rastp, &sourcename$, textlen    ;A1, A0, D0
 
-    MOVE.l bltlen,D0
-    MOVE.l reallen,D4
+      If sourcename_len > textlen             ;indicator for more characters
+        WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y-4-*rastp\TxBaseline +*rastp\TxHeight/2
+        WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y-2-*rastp\TxBaseline +*rastp\TxHeight/2
+        WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y  -*rastp\TxBaseline +*rastp\TxHeight/2
+        WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y+2-*rastp\TxBaseline +*rastp\TxHeight/2
+        WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y+4-*rastp\TxBaseline +*rastp\TxHeight/2
+      EndIf
 
-    CMP.l D0,D4
-    BLE 'nodots
-      MOVEM.l d1-d7,-(a7)
-      WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y-4-*rastp\TxBaseline +*rastp\TxHeight/2
-      WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y-2-*rastp\TxBaseline +*rastp\TxHeight/2
-      WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y  -*rastp\TxBaseline +*rastp\TxHeight/2
-      WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y+2-*rastp\TxBaseline +*rastp\TxHeight/2
-      WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y+4-*rastp\TxBaseline +*rastp\TxHeight/2
-      MOVEM.l (a7)+,d1-d7
-   'nodots:
+      ;SetDrMd_ *rastp, 1
+      xpos_text = xpos_text + #filenameoffs * *tfont\tf_XSize
+      *sourcefile = Peek.l(*sourcefile)
+    Until *sourcefile = 0
+  EndIf
 
-    MOVE.l (a7)+,a1
-    MOVE.l (a7)+,a0
-    MOVEM.l a0/a1,-(a7)
-    SetDrMd_ *rastp, 1
-    MOVEM.l (a7)+,a1/a0
-    MOVE.l (a0),d0
-  BNE 'again
- 'skip_filenames
   SetBPen_ *rastp,Peek.l(?backgroundcolor)
   SetFont_ *rastp,Peek.l(?ptr_sourcefont)
   SetSoftStyle_ *rastp,#FS_NORMAL,#FSF_BOLD
-  !asm
-RTS
-bltlen:         Dc.l  0
-reallen:        Dc.l  0
+Return
 
 .draw_bevel:
-  ;*visualinfo.l = GetVisualInfoA_(ActiveScreen,0)
   xsa.l = *tfont\tf_XSize / 2
   xsb.l = *tfont\tf_XSize - xsa
   bx1.l = xpos_text - xsa
@@ -24645,7 +24469,7 @@ reallen:        Dc.l  0
     cp_y+1
   EndIf
   Move_ *rastp,cp_x,cp_y
-RTS
+Return
 
 
 .check_mouse_in_statusarea
@@ -25851,9 +25675,9 @@ historypointer:       Dc.l 0
 oldsearch             Dc.w 0
 ptr_deflibsfilename   Dc.l 0
 ptr_incdirname        Dc.l 0
-taskaddr              Dc.l 0
+;ptr_runningTask       Dc.l 0
 str_spaces            Dcb.b 200,32
-str_pedpalfile        Ds.b #MAX_STRINGSIZE
+
 .classiccommands
                       ; memory reservations for libs that where introduced with old blitz2
                       ; here come whole libs
@@ -25892,9 +25716,6 @@ str_pedpalfile        Ds.b #MAX_STRINGSIZE
 classiccolor          Dc.l 1
 olddebugmode          Dc.w $0101
 cutmode               Dc.w 0
-NOP
-blitzname             ;Dc.b "Blitz3:",0        ; removed hardcode string Path will set by the init code  tomsmart1 2012 03 12
-                      Ds.b #MAX_STRINGSIZE
 Even
 dummystr              Dc.b ":",0,0
 
@@ -25915,14 +25736,14 @@ use_wbscreen          Ds.b 1
 clipbuf               Ds.b 300
 no_scrollrate         Ds.b 1
 loadAsNew              Ds.w 1
-filebuff              Ds.b 256
+filebuff              Ds.b 256              ; used for display the filenames in status area
 nodelete              Ds.w 1
 menuload              Ds.w 1
 replacestartcolumn    Ds.w 1
 fontWidth             Ds.w 1
 topaz8                Ds.l 1
 messagestore          Ds.l 1
-yposlow               Ds.w 1
+;yposlow               Ds.w 1
 nestcount             Ds.l 1
 iffound               Ds.b 1
 pad                   Ds.b 1
@@ -25993,7 +25814,7 @@ convert               Dc.b 0
 count                 Ds.l 1
 instru                Ds.w 1
 chartab               Ds.b 260      ;last
-comparetab            Ds.l 1
+lowerchartable        Ds.l 1
 casemode              Ds.w 1
 temp                  Ds.w 1
 ;_Screen               Ds.l 1
