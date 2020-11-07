@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.8.0
-; NumberOfBuilds  = 458
+; NumberOfBuilds  = 613
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 14843
-; CursorColumn    = 36
-; LabelSearch     = "print_statustext"
+; CursorLine      = 13076
+; CursorColumn    = 1
+; LabelSearch     = "comptr_sourcearearastport"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -217,6 +217,20 @@ log_Print{"===================================================================",
 .TYPES
 DEFTYPE.l quicktype,vars
 DEFTYPE.l
+
+NEWTYPE.sourceWindow
+  *pedScreen.Screen
+  *win.Window
+  *font.TextFont
+  *fontI.TextFont
+  *fontB.TextFont
+
+  statusAreaY.w
+  visibleLines.w
+  currentLine.l
+  currentColumn.w
+End NEWTYPE
+DEFTYPE.sourceWindow sourceWindow
 
 NEWTYPE.sourceLine              ; offset
   *nextLine.sourceLine          ; 0000
@@ -516,12 +530,12 @@ Macro isLetter
  'JL_0_60E8`@:
 End Macro
 
-Macro newalloc
+Macro newalloc                ; (A0: poolHeader, d0: memSize)
   ADDQ.l #4,d0
   MOVE.l _execbase,a6
   MOVE.l comPtr_MemPool,a0
   MOVE.l d0,-(a7)
-  JSR _AllocPooled(a6)
+  JSR _AllocPooled(a6)         ; (a0: poolHeader, d0: memSize)
   MOVE.l (a7)+,d1
   TST.l d0                      ; allocpooled returns memadress in d0
   BEQ 'avp_fail1`@
@@ -600,7 +614,7 @@ Function.s PED_GetWordAtPos{text$, textX.w}
     char$ = Mid$(text$,nextpos,1)
     nextpos + 1
   Until CheckChr{char$," ,+&!|(){}[]<>"+Chr$(34)} OR (nextpos>(tlen+1))
-  Function Return result$
+  Function Return StripLead$(result$,31)
 End Function
 
 
@@ -614,7 +628,7 @@ Statement Show_Helpfile{libname$,node$,pubscreen$}
   If helpdir$<>"" Then commandlineStr + " -d " + helpdir$
 
   log_Print{"seaching for <" + commandlineStr + ">"}
-  If pubscreen$<>"" AND Peek.b(?use_wbscreen)=0
+  If pubscreen$<>"" AND (use_wbscreen.b = 0)
     commandlineStr + " -s " + Peek$(?str_defaultpubscreen)
   Else
     commandlineStr + " -s Workbench"
@@ -636,17 +650,16 @@ Function.b CheckWindow{title$}
 End Function
 
 
-Statement PrintScreenTitle{text$}
-  SHARED screentitle$
+Statement SetScreenTitle{text$}
+  SHARED screentitle$            ; has to be shared, because on exit of function the variable will be discarded
   winaddr.l = ActiveWindow
   If winaddr
     screentitle$ = text$
-    If Peek.b(&screentitle$)
+    If screentitle$ <> ""
       SetWindowTitles_ winaddr,-1,&screentitle$
     EndIf
   EndIf
 End Statement
-
 
 Function.s PED_GetLibname{libnum.w}
   SHARED lib_mapping$()
@@ -885,6 +898,40 @@ Function.s PED_GetMacroName{macrobase.l,mname$}
 End Function
 
 
+Function PED_PrintStatus{txt$,xpos.w,@ypos.w}
+  SHARED sourceWindow,AB3Pen()
+
+  USEPATH sourceWindow
+  If \win
+    If FLen(txt$) > 0
+      xpos_text.l = \win\GZZWidth - (\font\tf_XSize) * xpos - 4
+      If ypos <> -1
+        ypos_text.w = \statusAreaY + (\font\tf_YSize) * ypos
+      Else
+        ypos_text.w = \statusAreaY + (\font\tf_YSize)
+      EndIf
+
+      SetAPen_ \win\RPort, AB3Pen(#AB3_screenshine)
+      SetBPen_ \win\RPort, AB3Pen(#AB3_screenfill)
+      Move_ \win\RPort, xpos_text, ypos_text
+
+      If Vallong(txt$) > 0                                   ; boldtext for numbers
+        SetFont_ \win\RPort,\fontB
+        SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
+      EndIf
+      Text_ \win\RPort,&txt$,FLen(txt$)
+
+      SetFont_ \win\RPort,\font
+      SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
+      SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+    EndIf
+  Else
+    log_Print{"PrintStatus(): window pointer empty!"}
+  EndIf
+End Function
+
+
+
 Statement move_cursor {a$,lst.l,pos.l}
          ;Select EventCode
 ;loopm1:vvblank_resetsync{}
@@ -911,9 +958,9 @@ Statement ChangeWZWindowTitle{wzwinname.s,newtitle.s}  ; made a Statement to rem
    SHARED NewWZWindowTitle.s                           ; make it global else it get freed after the Statement is finshed
    ; set windowtitle for wizard window                                ;tomsmart1
    ;*win.Window = WZWindowAddr                                         ;get window pointer works, but i find it not save  tomsmart1
-   *win.Window = Peek.l(Addr Window(WZID(wzwinname) ) )               ;get window pointer  tomsmart1
+   *wzwin.Window = Peek.l(Addr Window(WZID(wzwinname) ) )               ;get window pointer  tomsmart1
    NewWZWindowTitle = newtitle                                             ;new window title tomsmart1
-   SetWindowTitles_ *win,&NewWZWindowTitle,-1                              ;show new window title  tomsmart1
+   SetWindowTitles_ *wzwin,&NewWZWindowTitle,-1                              ;show new window title  tomsmart1
 End Statement
 
 
@@ -1266,7 +1313,7 @@ End Function
 
 
 Statement savewinpref{num.l,@sourcewin.l}
-  SHARED wpref(),wtemp,console_title$
+  SHARED wpref(),wtemp,console_title$,sourceWindow
 
   used_win.l = Used Window
   ret.l = ask{!TRANS{"The window settings have been saved.\\nPress appropriate FN-Key (F4-F6) to set window configuration."},!TRANS{"Ok"},!TRANS{"Info"}}
@@ -1278,15 +1325,7 @@ Statement savewinpref{num.l,@sourcewin.l}
   \diag_on = 0
   \click_on = 0
   \short_on = 0
-
-;  If used_win = 6
-;    \activewin = 0                   ; 6 = Settings Window
-;  Else
-;    \activewin = used_win
-;  EndIf
-;  If !windowaddr <> ActiveWindow
-    \activewin = 0
-;  End If
+  \activewin = 0
 
   If WZ_CheckOpen{"WIN_LIBRARYBROWSER"}
      Use Window WZID("WIN_LIBRARYBROWSER")
@@ -1338,11 +1377,10 @@ Statement savewinpref{num.l,@sourcewin.l}
   EndIf
 
   If sourcewin > 0
-    *swin.Window = Peek.l(sourcewin)
-    \source_x = *swin\LeftEdge
-    \source_y = *swin\TopEdge
-    \source_w = *swin\Width
-    \source_h = *swin\Height
+    \source_x = sourceWindow\win\LeftEdge
+    \source_y = sourceWindow\win\TopEdge
+    \source_w = sourceWindow\win\Width
+    \source_h = sourceWindow\win\Height
   EndIf
 
   ; -- check if console is open and store its position
@@ -1849,10 +1887,6 @@ If dos_CheckLib{"ted.library",1} = False           ; needed for PED and REDDebug
   ende = True
 End If
 
-;If dos_CheckLib{"reqtools.library",39} = False     ; needed for PED and REDDebugger                        ; changed position and removed end condition because PED is now reqtools free only the debugger need it  tomsmart1
-;  errorout + "Missing 'reqtools.library':\\nVersion 39 of this library is required by REDDebugger.\\n\\n"
-;End If
-
 If dos_CheckLib{"disassembler.library",40} = False ; only needed for REDDebugger
   errorout + "Missing 'disassembler.library':\\nVersion 40 of this library is required by REDDebugger.\\nASM debugging won't work.\\n\\n"
 End If
@@ -1871,7 +1905,7 @@ End If
 If ende Then Goto abnormal_exit
 
 *MyCatalog.l = OpenCatalogA_(0,"PED.catalog",0)
-;Set Tags so WIzardlibrary Use catalog File
+;Set Tags so Wizardlibrary Use catalog File
 If *MyCatalog
    WZTags #SFH_Catalog,*MyCatalog,#TAG_DONE,0,#TAG_END,0
 EndIf
@@ -1896,7 +1930,6 @@ If ( FindResident_("MorphOS") )        Then OSVersion = #MorphOS  ;: message{"RE
 .SET_DEFAULT_SETTINGS
 ;  MOVE.w #0,comWord_DoTokenize
 ;  MOVE.w #0,flag_tokenization
-Poke.s ?warningtitle,!TRANS{"!!!PROGRAM IS RUNNING: ONLY SAVE/NAVIGATION/HELP WILL WORK..."}
 a$ = dos_GetProgIcon{dos_AddPart{default_assign$,"AmiBlitz3"} }   ;  replaces hardcode string "blitz3:" tomsmart 2012 03 12
 
 .TOOLTYPES
@@ -1909,23 +1942,23 @@ a$ = dos_GetProgIcon{dos_AddPart{default_assign$,"AmiBlitz3"} }   ;  replaces ha
     log_SetDestination{log_mode,"System/PED.log"}
     !log_AvailMem{"at tooltype begin"}
 
-    If dos_GetToolState{"no_welcome"}         = -1 Then Poke.b ?no_welcome         ,1 : Else Poke.b ?no_welcome         ,0
-    If dos_GetToolState{"askbeforequit"}      = -1 Then Poke.b ?ask_before_quit    ,1 : Else Poke.b ?ask_before_quit    ,0
-    If dos_GetToolState{"standardeditmode"}   = -1 Then Poke.b ?new_editmode       ,1 : Else Poke.b ?new_editmode       ,0
-    If dos_GetToolState{"oldsearch"}          = -1 Then Poke.w ?oldsearch          ,1 : Else Poke.w ?oldsearch          ,0
-    If dos_GetToolState{"nodisplaybeep"}      = -1 Then Poke.b ?nodisplaybeep      ,1 : Else Poke.b ?nodisplaybeep      ,0
-    If dos_GetToolState{"auto_format"}        = -1 Then Poke.b ?auto_format        ,1 : Else Poke.b ?auto_format        ,0
-    If dos_GetToolState{"auto_indent"}        = -1 Then Poke.w ?auto_indent        ,1 : Else Poke.w ?auto_indent        ,0  ; added because was not loaded befor tomsmart1
-    If dos_GetToolState{"AUTO_CONSTRUCTS"}    = -1 Then Poke.b ?auto_constructs    ,1 : Else Poke.b ?auto_constructs    ,0
-    If dos_GetToolState{"correct_functions"}  = -1 Then Poke.b ?correct_functions  ,1 : Else Poke.b ?correct_functions  ,0
-    If dos_GetToolState{"smart_tokenization"} = -1 Then Poke.b ?smart_tokenization ,1 : Else Poke.b ?smart_tokenization ,0
-    If dos_GetToolState{"tokenbold"}          = -1 Then Poke.b ?bold_tokens        ,1 : Else Poke.b ?bold_tokens        ,0
-    If dos_GetToolState{"italic_remarks"}     = -1 Then Poke.b ?italic_remarks     ,1 : Else Poke.b ?italic_remarks     ,0
-    If dos_GetToolState{"linenumbers"}        = -1 Then Poke.b ?linenumbers        ,1 : Else Poke.b ?linenumbers        ,0
-    If dos_GetToolState{"onlinehelp"}         = -1 Then Poke.b ?onlinehelp         ,1 : Else Poke.b ?onlinehelp         ,0
-    If dos_GetToolState{"onlinehelp_extended"}= -1 Then Poke.b ?onlinehelp_extended,1 : Else Poke.b ?onlinehelp_extended,0
-    If dos_GetToolState{"USE_INTELLISENSE"}   = -1 Then Poke.b ?use_intellisense   ,1 : Else Poke.b ?use_intellisense   ,0
-    If dos_GetToolState{"DISABLE_INCLUDEHELP"}= -1 Then HelpForIncludes.b = False       Else HelpForIncludes.b = True
+    If dos_GetToolState{"no_welcome"}          = -1 Then no_welcome.b        = True  : Else no_welcome = 0
+    If dos_GetToolState{"askbeforequit"}       = -1 Then ask_before_quit.b   = True  : Else ask_before_quit = 0
+    If dos_GetToolState{"standardeditmode"}    = -1 Then Poke.b ?new_editmode       ,1 : Else Poke.b ?new_editmode       ,0
+    If dos_GetToolState{"oldsearch"}           = -1 Then Poke.w ?oldsearch          ,1 : Else Poke.w ?oldsearch          ,0
+    If dos_GetToolState{"nodisplaybeep"}       = -1 Then Poke.b ?nodisplaybeep      ,1 : Else Poke.b ?nodisplaybeep      ,0
+    If dos_GetToolState{"auto_format"}         = -1 Then auto_format.b       = True  : Else auto_format = 0
+    If dos_GetToolState{"auto_indent"}         = -1 Then Poke.w ?auto_indent        ,1 : Else Poke.w ?auto_indent        ,0  ; added because was not loaded befor tomsmart1
+    If dos_GetToolState{"AUTO_CONSTRUCTS"}     = -1 Then auto_constructs.b   = True  : Else auto_constructs = 0
+    If dos_GetToolState{"correct_functions"}   = -1 Then correct_functions.b = True  : Else correct_functions = 0
+    If dos_GetToolState{"smart_tokenization"}  = -1 Then Poke.b ?smart_tokenization ,1 : Else Poke.b ?smart_tokenization ,0
+    If dos_GetToolState{"tokenbold"}           = -1 Then bold_tokens.b       = True  : Else bold_tokens = 0
+    If dos_GetToolState{"italic_remarks"}      = -1 Then italic_remarks.b    = True  : Else italic_remarks = 0
+    If dos_GetToolState{"linenumbers"}         = -1 Then linenumbers.b       = True  : Else linenumbers = 0
+    If dos_GetToolState{"onlinehelp"}          = -1 Then onlinehelp.b        = True  : Else onlinehelp = 0
+    If dos_GetToolState{"onlinehelp_extended"} = -1 Then onlinehelp_extended.b = True : Else onlinehelp_extended = 0
+    If dos_GetToolState{"USE_INTELLISENSE"}    = -1 Then use_intellisense.b  = True  : Else use_intellisense = 0
+    If dos_GetToolState{"DISABLE_INCLUDEHELP"} = -1 Then HelpForIncludes.b   = True  : Else HelpForIncludes = 0
     If AvailMem_(#MEMF_FAST) < 4000000
       errormessage$ = "The available memory is low.\\n"
       errormessage$ + "Online-Help and intellisense for Include-functions will be disabled\\n"
@@ -1935,42 +1968,37 @@ a$ = dos_GetProgIcon{dos_AddPart{default_assign$,"AmiBlitz3"} }   ;  replaces ha
       error{errormessage$}
       HelpForIncludes = False
     End If
-    If HelpForIncludes = False Then Poke.b ?use_intellisense, 0
-
-    If dos_GetToolState{"HELPFORPRIVATFUNCTIONS"} = -1 Then HelpForPrivatFunctions.b = True : Else HelpForPrivatFunctions.b = False
+    use_intellisense = HelpForIncludes
+    If dos_GetToolState{"HELPFORPRIVATFUNCTIONS"}  = -1 Then HelpForPrivatFunctions.b = True : Else HelpForPrivatFunctions = 0
     If dos_GetToolState{"USE_COMMANDSINTELLISENSE"} = -1 Then Poke.b ?use_commandsintellisens,1 : Else Poke.b ?use_commandsintellisens,0 ; for command autocomplettion  switchable  tomsmart1
 
-
-    If dos_GetToolState{"USE_ASLDIMS"}        = -1 Then Poke.w ?use_asldims        ,1 : Else Poke.w ?use_asldims        ,0
-    If dos_GetToolState{"SOURCE_HISTORY"}     = -1 Then Poke.w ?remember_saved     ,1 : Else Poke.w ?remember_saved     ,0
-    If dos_GetToolState{"LOAD_LAST_SOURCE"}   = -1 Then Poke.b ?load_last_source   ,1 : Else Poke.b ?load_last_source   ,0
-
-    If dos_GetToolState{"SORT_LABELS"}        = -1 Then sort_labels.l  = True : Else sort_labels  = False
-    If dos_GetToolState{"CON_ONWB"}           = -1 Then console_wb.l   = True : Else console_wb   = False
-    If dos_GetToolState{"CON_WAIT"}           = -1 Then console_wait.l = True : Else console_wait = False
+    If dos_GetToolState{"USE_ASLDIMS"}             = -1 Then Poke.w ?use_asldims        ,1 : Else Poke.w ?use_asldims        ,0
+    If dos_GetToolState{"SOURCE_HISTORY"}          = -1 Then Poke.w ?remember_saved     ,1 : Else Poke.w ?remember_saved     ,0
+    If dos_GetToolState{"LOAD_LAST_SOURCE"}        = -1 Then Poke.b ?load_last_source   ,1 : Else Poke.b ?load_last_source   ,0
+    If dos_GetToolState{"SORT_LABELS"}             = -1 Then sort_labels.b         = True  : Else sort_labels = 0
+    If dos_GetToolState{"CON_ONWB"}                = -1 Then console_wb.b          = True  : Else console_wb  = 0
+    If dos_GetToolState{"CON_WAIT"}                = -1 Then console_wait.b        = True  : Else console_wait = 0
 
     If dos_GetToolState{"CLONE_WBSCREEN"}   = True
-      Poke.b ?clone_wbscreen,1
-      Poke.b ?use_wbscreen  ,0         ; for the case that both tooltypes are set we use cloneWB
+      clone_wbscreen.b = True : use_wbscreen.b = False
     Else
       If dos_GetToolState{"USE_WBSCREEN"}   = True
-        Poke.b ?use_wbscreen  ,1
-        Poke.b ?clone_wbscreen,0
+        use_wbscreen = True : clone_wbscreen = False
       EndIf
     EndIf
-
-    If dos_GetToolState{"DEFAULTPUBSCREEN"} = True Then Poke.w ?use_default_pubscreen,1 Else Poke.w ?use_default_pubscreen,0
-
-    If dos_GetToolState{"USE_WBFONT"}       = True Then use_wbfont.b = True
-
+    If dos_GetToolState{"PUBSCREEN"}          = -1 Then use_pubscreen.b         = True : Else use_pubscreen = 0
+    If dos_GetToolState{"DEFAULTPUBSCREEN"}   = -1 Then use_default_pubscreen.b = True : Else use_default_pubscreen = 0
+    If dos_GetToolState{"USE_WBFONT"}         = -1 Then use_wbfont.b            = True : Else use_wbfont = 0
   Else
-    MOVE.b #1,bold_tokens
-    MOVE.b #1,onlinehelp
+    bold_tokens           = True
     MOVE.b #1,new_editmode
-    MOVE.b #1,use_wbscreen
-    MOVE.b #0,clone_wbscreen
-    MOVE.w #0,use_default_pubscreen
-    use_wbfont.b = True
+    onlinehelp            = True
+    onlinehelp_extended   = False
+    use_wbscreen          = True
+    clone_wbscreen        = False
+    use_pubscreen         = False
+    use_default_pubscreen = False
+    use_wbfont            = True
   End If
 
   autolayout.l     = dos_GetToolValue{"autolayout"      ,-1}
@@ -1986,12 +2014,12 @@ a$ = dos_GetProgIcon{dos_AddPart{default_assign$,"AmiBlitz3"} }   ;  replaces ha
   cursorStyle.w = cursorStyleGetValue{dos_GetToolString{"cursorstyle","block"}}
   scroll_rate.l = dos_GetToolValue{"scrollrate",0}
   If scroll_rate<>0
-    If vvblank_SetFreq{scroll_rate}=False Then MOVE.b #1,no_scrollrate
+    If vvblank_SetFreq{scroll_rate} = False Then no_scrollrate.b = True
   Else
-    MOVE.b #1,no_scrollrate
+    no_scrollrate = True
   EndIf
 
-  Poke.b ?blinkrate, dos_GetToolValue{"cursorblinkrate",5}
+  blinkrate.b = dos_GetToolValue{"cursorblinkrate",5}
   Poke.l ?wheelstep, dos_GetToolValue{"MOUSEWHEELSTEP",6}     ; added to make Mousewheelsteprate changeable  tomsmart1
 
 
@@ -2033,8 +2061,8 @@ a$ = dos_GetProgIcon{dos_AddPart{default_assign$,"AmiBlitz3"} }   ;  replaces ha
   myscreen_Depth.l   = dos_GetToolValue{"SCREEN_DEPTH"  ,0} : Poke.w ?ownscreen_depth  ,myscreen_Depth
 
   ; check if any Screentooltype set
-  If Peek.b(?clone_wbscreen)=0 AND Peek.b(?use_wbscreen )=0 AND myscreen_modeid.l=0
-     Poke.b ?use_wbscreen,1          ; we use WBScreen if no Screen Tooltype is set
+  If (clone_wbscreen=0) AND (use_wbscreen = 0) AND myscreen_modeid.l=0
+     use_wbscreen = True  ; we use WBScreen if no Screen Tooltype is set
   EndIf
 
   MaxLen str2$   = 4096   ; this is important since Honitos used some string pointers, that might be empty
@@ -2069,7 +2097,6 @@ a$ = dos_GetProgIcon{dos_AddPart{default_assign$,"AmiBlitz3"} }   ;  replaces ha
         sourcefont$ = NextArgChar$(@",")
         a$ = NextArg$
         sourcefont_size.w = Vallong(a$)
-        ;Gosub check_font
         Poke.s ?str_sourcefontname ,sourcefont$ + StrClone(Chr$(0),79 - Len(sourcefont$))
         Poke.w ?sourcefontsize     ,sourcefont_size
         Poke.b ?sourcefontstyle    ,sourcefont_style.w
@@ -2227,7 +2254,7 @@ begin1:
   Poke.l ?comPtr_MemPool, CreatePool_(#MEMF_CLEAR,40000,40000)
   If Peek.l(?comPtr_MemPool) = 0
      log_Print{"Could not allocate enough memory. PED closes down now.",#log_error}
-     Goto exit_PED_nomem    ; changed to make a clean exit  tomsmart1
+     Goto exit_PED_nomem
   EndIf
 
   Poke.l ?_dosbase, OpenLibrary_("dos.library",0)
@@ -2235,13 +2262,6 @@ begin1:
 
   Poke.l ?_graphicsbase, OpenLibrary_("graphics.library",0)
   If Peek.l(?_graphicsbase) = 0 Then !asm : BRA.w exit_PED_closelibraries
-
-  ;Poke.l ?_intuibase, OpenLibrary_("intuition.library",0)
-  ;If Peek.l(?_intuibase)    = 0 Then !asm : BRA.w exit_PED_closelibraries
-  ;Poke.l ?comPtr_IntuiBase,Peek.l(?_intuibase)
-
-  ;Poke.l ?_gadtoolsbase, OpenLibrary_("gadtools.library",0)                 not needed anymore was used for DrawBevelBox
-  ;If Peek.l(?_gadtoolsbase) = 0 Then !asm : BRA.w exit_PED_closelibraries
 
   If ted_OpenLib{0}
     TEDSetJumpTable  {?COMDATABASE}
@@ -2270,7 +2290,6 @@ begin1:
   ADDA.w comWord_MaxColumns,A0
   ADDQ.w #6,A0
   MOVE.l A0,D0
-  ;MOVEQ.l #$01,D1                 ; memtype not needed with allocpool
   !newalloc
   MOVE.l D0,comPtr_DosBuffer
   BEQ.w exit_PED_closelibraries
@@ -2283,7 +2302,6 @@ begin1:
   MOVE.l A0,comPtr_Temp_TokenStringObsolete
 
   MOVE.l #$2F60 + 1000,D0
-  ;MOVE.l #$10000,D1              ; memtype not needed with allocpool
   !newalloc
   BEQ.w exit_PED_closelibraries
 
@@ -2369,7 +2387,7 @@ begin1:
   JSR cursor_off
   JSR menu_opennew
   JSR cursor_on
-  JSR update_statusarea
+  JSR draw_statusarea
 
   ; --
   ; -- if ptr_source_dir <> NULL then fill str_currentdir with this string
@@ -2390,17 +2408,9 @@ begin1:
  'l2
     JSR set_currentdir
  'l1
-  MOVE.l lock_currentdir,lock_defaultdirectory
-  CLR.l lock_currentdir
-
-;  LEA comStr_CurrentDir,A0
-;  MOVEA.l AL_0_BC8,A1
-;  JL_0_3BA:
-;    MOVE.b (A0)+,(A1)+
-;  BNE.b JL_0_3BA
-; JSR split_path_and_name
 
   !basic
+  *flock_defaultDir.l = *flock_currentDir.l
   log_Print{"check lastsource option"}
   If Peek.b(?load_last_source)<>0 OR compiler_source$<>""
     If compiler_source$<>"" Then last_source$ = compiler_source$
@@ -2432,21 +2442,22 @@ begin1:
     JSR cursor_off
     JSR load_source
     JSR update_vertscroller
-    JSR update_statusarea
+    JSR draw_statusarea
     JSR update_labelstuff
     JSR cursor_onoff_force
   skip_autoload:
 
   ; --
   ; -- show welcome requester if option selected
-.WELCOME_REQUESTER
+  .WELCOME_REQUESTER
   !basic
   log_Print{"check welcome requester"}
-  !asm
-  TST.b no_welcome
-  BNE 'skip_welcome
+  If no_welcome = 0
+    !asm
     JSR menu_about
- 'skip_welcome:
+    !basic
+  EndIf
+  !asm
 
   ; -- jump to main loop
   JSR main_loop
@@ -2462,26 +2473,15 @@ Exit_main:                                           ; insert to remove the evil
 exit_PED_closeall:
   CLR.w comWord_PEDIsAvailable        ; moved to clear to clear it if a error happend too  tomsmart1
   !basic
-  ; replace close of Sourcefonts here by a subroutine call because we need it more then once  tomsmart1
   Gosub close_sourcefonts
-  ; removed unused code
   !asm
 
-; no extra freeing needed because is pooled and freed with deleting the pool later  tomsmart1
-;  MOVEA.l comPtr_DosBuffer,A1
-;  MOVE.l A0,D0                       ; shoud be the size of the poodle to freed ?
-;  MOVEA.l _execbase,A6
-;  !newfree                           ;a0: poolHeader, a1:memory, d0:memSize
-
- exit_PED_closelibraries:
+  exit_PED_closelibraries:
   JSR close_arexxport
   JSR close_clipboard   ; paste is done by clipboard.include
 
   !basic
-  If *MyCatalog             Then CloseCatalog_ *MyCatalog ; If we used a Catalog so close it
-
-  ;If Peek.l(?_gadtoolsbase) Then CloseLibrary_ Peek.l(?_gadtoolsbase)  : CLR.l _gadtoolsbase
-  ;If Peek.l(?_intuibase)    Then CloseLibrary_ Peek.l(?_intuibase)     : CLR.l _intuibase
+  If *MyCatalog             Then CloseCatalog_ *MyCatalog
   If Peek.l(?_graphicsbase) Then CloseLibrary_ Peek.l(?_graphicsbase)  : CLR.l _graphicsbase
 
   ted_CloseLib{}
@@ -2491,24 +2491,9 @@ exit_PED_closeall:
 
   JSR close_WBlibrary
 
-  ;MOVE.l lock_defaultdirectory,D1
-  ;MOVEA.l _dosbase,A6
-  ;JSR _CurrentDir(A6)
-
-  ;MOVE.l lock_currentdir,D1
-  ;BEQ.w exit_PED_nomem ; jump if we had no lock
-  ;  JSR _UnLock(A6)
-
-  ;exit_PED_nomem:       ; free all alloced mem of the pool and remove it
-  ;MOVEA.l _execbase,A6
-  ;MOVE.l comPtr_MemPool,a0
-  ;JSR _DeletePool(a6)
-
   !basic
-  CurrentDir_(Peek.l(?lock_defaultdirectory))
-  If Peek.l(?lock_currentdir)
-    UnLock_ Peek.l(?lock_currentdir)
-  EndIf
+  CurrentDir_(*flock_defaultDir)
+  If *flock_currentDir Then UnLock_ *flock_currentDir
 
   If Peek.l(?_dosbase) Then CloseLibrary_ Peek.l(?_dosbase) : CLR.l _dosbase
 
@@ -2583,7 +2568,7 @@ End
     columnpos.w = PutD0
 
     ; --- format source line and get new column position ---
-    newcolumnpos.w = preparseline{columnpos,lineaddr,Peek.b(?auto_format),Peek.b(?correct_functions)}
+    newcolumnpos.w = preparseline{columnpos, lineaddr, auto_format, correct_functions}
     GetD0 newcolumnpos
     SUB.w comWord_ColumnsOffset,D0
     MOVE.w D0,comWord_Column
@@ -2696,7 +2681,7 @@ End
   ; --
   !regs2stack
   !basic
-  If Peek.b(?auto_constructs)
+  If auto_constructs
     If last_vankey.l = #VANILLAKEY_RETURN
       a$ = check_constructs{?comPtr_CurrentSourceLine}
       If a$<>""
@@ -2806,84 +2791,10 @@ BRA.w main_loop
   !asm
 BRA check_panic_exit
 
-;  !asm
-;  TST.l d0
-;  BEQ 'lexit                        ; -- panic executable kill
-;    MOVE.l a0,-(a7)
-;
-;    MOVE.l ptr_runningTask,D0
-;    BEQ 'exit
-;                                    ; -- close all windows and screens of executable
-;      MOVEA.l _execbase,A6
-;      JSR _Forbid(a6)
-;      MOVE.l ptr_runningTask,A1
-;      CLR.l ptr_exescreen
-;      MOVE.l _intuibase,a6
-;
-;      MOVEM.l a2/a3,-(a7)
-;      MOVE.l $3c(a6),d0              ;Intuibase\Firstscreen
-;
-;     'l4
-;        MOVE.l d0,a0
-;        MOVE.l $4(a0),d0             ;FirstScreen\Firstwindow
-;        BEQ 'l1
-;         'l3
-;            MOVE.l d0,a2
-;            MOVE.l $56(a2),a3            ;FirstWindow\UserPort
-;            CMP.l $10(a3),a1             ;UserPort\*mp_SigTask = ptr_runningTask ??
-;            BNE 'l2
-;              MOVE.l a0,ptr_exescreen
-;              MOVEM.l a0/a1,-(a7)
-;              CLR.l $56(a2)
-;              MOVE.l _intuibase,a6
-;              MOVE.l a2,a0
-;              JSR _CloseWindow(a6)         ; Close the window
-;              MOVEM.l (a7)+,a0/a1
-;              MOVE.l a0,d0
-;              BNE 'l4
-;           'l2
-;            MOVE.l (a2),d0
-;          BNE 'l3
-;       'l1
-;        MOVE.l (a0),d0
-;      BNE 'l4
-;      ;MOVE.l ptr_exescreen,d0
-;      ;BEQ 'l10
-;      !basic
-;      If Peek.l(?ptr_exescreen)<>0 Then CloseScreen_ Peek.l(?ptr_exescreen)
-;      ;'l10
-;      ;MOVE.l _execbase,A6
-;      If Peek.l(?ptr_runningTask) <> 0
-;      ;MOVE.l ptr_runningTask,D0
-;      ;BEQ 'exit
-;        ;MOVEA.l D0,A1              ; remove the executable task
-;        ;JSR _RemTask(A6)
-;        ;JSR _Permit(a6)
-;        ;CLR.b comByte_RunningFlag
-;        RemTask_ Peek.l(?ptr_runningTask)
-;        Permit_
-;        Poke.b ?comByte_RunningFlag,0
-;      EndIf
-;      !asm
-;      MOVEM.l (a7)+,a2/a3
-;   'exit:
-;    MOVE.l (a7)+,a0
-;    BRA check_panic_exit
-;
-; 'lexit
-;BRA JL_0_CE2
-
-
-
-
-
-
 
 ; -----------------------------------------------------------------------------------------------
 _graphicsbase:           Dc.l 0
-;_intuibase:              Dc.l 0
 _dosbase:                Dc.l 0
-
 _workbenchbase:          Dc.l 0
 str_libname_workb:       Dc.b "workbench.library",0 : Even
 ptr_AppMenuItem:         Ds.l 1
@@ -2892,37 +2803,19 @@ ptr_sourcefont:          Dc.l 0
 ptr_sourcefonti:         Dc.l 0
 ptr_sourcefontb:         Dc.l 0
 str_tempfilename:        Ds.b #MAX_STRINGSIZE
-;AL_0_766:                Ds.w 59
 
 str_pedname:             Dc.b "PED ",!versions,0: Even
                          Ds.b #MAX_STRINGSIZE
 Even
-str_screentitle:         Ds.b #MAX_STRINGSIZE  ;"AmiBlitz3 - PED V",!versions," (\\__DATE_GER__)",0
-Even
-str_pedscreenname:       Dc.b "SCR1_0_AB",0
-                         Ds.b 200
-Even
+;str_screentitle:         Ds.b #MAX_STRINGSIZE  ;"AmiBlitz3 - PED V",!versions," (\\__DATE_GER__)",0
+;Even
 str_version:             Dc.b "$VER: PED ",!versions,0
 Even
 
-;_tedlibbase:            Ds.l 1
 ptr_msgport_clipboard:   Ds.l 1
-;AL_0_B90:                Ds.l 1
 ptr_iorequest_clipboard: Ds.l 1
 str_devname_clipboard:   Dc.b "clipboard.device",0 : Even
-;                         Ds.l 2
-;AL_0_802:                Dc.l AL_0_822
-;AL_0_806:                Dc.l str_defaultpubscreen
-;AL_0_80A:                Dc.l AL_0_838
-;AL_0_80E:                Dc.l str_Arexx_PortName
-;AL_0_812:                Dc.l AL_0_82C
-;AL_0_816:                Dc.l str_defaultpubscreen
-;                         Ds.l 2
-;AL_0_822:                Dc.b "TEDSCREEN",0
-;AL_0_82C:                Dc.b "TEDSSCREEN",0 : Even
-;AL_0_838:                Dc.b "TEDSPORT",0 : Even
-;                         Ds.l 1
-;Even
+
 
 .init_clipboard:
   MOVEA.l _execbase,A6
@@ -3020,25 +2913,25 @@ RTS
  Next i
 
  ; init gadgets
- If Peek.b(?auto_format)           Then WZPrint "SET_AUTO_FORMAT"        ,On
- If Peek.b(?auto_constructs)       Then WZPrint "SET_COMPLETE_CONSTRUCTS",On
- If Peek.b(?use_intellisense)      Then WZPrint "SET_INTELLISENSE"       ,On
- If Peek.b(?correct_functions)     Then WZPrint "SET_CORRECT_FUNCTIONS"  ,On
+ If auto_format           Then WZPrint "SET_AUTO_FORMAT"        ,On
+ If auto_constructs       Then WZPrint "SET_COMPLETE_CONSTRUCTS",On
+ If use_intellisense      Then WZPrint "SET_INTELLISENSE"       ,On
+ If correct_functions     Then WZPrint "SET_CORRECT_FUNCTIONS"  ,On
  If Peek.b(?smart_tokenization)    Then WZPrint "SET_SMART_TOKENIZATION" ,On
  If Peek.b(?new_editmode)          Then WZPrint "SET_STANDARD_EDITMODE"  ,On
- If Peek.b(?no_welcome)            Then WZPrint "SET_WELCOME"            ,On
- If Peek.b(?ask_before_quit)       Then WZPrint "SET_ASKBEFOREQUIT"      ,On
+ If no_welcome            Then WZPrint "SET_WELCOME"            ,On
+ If ask_before_quit       Then WZPrint "SET_ASKBEFOREQUIT"      ,On
 
- If Peek.b(?onlinehelp)            Then WZPrint "SET_ONLINEHELP"         ,On
- If Peek.b(?bold_tokens)           Then WZPrint "SET_BOLDTOKENS"         ,On
- If Peek.b(?italic_remarks)        Then WZPrint "SET_ITALICREMARKS"      ,On
+ If onlinehelp            Then WZPrint "SET_ONLINEHELP"         ,On
+ If bold_tokens           Then WZPrint "SET_BOLDTOKENS"         ,On
+ If italic_remarks        Then WZPrint "SET_ITALICREMARKS"      ,On
  If Peek.b(?linenumbers)           Then WZPrint "SET_LINENUMBERS"        ,On
  oldlinenumbers.b = Peek.b(?linenumbers)
  If Peek.w(?remember_saved)        Then WZPrint "SET_REMEMBER_SAVED"     ,On
  If Peek.b(?load_last_source)      Then WZPrint "SET_LAST_SOURCE"        ,On
 
- If Peek.w(?use_pubscreen)         Then WZPrint "SET_PUBSCREEN"          ,On
- If Peek.w(?use_default_pubscreen) Then WZPrint "SET_DEFAULTPUBSCREEN"   ,On
+ If use_pubscreen.b         Then WZPrint "SET_PUBSCREEN"          ,On
+ If use_default_pubscreen Then WZPrint "SET_DEFAULTPUBSCREEN"   ,On
  If Peek.w(?use_filepattern)       Then WZPrint "SET_FILEPATTERN"        ,On
  If Peek.w(?auto_indent)           Then WZPrint "SET_AUTO_INDENT"        ,On
  If Peek.l(?nodisplaybeep)         Then WZPrint "SET_NO_DISPLAYBEEP"     ,On
@@ -3051,14 +2944,14 @@ RTS
 
  WZPrint "SET_SORTLABELS"     ,sort_labels
 
-; If NOT Peek.b(?no_scrollrate)
+; If NOT no_scrollrate
 ;   WZDisable "SET_SCROLLRATE"
 ; Else
    WZPrint "SET_SCROLLRATE"   ,scroll_rate
 ; EndIf
 
- WZPrint "SET_TAB_SIZE"       ,Peek.w(?tab_size)
- WZPrint "SET_CURSORBLINKRATE",Peek.b(?blinkrate)
+ WZPrint "SET_TAB_SIZE"       , Peek.w(?tab_size)
+ WZPrint "SET_CURSORBLINKRATE", blinkrate
  If OSVersion = #AmigaOS4                           ; check if OS4
    WZDisable "SET_MOUSEWHEELSTEP"                   ; yes disable it becau we use the System value
  Else                                               ; no print used value.
@@ -3116,9 +3009,9 @@ RTS
  tempstr2$           = guifont$+" ("+Str$(guifontsize)+")"
  WZPrint "SET_GUIFONTNAME",&tempstr2$
  olduse_wbfont.b     = use_wbfont               ; temp variables to check former stat
- olduse_wbscreen.b   = Peek.b(?use_wbscreen)
+ olduse_wbscreen.b   = use_wbscreen
 
- If Peek.b(?use_wbscreen) <> 0
+ If use_wbscreen <> 0
    WZPrint "SET_USEWB"  ,On
    WZPrint "SET_CLONEWB",Off
    WZDisable "SET_SCREENNAME"
@@ -3134,7 +3027,7 @@ RTS
    usewbscreen_tmp.b = False
  EndIf
 
- If Peek.b(?clone_wbscreen) <> 0
+ If clone_wbscreen <> 0
    WZPrint "SET_USEWB"  ,Off
    WZPrint "SET_CLONEWB",On
    WZDisable "SET_SCREENNAME"
@@ -3189,7 +3082,7 @@ RTS
  Repeat
    ev.l = WaitEvent
 
-   If Peek.b(?onlinehelp) <> 0
+   If onlinehelp <> 0
       If (ev<>#IDCMP_INTUITICKS) AND (ev<>#IDCMP_ACTIVEWINDOW) AND (ev<>#IDCMP_GADGETHELP)  AND (ev<>#IDCMP_CHANGEWINDOW)
         WZ_HideHelp{}
       Else
@@ -3538,42 +3431,41 @@ RTS
  If use_settings = True
    log_Print{"storing all settings"}
    WZ_LockWindow{"WIN_SETTINGS"}
-   Poke.b ?auto_format,           WZInput("SET_AUTO_FORMAT")
-   Poke.b ?auto_constructs,       WZInput("SET_COMPLETE_CONSTRUCTS")
-   Poke.b ?use_intellisense,      WZInput("SET_INTELLISENSE")
-   Poke.b ?correct_functions,     WZInput("SET_CORRECT_FUNCTIONS")
+   auto_format =           WZInput("SET_AUTO_FORMAT")
+   auto_constructs  =      WZInput("SET_COMPLETE_CONSTRUCTS")
+   use_intellisense =      WZInput("SET_INTELLISENSE")
+   correct_functions=      WZInput("SET_CORRECT_FUNCTIONS")
    Poke.b ?smart_tokenization,    Abs(WZInput("SET_SMART_TOKENIZATION"))
    Poke.b ?new_editmode,          WZInput("SET_STANDARD_EDITMODE")
-   Poke.b ?no_welcome,            WZInput("SET_WELCOME")
-   Poke.b ?ask_before_quit,       WZInput("SET_ASKBEFOREQUIT")
-   Poke.b ?onlinehelp,            WZInput("SET_ONLINEHELP")
-   Poke.b ?bold_tokens,           WZInput("SET_BOLDTOKENS")
-   Poke.b ?italic_remarks,        WZInput("SET_ITALICREMARKS")
+   no_welcome =            WZInput("SET_WELCOME")
+   ask_before_quit =       WZInput("SET_ASKBEFOREQUIT")
+   onlinehelp =            WZInput("SET_ONLINEHELP")
+   bold_tokens =           WZInput("SET_BOLDTOKENS")
+   italic_remarks =        WZInput("SET_ITALICREMARKS")
    Poke.b ?linenumbers,           WZInput("SET_LINENUMBERS")
-   Poke.w ?use_wbcolors,          Off
    Poke.w ?remember_saved,        WZInput("SET_REMEMBER_SAVED")
    Poke.b ?load_last_source,      WZInput("SET_LAST_SOURCE")
-   Poke.w ?use_asldims,           WZInput("SET_asl_DIMENSIONS")
-   Poke.w ?use_pubscreen,         WZInput("SET_PUBSCREEN")
-   Poke.w ?use_default_pubscreen, WZInput("SET_DEFAULTPUBSCREEN")
+   Poke.w ?use_asldims,           WZInput("SET_ASL_DIMENSIONS")
+   use_pubscreen         =        WZInput("SET_PUBSCREEN")
+   use_default_pubscreen =        WZInput("SET_DEFAULTPUBSCREEN")
    Poke.w ?use_filepattern,       WZInput("SET_FILEPATTERN")
-   Poke.b ?use_wbscreen,          WZInput("SET_USEWB")
-   Poke.b ?clone_wbscreen,        WZInput("SET_CLONEWB")
+   use_wbscreen =                 WZInput("SET_USEWB")
+   clone_wbscreen =               WZInput("SET_CLONEWB")
    use_wbfont =                   -WZInput("SET_USEWBFONT")
    Poke.w ?auto_indent,           WZInput("SET_AUTO_INDENT")
    Poke.w ?oldsearch,             WZInput("SET_OLDSEARCH")
    Poke.b ?nodisplaybeep,         WZInput("SET_NO_DISPLAYBEEP")
 
-   console_device$  = WZGetString("SET_CONSOLE_DEVICE")
-   console_wb       = -WZInput("SET_CONSOLE_ON_WB")
-   console_wait     = -WZInput("SET_CONSOLE_WAIT")
+   console_device$  =      WZGetString("SET_CONSOLE_DEVICE")
+   console_wb       =      -WZInput("SET_CONSOLE_ON_WB")
+   console_wait     =      -WZInput("SET_CONSOLE_WAIT")
    ;console_keepopen = WZInput("SET_CONSOLE_KEEPOPEN")
 
    sort_labels = -WZInput("SET_SORTLABELS")
    scroll_rate = WZInput("SET_SCROLLRATE")
-   If scroll_rate = 0 Then Poke.b ?no_scrollrate,1 Else vvblank_SetFreq{scroll_rate}
+   If scroll_rate = 0 Then no_scrollrate = True Else vvblank_SetFreq{scroll_rate}
    Poke.w ?tab_size      ,WZInput("SET_TAB_SIZE")
-   Poke.b ?blinkrate     ,WZInput("SET_CURSORBLINKRATE")
+   blinkrate = WZInput("SET_CURSORBLINKRATE")
    Poke.l ?wheelstep     ,WZInput("SET_MOUSEWHEELSTEP")     ; added to make Mousewheelsteprate changeable, no special OS4 handling nessacary because the System settings are used by any event  tomsmart1
 
    Poke.l ?aslreq_x      ,WZInput("SET_ASLX")
@@ -3604,13 +3496,13 @@ RTS
      Poke.w ?ownscreen_depth  ,temp_depth
    EndIf
 
-   If ( (newguifont$<>guifont$) OR (newguifontsize<>guifontsize) ) AND ( (NOT use_wbfont) AND (Peek.b(?use_wbscreen)=0) )
+   If ( (newguifont$<>guifont$) OR (newguifontsize<>guifontsize) ) AND ( (NOT use_wbfont) AND (use_wbscreen=0) )
      guifont$       = newguifont$
      guifontsize    = newguifontsize
      guifontstyle.l = newguifontstyle.l
      rebuild_gui    = True
    Else
-     If ( (use_wbfont AND (NOT olduse_wbfont) ) AND olduse_wbscreen=0 ) OR ( ( (Peek.b(?use_wbscreen)<>0) AND (olduse_wbscreen=0) ) AND (NOT olduse_wbfont) )
+     If ( (use_wbfont AND (NOT olduse_wbfont) ) AND olduse_wbscreen=0 ) OR ( ( (use_wbscreen<>0) AND (olduse_wbscreen=0) ) AND (NOT olduse_wbfont) )
       Gosub SetGuiFontToWBScreenFont
       rebuild_gui = True
      EndIf
@@ -3633,7 +3525,6 @@ RTS
      sourcefont$      = newsourcefont$
      sourcefont_size  = newsourcefontsize
      sourcefont_style = newsourcefontstyle.l
-     ;Gosub check_font               ; this is disabled because we dont mind if the font doesnt exist => will use system default
      Poke.s ?str_sourcefontname,sourcefont$  ; + StrClone(Chr$(0), 16 - Len(newsourcefont$) )
      Poke.w ?sourcefontsize    ,sourcefont_size
      Poke.b ?sourcefontstyle   ,sourcefont_style
@@ -3710,7 +3601,7 @@ RTS
 .update_colorboxes
    If WZInput("SET_PAGES") = 2
      WZ_LockWindow{"WIN_SETTINGS"}    ; added to prevent page switch during drawing  tomsmart1
-     *win.Window = Peek.l(Addr Window(WZID("WIN_SETTINGS")))
+     *winSettings.Window = Peek.l(Addr Window(WZID("WIN_SETTINGS")))
      boxpen.w = 1
      boxcolor.w = 0
      For ii.l = 1 To 12
@@ -3722,13 +3613,13 @@ RTS
          boxy.w = *gad\TopEdge
          boxh.w = boxy + *gad\Height
          boxcolor.w = screen_GetPenRGB{AB3RGB_temp(ii)}
-         SetAPen_ *win\RPort,boxcolor : RectFill_ *win\RPort,boxx+1,boxy+1,boxw-1,boxh-1
-         SetAPen_ *win\RPort,boxpen
-         Move_ *win\RPort,boxx,boxy
-         Draw_ *win\RPort,boxw,boxy
-         Draw_ *win\RPort,boxw,boxh
-         Draw_ *win\RPort,boxx,boxh
-         Draw_ *win\RPort,boxx,boxy
+         SetAPen_ *winSettings\RPort,boxcolor : RectFill_ *winSettings\RPort,boxx+1,boxy+1,boxw-1,boxh-1
+         SetAPen_ *winSettings\RPort,boxpen
+         Move_ *winSettings\RPort,boxx,boxy
+         Draw_ *winSettings\RPort,boxw,boxy
+         Draw_ *winSettings\RPort,boxw,boxh
+         Draw_ *winSettings\RPort,boxx,boxh
+         Draw_ *winSettings\RPort,boxx,boxy
        EndIf
      Next ii
 
@@ -3740,14 +3631,14 @@ RTS
          boxw = boxx + 16
          boxy = *gad\TopEdge
          boxh = boxy + *gad\Height
-         SetAPen_ *win\RPort,screen_GetPenRGB{AB3RGB_temp(20+ii)}
-         RectFill_ *win\RPort,boxx+1,boxy+1,boxw-1,boxh-1
-         SetAPen_ *win\RPort,boxpen
-         Move_ *win\RPort,boxx,boxy
-         Draw_ *win\RPort,boxw,boxy
-         Draw_ *win\RPort,boxw,boxh
-         Draw_ *win\RPort,boxx,boxh
-         Draw_ *win\RPort,boxx,boxy
+         SetAPen_ *winSettings\RPort,screen_GetPenRGB{AB3RGB_temp(20+ii)}
+         RectFill_ *winSettings\RPort,boxx+1,boxy+1,boxw-1,boxh-1
+         SetAPen_ *winSettings\RPort,boxpen
+         Move_ *winSettings\RPort,boxx,boxy
+         Draw_ *winSettings\RPort,boxw,boxy
+         Draw_ *winSettings\RPort,boxw,boxh
+         Draw_ *winSettings\RPort,boxx,boxh
+         Draw_ *winSettings\RPort,boxx,boxy
        EndIf
      Next ii
 
@@ -3758,14 +3649,14 @@ RTS
          boxw = boxx + 16
          boxy = *gad\TopEdge
          boxh = boxy + *gad\Height
-         SetAPen_ *win\RPort,screen_GetPenRGB{AB3RGB_copytemp}
-         RectFill_ *win\RPort,boxx+1,boxy+1,boxw-1,boxh-1
-         SetAPen_ *win\RPort,boxpen
-         Move_ *win\RPort,boxx,boxy
-         Draw_ *win\RPort,boxw,boxy
-         Draw_ *win\RPort,boxw,boxh
-         Draw_ *win\RPort,boxx,boxh
-         Draw_ *win\RPort,boxx,boxy
+         SetAPen_ *winSettings\RPort,screen_GetPenRGB{AB3RGB_copytemp}
+         RectFill_ *winSettings\RPort,boxx+1,boxy+1,boxw-1,boxh-1
+         SetAPen_ *winSettings\RPort,boxpen
+         Move_ *winSettings\RPort,boxx,boxy
+         Draw_ *winSettings\RPort,boxw,boxy
+         Draw_ *winSettings\RPort,boxw,boxh
+         Draw_ *winSettings\RPort,boxx,boxh
+         Draw_ *winSettings\RPort,boxx,boxy
        EndIf
      WZ_UnlockWindow{"WIN_SETTINGS"}  ; added to prevent page switch during drawing  tomsmart1
    EndIf
@@ -3780,9 +3671,6 @@ Return
       cw_open = False
     EndIf
 
-;    Repeat
-;      ev2.l = WaitEvent
-;    Until ev2 = #IDCMP_MOUSEBUTTONS
     WZ_LockWindow{"WIN_SETTINGS"}  ; added to prevent page switch during drawing  tomsmart1
     cw_open = WZ_DrawColorWheel{*cw_gad\LeftEdge,*cw_gad\TopEdge,*cw_gad\Width,*cw_gad\Height,False}; added flag to not show the error message of the include  tomsmart1
     If cw_open
@@ -3858,6 +3746,7 @@ Return
        dos_SetToolSwitch{"USE_WBSCREEN"    ,-WZInput("SET_USEWB")}
        dos_SetToolSwitch{"CLONE_WBSCREEN"  ,-WZInput("SET_CLONEWB")}
        dos_SetToolSwitch{"DEFAULTPUBSCREEN",-WZInput("SET_DEFAULTPUBSCREEN")}
+       dos_SetToolSwitch{"PUBSCREEN",-WZInput("SET_PUBSCREEN")}
        ;save ownscreen parameters
        dos_SetToolValue{"SCREEN_ID"        ,Peek.l(?ownscreen_modeid)}
        dos_SetToolValue{"SCREEN_WIDTH"     ,Peek.w(?ownscreen_width)}
@@ -3885,29 +3774,29 @@ Return
        EndIf
 
        ; save other settings
-       dos_SetToolSwitch{"NO_WELCOME"        ,-WZInput("SET_WELCOME")}
-       dos_SetToolSwitch{"ASKBEFOREQUIT"     ,-WZInput("SET_ASKBEFOREQUIT")}
-       dos_SetToolSwitch{"STANDARDEDITMODE"  ,-WZInput("SET_STANDARD_EDITMODE")}
-       dos_SetToolSwitch{"OLDSEARCH"         ,-WZInput("SET_OLDSEARCH")}
-       dos_SetToolSwitch{"NODISPLAYBEEP"     ,-WZInput("SET_NO_DISPLAYBEEP")}
-       dos_SetToolSwitch{"AUTO_FORMAT"       ,-WZInput("SET_AUTO_FORMAT")}
-       dos_SetToolSwitch{"AUTO_INDENT"       ,-WZInput("SET_AUTO_INDENT")}     ; add because was not saved before  tomsmart1
-       dos_SetToolSwitch{"AUTO_CONSTRUCTS"   ,-WZInput("SET_COMPLETE_CONSTRUCTS")}
-       dos_SetToolSwitch{"USE_INTELLISENSE"  ,-WZInput("SET_INTELLISENSE")}
-       dos_SetToolSwitch{"CORRECT_FUNCTIONS" ,-WZInput("SET_CORRECT_FUNCTIONS")}
-       dos_SetToolSwitch{"SMART_TOKENIZATION",-WZInput("SET_SMART_TOKENIZATION")}
-       dos_SetToolSwitch{"TOKENBOLD"         ,-Peek.b(?bold_tokens)}
-       dos_SetToolSwitch{"ITALIC_REMARKS"    ,-Peek.b(?italic_remarks)}
-       dos_SetToolSwitch{"LINENUMBERS"       ,-Peek.b(?linenumbers)}
-       dos_SetToolSwitch{"ONLINEHELP"        ,-WZInput("SET_ONLINEHELP")}
+       dos_SetToolSwitch{"NO_WELCOME"        , -WZInput("SET_WELCOME")}
+       dos_SetToolSwitch{"ASKBEFOREQUIT"     , -WZInput("SET_ASKBEFOREQUIT")}
+       dos_SetToolSwitch{"STANDARDEDITMODE"  , -WZInput("SET_STANDARD_EDITMODE")}
+       dos_SetToolSwitch{"OLDSEARCH"         , -WZInput("SET_OLDSEARCH")}
+       dos_SetToolSwitch{"NODISPLAYBEEP"     , -WZInput("SET_NO_DISPLAYBEEP")}
+       dos_SetToolSwitch{"AUTO_FORMAT"       , -WZInput("SET_AUTO_FORMAT")}
+       dos_SetToolSwitch{"AUTO_INDENT"       , -WZInput("SET_AUTO_INDENT")}     ; add because was not saved before  tomsmart1
+       dos_SetToolSwitch{"AUTO_CONSTRUCTS"   , -WZInput("SET_COMPLETE_CONSTRUCTS")}
+       dos_SetToolSwitch{"USE_INTELLISENSE"  , -WZInput("SET_INTELLISENSE")}
+       dos_SetToolSwitch{"CORRECT_FUNCTIONS" , -WZInput("SET_CORRECT_FUNCTIONS")}
+       dos_SetToolSwitch{"SMART_TOKENIZATION", -WZInput("SET_SMART_TOKENIZATION")}
+       dos_SetToolSwitch{"TOKENBOLD"         , bold_tokens}
+       dos_SetToolSwitch{"ITALIC_REMARKS"    , italic_remarks}
+       dos_SetToolSwitch{"LINENUMBERS"       , -Peek.b(?linenumbers)}
+       dos_SetToolSwitch{"ONLINEHELP"        , -WZInput("SET_ONLINEHELP")}
 
-       dos_SetToolSwitch{"SOURCE_HISTORY"    ,-WZInput("SET_REMEMBER_SAVED")}
-       dos_SetToolSwitch{"LOAD_LAST_SOURCE"  ,-WZInput("SET_LAST_SOURCE")}
-       dos_SetToolSwitch{"SORT_LABELS"       ,sort_labels}
-       dos_SetToolString{"CURSORSTYLE"       ,cursorStyleGetString{cursorStyle}}
-       dos_SetToolValue{"SCROLLRATE"         ,scroll_rate}
+       dos_SetToolSwitch{"SOURCE_HISTORY"    , -WZInput("SET_REMEMBER_SAVED")}
+       dos_SetToolSwitch{"LOAD_LAST_SOURCE"  , -WZInput("SET_LAST_SOURCE")}
+       dos_SetToolSwitch{"SORT_LABELS"       , sort_labels}
+       dos_SetToolString{"CURSORSTYLE"       , cursorStyleGetString{cursorStyle}}
+       dos_SetToolValue{"SCROLLRATE"         , scroll_rate}
        If OSVersion <> #AmigaOS4                                     ; check if not OS4 than save the value, because on OS4 the System value is used  tomsmart1
-         dos_SetToolValue{"MOUSEWHEELSTEP"   ,Peek.l(?wheelstep)}    ; added to make Mousewheelsteprate configuatable and saveable  tomsmart1
+         dos_SetToolValue{"MOUSEWHEELSTEP"   , Peek.l(?wheelstep)}   ; added to make Mousewheelsteprate configuatable and saveable  tomsmart1
        EndIf
 
        ; save console settings
@@ -3922,7 +3811,7 @@ Return
        dos_SetToolValue{"ASLREQ_W"    ,Peek.l(?aslreq_width)}
        dos_SetToolValue{"ASLREQ_H"    ,Peek.l(?aslreq_height)}
 
-       If Peek.b(?blinkrate)>0 Then dos_SetToolValue{"CURSORBLINKRATE",Peek.b(?blinkrate)}
+       If blinkrate > 0 Then dos_SetToolValue{"CURSORBLINKRATE",blinkrate}
 
        ; save pathes
        dos_SetToolString{"HELPDIR"    ,helpdir$}
@@ -3933,8 +3822,6 @@ Return
 
        ;update AND write Icon
        dos_FlushToolTypes{}
-;   Else
-;     !cout{"no icon available !"}
    EndIf
 Return
 
@@ -3975,6 +3862,7 @@ RTS
 exit_PED_closeall_longjmp:
 JMP exit_PED_closeall
 
+
 .taglist_mousepointerbusy:
   Dc.b $80,$00,$00,$98               ; #WA_BusyPointer.
   Dc.b $FF,$FF,$FF,$FF
@@ -3988,7 +3876,7 @@ JMP exit_PED_closeall
   !regs2stack
   !basic
   If Peek.l(?ptr_sourcewindow)
-    If KickVersion(39) Then SetWindowPointerA_ Peek.l(?ptr_sourcewindow), ?taglist_mousepointernormal
+    If KickVersion(39) Then SetWindowPointerA_ Peek.l(?ptr_sourcewindow), ?taglist_mousepointernormal;Tags(#WA_Pointer,#TAG_END)
     If (Peek.l(?addr_menustrip) <> 0)
       ResetMenuStrip_ Peek.l(?ptr_sourcewindow),Peek.l(?addr_menustrip)
       ; set it back to the flags that are used by open the window  tomsmart1
@@ -4003,7 +3891,7 @@ RTS
   !regs2stack
   !basic
   If Peek.l(?ptr_sourcewindow)
-    If KickVersion(39) Then SetWindowPointerA_ Peek.l(?ptr_sourcewindow), ?taglist_mousepointerbusy
+    If KickVersion(39) Then SetWindowPointerA_ Peek.l(?ptr_sourcewindow), ?taglist_mousepointerbusy;Tags(#WA_BusyPointer,True)
     ClearMenuStrip_ Peek.l(?ptr_sourcewindow)
     ; only allow following flags to lock the sourcewin
     ModifyIDCMP_ Peek.l(?ptr_sourcewindow), #IDCMP_NEWSIZE|#IDCMP_REFRESHWINDOW|#WFLG_REPORTMOUSE
@@ -4033,7 +3921,7 @@ RTS
 
 .open_xtrafile:
   !basic
-  MOVE.l d2,d0 ; get accessmode from d2
+  MOVE.l d2,d0                      ; get accessmode from d2
   accessmode.l = PutD0
   *fh.l = Open_(Peek$(Peek.l(?ptr_sourcefilename)) + Peek$(?str_extentionxtra),accessmode)
   MOVE.l d0,d7
@@ -4048,7 +3936,7 @@ RTS
   MOVE.b #$0,(A0)+
   JSR show_newfilerequest
   MOVEA.l #str_newfile_req,A0
-  MOVE.l #$4E657720,(A0)+            ; "New File"
+  MOVE.l #$4E657720,(A0)+           ; "New File"
   MOVE.l #$46696C65,(A0)+
   MOVE.b #$0,(A0)+
 
@@ -4062,35 +3950,19 @@ RTS
   BNE.w load_source
 RTS
 
-;.change_directory:
-;  MOVE.l #$FFFFFFFF,asl_drawersonly
-;  MOVEA.w #-$1,A3
-;  LEA str_aslchangedir,A2
-;  LEA comStr_CurrentDir,A0
-;  JSR aslrequest_file
-;  TST.l D0
-;  BNE.w set_currentdir
-;RTS
-
-
-;AL_0_BC8:               Ds.l 1
-lock_defaultdirectory:  Ds.l 1
-lock_currentdir:        Ds.l 1
-
 .set_currentdir:
   !regs2stack
   !basic
   If Peek$(?comStr_CurrentDir) = "" Then GetCurrentDirName_ ?comStr_CurrentDir,$40
-  If Peek.l(?lock_currentdir) Then UnLock_ Peek.l(?lock_currentdir)
 
-  *flock.l = Lock_(Peek$(?comStr_CurrentDir),#ACCESS_READ)
-  If *flock Then CurrentDir_ *flock
-  Poke.l ?lock_currentdir, *flock
+  If *flock_currentDir Then UnLock_ *flock_currentDir
+  *flock_currentDir.l = Lock_(Peek$(?comStr_CurrentDir),#ACCESS_READ)
+  If *flock_currentDir Then CurrentDir_ *flock_currentDir
   !asm
   !stack2regs
 RTS
 
-split_filename:
+.split_filename:
   ;comStr_SourceFileComplete,A0
   ;comStr_CurrentDir,A1
   ;comStr_SourceName,A2
@@ -4174,7 +4046,7 @@ RTS
     JSR _redraw
     JSR set_pointernormal
     JSR analyze_loadedsource
-    JSR update_statusarea
+    JSR draw_statusarea
     CLR.b convert
     MOVE.l #1,loading_done
 
@@ -4346,7 +4218,7 @@ old_loading_routine:
   JSR _redraw
   JSR set_pointernormal
   JSR analyze_loadedsource
-  JSR update_statusarea
+  JSR draw_statusarea
   CLR.b convert
 
   !basic
@@ -4381,53 +4253,35 @@ RTS
 Return
 
 
-;set filenmae as screentitle
 .analyze_loadedsource:
-  LEA comStr_SourceName,A0
-  ; --
-  ; -- erzeugen des Fenstertitels
-  MOVEA.l str_windowtitle,A1
-  MOVE.l #$46696C65,(A1)+            ; "File - "
-  MOVE.w #$202D,(A1)+
-  MOVE.b #$20,(A1)+
-
-  ; -- ist Dateiname angegeben ?
-  TST.b (A0)
-   BNE.w JL_0_1074
-  ; -- nein
-  MOVE.l #$556E6E61,(A1)+            ; "unnamed "
-  MOVE.l #$6D656420,(A1)+
-  CLR.b -$1(A1)
-  TST.b smart_tokenization
-  BEQ 'l1
-    MOVE.w #$ffff,comWord_DoTokenize
- 'l1
-  BRA.w update_title_sourcewindow
-
-  ; -- ja
-  JL_0_1074:
-    MOVE.b (A0)+,(A1)+
-  BNE.b JL_0_1074
-
-  ; -- in A0 steht jetzt das Ende des Filenamens, wir checken die Dateiendung
-  ; -- um zu schauen, ob tokeniziert werden soll
-  JSR check_fileextension_for_tokenization
-
-  MOVE.l #"  Di",-1(a1)
-  ADDQ.l #3,a1
-  MOVE.l #"r - ",(a1)+
-  ;LEA comStr_SourceName,A0
-  ;LEA -$c0(a0),a0
-  LEA comStr_CurrentDir,A0
- 'l2
-    MOVE.b (A0)+,(A1)+
-  BNE.b 'l2
-
-  update_title_sourcewindow:
+  !regs2stack
   !basic
-  SetWindowTitles_ Peek.l(?ptr_sourcewindow), Peek.l(?str_windowtitle), -1
+  windowtitle$ = "File - "
+  If Peek.b(?comStr_SourceName) = 0
+    windowtitle$ + "unnamed "
+    If Peek.b(?smart_tokenization) Then Poke.w ?comWord_DoTokenize,$FFFF
+  Else
+    windowtitle$ + Peek$(?comStr_SourceName) + " (" + Peek$(?comStr_CurrentDir) + ")"
+    ; -- check extension
+    fext$ = LCase$(dos_GetExt{Peek$(?comStr_SourceName)})
+    log_Print{"checking file extention of loaded file: " + fext$}
+    If fext$ = "bb2" OR fext$ = "ab2" OR fext$ = "ab3" OR fext$ = "bb"
+      log_Print{"activating tokenization"}
+      Poke.w ?comWord_DoTokenize, $FFFF
+      Poke.w ?flag_tokenization, $FFFF
+    EndIf
+    If fext$ = "txt" OR fext$ = "guide"
+      log_Print{"activating tokenization"}
+      Poke.w ?comWord_DoTokenize, 0
+      Poke.w ?flag_tokenization, 0
+      If fext$ = "guide" Then Poke.b ?amigaguide,1
+    EndIf
+  EndIf
 
-  If Peek.b(?load_last_source)<>0
+  SetWindowTitles_ sourceWindow\win, &windowtitle$, -1
+
+  ; -- update tooltype "LAST_SOURCE"
+  If Peek.b(?load_last_source) <> 0
     last_source$ = Peek$(?comStr_SourceFileComplete)
     If last_source$<>""
       If Instr(last_source$,Peek$(?comStr_SourceName))<>0
@@ -4436,40 +4290,7 @@ Return
     EndIf
   EndIf
   !asm
-RTS
-
-.check_fileextension_for_tokenization
-  TST.b smart_tokenization
-  BEQ 'rt
-    CMP.l #".bb2",-5(a1)
-    BEQ 'do
-      CMP.l #".ab2",-5(a1)
-      BEQ 'do
-        CMP.l #".ab3",-5(a1)
-        BEQ 'do
-          CMP.l #".AB3",-5(a1)
-          BEQ 'do
-            CMP.w #".b",-4(a1)
-            BNE 'l1
-              CMP.b #"b",-2(a1)
-              BEQ 'do
-                RTS
-   'do
-    MOVE.w #$ffff,comWord_DoTokenize
-    MOVE.w #$ffff,flag_tokenization
-    RTS
- 'l1
-    CMP.l #".txt",-5(a1)
-    BEQ 'no
-      CMP.l #".gui",-7(a1)
-      BNE 'rt
-        CMP.w #"de",-3(a1)
-        BNE 'rt
-          MOVE.b #1,amigaguide
-   'no
-    MOVE.w #0,comWord_DoTokenize
-    MOVE.w #0,flag_tokenization
- 'rt
+  !stack2regs
 RTS
 
 
@@ -4814,8 +4635,6 @@ JL_0_12D6:
   BNE JL_0_12Dca
   ;DBF D5,JL_0_12Dca
 
-  MOVEA.l _execbase,A6
-  MOVEQ.l #$00,D1
   MOVE.l D0,AL_0_15C0
   !newalloc
   MOVEA.l comPtr_FirstSourceLine,A2
@@ -4894,11 +4713,9 @@ JL_0_1372:
     skip_writingxtrafile:
   JL_0_13A8:
 
-  MOVE.w #1,prefs_source_icon
+  ;MOVE.w #1,prefs_source_icon
   !basic
-  If Peek.w(?prefs_source_icon)
-    Gosub write_infofile
-  EndIf
+  If Peek.w(?prefs_source_icon) Then Gosub write_infofile
   !asm
 
   JSR analyze_loadedsource
@@ -5019,9 +4836,8 @@ Even
 
 
 .menu_about:
-  !regs2stack
   !basic
-  txt0$ = !versions+"#"+Peek$(Peek.l(?comPtr_CompilerVersion))
+  txt0$ = !versions + "#" + Peek$(Peek.l(?comPtr_CompilerVersion))
   txt1$ = Peek$(?str_Arexx_PortName)
   txt2$ = Peek$(?str_defaultpubscreen)
   txt3$ = acidlibdate$
@@ -5029,7 +4845,6 @@ Even
 
   window_welcome{txt0$,txt1$, txt2$, txt3$, txt4$}
   !asm
-  !stack2regs
   !setregsformenuexit
 RTS
 
@@ -5307,8 +5122,8 @@ RTS
       !regs2stack
       !basic
       dummy.l = 1
-      If Peek.b(?ask_before_quit) = 1
-        dummy.l=ask{!TRANS{"Closing last source, do you really want to quit?"},!TRANS{"Ok|Cancel"},!TRANS{"Question"}}
+      If ask_before_quit
+        dummy.l = ask{!TRANS{"Closing last source, do you really want to quit?"},!TRANS{"Ok|Cancel"},!TRANS{"Question"}}
       EndIf
       If dummy = 0
         Pop If
@@ -5326,7 +5141,7 @@ RTS
       JMP Exit_main                   ;Jump to real exit, this fix the Exit bug if the Sourcewindow not active  tomsmart1
   exit_quit:
 
-  JSR update_statusarea
+  JSR draw_statusarea
 RTS
 
 
@@ -6161,7 +5976,7 @@ RTS
           TST.b nodisplaybeep
           BNE 'l2
             !basic
-            DisplayBeep_ Peek.l(?ptr_pedscreen)
+            DisplayBeep_ sourceWindow\pedScreen
             !asm
             ;MOVEA.l ptr_pedscreen,A0
             ;MOVEA.l _intuibase,A6
@@ -6595,7 +6410,8 @@ JMP _redraw
 
 JL_0_2A46:
   TST.w auto_indent
-   BEQ.w JL_0_2A7A
+  BEQ.w JL_0_2A7A
+
   MOVEM.l D0/A0,-(A7)
   MOVEA.l comPtr_CurrentSourceLine,A0
   LEA $9(A0),A0
@@ -6911,10 +6727,9 @@ JMP update_horizscroller
 .call_compilermenuitem:              ; (Menuitem in D6)
   CMP.l #$5A,D6                      ; empty menuitem number
   BNE.w 'noemptymenu
- ;JMP change_directory
-RTS
-
+    RTS
  'noemptymenu                        ; check For calculator  tomsmart1 2012 03
+
   CMP.l ##MENU_CALCULATOR,D6         ; replaced hardcode ID with the constants  tomsmart1
   BNE 'nocalculator                  ; no check next
     JSR set_pointerbusy
@@ -7192,14 +7007,6 @@ JMP update_vertscroller
 
 
 JL_0_2Dca8:
-;  MOVE.w oldWindowPos,D0
-;  CMP.w comWord__AL_0_86C4,D0
-;  BEQ.w JL_0_2DEA
-;    MOVE.w oldWindowPos,comWord__AL_0_86C4
-;    JSR close_sourcewindow
-;    JSR open_sourcewindow
-;  JL_0_2DEA:
-
   JSR calc_SourceWindowDimensions
   JSR clear_sourcewindow
   JSR update_labelstuff
@@ -7211,7 +7018,7 @@ JL_0_2Dca8:
   BNE 'l2
     TST.b AL_0_4734
     BNE.w JL_0_2E0E
-      JSR update_statusarea
+      JSR draw_statusarea
       JSR _redraw
  'l2
   JSR set_currentdir
@@ -7219,24 +7026,16 @@ JL_0_2Dca8:
   JL_0_2E0E:
   MOVEA.l comPtr_CurrentSourceLine,A4
   CLR.w comWord_SourceModifiedFlag
-  ;JSR printlargestmem
 RTS
 
 
 .load_template:
   mcounter.l = menuentry-#MENU_TEMPLATE
-;  error{"Menuentry is:"+Str$(menuentry)}
   ResetList templates()
-  For n.l=0 To mcounter-1
+  For n.l = 0 To mcounter - 1
     NextItem templates()
   Next
   If NextItem(templates())
-; -- optinally check, if template already loaded
-;    If Peek$(Peek.l(?actualfile)+$DE)<>""
-;      !asm
-;      JSR menu_opennew
-;      !basic
-;    EndIf
     templatefilename$ = templates()\filename
     GetD0 &templatefilename$
     !asm
@@ -7280,30 +7079,25 @@ BRA JL223
  'l10
   MOVE.l (a7)+,d0
 
-  MOVEA.l _execbase,A6
   MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin+10,d0
-  ;MOVE.l #$50C+72,D0
-  MOVE.l ##MEMF_CLEAR,D1
-  !newalloc;JSR _AllocVec(A6)
+  !newalloc
   TST.l D0
-  BEQ.w JUMP_display_memoryalert
+  BEQ.w error_xtramem
+    TST.l AL_0_84B2
+    BNE.w JL_0_2E70
 
-  TST.l AL_0_84B2
-  BNE.w JL_0_2E70
-
-  MOVEM.l D0/A6,-(A7)
-  JSR clear_sourcebuffer;JL_0_6B7C
-  CLR.w comWord_SourceChanged
-  MOVEM.l (A7)+,D0/A6
-  MOVE.l D0,actualfile
-  MOVE.l D0,AL_0_84B2
-  MOVE.l D0,loadedfilesbase
-  MOVEA.l D0,A0
-  CLR.l $4(A0)
-  CLR.l (A0)
-RTS
-
-JUMP_display_memoryalert:
+    MOVEM.l D0/A6,-(A7)
+    JSR clear_sourcebuffer;JL_0_6B7C
+    CLR.w comWord_SourceChanged
+    MOVEM.l (A7)+,D0/A6
+    MOVE.l D0,actualfile
+    MOVE.l D0,AL_0_84B2
+    MOVE.l D0,loadedfilesbase
+    MOVEA.l D0,A0
+    CLR.l $4(A0)
+    CLR.l (A0)
+    RTS
+  error_xtramem:
 JMP display_memoryalert
 
 
@@ -7354,7 +7148,6 @@ RTS
   ADDQ.l #8,A0                       ; jump over list node header to xtra data
   LEA comLongLong_XtraBegin,A1
   MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin,d0; #$504+72,D0
-  ;MOVE.l #$504+72,D0
   SUBQ.w #1,D0
 
  'copyloop
@@ -7369,7 +7162,6 @@ RTS
   ; zurueckholen der xtra-settings nach sourcewechsel
   ADDQ.l #8,A0
   LEA comLongLong_XtraBegin,A1
-  ;MOVE.l #$504+72,D0
   MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin ,D0  ;MOVE.l #$504+72,D0
   SUBQ.w #1,D0
 
@@ -7380,14 +7172,6 @@ RTS
   !basic
   ; restore windows
   Gosub RestoreLabelAndNewtypeWin
-
-
-;  If WZ_CheckOpen{"WIN_NEWTYPE"}
-;
-;    lev = 0
-;    WZ_ClearTable{"TYPETABLE"}
-;    cstr2$ = "blabla"
-;  End If
   !asm
   MOVEA.l comPtr_CurrentSourceLine,A4
 RTS
@@ -7405,7 +7189,7 @@ RTS
   JSR JL_0_2Dca8
 
   JSR read_tempprefs
-  JSR update_statusarea              ;JSR linetext
+  JSR draw_statusarea              ;JSR linetext
   JSR update_horizscroller
 RTS
 
@@ -7431,7 +7215,7 @@ RTS
   BSR.b GetXtraData
   JSR JL_0_2Dca8
   JSR read_tempprefs
-  JSR update_statusarea              ;JSR linetext
+  JSR draw_statusarea              ;JSR linetext
   JSR update_horizscroller
 RTS
 
@@ -7455,37 +7239,37 @@ RTS
   JSR GetXtraData
   JSR JL_0_2Dca8
   JSR read_tempprefs
-  JSR update_statusarea
+  JSR draw_statusarea
   JSR update_horizscroller
 RTS
 
 
-.menu_new:
-  JSR show_newfilerequest
-
-  TST.l D0
-  BEQ.w JL_0_76E8c
-    JSR clear_actualsource
-    ; -- copy screentitle to windowtitle
-    LEA str_screentitle,A0
-    MOVEA.l str_windowtitle,A1
-
-    JL_0_2FA0:
-      MOVE.b (A0)+,(A1)+
-    BNE.b JL_0_2FA0
-    JSR update_title_sourcewindow
-
-    MOVE.l comFunc_ReadXtraFile,d0
-    BEQ 'l10
-      MOVE.l d0,a0
-      CLR.l d0
-      JSR (a0)
-   'l10
-    JMP clear_sourcebuffer
-
-  JL_0_76E8c:
-  ;JMP JL_0_76E8
-RTS
+;.menu_new:
+;  JSR show_newfilerequest
+;
+;  TST.l D0
+;  BEQ.w JL_0_76E8c
+;    JSR clear_actualsource
+;
+;    ; -- copy screentitle to windowtitle
+;    ;LEA str_screentitle,A0
+;    ;MOVEA.l str_windowtitle,A1
+;    ;JL_0_2FA0:
+;    ;  MOVE.b (A0)+,(A1)+
+;    ;BNE.b JL_0_2FA0
+;    ;JSR update_title_sourcewindow
+;
+;    MOVE.l comFunc_ReadXtraFile,d0
+;    BEQ 'l10
+;      MOVE.l d0,a0
+;      CLR.l d0
+;      JSR (a0)
+;   'l10
+;    JMP clear_sourcebuffer
+;
+;  JL_0_76E8c:
+;  ;JMP JL_0_76E8
+;RTS
 
 
 str_iffchunk_form:    Dc.b "FORM"
@@ -7876,66 +7660,9 @@ RTS
 .menu_paste:
   ; -- read from clipboard
   MOVE.l A4,-(A7)
-;  MOVEA.l _execbase,A6
-;  MOVEA.l ptr_iorequest_clipboard,A1
-;  MOVE.l #$0,$2C(A1)
-;  MOVE.b #$0,$1E(A1)
-;  MOVE.l #$0,$30(A1)
-;  MOVEA.l A1,A4
-;  MOVE.w #$0002,$1C(A1)
-;  MOVE.l #$14,$24(A1)
-;  MOVE.l #str_iffchunk_form,$28(A1)
-;  JSR _DoIO(A6)
-;  MOVEA.l A4,A1
-;  MOVE.l $20(A1),D0
-;  TST.l D0
-;   BEQ.w exit_paste
-;  LEA str_iffchunk_form,A0
-;  CMPI.l #"FORM",(A0)
-;   BNE.w JL_0_344A
-;  CMPI.l #"FTXT",$8(A0)
-;   BNE.w JL_0_344A
-;  CMPI.l #"CHRS",$c(A0)
-;   BEQ.w 's1
-;  CMP.l #"COLS",$c(a0)
-;  BNE 'c1
-;  MOVEA.l A4,A1
-;  MOVE.w #$0002,$1C(A1)
-;  MOVE.l #$4,$24(A1)
-;  MOVE.l #str_iffchunk_form,$28(A1)
-;  JSR _DoIO(A6)
-; 'c1
-;  MOVEA.l A4,A1
-;  MOVE.w #$0002,$1C(A1)
-;  MOVE.l #$8,$24(A1)
-;  MOVE.l #str_iffchunk_form,$28(A1)
-;  JSR _DoIO(A6)
-;  LEA str_iffchunk_form,A0
-;  CMP.l #"STYL",(a0)
-;   BEQ 'c1
-;  CMPI.l #"CHRS",(A0)
-;   BNE.w JL_0_344A
-; 's1
-
   MOVE.w #$FFFF,comWord_PasteMode
   JSR JL_0_3748
   MOVE.w #$0000,comWord_PasteMode
-
-;  MOVEA.l ptr_iorequest_clipboard,A4
-;  TST.l $20(A4)
-;   BEQ.w exit_paste
-;  JL_0_344A:
-;  MOVEA.l A4,A1
-;  MOVE.w #$0002,$1C(A1)
-;  MOVE.l #$14,$24(A1)
-;  MOVE.l #str_iffchunk_form,$28(A1)
-;  JSR _DoIO(A6)
-;  MOVEA.l A4,A1
-;  MOVE.l $20(A1),D0
-;  TST.l D0
-;   BNE.b JL_0_344A
-
-  exit_paste:
   MOVEA.l (A7)+,A4
 RTS
 
@@ -8042,9 +7769,6 @@ BRA saveab
 
  .saveab:
   MOVE.l D0,-(a7)
-  ;!basic
-  ;WZ_ShowMessage{!TRANS{"Exporting source code as ASCII file..."}}
-  ;!asm
   JSR set_pointerbusy
   MOVE.l (a7)+,D0
 
@@ -8152,10 +7876,6 @@ BRA saveab
   JSR _Close(A6)
 
   saveascii_exit:
-  ;JSR set_pointernormal
-  ;!basic
-  ;WZ_HideMessage{}
-  ;!asm
   MOVEA.l (A7)+,A2
 RTS
 
@@ -8311,7 +8031,7 @@ JL_0_3748:
 
   JSR JL_0_4E36
   JSR JL_0_5596
-  CLR.b skipit
+  ;CLR.b skipit
 
   JL_0_37B4:
   MOVEA.l comPtr_Temp_TokenString2,A0
@@ -8403,8 +8123,7 @@ JL_0_3748:
   JSR update_currsourceline
   JSR reset_Blockflag
 BRA.w JUMP_redraw
-;JL_0_382E:  not called anymore
-;RTS
+
 
 .menu_dublicate:
   CMPI.l #$ffffFFFF,comLong_BlockEndY
@@ -8601,19 +8320,6 @@ BRA.w JUMP_redraw
 BRA.w JUMP_redraw
 
 
-;AJL_0_3A5E:                          ; mit maus in source-liste unten geklickt
-;  MOVE.w visiblecolumns,D0
-;  ADDQ.w #2,D0
-;  CMP.w D0,D2
-;    BCS.w 'exit
-;  CMP.w comWord_LabelCounter,D3
-;    BCC.w 'exit
-;  LEA comPtr_LabelList,A0
-;
-;  JL_0_3A76:
-;    MOVEA.l (A0),A0
-;  DBF D3,JL_0_3A76
-
 .jump_to_keyword:                    ; A0 = pointer zieltextzeile
   MOVEA.l comPtr_FirstSourceLine,A1
   MOVEQ.l #$00,D0
@@ -8646,13 +8352,22 @@ RTS
 
 
 .event_leftmousebutton:
-  JSR get_mousepos                   ; return D0:x, D1:y, D2: TextX, D3: TextY
+  JSR get_mousepos                   ; return D2: TextX, D3: TextY
   BMI.w exit_leftmousebutton         ; ausserhalb source- und statusareabereich
+;  !basic
+;  Gosub get_TextPosMouse
+;  GetD0 textX.w : MOVE.l D0,D2
+;  GetD0 textY.w : MOVE.l D0,D3
+;  GetReg D2,textX.w
+;  GetReg D3,textY.w
+;  If textY.w < 0
+;    Pop If
+;    !asm
+;    BRA.w exit_leftmousebutton
+;  EndIf
+;  !asm
 
-;  CMP.w visiblecolumns,D2           ; ausserhalb der darstellbaren Spalten
-;   BCC.b AJL_0_3A5E
-
-  MOVE.l D3,D1                       ;
+  MOVE.l D3,D1                        ; d3: textY
   ADD.l comLong_DisplayLineOffset,D1
   CMP.l comLong_TotalLines,D1
   BCC.w exit_leftmousebutton
@@ -8673,7 +8388,7 @@ RTS
   ADD.l comLong_DisplayLineOffset,D1
   MOVE.l D1,comLong_LinePosStartY
   MOVE.l D1,comLong_LinePosEndY
-  ADD.w comWord_ColumnsOffset,D2
+  ADD.w comWord_ColumnsOffset,D2      ; d2: TextX
   MOVE.w D2,comLong_LinePosStartX
   MOVE.w D2,comWord_LinePosEndX
 
@@ -9233,37 +8948,32 @@ RTS
 JMP _redraw
 
 
-
 .menu_closewb:
-  ;MOVEA.l _intuibase,A6
-  ;JSR _CloseWorkbench(A6)
   !basic
-  CloseWorkBench_
+  If NOT CloseWorkBench_
+    log_Print{"could not close the workbench due to open windows...",#log_warning}
+  EndIf
   !asm
 RTS
 
 .menu_openwb:
-;  MOVEA.l _intuibase,A6
-;  JSR _OpenWorkbench(A6)
-;  MOVEA.l ptr_pedscreen,A0
-;  JSR _ScreenToFront(A6)
-;  MOVEA.l ptr_sourcewindow,A0
-;  JMP _ActivateWindow(A6)
   !basic
-  OpenWorkBench_
-  ScreenToFront_ Peek.l(?ptr_pedscreen)
-  ActivateWindow_ Peek.l(?ptr_sourcewindow)
+  If OpenWorkBench_ = 0
+    log_Print{"could not open the workbench...",#log_error}
+  EndIf
+  ScreenToFront_ sourceWindow\pedScreen
+  ActivateWindow_ sourceWindow\win
   !asm
 RTS
 
 .menu_newshell:
   !basic
   screen_
-  If Peek.w(?use_wbscreen)<>0
+  If use_wbscreen <> 0
     WBenchToFront_
     exescr$ = "Workbench"
   Else
-    exescr$ = Peek$(?str_defaultpubscreen) ;Sreenname not Screentitle (?str_pedscreenname)
+    exescr$ = Peek$(?str_defaultpubscreen)
   EndIf
   exe.s = "NEWCLI WINDOW = \\22"+console_device$+"///196/AmiBlitz Shell/CLOSE/SCREEN "+exescr$+"\\22"   ; use select Consoledevice for Shell
   Execute_ &exe,0,0
@@ -9271,10 +8981,6 @@ RTS
   !setregsformenuexit
 RTS
 
-Even
-;str_contitle:      Dc.b "CON:0/13/640//AmiBlitz3 CLI Window",0     ; seem not in use any more
-;                   Ds.b #MAX_STRINGSIZE
-;                   Even
 CLI_input_stream:  Ds.l 1
 CLI_output_stream: Ds.l 1
 CLI_output_file:   Ds.l 1
@@ -9365,67 +9071,12 @@ RTS
   EndIf
   Close_ Peek.l(?CLI_output_file) : Poke.l ?CLI_output_file,0
   If KickVersion(39)
-    SetWindowPointerA_ Peek.l(?ptr_sourcewindow) , ?taglist_mousepointernormal
+    SetWindowPointerA_ Peek.l(?ptr_sourcewindow), ?taglist_mousepointernormal
   EndIf
   Gosub activatesourcewindow
-  If console_wb = True Then ScreenToFront_ Peek.l(?ptr_pedscreen)
+  If console_wb = True Then ScreenToFront_ sourceWindow\pedScreen
   !asm
-  ;
-  ;MOVEA.l _dosbase,A6
-  ;MOVE.l CLI_output_file,D1
-  ;JSR _Close(A6)
-  ;MOVEA.l ptr_pedscreen,A0
-  ;MOVEA.l _intuibase,A6
-  ;JSR _ScreenToFront(A6)
-  ;MOVEA.l ptr_sourcewindow,A0
-;JMP _ActivateWindow(A6)
 RTS
-
-;
-;
-;
-;.check_devicelist:
-;  MOVEA.l _dosbase,A1
-;  MOVEA.l $22(A1),A1
-;  MOVEA.l $18(A1),A1
-;  ADDA.l A1,A1
-;  ADDA.l A1,A1
-;  MOVE.l $4(A1),D1
-;
-; JL_0_434A:
-;  MOVEA.l D1,A1
-;  ADDA.l A1,A1
-;  ADDA.l A1,A1
-;  MOVEA.l $28(A1),A2
-;  ADDA.l A2,A2
-;  ADDA.l A2,A2
-;  CMP.b (A2)+,D0
-;  BNE.w JL_0_4372
-;    MOVEA.l A0,A3
-;    MOVE.w D0,D1
-;    SUBQ.w #1,D1
-;
-;    JL_0_4364:
-;      CMPM.b (A3)+,(A2)+
-;      BNE.w JL_0_4372
-;    DBF D1,JL_0_4364
-;    MOVEQ.l #$00,D0
-;    RTS
-;  JL_0_4372:
-;
-;  MOVE.l (A1),D1
-;  BNE.b JL_0_434A
-;    MOVEQ.l #-$01,D0
-;RTS
-
-
-;deactivated because it is not called form the compiler anymore  tomsmart1 2013 12 28
-;.comwin_refreshglist:
-;  MOVEA.l comPtr_CompilerWindow,A1
-;  SUBA.l A2,A2
-;  MOVEA.l _intuibase,A6
-;JMP _RefreshGList(A6)                ; A0: Gadgets, A1: Window, A2: Requ, D0: NumGad
-
 
 .com_0_44E2:
   MOVEA.l A0,A2
@@ -9627,11 +9278,6 @@ RTS
   BNE JL_0_467C
   MOVEA.l (A7)+,A1
 RTS
-
-
-;.caseadd
-;RTS
-
 
 .alladd
   MOVEM.l d2-d3/a2/a3,-(a7)
@@ -9892,20 +9538,9 @@ AL_0_4734:  Ds.l 1
 
   ST AL_0_4734
   MOVE.w clickpos,comWord_LabelSize
-;  JSR _redraw                          ; not necessary here...
-;  JSR update_horizscroller
-;  JSR update_vertscroller
   CLR.w comWord_LabelListChanged
 
   redraw_labellist:
-;  MOVE.w comWord_LabelCounter,D5       ; not nedessary, as it is done in basic now
-;  MOVEQ.l #$00,D1
-;  MOVEQ.l #$00,D4
-;  TST.w comWord_LabelCounter
-;  BRA JL_0_47Dca
-;    RTS
-;  JL_0_47Dca:
-
   !basic
   MOVEQ #0,d0
   MOVE.w comWord_LabelCounter,d0
@@ -9960,15 +9595,7 @@ RTS
 
 .set_oldpreferences:
   LEA $C0(A0)  ,A0 : MOVE.l A0,struct_textfont
-  LEA $1000(A0),A0 : MOVE.l A0,str_windowtitle
-
-  ; -- copy screentitle to windowtitle
-  LEA str_screentitle,A1
-  MOVE.l A0,-(A7)
-  JL_0_2CA:
-    MOVE.b (A1)+,(A0)+
-  BNE.b JL_0_2CA
-  MOVEA.l (A7)+,A0
+  ;LEA $1000(A0),A0 : MOVE.l A0,str_windowtitle ; obsolete
 
   !regs2stack
 
@@ -10000,30 +9627,7 @@ copy_A0_to_A1:
   MOVEM.l (A7)+,A0-A1
 RTS
 
-;.prefs_redo_gui:
-;  JSR close_sourcewindow
-;  BMI.w exit_PED_closeallb
-;    JSR open_sourcewindow
-;    BMI.w exit_PED_closeallb
-;      RTS
-;  exit_PED_closeallb:
-;JMP exit_PED_closeall
 
-;.check_font:
-;  If sourcefont$<>"topaz.font"
-;    If Exists("fonts:"+sourcefont$) = 0
-;      dummy.l = ask{!TRANS{"Selected font "} +Chr$(34)+sourcefont$ + Chr$(34)+!TRANS{" is not available.\\nChoosing standard font."},!TRANS{"Ok"}}
-;      sourcefont$ = "topaz.font"
-;      sourcefont_size = 8
-;      sourcefont_style = 0
-;      Poke.s ?str_sourcefontname, sourcefont$
-;    EndIf
-;  EndIf
-;  If sourcefont_size<6 Then sourcefont_size = 8
-;Return
-
-
-; Subroutine to close the sourcefonts (was a copy&past from the exit code) because it was uptodate;) tomsmart1
 .close_sourcefonts
   If Peek.l(?ptr_sourcefonti)
     If Peek.l(?ptr_sourcefonti)><Peek.l(?ptr_sourcefont)
@@ -10062,6 +9666,7 @@ Return
     Poke.w ?sourcefontsize    ,ta\ta_YSize
     *font = OpenDiskFont_(ta)
   EndIf
+  sourceWindow.sourceWindow\font = *font
   Poke.l ?ptr_sourcefont,*font
 
   ; open italic font
@@ -10080,6 +9685,7 @@ Return
     Poke.l ?ptr_sourcefonti,*font
     CloseFont_ *fontI : *fontI = *font
   End If
+  sourceWindow\fontI = *fontI
   Poke.l ?ptr_sourcefonti,*fontI
 
   ; open bold font
@@ -10101,6 +9707,7 @@ Return
     End If
   End If
   Poke.l ?ptr_sourcefontb,*fontB
+  sourceWindow\fontB = *fontB
   !asm
 RTS
 
@@ -10179,6 +9786,59 @@ RTS
 ;  !asm
 RTS
 
+
+.update_title_sourcewindow:
+  !basic
+  log_Print{"update_title_sourcewindow"}
+  SetWindowTitles_ sourceWindow\win,&windowtitle$,-1
+  If Peek.b(?load_last_source) <> 0
+    last_source$ = Peek$(?comStr_SourceFileComplete)
+    If last_source$<>""
+      If Instr(last_source$,Peek$(?comStr_SourceName))<>0
+        dos_SetToolString{"LAST_SOURCE",last_source$}
+      EndIf
+    EndIf
+  EndIf
+  !asm
+RTS
+
+
+.check_fileextension_for_tokenization
+  TST.b smart_tokenization
+  BEQ 'rt
+    CMP.l #".bb2",-5(a1)
+    BEQ 'do
+      CMP.l #".ab2",-5(a1)
+      BEQ 'do
+        CMP.l #".ab3",-5(a1)
+        BEQ 'do
+          CMP.l #".AB3",-5(a1)
+          BEQ 'do
+            CMP.w #".b",-4(a1)
+            BNE 'l1
+              CMP.b #"b",-2(a1)
+              BEQ 'do
+                RTS
+   'do
+    MOVE.w #$ffff,comWord_DoTokenize
+    MOVE.w #$ffff,flag_tokenization
+    RTS
+ 'l1
+    CMP.l #".txt",-5(a1)
+    BEQ 'no
+      CMP.l #".gui",-7(a1)
+      BNE 'rt
+        CMP.w #"de",-3(a1)
+        BNE 'rt
+          MOVE.b #1,amigaguide
+   'no
+    MOVE.w #0,comWord_DoTokenize
+    MOVE.w #0,flag_tokenization
+ 'rt
+RTS
+
+
+
 .open_sourcefile:                    ; D7: filename & Path
   TST.w comWord_PasteMode
     BNE.w exit_opensourcefile
@@ -10222,6 +9882,49 @@ RTS
   exit_opensourcefile:
 RTS
 
+
+
+.open_sourcefile_basic:             ; D7: filename & Path, D2: accessmode
+  MOVEM.l d2/d7,-(a7)
+  !basic
+  MOVE.l (a7)+,d0 : accessmode.l = PutD0
+  MOVE.l (a7)+,d0 : fptr.l = PutD0
+  log_Print{"open_sourcefile"}
+  ;-- check if Paste is from File not from Clipboard
+  If Peek.w(?comWord_PasteMode) = 0
+    fname$ = Peek$(fptr)
+    log_Print{"pastemode: insertfile <" + fname$ + ">"}
+    Poke.l ?convert,0
+    f$ = Peek$(?comStr_SourceFileComplete)
+    fext$ = LCase$(dos_GetExt{f$})
+    If fext$ = "asm"
+      If Peek.b(?smart_tokenization)
+        Poke.w ?comWord_DoTokenize, $FFFF
+      EndIf
+      Poke.b ?convert, 1
+    EndIf
+    *fh.l = Open_(&fname$, accessmode)
+    If *fh
+      log_Print{"file opened successfully"}
+      Poke.l ?comPtr_SourceFileHandle,*fh
+      GetD0 *fh
+      MOVE.l d0,d7
+    Else
+      log_Print{"could not open file <" + fname$ + ">"}
+      !asm
+      ADDQ.w #4,A7              ; dont know why the stack pointer has to be changed ?
+      MOVEA.l #comStr_ErrorOpenFile,A0
+      TST.b menuload
+      BNE 'lod1
+        BRA.w show_errorrequester
+     'lod1
+      CLR.b menuload
+      BRA loadfileerror
+    EndIf
+  EndIf
+  !asm
+RTS
+
 .readbyte:
     SUBQ.w #1,D6
     BMI.w JL_0_4EA2
@@ -10239,6 +9942,7 @@ RTS
 .source_readin:                       ; can be clipboard or file
   TST.w comWord_PasteMode
   BEQ.w source_read_from_file_cached ; well, it's from file
+
   !regs2stack                           ; new line-by-line Code (Thilo)
   !basic
   Poke.l ?clipboard_copylen,0
@@ -10303,7 +10007,8 @@ RTS
 
 
 .source_read_from_file_cached:
-  MOVE.l D7,readcache_fp
+;  MOVE.l D7,readcache_fp
+  MOVE.l comPtr_SourceFileHandle,readcache_fp
   MOVEA.l comPtr_DosBuffer,A5
   MOVE.l A5,readcache_destptr        ; membuffer
   MOVE.l #$2000,readcache_blocklen   ; length
@@ -11056,7 +10761,7 @@ RTS
         GetD0 &sourcename$
         !asm
         JSR loadfile
-        JSR update_statusarea
+        JSR draw_statusarea
         JSR update_vertscroller
         !basic
       End If
@@ -11206,9 +10911,9 @@ JL_0_5524:
 
   MOVE.w comWord_DoTokenize,D0
   BEQ.w JL_0_5538
-  BRA.w JL_0_553A
-
+    BRA.w JL_0_553A
   JL_0_5538:
+
 RTS
 
 JL_0_553A:
@@ -11400,102 +11105,9 @@ JL_0_568C:
   MOVEQ.l #$00,D0
 RTS
 
-;L_0_5696:
-;  Dc.b $00,$00,$00,$C9
-;  Dc.b $00,$00,$00,$CA
-;  Dc.b $00,$00,$00,$D8
-;  Dc.b $00,$00,$00,$CC
-;  Dc.b $00,$00,$00,$CD
-;  Dc.b $00,$00,$00,$D2
-;  Dc.b $00,$00,$00,$D3
-;  Dc.b $00,$00,$00,$D7
-;
-;AL_0_56B6:  Dc.l $CB
-;JL_0_56BA:                             obsolete: something with writing "BLOCK"-flag in status area
-;  TST.l AL_0_B90
-;  BNE.w JL_0_56C6
-;    RTS
-;  JL_0_56C6:
-;  MOVEM.l D0-D3/A0-A1,-(A7)
-;  MOVEA.l addr_menustrip,A1             ; struct Menu *Menu
-;  LEA L_0_5696,A0
-;  MOVEA.l (A1),A1                       ; struct Menu *NextMenu
-;  MOVEA.l $12(A1),A1                    ; *FirstItem
-;  MOVE.l (A0),D0
-;
-;  JL_0_56Dca:
-;    CMP.l $22(A1),D0
-;    BEQ.w JL_0_56F2
-;      MOVEA.l (A1),A1
-;      CMPA.l #$0,A1
-;      BNE.b JL_0_56Dca
-;        TRAP #1
-;        BRA.w JL_0_570C
-;    JL_0_56F2:
-;    ORI.w #$10,$C(A1)
-;    MOVEA.l addr_menustrip,A1
-;    MOVEA.l (A1),A1
-;    MOVEA.l $12(A1),A1
-;    ADDQ.l #4,A0
-;    MOVE.l (A0),D0
-;  TST.l (A1)
-;  BNE.b JL_0_56Dca
-;
-;  JL_0_570C:
-;;  LEA str_block,A0
-;;  MOVE.l #$626C6F63,(A0)             ; "block"
-;;  MOVE.b #"k",$4(A0)
-;;   JSR JL_0_5726
-;  MOVEM.l (A7)+,D0-D3/A0-A1
-;RTS
-;
-;JL_0_5726:
-;!basic
-;!cout{"called."}
-;!asm
-;  MOVEQ.l #$2C,D0
-; JMP update_statusarea
-
-reset_Blockflag:
-;  CLR.l AL_0_56B6
-;
-;  TST.l AL_0_B90
-;  BNE.w JL_0_5746
-;    MOVE.l #$CB,AL_0_56B6
-;  JL_0_5746:
-;
-;  MOVEM.l D0-D3/A0-A1,-(A7)
-;  MOVEA.l addr_menustrip,A1
-;  LEA L_0_5696,A0
-;  MOVEA.l (A1),A1
-;  MOVEA.l $12(A1),A1
-;  MOVE.l (A0),D0
-;
-;  JL_0_575C:
-;  CMP.l $22(A1),D0
-;  BEQ.w JL_0_5772
-;    MOVEA.l (A1),A1
-;    CMPA.l #$0,A1
-;    BNE.b JL_0_575C
-;      BRA.w JL_0_578C
-;  JL_0_5772:
-;    ANDI.w #$FFEF,$C(A1)
-;    MOVEA.l addr_menustrip,A1
-;    MOVEA.l (A1),A1
-;    MOVEA.l $12(A1),A1
-;    ADDQ.l #4,A0
-;    MOVE.l (A0),D0
-;    TST.l (A1)
-;    BNE.b JL_0_575C
-;  JL_0_578C:
-
+.reset_Blockflag:
   MOVE.w #$FFFF,store_BlockStartX
   MOVE.l #$ffffFFFF,comLong_BlockEndY
-;  LEA str_block,A0
-;  MOVE.l #$20202020,(A0)
-;  MOVE.b #$20,$4(A0)
-;   JSR JL_0_5726
-;  MOVEM.l (A7)+,D0-D3/A0-A1
 RTS
 
 JL_0_57B6:
@@ -11543,6 +11155,7 @@ JL_0_57F2:
   MOVE.l (A7)+,comLong_DisplayLine
   MOVE.w (A7)+,comWord_Column
 RTS
+
 
 .AbsBlockDimensions:
   MOVE.w comLong_BlockStartX,D0
@@ -11735,30 +11348,14 @@ CEND
 
   ; -- better refresh: clear bottom
   MOVE.l #0,ClearEndOfLine
-  ;  MOVEA.l _graphicsbase,A6
-  ;  MOVEA.l rp_sourcewindow,A1
-  ;  MOVE.l backgroundcolor,d0
-  ;  JSR _SetAPen(A6)
-  ;  MOVEA.l rp_sourcewindow,A1
-  ;  MOVE.w source_BoxLeft,D0
-  ;  MOVE.l comLong_DisplayLine,D1
-  ;  MULU fontHeight,D1
-  ;  ADD.w  fontHeight,D1
-  ;  MOVE.w source_BoxWidth,D2
-  ;  MOVE.w ypos_statusarea ,D3
-  ;  CMP.w d0,d2                        ; d2-d0
-  ;  BMI 'skip
-  ;    CMP.w d1,d3
-  ;    BMI 'skip
-  ;      JSR _RectFill(A6)                  ;A1:rp, D0:x min, D1:ymin, D2:xmax, D3:ymax  d0-d3:16
-  ; 'skip:
   !basic
-  SetAPen_  Peek.l(?rp_sourcewindow), Peek.l(?backgroundcolor)
+  USEPATH sourceWindow
+  SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
   rectx.w = Peek.w(?source_BoxLeft)
-  recty.w = Peek.l(?comLong_DisplayLine) * Peek.w(?fontHeight) + Peek.w(?fontHeight)
+  recty.w = Peek.l(?comLong_DisplayLine) * \font\tf_YSize + \font\tf_YSize
   rectw.w = Peek.w(?source_BoxWidth)
-  recth.w = Peek.w(?ypos_statusarea)
-  If rectw > rectx Then RectFill_ Peek.l(?rp_sourcewindow), rectx, recty, rectw, recth
+  recth.w = \statusAreaY
+  If rectw > rectx Then RectFill_ \win\RPort, rectx, recty, rectw, recth
   !asm
 
   JSR restore_cursorposition
@@ -11929,25 +11526,43 @@ call_RectFill:
 RTS
 
 
-.get_mousepos:                       ; get screenpos for click: return D0:x, D1:y, D2: TextX, D3: TextY
+.get_TextPosMouse:
+  USEPATH sourceWindow
+  mx.w = \win\MouseX - \win\BorderLeft
+  my.w = \win\MouseY - \win\BorderTop
+  If (mx > 0) AND (my > 0) AND (my < \statusAreaY + \win\BorderTop)
+    textX.w = mx - Peek.w(?source_BoxLeft)
+    If textX < 0 Then textX = 0
+    textX = textX / \font\tf_XSize
+    textY.w = my / \font\tf_YSize
+  Else
+    textX = -1
+    textY = -1
+  EndIf
+  ;msg$ =  Str$(x) +  ", " + Str$(y) + "      " + Str$(textX) + ", " + Str$(textY)
+  ;SetScreenTitle{msg$}
+Return
+
+
+.get_mousepos:                       ; get screenpos for click: return D2: TextX, D3: TextY
   MOVE.l ptr_sourcewindow,a0
+
   MOVE.w $C(A0),D1                   ; Window\MouseY
   ADD.w #1,D1
-
-;  SUB.w oldWindowPos,D1
   TST.w D1
   BPL.w JL_0_5ACA
     MOVEQ.l #$00,D1
   JL_0_5ACA:
 
-  MOVE.w win_BorTop,D2               ; Window\TopEdge
+  MOVEQ #0,D2
+  MOVE.w win_BorTop,D2               ; Window\BorderTop was win_BorTop    $37(A0)
   CMP.w D2,D1
   BLS.w JL_0_5AF4
     ADD.w ypos_statusarea,D2
     CMP.w D2,D1
     BCC.w JL_0_5AF4
       MOVE.w $E(A0),D0               ; Window\MouseX
-      SUB.w win_BorLef,D0
+      SUB.w win_BorLef,D0            ; was win\BorLef    $36(A0)
       BGT 'l1                        ; wenn weniger als BorLeft, auf borleft setzen
         MOVEQ #0,d0
      'l1
@@ -11961,14 +11576,14 @@ RTS
 
       MOVEQ.l #$00,D3
       MOVE.w D1,D3                   ; Y
-      SUB.w win_BorTop,D3
+      SUB.w win_BorTop,D3            ; was win_BorTop $37(A0)
       DIVU fontHeight,D3
       EXT.l D3
       RTS
   JL_0_5AF4:
   MOVE.w $12(A0),D0                  ; Window\MinHeight
   MOVE.w D0,D2
-  EXT.l d2
+  EXT.l D2
   DIVU fontWidth,d2
   MOVEQ.l #-$01,D3
 RTS
@@ -12087,8 +11702,6 @@ RTS
     CLR.l (A2)+
   DBF D2,JL_0_5C20
 
-  ;MOVEA.l _intuibase,A6
-
   TST.w comWord_DoTokenize
   BNE.w tokenized_text
     JSR print_standard_text            ; print standard, non-tokenized text
@@ -12107,56 +11720,27 @@ RTS
     JSR print_tokenized_text
   exit_print_complete_line:
 
-;  TST.l ClearEndOfLine
-;  BEQ skip_clearendofline
-;    ;--  better refresh: clear line at the end
-;    !regs2stack
-;    MOVEA.l rp_sourcewindow,A1
-;    MOVE.l backgroundcolor,D0
-;    MOVEA.l _graphicsbase,A6
-;    JSR _SetAPen(A6)
-;
-;    MOVEA.l rp_sourcewindow,A1
-;    MOVE.w $24(A1),D0                 ; cp_x : current pen position
-;    MOVE.l comLong_DisplayLine,D1     ; calculate line y
-;    MULU fontHeight,D1
-;    MOVE.w source_BoxWidth,D2
-;    MOVE.w D1,D3
-;    ADD.w  fontHeightm1,D3
-;    CMP.w d0,d2                       ; d2-d0
-;    BMI 'skip
-;      CMP.w d1,d3
-;      BMI 'skip
-;        JSR _RectFill(A6)             ; A1:rp, D0:x min, D1:ymin, D2:xmax, D3:ymax  d0-d3:16
-;   'skip:
-;    !stack2regs
-;  skip_clearendofline:
-
   !basic
   If Peek.l(?ClearEndOfLine)
     !regs2stack
-    *rastp.RastPort = Peek.l(?rp_sourcewindow)
-    SetAPen_  *rastp, Peek.l(?backgroundcolor)
+    USEPATH sourceWindow
+    SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground) ;Peek.l(?backgroundcolor)
 
-    rectx.w = *rastp\cp_x
-    recty.w = Peek.l(?comLong_DisplayLine) * Peek.w(?fontHeight)
+    rectx.w = \win\RPort\cp_x
+    recty.w = Peek.l(?comLong_DisplayLine) * \font\tf_YSize ;Peek.w(?fontHeight)
     rectw.w = Peek.w(?source_BoxWidth)
     recth.w = recty + Peek.w(?fontHeightm1)
-    If (rectw > rectx) AND (recth > recty) Then RectFill_ *rastp, rectx, recty, rectw, recth
+    If (rectw > rectx) AND (recth > recty) Then RectFill_ \win\RPort, rectx, recty, rectw, recth
     !stack2regs
   EndIf
   !asm
-
-
-
 
   MOVE.l (A7)+,D2
   CLR.w comWord__AL_0_8660
 RTS
 
 ;/* this is a flag to indicate if we need to clear the end of the line!
-ClearEndOfLine:
-Dc.l 0
+ClearEndOfLine: Dc.l 0
 
 
 .print_tokenized_text
@@ -12303,61 +11887,23 @@ Dc.l 0
 
   MOVEM.l a6/d0-d1/a0/a1,-(a7)
 
-  ;MOVEA.l _graphicsbase,A6
-  ;MOVEA.l rp_sourcewindow,A1
-  ;MOVE.l tokenbackground,D0
-  ;JSR _SetBPen(A6)
-
-  ;TST.b bold_tokens
-  ;BEQ.b 'no_bold                     ; optional set bold style
-  ;  MOVEA.l rp_sourcewindow,A1
-  ;  MOVEA.l ptr_sourcefontb,A0
-  ;  JSR _SetFont(A6)
-
-  ;  MOVEA.l rp_sourcewindow,A1
-  ;  MOVE.l #FSF_BOLD,D0
-  ;  MOVE.l #FSF_BOLD,D1
-  ;  JSR _SetSoftStyle(A6)
- ;'no_bold
   !basic
-  SetBPen_ Peek.l(?rp_sourcewindow), Peek.l(?tokenbackground)
-
-  If Peek.b(?bold_tokens)
-    SetFont_ Peek.l(?rp_sourcewindow), Peek.l(?ptr_sourcefontb)
-    SetSoftStyle_ Peek.l(?rp_sourcewindow),#FSF_BOLD,#FSF_BOLD
+  SetBPen_ \win\RPort, AB3Pen(#AB3_ctokenbackground)
+  If bold_tokens
+    SetFont_ \win\RPort, \fontB
+    SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
   EndIf
   !asm
                                                                                                                                                                                                                                                          
   MOVEM.l (a7),a6/d0-d1/a0/a1
-
   JSR print_text                     ; A0: string, D0: x-pos, D1: y-pos, D2: textlength, D3: foregroundcolor
-
-  ;MOVEA.l _graphicsbase,A6           ; set backgroundcolour
-  ;MOVEA.l rp_sourcewindow,A1
-  ;MOVE.l backgroundcolor,d0
-  ;JSR _SetBPen(A6)
-
-;  TST.b bold_tokens                  ; optional set back to normal style
-;  BEQ.b 'no_bold2
-;    MOVEA.l rp_sourcewindow,A1
-;    MOVEA.l ptr_sourcefont,A0
-;    JSR _SetFont(A6)
-;
-;    MOVEA.l rp_sourcewindow,A1
-;    MOVE.l #FS_NORMAL,D0
-;    MOVE.l #FSF_BOLD,D1
-;    JSR _SetSoftStyle(A6)
-; 'no_bold2
-
   !basic
-  SetBPen_ Peek.l(?rp_sourcewindow), Peek.l(?backgroundcolor)
-
-  If Peek.b(?bold_tokens)
-    SetFont_ Peek.l(?rp_sourcewindow), Peek.l(?ptr_sourcefont)
-    SetSoftStyle_ Peek.l(?rp_sourcewindow),#FS_NORMAL,#FSF_BOLD
+  SetBPen_ \win\RPort, AB3Pen(#AB3_cbackground)
+  If bold_tokens
+    SetFont_ \win\RPort, \font
+    SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
   EndIf
   !asm
-
   MOVEM.l (a7)+,a6/d0-d1/a0/a1
 
   MOVE.w (A7)+,D0
@@ -12376,7 +11922,7 @@ Dc.l 0
   MOVE.b comByte__AL_0_8662,$0(A1,D4.W)
 RTS
 
-.print_hightlight                    ;a0 = text,d0 = x,d2 = charslen,d3 = color
+.print_hightlight                    ;a0 = text,d0 = x,d2 = charslen,d3 = color, d5 = style
   MOVEM.l D0-D4/A0-A1/A4/A6,-(A7)
   MOVEA.l _graphicsbase,A6
 
@@ -12395,7 +11941,6 @@ RTS
 
   MOVEQ #0,D4
   MOVE.w D0,D4
-  ;ASL.w #3,D0
   MULU fontWidth,D0
   ADD.w source_BoxLeft,D0
   MOVE.l comLong_DisplayLine,D1
@@ -12408,12 +11953,6 @@ RTS
   MOVE.l D3,D0
   MOVEA.l rp_sourcewindow,A1
   JSR _SetAPen(A6)
-;      ;
-;      MOVEA.l rp_sourcewindow,A1
-;      MOVE.l D5,D0
-;      MOVE.l #0,D1
-;      JSR _SetSoftStyle(A6)
-;      ;
 
   MOVEA.l rp_sourcewindow,A1
   MOVEA.l (A7)+,A0
@@ -12423,211 +11962,136 @@ RTS
     ADD.l d0,d4
     CMP.w visiblecolumns,D4
     BLE.w 'l1
-   'l2
-    MOVE.w visiblecolumns,D0
-    SUB.l d3,d0
-    BMI 'x1
+      MOVE.w visiblecolumns,D0
+      SUB.l d3,d0
+      BMI 'x1
    'l1
     JSR _Text(A6)
-    ;MOVEA.l rp_sourcewindow,A1
-    ;MOVE.l #0,D0
-    ;MOVE.l #0,d1
-    ;JSR _SetSoftStyle(A6)
  'x1
   MOVEM.l (A7)+,D0-D4/A0-A1/A4/A6
 RTS
 
 
-.print_text                          ;tokens, othertext, remarks
-  ; A0: string
-  ; D0: x-pos
-  ; D1: y-pos
-  ; D2: textlength
-  ; D3: foregroundcolor
 
-  MOVEM.l D0-D2/A0-A1/A4/A6,-(A7)
-  MOVEA.l _graphicsbase,A6
-  MOVE.l A0,-(A7)
-
-  ADD.w font_Baseline,D1
-  MOVEA.l rp_sourcewindow,A1
-  JSR _Move(A6)
-
-  MOVE.l (a7),a0
-
-  MOVE.l D3,D0
-
-  MOVEA.l rp_sourcewindow,A1
-  JSR _SetAPen(A6)
-  MOVEA.l rp_sourcewindow,A1
-  MOVEA.l (A7)+,A0
-
-  ; -- clip text to visible columns
-  MOVE.l D2,D0
-  BMI 'l1
-    CMP.w visiblecolumns,D0
-    BLE.w skip_clipping
- 'l1
-    MOVE.w visiblecolumns,D0
-  skip_clipping:
-
-  TST.l remarkcolor
-  BNE check_comments
-    TST.l remarkbgcolor
-    BNE check_comments
-
-  exit_check_comments:
-  MOVEA.l rp_sourcewindow,A1
-  JSR _Text(A6)
-
-  MOVEM.l (A7)+,D0-D2/A0-A1/A4/A6
-RTS
-
-.check_comments:
-  ; -- save string address a0 in A4 and stringlength in d0 to stack
-  MOVE.l a0,a4
-  MOVE.l d0,-(a7)
-
-  ; -- move data to stack for basic routine
-  MOVE.l a0,-(a7)
+.print_text:
+  !regs2stack
+  MOVE.l A0,-(a7)   ; string
+  MOVE.l D0,-(a7)   ; x-pos
+  MOVE.l D1,-(a7)   ; y-pos
+  MOVE.l D2,-(a7)   ; textlength
+  MOVE.l D3,-(a7)   ; foregroundcolor
   !basic
-  str_length.w = PutD0
+  MOVE.l (a7)+,d0 : tcolor.w = PutD0
+  MOVE.l (a7)+,d0 : tlength.w = PutD0
+  MOVE.l (a7)+,d0 : tposy.w = PutD0 + \font\tf_Baseline
+  MOVE.l (a7)+,d0 : tposx.w = PutD0
   MOVE.l (a7)+,d0 : *textaddr.l = PutD0
 
+  Move_ \win\RPort, tposx, tposy
+  SetAPen_ \win\RPort, tcolor
+
+  ; -- clip text to visible columns
+  ;   MOVE.l D2,D0                      ; this one is not converted
+  ;   BMI 'l1
+  ;     CMP.w visiblecolumns,D0
+  ;     BLE.w skip_clipping
+  ;  'l1
+  ;     MOVE.w visiblecolumns,D0
+  ;   skip_clipping:
+  If (tlength > Peek.w(?visiblecolumns))
+    tlength = Peek.w(?visiblecolumns)
+  EndIf
+
+  If remarkcolor.l OR remarkbgcolor.l
+    Gosub print_textcomments
+  Else
+    Text_ \win\RPort,Peek$(*textaddr), tlength
+  EndIf
+
+  !asm
+  !stack2regs
+RTS
+
+.print_textcomments:
   semi_position.w = 0
   in_string.b = 0
   columnsoff.w = Peek.w(?comWord_ColumnsOffset)
-
-  ; -- if templine is used, get it instead of textbuffer
-;  If Peek.w(?columnsoffset) = 0
-;    If Peek.l(?templine)<>0
-;      mytext$ = Peek$(Peek.l(?templine))
-;    EndIf
-;    If mytext$=""
-;      mytext$ = Peek$(Peek.l(?textbufferaddr)+Peek.l(?comWord_TextBufferOffset))
-;    EndIf
-;  Else
-    mytext$ = Peek$(*textaddr)
-;  EndIf
+  mytext$ = Peek$(*textaddr)
 
   ; -- search for a comment and save the starting position
-  CLR.w semipos
-  search_again:
-  semi_position = Instr(mytext$,";",semi_position+1)
+  search_again2:
+  semi_position = Instr(mytext$,";",semi_position + 1)
   If semi_position > 0
-    ;  !cout{Peek$(*textaddr), Instr(Peek$(*textaddr),Chr$(0))}
     ; -- check if the comment-char +++ ; +++ is in a string
     acount.b = 0
     For i = 1 To semi_position
-      If Mid$(mytext$,i,1)=Chr$($22) Then acount + 1
+      If Mid$(mytext$,i,1) = Chr$($22) Then acount + 1
     Next i
     If (acount MOD 2) = 1
       ; -- ungerade Anzahl von +++ " +++ impliziert, das +++ ; +++ in einem String steckt...
       semi_position = 0
     Else
-      If Mid$(mytext$,semi_position+1,2)=":@"
+      If Mid$(mytext$,semi_position + 1,2)=":@"
         ; -- nachschauen, ob dahinter ein echter Kommentar kommt
-        Goto search_again
+        Goto search_again2
       EndIf
     EndIf
-    If semi_position<=str_length Then Poke.w ?semipos,semi_position
+    If semi_position > tlength Then semi_position = 0
   EndIf
-  !asm
-  MOVE.l (a7)+,d0
-  MOVE.l d0,d2
-  MOVE.l a4,a0
-  TST.w semipos
-  BEQ exit_check_comments
+  If semi_position > 0
+    semi_position - 1 ; hightlight +++ ; ++ as well
+    ; -- print text before +++ ; +++
+    Text_ \win\RPort,mytext$,semi_position
 
-  MOVE.w semipos,d0
-  CMP.w #1,d0                 ; ";" should be also colored
-  BLT skip_sub
-    SUB.w #1,semipos
-    MOVE.w semipos,d0
-  skip_sub:
+    ; -- set remarks color
+    SetAPen_ \win\RPort, AB3Pen(#AB3_cremarkforeground)
+    SetBPen_ \win\RPort, AB3Pen(#AB3_cremarkbackground)
 
-  MOVE.l a4,a0
-  MOVE.l d0,-(a7)             ; -- draw text until ";"
-  MOVEA.l rp_sourcewindow,A1
-  JSR _Text(A6)
+    ; -- optional switch italic on
+    If italic_remarks
+      SetFont_ \win\RPort,\fontI
+      SetSoftStyle_ \win\RPort, #FSF_ITALIC,#FSF_ITALIC
+    EndIf
 
-  ; -- set remarks color
-  MOVE.l remarkcolor,D0
-  MOVEA.l rp_sourcewindow,A1
-  JSR _SetAPen(A6)
-  MOVE.l remarkbgcolor,D0
-  MOVEA.l rp_sourcewindow,A1
-  JSR _SetBPen(A6)
+    Text_ \win\RPort,UnRight$(mytext$,semi_position),tlength-semi_position
 
-  ; -- optional switch italic on
-  TST.b italic_remarks
-  BEQ.b 'no_italic
-    MOVEA.l rp_sourcewindow,A1
-    MOVEA.l ptr_sourcefonti,A0
-    JSR _SetFont(a6)
-    MOVEA.l rp_sourcewindow,A1
-    MOVE.l #FSF_ITALIC,D0
-    MOVE.l #FSF_ITALIC,D1
-    JSR _SetSoftStyle(A6)
- 'no_italic
-
-  ; -- print the comment text
-  MOVE.l (a7)+,d0
-  SUB.l d0,d2
-  LEA 0(a4,d0),a0
-  MOVE.l d2,d0
-  MOVEA.l rp_sourcewindow,A1
-  JSR _Text(A6)
-
-  ; -- restore standard backgroundcolor
-  MOVE.l backgroundcolor,D0
-  MOVEA.l rp_sourcewindow,A1
-  JSR _SetBPen(A6)
-
-  ; -- optional switch italic off
-  TST.b italic_remarks
-  BEQ.b 'no_italic2
-    MOVEA.l rp_sourcewindow,A1
-    MOVEA.l ptr_sourcefont,A0
-    JSR _SetFont(a6)
-    MOVEA.l rp_sourcewindow,A1
-    MOVE.l #FS_NORMAL,D0
-    MOVE.l #FSF_ITALIC,D1
-    JSR _SetSoftStyle(A6)
- 'no_italic2
-
- 'l4
-  MOVEM.l (A7)+,D0-D2/A0-A1/A4/A6
-RTS
-
+    ; -- restore standard backgroundcolor and font if changed
+    SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+    If italic_remarks
+      SetFont_ \win\RPort,\font
+      SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_ITALIC
+    EndIf
+  Else
+    Text_ \win\RPort,mytext$, tlength
+  EndIf
+                                                                                                                                                                                                                                                        
+Return
 
 .print_linenumber:
   !regs2stack
   !basic
-  *rastp.RastPort = Peek.l(?rp_sourcewindow)
+  USEPATH sourceWindow
 
   dl.l = Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine) + 1
   linenum$ = Str$(dl)
 
-  lx.w = Peek.w(?source_BoxLeft) - 3 - (FLen(linenum$) * Peek.w(?fontWidth))
-  ly.w = Peek.l(?comLong_DisplayLine) * Peek.w(?fontHeight)
+  lx.w = Peek.w(?source_BoxLeft) - 3 - (FLen(linenum$) * \font\tf_XSize) ;Peek.w(?fontWidth))
+  ly.w = Peek.l(?comLong_DisplayLine) * \font\tf_YSize ; Peek.w(?fontHeight)
 
-  SetAPen_ *rastp,Peek.l(?backgroundcolor)
-  RectFill_ *rastp,0,ly,Peek.w(?source_BoxLeft),ly + Peek.w(?fontHeight)
+  SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground) ;Peek.l(?backgroundcolor)
+  RectFill_ \win\RPort,0,ly,Peek.w(?source_BoxLeft),ly + \font\tf_YSize ;Peek.w(?fontHeight)
 
-  SetAPen_ *rastp,Peek.w(?othercolor)
-  Move_ *rastp,lx,ly + Peek.w(?font_Baseline)
-  Text_ *rastp,&linenum$,FLen(linenum$)
+  SetAPen_ \win\RPort,AB3Pen(#AB3_cother) ;Peek.w(?othercolor)
+  Move_ \win\RPort,lx,ly + \font\tf_Baseline ;Peek.w(?font_Baseline)
+  Text_ \win\RPort,&linenum$,FLen(linenum$)
 
-  Move_ *rastp,Peek.w(?source_BoxLeft)-2,ly
-  Draw_ *rastp,Peek.w(?source_BoxLeft)-2,ly + Peek.w(?fontHeight)
+  Move_ \win\RPort,Peek.w(?source_BoxLeft)-2,ly
+  Draw_ \win\RPort,Peek.w(?source_BoxLeft)-2,ly + \font\tf_YSize
   !asm
   !stack2regs
 RTS
 
-.print_standard_text
-  MOVEA.l _graphicsbase,A6
-
+.print_standard_text:         ;d0:x, d1:y, a0: text, d3, length
   MOVEA.l AL_0_5BAA,A1
   MOVE.w comWord_MaxColumns,D3
 
@@ -12638,6 +12102,7 @@ RTS
   JL_0_5Dca2:
   MOVE.b #$0,-$1(A1)
 
+  MOVEA.l _graphicsbase,A6
   MOVEA.l rp_sourcewindow,A1
 
   ANDI.w #$FFFF,D1
@@ -12665,7 +12130,7 @@ RTS
   JL_0_5E1C:
   MOVE.l D0,-(A7)
   JSR _Text(A6)
-
+  ;Text_     ; A1: rp, A0: string, d0: count
   MOVE.l (A7)+,D0
 RTS
 
@@ -12750,6 +12215,7 @@ RTS
 .dostring
   TST.l stringcolor
   BEQ ready
+
   MOVEM.l a2/d2/a1,-(a7)
   SUBQ.l #1,a2
   MOVE.l a2,a0
@@ -12761,10 +12227,10 @@ RTS
     CMP.b #$22,d0
     BEQ 'l3
    'l1
-    ADDQ #1,d2
-    CMP.w #MAX_Columns,d2            ; check the full line
-    BEQ 'r1
-    ADDQ #1,a2
+      ADDQ #1,d2
+      CMP.w #MAX_Columns,d2            ; check the full line
+      BEQ 'r1
+        ADDQ #1,a2
   BRA 'l2b
  'l3
   ADDQ #1,d2
@@ -12957,14 +12423,17 @@ BRA ready
   ADDA.w comWord_TextBufferOffset,A0
   MOVE.l a0,a2
   MOVE.l a2,textlinestart
+
   MOVEQ #0,d0
   MOVE.w comWord_ColumnsOffset,d0
   ADD.l d0,textlinestart
+
   MOVEQ #0,d2
   hl1:
     MOVE.b (a2)+,d0
     CMP.b #";",d0
     BEQ skipsyntax
+
     CMP.b #$22,d0
     BEQ dostring
     ;BNE 'ls1
@@ -12973,19 +12442,21 @@ BRA ready
     ;BNE ready
     CMP.b #"{",d0
     BEQ dofunction
+
     CMP.b #"!",d0
     BEQ domacro
    'ls2
     CMP.b #"#",d0
     BEQ doconstant
+
     CMP.b #"\",d0
     BEQ donewtype
    ready
     ADDQ.l #1,d2
     CMP.w #MAX_Columns,d2
   BLE hl1
-
   CLR.b instring
+
   skipsyntax:
   MOVEM.l (a7)+,a2/d2
 RTS
@@ -13293,12 +12764,6 @@ checkForLetter:
 
   JL_0_60E8:
 RTS
-
-;JL_0_60EA:                     not used anymore
-;  EXG.l D0,D2
-;  BSR.b checkForLetter
-;  EXG.l D0,D2
-;RTS
 
 .source_fullscroll_down:
   MOVEQ.l #$00,D7
@@ -13676,39 +13141,6 @@ RTS
   JSR _WaitBlit(A6)
   ;JSR delay
 RTS
-
-
-; not used anymore ...
-;JL_0_653C:
-;  TST.l comLong_BlockEndY
-;  BMI.w JL_0_65A4
-;
-;  MOVEQ.l #$00,D0
-;  MOVE.w comWord_Column,D0
-;  MOVE.l comLong_DisplayLine,D1
-;  ADD.w comWord_ColumnsOffset,D0
-;  ADD.l comLong_DisplayLineOffset,D1
-;  CMP.l comLong_BlockStartY,D1
-;  BLT.w JL_0_65A4
-;    CMP.l comLong_BlockEndY,D1
-;    BGT.w JL_0_65A4
-;      CMP.w comLong_BlockStartX,D0
-;      BLT.w JL_0_65A4
-;        CMP.w comLong_BlockEndX,D0
-;        BGT.w JL_0_65A4
-;          MOVEA.l comPtr_SourceAreaRastPort,A1
-;          ;ASL.w #3,D0
-;          MULU fontWidth,d0
-;          MOVE.l D0,D2
-;          ADDQ.w #7,D2
-;          ;ADD.w #fontWidth,D2
-;          MULU fontHeight,D1
-;          MOVE.l D1,D3
-;          ADD.w fontHeightm1,D3
-;          JSR _RectFill(A6)                  ;A1:rp, D0:xmin, D1:ymin, D2:xmax, D3:ymax  d0-d3:16
-;  JL_0_65A4:
-;RTS
-
 
 .scroll_right:
   MOVE.l #1,blockmarking
@@ -14191,7 +13623,7 @@ RTS
   JSR update_horizscroller
   JSR update_modifiermark
   JSR update_vertscroller
-  JSR update_statusarea
+  JSR draw_statusarea
   MOVEQ.l #-$01,D0
 RTS
 
@@ -14276,15 +13708,10 @@ BRA.w _redraw
 JUMP_exit_PED_closeall:
 JMP exit_PED_closeall
 
-
-;ptr_visualinfo: Ds.l 1
-
-
 .SetGuiFontToWBScreenFont:                            ;Subroutine to get the used Screenfont of the WB an set it as guifont  tomsmart1
     WbToScreen 0                                      ; set WB to screen 0
-    *scr.Screen=Peek.l(Addr Screen(0))                ; get pointer of this screen
-    If *scr<>0                                        ; check if we get a screenstructure
-
+    *scr.Screen = Peek.l(Addr Screen(0))              ; get pointer of this screen
+    If *scr <> 0                                      ; check if we get a screenstructure
       *scrfont.TextAttr=*scr\Font                     ; try to get the font out of the screenstructur
       If *scrfont<>0                                  ; check if we get a TextAttrstructure
 
@@ -14302,7 +13729,7 @@ Return
 .open_gui:
   !basic
   log_Print{"opening gui..."}
-  If (use_wbfont = True)  OR  (Peek.b(?use_wbscreen)<>0)              ; check if we use workbench fonts or screen for Gui tomsmart1
+  If (use_wbfont = True)  OR  (use_wbscreen<>0)              ; check if we use workbench fonts or screen for Gui tomsmart1
 
     ;Gosub SetGuiFontToWBScreenFont                                   ; try to get the workbench screen font settinge out of the screen structure tomsmart1
     ;*guifont.TextFont = screen_SetDefaultFont{guifont$,guifontsize}  ; and try to use it for the Gui of oure own screen  tomsmart1
@@ -14329,17 +13756,16 @@ Return
 
   EndIf
 
-  Poke$ ?str_screentitle,"AmiBlitz3 - PED V\\__VER_MAJOR.\\__VER_MINOR.\\__VER_PATCH"
-  scrname$ = Peek$(?str_screentitle)
-  If Peek.b(?use_wbscreen)<>0                                    ; -- use workbench here
-    If screen_Open{scrname$,#scr_mode_wb_use} = False
+  default_screentitle$ = "AmiBlitz3 - PED V\\__VER_MAJOR.\\__VER_MINOR.\\__VER_PATCH"
+  If use_wbscreen <> 0                                    ; -- use workbench here
+    If screen_Open{default_screentitle$,#scr_mode_wb_use} = False
       !asm
       JMP error_openscreen
     Else
       Poke$ ?screen_number,"WB"
     EndIf
   Else
-    If Peek.w(?use_pubscreen)<>0                                 ; -- searching for already opened ab3-screens
+    If use_pubscreen                                 ; -- searching for already opened ab3-screens
       screen_ziffer.b = 1 : exit_screensearch.b = False
       Poke.w ?screen_number,0  ; to set the termination (end)to str_defaultpubscreen string without a number if the gui reopen  tomsmart1
       Repeat
@@ -14356,24 +13782,24 @@ Return
       WbToScreen 0 ; we need this, because GetPubScreen is steeling us the focus on screen 0
     EndIf
 
-    If Peek.b(?clone_wbscreen)<>0                                ; -- clone the workbench for one screen
-      If screen_Open{scrname$,#scr_mode_wb_clone} = False
+    If clone_wbscreen <> 0                                ; -- clone the workbench for one screen
+      If screen_Open{default_screentitle$,#scr_mode_wb_clone} = False
         !asm
         JMP error_openscreen
       EndIf
     Else
-      If screen_Open{scrname$,Peek.l(?ownscreen_modeid),Peek.w(?ownscreen_width),Peek.w(?ownscreen_height),Peek.w(?ownscreen_depth)} = False
+      If screen_Open{default_screentitle$,Peek.l(?ownscreen_modeid),Peek.w(?ownscreen_width),Peek.w(?ownscreen_height),Peek.w(?ownscreen_depth)} = False
         err_msg$ = "Could not open selected screen.\\nTrying to open default screen."
         log_Print{err_msg$,#log_warning}
         dummy.l = ask{!TRANS{err_msg$},!TRANS{"Ok"},!TRANS{"Error"}}
 
-        Poke.b ?clone_wbscreen, 1    ;try clone Wbscreen
-        If screen_Open{scrname$,#scr_mode_wb_clone} = False
+        clone_wbscreen = 1    ;try clone Wbscreen
+        If screen_Open{default_screentitle$,#scr_mode_wb_clone} = False
           err_msg$ = "Could not clone WB-screen, using WB itself."
           dummy.l = ask{!TRANS{err_msg$},!TRANS{"Ok"},!TRANS{"Error"}}
-          Poke.b ?clone_wbscreen, 0  ; no clone Wbscreen
-          Poke.b ?use_wbscreen,   1  ; try use Wbscreen
-          If screen_Open{scrname$,#scr_mode_wb_use} = False
+          clone_wbscreen = False  ; no clone Wbscreen
+          use_wbscreen = True     ; try use Wbscreen
+          If screen_Open{default_screentitle$,#scr_mode_wb_use} = False
             !asm
             JMP error_openscreen
           EndIf
@@ -14403,15 +13829,10 @@ Return
     log_Print{"screen_GetDepth(): "+ Str$(screen_GetDepth{}),#log_debug}
     dummy.l = ask{!TRANS{"It is recommended to open a screen with at least 16 colors."},!TRANS{"Ok"},!TRANS{"Info"}}
   EndIf
-  log_Print{"poking around..."}
-  Poke.s ?str_pedscreenname,Peek$(?str_screentitle)
-  Poke.l ?ptr_pedscreen    ,Peek.l(Addr Screen(0))
+  sourceWindow\pedScreen = Peek.l(Addr Screen(0))
 
   If screen_GetModeID{}<>#scr_mode_wb_use
-    ;If Peek.w(?use_pubscreen)<>0  ; screen_Open is doing this for us
-    ;  PubScreenStatus_ Peek.l(Addr Screen(0)),0   ; make the PubScreen public for real
-    ;EndIf
-    If Peek.w(?use_default_pubscreen)<>0
+    If use_default_pubscreen
       log_Print{"settings defaultpubscreen"}
       SetDefaultPubScreen_ ?str_defaultpubscreen
     EndIf
@@ -14419,21 +13840,12 @@ Return
   log_Print{"setting colors..."}
   Gosub set_storedcolors
 
-  ; -- get the visualinfo-data
-  ;MOVE.l ptr_pedscreen,D0
-  ;MOVEA.l _gadtoolsbase,A6
-  ;MOVEA.l D0,A0
-  ;MOVEA.l #0,A1
-  ;JSR _GetVisualInfoA(A6)
-  ;MOVE.l D0,ptr_visualinfo
-  ;Poke.l ?ptr_visualinfo = GetVisualInfoA_(?ptr_pedscreen,0)
-
   !asm
   ; -- inform via arexx
   ; -- that the window is opened
   JSR arexx_send_openwindow
-
   !basic
+
   log_Print{"init menues"}
   Gosub init_menus
   log_Print{"init windowlayouts"}
@@ -14477,8 +13889,7 @@ win_Height:   Dc.w 200
   MOVE.w D0,fontHeightm1
   MOVEA.l ptr_sourcefont,A0
   MOVE.w $18(A0),fontWidth
-  MOVE.w $1A(A0),D0
-  MOVE.w D0,font_Baseline
+  MOVE.w $1A(A0),font_Baseline
 
   !basic
   DEFTYPE.Image       *img             ; An image which represents the size gadget
@@ -14728,7 +14139,9 @@ win_Height:   Dc.w 200
   SourceWindowWFlags   | #WFLG_SIZEBBOTTOM|#WFLG_SIZEBRIGHT|#WFLG_SIZEGADGET|#WFLG_CLOSEGADGET|#WFLG_DEPTHGADGET
   SourceWindowWFlags   | #WFLG_DRAGBAR|#WFLG_REPORTMOUSE
   log_Print{"opening source window"}
-  *sourcewin.Window = OpenWindowTagList_(0,Tags(@@
+
+
+  sourceWindow.sourceWindow\win = OpenWindowTagList_(0,Tags(@@
                       #WA_Title      ,"AmiBlitz3",@@
                       #WA_Left       ,Peek.w(?win_TopLeft),@@
                       #WA_Top        ,Peek.w(?win_TopEdge),@@
@@ -14742,30 +14155,31 @@ win_Height:   Dc.w 200
                       #WA_IDCMP      ,SourceWindowIDCMPFlags,@@
                       #WA_Gadgets    ,*darrowbutton,@@
                       #WA_PubScreen  ,*myscreen))
-  If *sourcewin = 0
+  If sourceWindow\win = 0
+    Pop If
     !asm
     CLR.l ptr_sourcewindow
     BRA.w error_opensourcewindow                   ; bei Fehler ...
   EndIf
 
   log_Print{"setting window pointers for asmcode"}
-  Poke.l ?ptr_sourcewindow,*sourcewin
-  Poke.l ?rp_sourcewindow ,*sourcewin\RPort
-  Poke.l (Addr Window(0) ),*sourcewin  ; to set the Window address in the BlitzBasic structure so we can use  "Use Window 0" this helps to shown the requesters of the error.include one the Amiblitz screen and not on the WB
+  Poke.l ?ptr_sourcewindow,sourceWindow\win
+  Poke.l ?rp_sourcewindow ,sourceWindow\win\RPort
+  Poke.l (Addr Window(0) ),sourceWindow\win  ; to set the Window address in the BlitzBasic structure so we can use  "Use Window 0" this helps to shown the requesters of the error.include one the Amiblitz screen and not on the WB
 
   log_Print{"attaching menustrip to window"}
   ; Anhaengen des Menus
-  If Peek.l(?addr_menustrip) Then SetMenuStrip_ *sourcewin,Peek.l(?addr_menustrip)
+  If Peek.l(?addr_menustrip) Then SetMenuStrip_ sourceWindow\win,Peek.l(?addr_menustrip)
 
   log_Print{"setting font"}
   ; Setzen des Standardfonts
-  SetFont_ *sourcewin\RPort,Peek.l(?ptr_sourcefont)
+  SetFont_ sourceWindow\win\RPort,Peek.l(?ptr_sourcefont)
 
   ; attach sourcewindow to peds process
   log_Print{"find current task"}
   *this_process.Process = FindTask_("")
   Poke.l ?ptr_windowPtrTemp, *this_process\pr_WindowPtr
-  *this_process\pr_WindowPtr = ?ptr_sourcewindow
+  *this_process\pr_WindowPtr = sourceWindow\win
   !asm
   MOVE.w #$FFFF,comWord_LabelListChanged     ; indicate that label window has to be updated too
   ;MOVEA.l _execbase,A6
@@ -14779,17 +14193,15 @@ win_Height:   Dc.w 200
   !basic
   ; -- Setzen des WindowTitles
   log_Print{"set window title"}
-  SetWindowTitles_ *sourcewin,?str_screentitle,-1
+  SetWindowTitles_ sourceWindow\win,&default_screentitle$,-1
   log_Print{"update statuser"}
   !asm
-  JSR update_statusarea
+  JSR draw_statusarea
   JSR set_pointernormal
 
   ; -- allocate memory for temp rastport
   MOVEM.l D0-D1/A0-A1/A6,-(A7)
-  MOVEA.l _execbase,A6
   MOVEQ.l #$64,D0
-  MOVEQ.l #$00,D1
   !newalloc
   MOVE.l D0,comPtr_SourceAreaRastPort
   MOVEA.l rp_sourcewindow,A0
@@ -14817,9 +14229,6 @@ RTS
 
 .calc_SourceWindowDimensions:
   !basic
-  Poke.w ?win_InnerHeight, Peek.w(?win_Height ) - Peek.w(?win_BorTop) - Peek.w(?win_BorBot)
-  Poke.w ?win_InnerWidth , Peek.w(?win_Width)   - Peek.w(?win_BorLef) - Peek.w(?win_BorRig)
-
   Poke.w ?source_BoxHeight, Peek.w(?win_Height ) - Peek.w(?win_BorTop) - Peek.w(?win_BorBot)
   Poke.w ?source_BoxWidth , Peek.w(?win_Width)   - Peek.w(?win_BorLef) - Peek.w(?win_BorRig)
 
@@ -14836,12 +14245,16 @@ RTS
     Poke.w ?source_BoxLeft, 0
   EndIf
 
-  visibleLines.l = (Peek.w(?source_BoxHeight) - 6) / Peek.w(?fontHeight)  ; 6 Pixel fehlen wg. Trennlinie etc.
-  If visibleLines > 125 Then visibleLines = 125 ; why?
-  visibleLines = visibleLines - 2       ; sub two lines for status area
-  Poke.l ?viewablelines,visibleLines
-  Poke.l ?viewablelines_m1, visibleLines-1
-  Poke.w ?ypos_statusarea, visibleLines * Peek.w(?fontHeight)
+  USEPATH sourceWindow
+  \visibleLines = (Peek.w(?source_BoxHeight) - 6) / Peek.w(?fontHeight)  ; 6 Pixel fehlen wg. Trennlinie etc.
+  If \visibleLines > 125 Then \visibleLines = 125 ; why?
+
+  \visibleLines - 2       ; subtract two lines for status area
+
+  Poke.l ?viewablelines,\visibleLines
+  Poke.l ?viewablelines_m1, \visibleLines - 1
+  Poke.w ?ypos_statusarea, \visibleLines * Peek.w(?fontHeight)
+  sourceWindow\statusAreaY = \visibleLines * Peek.w(?fontHeight)
 
   ;visibleColumns.w = (Peek.w(?source_BoxWidth) - Peek.w(?source_BoxLeft)) / Peek.w(?fontWidth)
   ;visibleColumns = visibleColumns AND (NOT 1)
@@ -14852,13 +14265,13 @@ RTS
   SUB.w source_BoxLeft,D0
   EXT.l d0
   DIVU fontWidth,d0
-  BCLR #$0,D0
+  BCLR #0,D0
   MOVE.w D0,visiblecolumns
   SUBQ.w #1,D0
   BCLR #0,D0
   MOVE.w D0,comWord__AL_0_8670
 
-  BCLR #$0,comLong_BoundLinesX
+  BCLR #0,comLong_BoundLinesX
   MOVE.w comWord_LabelSize,comWord_LabelSizeC
 RTS
 
@@ -14869,8 +14282,6 @@ RTS
   JSR error_unable_window
 
   JL_0_7334:
-  ;MOVEA.l ptr_pedscreen,A0
-  ;MOVEA.l _intuibase,A6
   !basic
   !coutclose
   CloseAllWZWindows{}
@@ -14890,76 +14301,24 @@ RTS
 ptr_windowPtrTemp:    Ds.l 1
 
 .print_actualsourceline:
-  MOVE.l #$20202020,str_actualline
-  MOVE.l #$20200000,str_actualline+4    ; loeschen von "str_actualline" ; changed form #$20000000 to #$2020000 that the function "format_value" use 6 instead of 5 columns for up to 999999 lines  tomsmart1
-  MOVE.l comLong_DisplayLineOffset,D0
-  ADD.l comLong_DisplayLine,D0
-  ADDQ.l #1,D0
-  LEA str_actualline,A0
-  JSR format_value
-  MOVEQ.l #$12,D0                 ; xpos=6 in D0 laden
-  LEA str_actualline,A0                 ; text laden
-  JSR print_statustext          ; text in statusarea darstellen
+  !basic
+  sourceWindow\currentLine = Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine) + 1
+  formatstr$ = "      " : len_fmtstr.b = FLen(formatstr$)
+  formatstr$ = StrRight(Str$(sourceWindow\currentLine),len_fmtstr,48)  ; mit nullen auffuellen
+  PED_PrintStatus{formatstr$,18}
+  !asm
 RTS
 
 .print_actualsourcecolumn
-  MOVE.l #$20202000,comLong_ActualColumn
-  MOVEQ #0,d0
-  MOVE.w comWord_ColumnsOffset,D0
-  ADD.w comWord_Column,D0
-  ADDQ.w #1,D0
-  LEA comLong_ActualColumn,A0
-  JSR format_value
-  MOVEQ.l #$03,D0                 ; xpos=21   ; added 1 to move the print of the Columnnumber to the right to support up to 999999 Lines  tomsmart1
-  LEA comLong_ActualColumn,A0
-  JSR print_statustext      ; print column in statusarea
-RTS
-
-
-Function PED_PrintStatus{text$,xpos}
-  SHARED *rpSourceWin *SourceWin, *
-End Function
-
-
-
-text_ptr:   Ds.l 1
-
-.print_statustext:        ; d0:xpos, a0: textpointer
-  ; X-Position ermitteln
-  MULU fontWidth,D0
-  MOVE.l A0,text_ptr
   !basic
-  xpos_text.l = PutD0 + 2
-  MOVE.l text_ptr,d0 :_d0.l = PutD0 : txt$ = Peek$(_d0)
-  If FLen(txt$) > 0
-    *rastp.RastPort = Peek.l(?rp_sourcewindow)
-    *swin.Window    = Peek.l(?ptr_sourcewindow)
-    *tfont.TextFont = Peek.l(?ptr_sourcefont)
-
-    xpos_text.l = *swin\GZZWidth - xpos_text
-    ypos_sa.w = Peek.w(?ypos_statusarea) + 1
-
-    ;ypos_text.w = ypos_sa + 7 + *tfont\tf_Baseline + 1    ; Filenames and some linepixels
-    ;ypos_text   + (*tfont\tf_Baseline + 1)
-    ypos_text.w = ypos_sa + 2 + *tfont\tf_Baseline + 1
-
-    SetAPen_ *rastp, AB3Pen(#AB3_screenshine)
-    SetBPen_ *rastp, AB3Pen(#AB3_screenfill)
-    Move_ *rastp, xpos_text, ypos_text
-    If Vallong(txt$)> 0                                   ; boldtext for numbers
-      SetFont_ *rastp,Peek.l(?ptr_sourcefontb)
-      SetSoftStyle_ *rastp,#FSF_BOLD,#FSF_BOLD
-    EndIf
-    Text_ *rastp,&txt$,FLen(txt$)
-    SetFont_ *rastp,Peek.l(?ptr_sourcefont)
-    SetSoftStyle_ *rastp,#FS_NORMAL,#FSF_BOLD
-    SetBPen_ *rastp,Peek.l(?backgroundcolor)
-  EndIf
+  sourceWindow\currentColumn = Peek.w(?comWord_ColumnsOffset) + Peek.w(?comWord_Column) + 1
+  formatstr$ = "   " : len_fmtstr.b = FLen(formatstr$)
+  formatstr$ = StrRight(Str$(sourceWindow\currentColumn),len_fmtstr,48)  ; mit nullen auffuellen
+  PED_PrintStatus{formatstr$,3}
   !asm
 RTS
 
 .print_availmem:
-  !basic
   availchip.l = AvailMem_(#MEMF_CHIP) / 1024
   availfast.l = AvailMem_(#MEMF_FAST) / 1024
   Format "###0,000"
@@ -14967,64 +14326,41 @@ RTS
   availmem$ + " | FAST " + StrPack(Str$(availfast)) + "kb"
   Format ""
 
-  *rastp.RastPort = Peek.l(?rp_sourcewindow)
-  *swin.Window    = Peek.l(?ptr_sourcewindow)
-  *tfont.TextFont = Peek.l(?ptr_sourcefont)
-
-  xpos_text = *swin\GZZWidth - *tfont\tf_XSize * Len(availmem$) - 2
-  ypos_sa.w = Peek.w(?ypos_statusarea) + 1
-  ypos_text.w = ypos_sa + (*tfont\tf_Baseline + 1) * 2 + 6
-
-  SetAPen_ *rastp, AB3Pen(#AB3_screenshine)
-  SetBPen_ *rastp, AB3Pen(#AB3_screenfill)
-  SetFont_ *rastp,Peek.l(?ptr_sourcefontb)
-  SetSoftStyle_ *rastp,#FS_NORMAL,#FSF_BOLD
-  Move_ *rastp, xpos_text, ypos_text
-  Text_ *rastp,&availmem$,FLen(availmem$)
-
-  SetFont_ *rastp,Peek.l(?ptr_sourcefont)
-  SetSoftStyle_ *rastp,#FS_NORMAL,#FSF_BOLD
-  SetBPen_ *rastp,Peek.l(?backgroundcolor)
-
-  !asm
+  PED_PrintStatus{availmem$,Len(availmem$),2}
 RTS
 
 
-.update_statusarea:               ; d0:xpos, a0: textpointer
-  ; X-Position ermitteln
+.update_statusarea:
   !basic
-  *rastp.RastPort = Peek.l(?rp_sourcewindow)
-  *swin.Window    = Peek.l(?ptr_sourcewindow)
-  *tfont.TextFont = Peek.l(?ptr_sourcefont)
-  ypos_sa.w = Peek.w(?ypos_statusarea) + 1
+  JSR print_availmem
+  !asm
+  JSR print_actualsourceline
+  JSR print_actualsourcecolumn
+RTS
+
+.draw_statusarea:
+  !basic
+  USEPATH sourceWindow
 
   ;-- clear area
-  SetAPen_ *rastp,AB3Pen(#AB3_screenfill)
-  RectFill_ *rastp,0,ypos_sa + 2,*swin\Width-1,*swin\Height-12
+  SetAPen_  \win\RPort, AB3Pen(#AB3_screenfill)
+  RectFill_ \win\RPort, 0,\statusAreaY,\win\GZZWidth,\win\GZZHeight
 
   ;-- Draw separation lines
-  SetAPen_ *rastp, AB3Pen(#AB3_screenshine) : Move_ *rastp,0,ypos_sa     : Draw_ *rastp,*swin\Width-1,ypos_sa
-  SetAPen_ *rastp, AB3Pen(#AB3_screentext)  : Move_ *rastp,0,ypos_sa + 1 : Draw_ *rastp,*swin\Width-1,ypos_sa + 1
+  SetAPen_ \win\RPort, AB3Pen(#AB3_screenshine)
+  Move_ \win\RPort,0,\statusAreaY : Draw_ \win\RPort,\win\GZZWidth,\statusAreaY
+  SetAPen_ \win\RPort, AB3Pen(#AB3_screentext)
+  Move_ \win\RPort,0,\statusAreaY + 1 : Draw_ \win\RPort,\win\GZZWidth,\statusAreaY + 1
 
   ; update EACH TIME ??? WHY??
   Gosub draw_tabs
 
+  PED_PrintStatus{"Line:        ", 24}
+  PED_PrintStatus{"Column:    ", 11}
   !asm
-  MOVEQ.l #24,D0                        ; x postion to print the Line string on the screen
-  LEA comStr_StatusString,A0             ; "Line"
-  JSR print_statustext
 
-  MOVEQ.l #11,D0                         ; added 2 to the x postion to move it to the right to support up to 999999 Lines  tomsmart1
-  LEA comStr_StatusString+13,A0          ; "Column" ; also here added 2 to get the new start position of the Column string  tomsmart1
-  JSR print_statustext
-
-  JSR print_actualsourceline
-  JSR print_actualsourcecolumn
-  JSR print_availmem
-
+  BRA.b update_statusarea
 RTS
-;statcolumn: Dc.l 0
-;statline:   Dc.l 0
 
 .free_textbuffer:
   TST.l textbufferaddr
@@ -15039,7 +14375,6 @@ RTS
 RTS
 
 .allocate_textbuffer:
-  ;MOVEA.l _execbase,A6
   MOVE.w comWord_MaxColumns,D0
   MULU viewablelines+2,D0
   ;MOVEQ.l #$02,D1                ; memtype not needed with AllocPooled
@@ -15085,17 +14420,8 @@ RTS
 
   BSR.b free_textbuffer
 
-  ;TST.w use_pubscreen
-  ;BEQ.w JL_0_7518
-  ;  MOVEA.l _intuibase,A6
-  ;  MOVEA.l ptr_pedscreen,A0
-  ;  MOVEQ.l #$01,D0
-  ;  JSR _PubScreenStatus(A6)
-  ;JL_0_7518:
   !basic
-  If Peek.b(?use_pubscreen)
-    PubScreenStatus_ Peek.l(?ptr_pedscreen),#PSNF_PRIVATE
-  EndIf
+  If use_pubscreen Then PubScreenStatus_ sourceWindow\pedScreen,#PSNF_PRIVATE
 
   vvblank_Free{}
   screen_Close{}   ; this release all pens for us  and close the used font
@@ -15114,7 +14440,7 @@ RTS
     JSR flush_intuimessages
 
     !basic
-    CloseWindow_ *sourcewin : *sourcewin = 0
+    CloseWindow_ sourceWindow\win : sourceWindow\win = 0
     Poke.l Addr Window(0),0  ; to clear the window structure of BlitzBasic to prevent a crash at exit.
     DisposeObject_ *larrowbutton
     DisposeObject_ *larrowimage
@@ -15127,6 +14453,7 @@ RTS
     DisposeObject_ *uarrowimage
     DisposeObject_ *vertiprop
     FreeScreenDrawInfo_ *myscreen,*drawinfo
+
     !asm
     CLR.l ptr_sourcewindow
     ; -- clear rastport for source area
@@ -15145,7 +14472,7 @@ RTS
 .set_storedcolors:
   screen_ReleaseAllPens{} ; release all pens that have been previously obtained by screen.include
 
-  If (Peek.b(?use_wbscreen) = False) AND KickVersion(39)
+  If (use_wbscreen = False) AND KickVersion(39)
     screen_SetPenRGB{0             ,AB3RGB(#AB3_screenback) }
     screen_SetPenRGB{1             ,AB3RGB(#AB3_screentext) }
     screen_SetPenRGB{2             ,AB3RGB(#AB3_screenshine)}
@@ -15194,8 +14521,8 @@ RTS
   Poke.l ?stringcolor              ,AB3Pen(#AB3_cstring)
   Poke.l ?newtypecolor             ,AB3Pen(#AB3_cnewtype)
   Poke.l ?constantcolor            ,AB3Pen(#AB3_cconstant)
-  Poke.l ?remarkcolor              ,AB3Pen(#AB3_cremarkforeground)
-  Poke.l ?remarkbgcolor            ,AB3Pen(#AB3_cremarkbackground)
+  remarkcolor.l              = AB3Pen(#AB3_cremarkforeground)
+  remarkbgcolor.l            = AB3Pen(#AB3_cremarkbackground)
   Poke.w ?tokencolor               ,AB3Pen(#AB3_ctoken)
   Poke.l ?tokenbackground          ,AB3Pen(#AB3_ctokenbackground)
   Poke.l ?backgroundcolor          ,AB3Pen(#AB3_cbackground)
@@ -15221,26 +14548,15 @@ RTS
 .clear_sourcewindow:
   ; -- clear the codelines in window
   !basic
-  ;MOVEA.l _graphicsbase,A6
-  ;MOVEA.l rp_sourcewindow,A1
-  *rastp.RastPort = Peek.l(?rp_sourcewindow)
-  ;MOVE.l backgroundcolor,D0
-  ;JSR _SetAPen(A6)
-  SetAPen_ *rastp,Peek.l(?backgroundcolor)
-  ;MOVE.w source_BoxLeft,D0
-  ;MOVE.w source_BoxTop,D1
-  ;MOVEQ #$00,D0
-  ;MOVEQ #$00,D1
-  ;MOVE.w source_BoxWidth,D2
-  ;MOVE.w ypos_statusarea,D3
-  ;JSR _RectFill(A6)              ;A1:rp, D0:xmin, D1:ymin, D2:xmax, D3:ymax  d0-d3:16
-  RectFill_ *rastp,0,0,Peek.w(?source_BoxWidth),Peek.w(?ypos_statusarea)
+  USEPATH sourceWindow
+  SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+  RectFill_ \win\RPort,0,0,Peek.w(?source_BoxWidth),Peek.w(?ypos_statusarea)
 
   If Peek.b(?linenumbers)
-    SetAPen_ *rastp,Peek.w(?othercolor)
+    SetAPen_ \win\RPort,AB3Pen(#AB3_cother)
     lx.w = Peek.w(?source_BoxLeft) - 2
-    Move_ *rastp,lx, Peek.w(?source_BoxTop)
-    Draw_ *rastp,lx, Peek.w(?ypos_statusarea)
+    Move_ \win\RPort,lx, Peek.w(?source_BoxTop)
+    Draw_ \win\RPort,lx, \statusAreaY
   EndIf
   !asm
   TST.b linenumbers
@@ -15262,23 +14578,16 @@ RTS
   DBF D1,JL_0_76A6
 RTS
 
-;JL_0_76E8:
-;RTS
-
 .delay:
-  TST.b no_scrollrate
-  BNE 'skipwait
-    !basic
+  !basic
+  If no_scrollrate
     vvblank_Wait{}
     ;vvblank_WaitSync{1}
     ;vvblank_ResetSync{}
-    !asm
-    BRA 'exitdelay
- 'skipwait
-    !basic
+  Else
     Delay_ 1
-    !asm
- 'exitdelay
+  EndIf
+  !asm
 RTS
 
 JL_0_76EA:
@@ -15316,7 +14625,7 @@ JL_0_76EA:
   SF comWord_CursorInMarkedBlock
 RTS
 
-update_TextBufferOffset:                                    ; calculate Textbufferoffset
+.update_TextBufferOffset:                                    ; calculate Textbufferoffset
 ;  MOVE.l comLong_DisplayLine,D1
 ;  MULU comWord__AL_0_86CC,D1
 ;  MOVE.l D1,comLong__AL_0_868A
@@ -15408,7 +14717,7 @@ RTS
       !mul48f{slider_top    ,#max_slider_res,slider_total,slider_top}
       slider_total   = #max_slider_res
     EndIf
-    SetGadgetAttrsA_ *vertiprop,*sourcewin,0,Tags(@@
+    SetGadgetAttrsA_ *vertiprop,sourceWindow\win,0,Tags(@@
                                             #PGA_Total  ,slider_total,@@
                                             #PGA_Top    ,slider_top,@@
                                             #PGA_Visible,slider_visible)
@@ -15437,11 +14746,21 @@ RTS
       MOVE.l #$46494544,comStr_Modified+4      ;then the rest "FIED"
       MOVE.b #$0,comStr_Modified+8             ; terminate the string  tomsmart1
   JL_0_78E6:
-;  MOVEQ.l #$00,D0
-;  MOVE.w visiblecolumns,D0
-;  SUBQ.w #8,D0
-;  LEA comStr_Modified,A0
-  JSR update_statusarea
+;  !basic
+;  If Peek.w(?comWord_KeyBeforeReturn)
+;    If Peek.w(?comWord_SourceChanged)
+;      If Peek.w(?comWord_SourceModifiedFlag) <> 1
+;        Poke.w ?comWord_SourceModifiedFlag, 1
+;        Poke.s ?comStr_Modified,"        " + Chr$(0)
+;      EndIf
+;    EndIf
+;  EndIf
+;  If Peek.w(?comWord_SourceModifiedFlag) <> 2
+;    Poke.w ?comWord_SourceModifiedFlag, 2
+;    Poke.s ?comStr_Modified,"MODIFIED" + Chr$(0)
+;  EndIf
+;  !asm
+  JSR draw_statusarea
 
   JL_0_78F6:
   MOVEM.l (A7)+,D0/A0-A1/A3
@@ -15462,7 +14781,7 @@ RTS
   xmax_slider.l = #MAX_Columns
   MOVE.w visiblecolumns,d0
   xvis.w = PutD0 / xmax_slider
-  SetGadgetAttrsA_ *horizprop,*sourcewin,0,Tags(#PGA_VertPot,-1,@@
+  SetGadgetAttrsA_ *horizprop,sourceWindow\win,0,Tags(#PGA_VertPot,-1,@@
                                             #PGA_VertBody,1,@@
                                             #PGA_HorizPot,xpot,@@
                                             #PGA_HorizBody,xvis,@@
@@ -15625,7 +14944,7 @@ RTS
   ; -- update functioncompletion and close any subwindows on key-press
   !regs2stack
   !basic
-  If Peek.b(?use_intellisense)<>0
+  If use_intellisense
     ; -- update intellisense after DELETE_KEY or SPACE_KEY                        ; moved it too remove double switch asm-basic-asm and expand with Space-Key support  tomsmart1
     If (last_vankey = $08) OR (last_vankey = $20)
       Gosub intellisense
@@ -15965,8 +15284,7 @@ RTS
     Gosub open_instructionbrowser
   EndIf
 
-  strhelp$ = Peek$(?str_screentitle)
-  PrintScreenTitle{strhelp$}
+  SetScreenTitle{default_screentitle$}
   !asm
 RTS
 
@@ -16046,17 +15364,17 @@ RTS
       ;EndIf
 
      Case $0D ; ENTER
-       If Peek.b(?use_intellisense) = 1 AND HelpForIncludes
+       If use_intellisense AND HelpForIncludes
          If WZ_CheckOpen{"WIN_POPUP"}
            a$ = WZ_GetPopUpEntry{WZ_GetPopUpMenu{}+1}
 
            ; include function
            a_new$ = dos_Trim{Left$(a$,Instr(a$,"{")-1)}
            If (a_new$ <> "") ;test if include function
-             PrintScreenTitle{a_new$ + " " + PED_GetIncludeHelp{a_new$} }
+             SetScreenTitle{a_new$ + " " + PED_GetIncludeHelp{a_new$} }
              a$ = a_new$ + "{"
            Else          ; is command
-             PrintScreenTitle{a$ + " " + PED_GetTokenHelp{*tokenbase,a$} }
+             SetScreenTitle{a$ + " " + PED_GetTokenHelp{*tokenbase,a$} }
            EndIf
 
            a$ = UnRight$(a$,FLen(poptok$)) ; cut string
@@ -16134,9 +15452,9 @@ End Function
     strhelp$ =  FindTokenHelpStr{tokname$}
     If Len(strhelp$) < 3
       ; keine Hilfe und kein Word unter Cursor
-      PrintScreenTitle{Peek$(?str_screentitle)}
+      SetScreenTitle{default_screentitle$}
     Else
-      PrintScreenTitle{strhelp$}
+      SetScreenTitle{strhelp$}
     EndIf
   EndIf
 RTS
@@ -16144,7 +15462,7 @@ RTS
 
 .intellisense:
   ; -- bei delete-key wird ?comWord_Column nicht aktualisiert
-  If Peek.b(?use_intellisense) = 1
+  If use_intellisense
     If Peek.w(?comWord_Column) > 1
       ; -- get everything left of cursor until " " or "=" , ":", "(", "{", ",", "+"    ; check expand to allow the following chars  : ( { , +  too tomsmart1
       If lineaddr.l
@@ -16219,10 +15537,10 @@ RTS
         ; -- open list if something found
         If popfound > 0
           WZ_SetPopUpMenu{tokenliste$,1}
-          xpos.l = Peek.w(?win_TopLeft) + Peek.w(?win_BorLef) + (Peek.w (?comWord_Column)-2)  * Peek.w(?fontWidth)
-          ypos.l = Peek.w(?win_TopEdge) + Peek.w(?win_BorTop) + Peek.l (?comLong_DisplayLine) * Peek.w(?fontHeight) + Peek.w(?fontHeight) + 2
-          *screenrp.RastPort = *myscreen\RastPort             ; added get rastport of the used screen  tomsmart1
-          WZ_PopUp_Nonmodal{xpos,ypos,-1,-1,*screenrp}        ; added the rastport to the function call so the needed width of the Popup win for the used Font can be calculated  tomsmart1
+          USEPATH sourceWindow
+          xpos.l = \win\LeftEdge + \win\BorderLeft + \font\tf_XSize * (Peek.w(?comWord_Column)-2)
+          ypos.l = \win\TopEdge +  \win\BorderTop +  \font\tf_YSize * Peek.l(?comLong_DisplayLine) + \font\tf_YSize + 2
+          WZ_PopUp_Nonmodal{xpos,ypos,-1,-1,*myscreen\RastPort}
         Else
           Gosub close_popupwindow
         EndIf
@@ -16235,7 +15553,6 @@ RTS
     Gosub activatesourcewindow              ; if we change popupwin (open, close, change) so we need to activate sourcewin again  tomsmart1
   End If
 RTS
-
 
 .scan_source_for_used_libs:
   !asm
@@ -16392,13 +15709,6 @@ JL_0_7BE6:
   MOVEA.l (A7)+,A0
 BRA.w JL_0_7AA0
 
-;JL_0_7C1C:
-;  MOVE.b #1,doedit2
-;  ;JL_0_7C1Cb:
-;  JSR moveCursorLeft
-;BRA.w JL_0_7AA0
-
-
 
 .deletechar:
   MOVEM.l d0-d1/a0-a2,-(a7)
@@ -16519,7 +15829,7 @@ BRA.w JL_0_7AA0
   BNE.w 'l1
 
   TST.b new_editmode
-   BEQ JL_0_7AA0
+  BEQ JL_0_7AA0
 
   MOVEM.l a0-a3/a5/d0-d6,-(a7)
   MOVE.l comLong_DisplayLineOffset,d0
@@ -16693,7 +16003,6 @@ BRA.b JL_0_7D72
   ADD.w D0,comWord_Column
   MOVE.w D0,D1
   MOVE.w (A7)+,D7
-  ;BRA.w JL_0_7C5C
   JSR moveCursorToX
   BRA.w JL_0_7AA0
 
@@ -16705,15 +16014,14 @@ BRA.b JL_0_7D72
   SUBQ.w #1,D7
 
  JL_0_7DF0:
-  MOVE.b (A2)+,D0
-  MOVEM.l D7/A2,-(A7)
-   JSR JL_0_76EA
-  MOVEM.l (A7)+,D7/A2
-  ADDQ.w #1,comWord_Column
-   DBF D7,JL_0_7DF0
+    MOVE.b (A2)+,D0
+    MOVEM.l D7/A2,-(A7)
+    JSR JL_0_76EA
+    MOVEM.l (A7)+,D7/A2
+    ADDQ.w #1,comWord_Column
+  DBF D7,JL_0_7DF0
   MOVE.w (A7)+,comWord_Column
   MOVE.w (A7)+,D1
-  ;BRA.w JL_0_7C5C
   JSR moveCursorToX
   BRA.w JL_0_7AA0
 
@@ -17127,12 +16435,12 @@ RTS
 
 .handle_event_newsizewindow:
   !basic
-  Poke.w ?win_TopLeft,*sourcewin\LeftEdge
-  Poke.w ?win_TopEdge,*sourcewin\TopEdge
-  Poke.w ?win_Width,*sourcewin\Width
-  Poke.w ?win_Height,*sourcewin\Height
-  Poke.w ?win_InnerHeight, Peek.w(?win_Height) - Peek.w(?win_BorTop) - Peek.w(?win_BorBot)
-  Poke.w ?win_InnerWidth , Peek.w(?win_Width)  - Peek.w(?win_BorLef) - Peek.w(?win_BorRig)
+  Poke.w ?win_TopLeft,sourceWindow\win\LeftEdge
+  Poke.w ?win_TopEdge,sourceWindow\win\TopEdge
+  Poke.w ?win_Width,sourceWindow\win\Width
+  Poke.w ?win_Height,sourceWindow\win\Height
+  ;Poke.w ?win_InnerHeight, Peek.w(?win_Height) - Peek.w(?win_BorTop) - Peek.w(?win_BorBot)
+  ;Poke.w ?win_InnerWidth , Peek.w(?win_Width)  - Peek.w(?win_BorLef) - Peek.w(?win_BorRig)
 
   *intuimessage.IntuiMessage = Peek.l(?messagestore)
   If *intuimessage
@@ -17140,20 +16448,11 @@ RTS
     Poke.l ?messagestore,0
   EndIf
 
-;  MOVE.l messagestore,d0                  ; reply message
-;  BEQ 'ls1
-;    MOVE.l d0,a1
-;    JSR _ReplyMsg(A6)
-;    MOVEQ.l #$00,D0
-;    CLR.l messagestore
-; 'ls1
   If *intuimessage\Qualifier <> $FFFFC000   ; update only if mousebutton has been released
     Pop If
     !asm
     BRA resize_sourcewindow
   EndIf
-;  CMP.l #$FFFFC000,message_qualifier      ; update window only if mousebutton is not pressed anymore
-;  BNE resize_sourcewindow
   !asm
 RTS
 
@@ -17165,7 +16464,7 @@ RTS
   JSR calc_SourceWindowDimensions
   JSR allocate_textbuffer
   JSR clear_sourcewindow
-  JSR update_statusarea
+  JSR draw_statusarea
   JSR _redraw
   JSR cursor_on
 
@@ -17235,24 +16534,27 @@ JL_0_8104:
   MOVE.b rexx_signalbits,D1
   BSET D1,D0
   JSR _Wait(A6)
-;TRAP #6
 
   .message
   MOVE.l a2,-(a7)                           ; sichern des Msg-Port in A2
 
   ; -- ----- cursor blinking
-  MOVE.l a1,-(a7)
-  ADD.b #1,blinkcount
-  MOVE.b blinkrate,d0
-  BEQ 'l1
-    CMP.b blinkcount,d0
-    BGT 'l1
-      MOVE.b #0,blinkcount
+  !regs2stack
+  !basic
+  blinkcount.b + 1
+  If blinkrate > 0
+    If blinkcount >= blinkrate
+      blinkcount = 0
+      !asm
       JSR cursor_onoff_force
- 'l1
-  MOVE.l (a7)+,a1
+      !basic
+    EndIf
+  EndIf
+  !asm
+  !stack2regs
+
   ; -- ----------------------
-;TRAP #7
+
  .event_handler:        ; hier kommt die BB2 message (all windows but sourcewindow)
   !basic
   ev.l = Event
@@ -17262,7 +16564,7 @@ JL_0_8104:
     End If
 
     ; bubble onlinehelp for most windows
-    If Peek.b(?onlinehelp)<>0
+    If onlinehelp <> 0
       If (ev<>#IDCMP_INTUITICKS) AND (ev<>#IDCMP_ACTIVEWINDOW) AND (ev<>#IDCMP_GADGETHELP)  AND (ev<>#IDCMP_CHANGEWINDOW)
         WZ_HideHelp{}
       EndIf
@@ -17316,24 +16618,12 @@ JL_0_8104:
     ev = Event
   Wend
 
-  ;-- check if a compiled program is running
-;  TST.b comByte_RunningFlag
-;  BEQ 'l1
-;    PrintScreenTitle{Peek$(?warningtitle)}
-;    rf.l = 1
-;    BRA 'l2
-; 'l1
-;    If rf = 1 AND Peek.b(?comByte_RunningFlag) = 0
-;      PrintScreenTitle{Peek$(?str_screentitle)}
-;      rf = 0
-;    End If
-; 'l2
   If Peek.b(?comByte_RunningFlag)<>0
-    PrintScreenTitle{Peek$(?warningtitle)}
+    SetScreenTitle{!TRANS{"!!!PROGRAM IS RUNNING: ONLY SAVE/NAVIGATION/HELP WILL WORK..."}}
     rf.l = 1
   Else
     If rf = 1 AND Peek.b(?comByte_RunningFlag) = 0
-      PrintScreenTitle{Peek$(?str_screentitle)}
+      SetScreenTitle{default_screentitle$}
       rf = 0
     End If
   EndIf
@@ -17475,7 +16765,7 @@ RTS
     ;log_Print{"byte type " + Str$(*gadget\GadgetType AND $00FF)}
 
   Case #IDCMP_MENUVERIFY
-  ; do nothing
+    ; do nothing
 
   Case #IDCMP_CLOSEWINDOW
     Pop Select
@@ -17586,7 +16876,6 @@ RTS
   !regs2stack
   !basic
   Use Window 0
-  ;log_Print{"event activewindow"}
   !asm
   JSR cursor_on
   !stack2regs
@@ -17646,21 +16935,21 @@ BRA.w JL_0_844C
 .handle_event_intuiticks:
   !regs2stack
   !basic
-  If Peek.b(?onlinehelp_extended) AND *intuimessage<>0
+  If onlinehelp_extended AND *intuimessage<>0
     ; -- wait for at least 1 second before displaying the bubble
     help_ticks.b + 1 : If help_ticks < 10 Goto skip_this
 
     ; -- check sourcearea
-    *swin.Window = Peek.l(?ptr_sourcewindow)
-    If *intuimessage\MouseX - *swin\BorderLeft<0 Then Goto skip_this
-    If *intuimessage\MouseY - *swin\BorderTop <0 Then Goto skip_this
-    If *intuimessage\MouseY - *swin\BorderTop - Peek.w(?ypos_statusarea) > 0 Then Goto skip_this
-    If *intuimessage\MouseX - *swin\BorderRight - *swin\Width > 0 Then Goto skip_this
+    USEPATH sourceWindow
+    If *intuimessage\MouseX - \win\BorderLeft<0 Then Goto skip_this
+    If *intuimessage\MouseY - \win\BorderTop <0 Then Goto skip_this
+    If *intuimessage\MouseY - \win\BorderTop - \statusAreaY > 0 Then Goto skip_this
+    If *intuimessage\MouseX - \win\BorderRight - \win\Width > 0 Then Goto skip_this
     If (*intuimessage\MouseX = ocmousex.w) AND (*intuimessage\MouseY = ocmousey.w) Then Goto skip_this
 
     ; -- check mouseposition in source area
-    textX.w = (*intuimessage\MouseX - *swin\BorderLeft) / Peek.w(?fontWidth) + Peek.w(?comWord_ColumnsOffset) + 1
-    textY.w = (*intuimessage\MouseY - *swin\BorderTop) / Peek.w(?fontHeight) + Peek.l(?comLong_DisplayLineOffset) + 1
+    textX.w = (*intuimessage\MouseX - \win\BorderLeft) / \font\tf_XSize + Peek.w(?comWord_ColumnsOffset) + 1
+    textY.w = (*intuimessage\MouseY - \win\BorderTop) / \font\tf_YSize + Peek.l(?comLong_DisplayLineOffset) + 1
 
     ; -- get the currentsourceline and move to mouse cursor-line
     actualLine.l = Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine) + 1
@@ -17694,7 +16983,7 @@ BRA.w JL_0_844C
             ;-- check for a newtype
           EndIf
           ;            $45464748
-          PrintScreenTitle{helptext$}
+          SetScreenTitle{helptext$}
           If helpvalue = 0 Then helpvalue = Vallong(helptext$)
           If helpvalue <> 0
             msg$ = helptext$
@@ -17734,10 +17023,6 @@ BRA.w reply_idcmp_message
   JSR set_tedlibbase                          ; why ??
 
   MOVE.l A1,-(A7)
-  ;ANDI.l #MaxWord,D0
-  ;MOVEA.l addr_menustrip,A0
-  ;MOVEA.l _intuibase,A6
-  ;JSR _ItemAdress(A6)                         ; returns struct MenuItem in D0
   !basic
   _menuNumber.w = PutD0
   _menuItem.l = ItemAddress_(Peek.l(?addr_menustrip),_menuNumber AND #MaxWord)
@@ -17783,7 +17068,7 @@ BRA.w reply_idcmp_message
         Gosub getstring_new2
         ;log_Print{"doubleclick on ==>" + actualword$}
         If WZ_CheckOpen{"WIN_LABELS"}
-          search_label$ = LCase$(actualword$)
+          search_label$ = StripLead$(LCase$(actualword$),32)
           If StrLeft(search_label$,1)="." Then search_label$ = StrRight(search_label$,-1)
           Use Window WZID("WIN_LABELS")
           WZPrint "STRING_LABEL",search_label$
@@ -17938,7 +17223,7 @@ BRA handle_event_vanillakey
 
   CMP.w #$8008,d1                        ; check for CTRL Qualifier
   BNE 'noCTRL_Qualifier                  ; no so skip all Contol-Key Hotkeys
-; begin Control-Key Hotkeys
+    ; begin Control-Key Hotkeys
     CMP.w #$15,d7                        ; check for "CTRL_U"
     BNE 'noCTRL_U
       MOVEM.l a0-a6/d0-d7,-(a7)
@@ -18282,7 +17567,7 @@ RTS
 
 .handle_event_mousemove:
   !basic
-  If Peek.b(?onlinehelp_extended)
+  If onlinehelp_extended
     help_ticks.b = 0 : WZ_HideHelp{}
   EndIf
   !asm
@@ -18338,8 +17623,8 @@ AL_0_84B2:              Dc.l 0  ; some other file, maybe last file
  fontHeight:            Dc.w 0
  ypos_statusarea        Dc.l 0
  viewablelines_m1:      Dc.l 0
- win_InnerHeight:       Dc.w 0
- win_InnerWidth:        Dc.w 0
+ ;win_InnerHeight:       Dc.w 0
+ ;win_InnerWidth:        Dc.w 0
  win_TopEdge:           Dc.w 0
 
  source_BoxLeft:        Dc.w 0
@@ -18351,7 +17636,7 @@ AL_0_84B2:              Dc.l 0  ; some other file, maybe last file
  font_Baseline:         Ds.l 1
  ptr_sourcewindow:      Dc.l 0
  rp_sourcewindow:       Dc.l 0
- ptr_pedscreen:         Dc.l 0
+; ptr_pedscreen:         Dc.l 0
 ; ptr_exescreen:         Dc.l 0
  textbufferaddr:        Dc.l 0
 
@@ -18440,8 +17725,10 @@ RTS
 
 Even                   ; make sure to have enough space reserved
 .PREFSFORMAT
- use_wbcolors:          Dc.b $00,$00        ; OBSOLETE
- clone_wb:              Dc.b $00,$00        ; TOOLTYPE
+ ;use_wbcolors:
+                        Dc.b $00,$00        ; OBSOLETE
+ ;clone_wb:
+                        Dc.b $00,$00        ; TOOLTYPE
  use_asldims:           Dc.b $FF,$FF
  aslreq_x:              Dc.l $18
  aslreq_y:              Dc.l $18
@@ -18459,7 +17746,7 @@ Even                   ; make sure to have enough space reserved
  ;myscreen_Depth:
                         Dc.b $00,$00
                         Ds.w 1
- clickpos:              Dc.b $00,$0F
+ clickpos:              Dc.b $00,$0F        ; labelsize??
  othercolor:            Dc.b $00,$02        ; TOOLTYPE ex. backgroundcoler
  tokencolor:            Dc.b $00,$03        ; TOOLTYPE
  str_sourcefontname:    Dc.b 0              ; TOOLTYPE
@@ -18473,9 +17760,11 @@ Even                   ; make sure to have enough space reserved
  use_filepattern:       Dc.b $FF,$FF        ; TOOLTYPE
  AL_0_B7E0:             Dc.b $FF,$FF        ; Save xtra-File ???
  tab_size:              Dc.b $00,$02        ; TOOLTYPE
- use_pubscreen:         Dc.b $FF,$FF        ; TOOLTYPE
+ ;use_pubscreen:
+                        Dc.b $FF,$FF        ; TOOLTYPE
  remember_saved:        Dc.b $FF,$FF        ; TOOLTYPE
- use_default_pubscreen: Ds.w 1              ; TOOLTYPE
+ ;use_default_pubscreen:
+                        Ds.w 1              ; TOOLTYPE
  ownscreen_depth:       Dc.b $00,$04        ; TOOLTYPE
  startup_folder:        Dc.b $FF,$FF
  ;oldWindowPos:                             ; ??? irgendwas mit Fensterpos  OBSOLETE ??
@@ -18657,7 +17946,6 @@ RTS
   BNE.w load_historyfile
     MOVEA.l _execbase,A6
     MOVE.l #$500,D0
-    MOVE.l #$10000,D1
     !newalloc;JSR _AllocVec(A6)
     MOVE.l D0,ptr_historyfilelist
 .load_historyfile:
@@ -18743,7 +18031,7 @@ RTS
   !basic
   af.l = Peek.l(?actualfile)
   If af
-    If Peek$(af+$DE)<>""
+    If Peek$(af + $DE)<>""
   ;    !cout{"need to open a new tab."}
       !asm
       JSR menu_opennew
@@ -18773,7 +18061,7 @@ RTS
    JSR analyze_loadedsource
    MOVE.w (A7)+,D6
    JSR set_remembered_filename
-   JSR update_statusarea
+   JSR draw_statusarea
    JSR write_pedhistoryfiles
   RTS
 
@@ -18850,7 +18138,7 @@ RTS
   MOVE.l (A7)+,D6
   JSR get_remembered_filename
   JSR analyze_loadedsource
-  JSR update_statusarea
+  JSR draw_statusarea
 RTS
 
 
@@ -18888,7 +18176,7 @@ addr_menustrip:       Ds.l 1
 
 .kill_menus
   If Peek.l(Addr GTMenuList(0))<>0
-    If *sourcewin<>0 Then ClearMenuStrip_ *sourcewin
+    If sourceWindow\win <> 0 Then ClearMenuStrip_ sourceWindow\win
     If WZ_CheckOpen{"WIN_NEWTYPE"}            Then Use Window WZID("WIN_NEWTYPE")            : ClearMenuStrip_ WZWindowAddr
     If WZ_CheckOpen{"WIN_LABELS"}             Then Use Window WZID("WIN_LABELS")             : ClearMenuStrip_ WZWindowAddr
     If WZ_CheckOpen{"WIN_INSTRUCTIONBROWSER"} Then Use Window WZID("WIN_INSTRUCTIONBROWSER") : ClearMenuStrip_ WZWindowAddr
@@ -19057,7 +18345,7 @@ Return
   If Peek.l(Addr GTMenuList(0))<>0
     Poke.l ?addr_menustrip,Peek.l(Addr GTMenuList(0))
 
-    If *sourcewin<>0                          Then                                             SetMenuStrip_   *sourcewin,Peek.l(?addr_menustrip)
+    If sourceWindow\win <> 0                  Then                                             SetMenuStrip_  sourceWindow\win,Peek.l(?addr_menustrip)
     If WZ_CheckOpen{"WIN_SHORTCUTS"}          Then Use Window WZID("WIN_SHORTCUTS")          : SetMenuStrip_ WZWindowAddr,Peek.l(?addr_menustrip)
     If WZ_CheckOpen{"WIN_SEARCH"}             Then Use Window WZID("WIN_SEARCH")             : SetMenuStrip_ WZWindowAddr,Peek.l(?addr_menustrip)
     If WZ_CheckOpen{"WIN_NEWTYPE"}            Then Use Window WZID("WIN_NEWTYPE")            : SetMenuStrip_ WZWindowAddr,Peek.l(?addr_menustrip)
@@ -19347,25 +18635,10 @@ Even
                         Dc.b $00,$20,$09,$00
                         Ds.l 7
                         Dc.b $00,$0F
-Even
 
 str_unable_screen:      Dc.b "Unable to open screen!",0 : Even
 str_unable_window:      Dc.b "Unable to open window!",0 : Even
-;str_no_asl_library:     Dc.b "Unable to open asl.library V36 or newer",0 : Even
 str_no_clipboard_device:Dc.b "Unable to open clipboard.device",0 : Even
-Even
-
-;easystruct_closescreen: Ds.w 1
-;                        Dc.b $00,$14,$00,$00
-;                        Ds.w 1
-;  AL_0_D3D0:            Dc.l AL_0_D3Dca
-;  AL_0_D3D4:            Dc.l AL_0_D3EA
-;  AL_0_D3D8:            Dc.l AL_0_D430
-;
-;  AL_0_D3Dca:           Dc.b "Public Screen",0 : Even
-;  AL_0_D3EA:            Dc.b "I'm attempting to close my screen.",10,"Please close all visitor windows.",0 : Even
-;  AL_0_D430:            Dc.b "Retry",0 :Even
-
 
 easystruct_saveas:      Ds.w 1
                         Dc.b $00,$14,$00,$00
@@ -19394,22 +18667,22 @@ easystruct_loosewarning:Ds.w 1
                         Dc.b $00,$14,$00,$00
                         Ds.w 1
   AL_0_D5FE:            Dc.l str_newfile_req
-  AL_0_D602:            Dc.l AL_0_D614
-  AL_0_D606:            Dc.l AL_0_D63C
+  AL_0_D602:            Dc.l str_unsaved
+  AL_0_D606:            Dc.l str_continue
 
 str_newfile_req:        Dc.b "New File ",0 : Even
-  AL_0_D614:            Dc.b "You have unsaved changes!",0 : Even
-  AL_0_D63C:            Dc.b "Continue|Cancel",0 : Even
+str_unsaved:            Dc.b "You have unsaved changes!",0 : Even
+str_continue:           Dc.b "Continue|Cancel",0 : Even
 Even
 
-str_AL_0_D68E:          Dc.b "topaz.font",0 : Even
-topaz_font:             Dc.l str_AL_0_D68E
-                        Dc.b $00,$08,$00,$00
+;str_topaz:              Dc.b "topaz.font",0 : Even
+;topaz_font:             Dc.l str_topaz
+;                        Dc.b $00,$08,$00,$00
 str_unnamed:            Dc.b "<unnamed>",0 : Even
-Even
+
 str_printerdevice:      Dc.b "PRT:",0 : Even
                         Ds.w 29
-Even
+
 str_Arexx_PortName:     Dc.b "PED_"
 str_Arexx_availability: Dc.b "REXX"
 str_Arexx_portnumber:   Dc.b "1"                       ; portnumber as string
@@ -19418,8 +18691,7 @@ str_Arexx_portnumber:   Dc.b "1"                       ; portnumber as string
 str_defaultpubscreen:   Dc.b "AmiBlitz3_"
 screen_number:          Dc.b 0,0,0                     ; Screennumber, max 3 chars 1-255 or string "WB"
                         Dc.b 0                         ; string termination
-Even
-str_windowtitle:        Ds.l 1
+;str_windowtitle:        Ds.l 1
 struct_WBMsgPort        Ds.l 1
 ptr_tempstring:         Ds.l 1
 
@@ -19918,7 +19190,6 @@ RTS
 
 .init_arexxport:
   MOVE.l #$10000,D1
-  MOVE.l #$200,D0
   !newalloc;JSR _AllocVec(A6)         ;for arexxfunc_getword
   MOVE.l D0,ptr_tempstring
 
@@ -19944,7 +19215,6 @@ RTS
 
   JL_0_E054:
   MOVE.l #$1000,D0
-  MOVE.l #$10000,D1
   !newalloc
 
   MOVEQ.l #$0F,D1
@@ -20253,8 +19523,6 @@ ptr_arexxcmd_list:
  Dc.l arexxfunc_help               ;help
  Dc.l AL_0_E628
  Dc.l arexxfunc_helptext           ;helptext
- Dc.l AL_0_E6C6
- Dc.l arexxfunc_libguide           ;libguide
  Dc.l AL_0_E6D0
  Dc.l arexxfunc_activate           ;activate
  Dc.l AL_0_E69C
@@ -20273,10 +19541,6 @@ ptr_arexxcmd_list:
  Dc.l arexxfunc_numlines           ;numlines
  Dc.l AL_0_E590
  Dc.l rebuild_menus                ;reloadmenus
-; Dc.l AL_0_E6E4
-; Dc.l arexxfunc_windowshorten      ;windowshorten
-; Dc.l AL_0_E6DA
-; Dc.l arexxfunc_windowpos          ;windowpos
  Dc.l AL_0_E6F2
  Dc.l arexxfunc_makeexec           ;makeexec
  Ds.l 4
@@ -20323,10 +19587,7 @@ ptr_arexxcmd_list:
  AL_0_E6B6:  Dc.b "CUT",0
  AL_0_E6BA:  Dc.b "COPY",0,0
  AL_0_E6C0:  Dc.b "PASTE",0
- AL_0_E6C6:  Dc.b "LIBGUIDE",0,0
  AL_0_E6D0:  Dc.b "ACTIVATE",0,0
-; AL_0_E6DA:  Dc.b "WINDOWPOS",0
-; AL_0_E6E4:  Dc.b "WINDOWSHORTEN",0
  AL_0_E6F2:  Dc.b "MAKEEXEC",0,0
 
 
@@ -20334,14 +19595,6 @@ ptr_arexxcmd_list:
 ; -- funtions to be executed by appropriate arexx-command
 ; --
 .arexxfunc_activate:
-;  TST.l ptr_sourcewindow
-;  BEQ.w JL_0_E826
-;    MOVEA.l ptr_sourcewindow,A0
-;    MOVE.l A6,-(A7)
-;    MOVEA.l _intuibase,A6
-;    JSR _ActivateWindow(A6)
-;    MOVEA.l (A7)+,A6
-;  JL_0_E826:
   !basic
   If Peek.l(?ptr_sourcewindow)
     ActivateWindow_ Peek.l(?ptr_sourcewindow)
@@ -20468,65 +19721,6 @@ RTS
   MOVEA.l ptr_tempstring,A0
   MOVEQ.l #$00,D0
 RTS
-
-;.arexxfunc_windowpos:
-;  CMPI.w #$2,arexx_number_of_parameters
-;  BNE.w JL_0_E9A4
-;    MOVEA.l arexx_parameterlist,A0
-;    JSR Str2Int
-;    MOVE.w oldWindowPos,D6
-;
-;    CMP.w D6,D7
-;    BEQ.w JL_0_E9A4
-;      MOVE.w D7,oldWindowPos
-;      MOVE.w D7,comWord__AL_0_86C4
-;      CLR.w oldWindowNumber
-;      CLR.w comWord__AL_0_86C6
-;      TST.l ptr_sourcewindow
-;      BEQ.w JL_0_E9A4
-;        JSR close_sourcewindow
-;        JSR open_sourcewindow
-;        JSR update_labelstuff
-;  JL_0_E9A4:
-;  SUBA.l A0,A0
-;  MOVEQ.l #$00,D0
-;RTS
-;
-;.arexxfunc_windowshorten:
-;  CMPI.w #$2,arexx_number_of_parameters
-;  BNE.w JL_0_E9FC
-;    MOVEA.l arexx_parameterlist,A0
-;    JSR Str2Int               ; returns Integer in D7
-;    MOVE.w oldWindowNumber,D6
-;
-;    CMP.w D6,D7
-;    BEQ.w JL_0_E9FC
-;      MOVE.w D7,oldWindowNumber
-;      MOVE.w D7,comWord__AL_0_86C6
-;      CLR.w oldWindowPos
-;      CLR.w comWord__AL_0_86C4
-;      TST.l ptr_sourcewindow
-;      BEQ.w JL_0_E9FC
-;        JSR close_sourcewindow
-;        JSR open_sourcewindow
-;        JSR update_labelstuff
-;  JL_0_E9FC:
-;  SUBA.l A0,A0
-;  MOVEQ.l #$00,D0
-;RTS
-;
-;.Str2Int:                     ; get String in A0, return integer in D7
-;  MOVEQ.l #$00,D7
-;  MOVEQ.l #$00,D0
-;  JL_0_EA06:
-;    MOVE.b (A0)+,D0
-;    BEQ.w JL_0_EA18
-;      SUBI.b #"0",D0          ; $30 / 48
-;      MULU #$A,D7             ; 10
-;      ADD.b D0,D7
-;  BRA.b JL_0_EA06
-;  JL_0_EA18:
-;RTS
 
 .arexxfunc_cut:
   JSR menu_cut
@@ -20732,22 +19926,16 @@ RTS
 RTS
 
 .arexxfunc_screentoback:
-  ;MOVEA.l _intuibase,A6
-  ;MOVEA.l ptr_pedscreen,A0
-  ;JSR _ScreenToBack(A6)
   !basic
-  ScreenToBack_ Peek.l(?ptr_pedscreen)
+  ScreenToBack_ sourceWindow\pedScreen
   !asm
   SUBA.l A0,A0
   MOVEQ.l #$00,D0
 RTS
 
 .arexxfunc_screentofront:
-  ;MOVEA.l _intuibase,A6
-  ;MOVEA.l ptr_pedscreen,A0
-  ;JSR _ScreenToFront(A6)
   !basic
-  ScreenToFront_ Peek.l(?ptr_pedscreen)
+  ScreenToFront_ sourceWindow\pedScreen
   !asm
   SUBA.l A0,A0
   MOVEQ.l #$00,D0
@@ -21075,13 +20263,6 @@ JL_0_EE70:
   MOVEQ.l    #$00,D0
 RTS
 
-.arexxfunc_libguide:
-  !basic
-  dummy.l = ask{!TRANS{"This AREXX command is not available anymore."},!TRANS{"Ok"},!TRANS{"Error"}}
-  !asm
-  MOVEQ.l #$00,D0
-RTS
-
 .rebuild_menus:
   !basic
   Gosub init_menus
@@ -21091,9 +20272,9 @@ RTS
 RTS
 
 
-arexx_table:    Ds.l 1
-arexx_parameterlist:      Ds.l 15
-L_0_EF02:       Ds.w 7
+arexx_table:        Ds.l 1
+arexx_parameterlist:Ds.l 15
+L_0_EF02:           Ds.w 7
 
 .arexx_count_parameters:
   MOVEA.l struct_RexxMsg,A1
@@ -21629,74 +20810,76 @@ RTS
    'l5:
       CMP.b #" ",(a0)
       BNE 'l5b
-      ADDQ.l #1,a0
-      BRA 'l5
+        ADDQ.l #1,a0
+        BRA 'l5
      'l5b
       CMP.w ##TOKEN_Statement,(a0)
       BNE 'nostatement
       MOVE.b #1,foundf
       ADDQ.w #2,a0
     BRA 'l5
-
    'nostatement:
+
     CMP.w ##TOKEN_Function,(a0)
     BNE 'nofunction
-    MOVE.b #1,foundf
-    ADDQ.w #2,a0
-    CMP.b #".",(a0)
-    BNE 'nod
-    ADDQ.l #2,a0
-    !skipspace a0
-   'nod
-    BRA 'l5
-
+      MOVE.b #1,foundf
+      ADDQ.w #2,a0
+      CMP.b #".",(a0)
+      BNE 'nod
+        ADDQ.l #2,a0
+        !skipspace a0
+     'nod
+      BRA 'l5
    'nofunction
+
     CMP.w ##TOKEN_Macro,(a0)
     BNE 'nomacro
-    MOVE.b #1,foundf
-    ADDQ.w #2,a0
-    BRA 'l5
-
+      MOVE.b #1,foundf
+      ADDQ.w #2,a0
+      BRA 'l5
    'nomacro
+
     CMP.b #".",(a0)
     BNE 'l100
-    ADDQ #1,a0
-   'l51:
-      CMP.b #" ",(a0)
-      BNE 'l51b
-      ADDQ.l #1,a0
-    BRA 'l51
-   'l51b
-
+      ADDQ #1,a0
+     'l51:
+        CMP.b #" ",(a0)
+        BNE 'l51b
+          ADDQ.l #1,a0
+          BRA 'l51
+      'l51b
    'l100:
+
     TST.b (a0)
     BEQ 'nextline
+
     CMP.l #"FAST",(a0)
     BNE 'la1
-    ADDQ.l #4,a0
-    !skipspace a0
+      ADDQ.l #4,a0
+      !skipspace a0
    'la1
     MOVE.l ptr_tempstring,a1
    'l1:
-    CMPM.b (a0)+,(a1)+
-    BNE 'nextline
+      CMPM.b (a0)+,(a1)+
+      BNE 'nextline
     TST.b (a1)
-     BNE 'l1
+    BNE 'l1
+
     TST.w foundf2
-     BEQ 'lb2
-    TST.w foundf
-     BEQ 'nextline
+    BEQ 'lb2
+      TST.w foundf
+      BEQ 'nextline
    'lb2
     CMP.b #" ",(a0)
-     BEQ 'do
-    CMP.b #";",(a0)
-     BEQ 'do
-    CMP.b #":",(a0)
-     BEQ 'do
-    CMP.b #"{",(a0)
-     BEQ 'do
-    TST.b (a0)
-     BNE 'nextline
+    BEQ 'do
+      CMP.b #";",(a0)
+      BEQ 'do
+        CMP.b #":",(a0)
+        BEQ 'do
+          CMP.b #"{",(a0)
+          BEQ 'do
+            TST.b (a0)
+            BNE 'nextline
    'do
     MOVE.l d3,d0
     JSR jumpline
@@ -21720,15 +20903,17 @@ RTS
   !basic
   TEDSetCurrentLine{?comPtr_CurrentSourceLine}
   Gosub getstring_new2
-  word1$ = dos_Trim{actualword$}
+  word1$ = actualword$
+  log_Print{"jumpclick: searching for <" + word1$ + ">"}
   ; -- searching in HelpIndexFile for macro or function name
   found.l = False
-  If word1$><""
+  If word1$ >< ""
     ResetList HelpIndexCache()
-    While NextItemFast(HelpIndexCache()) AND found=False
-      If word1$=HelpIndexCache()\name OR word1$=HelpIndexCache()\includefile
+    While NextItemFast(HelpIndexCache()) AND found = False
+      If word1$ = HelpIndexCache()\name OR word1$ = HelpIndexCache()\includefile
+        found = True
         temp_filename$ = dos_AddPart{includedir$,HelpIndexCache()\includefile}
-        found=True
+        log_Print{"found in HelpIndexCache(), will open it"}
         ;error{"Looking for "+temp_filename$+" (from search string"+word1$+"=="+HelpIndexCache()\name+")"}
         GetD0 &temp_filename$
         !asm
@@ -21922,11 +21107,6 @@ nopeek:  InitArgParse res$
  EndIf
 RTS
 
-;.newhelp:
-;  !basic
-;  ask{!TRANS{"old newhelp routine called"},!TRANS{"Ok","debug"}}
-;  !asm
-;RTS
 
 .help_checkfortype:
   MOVE.w comWord_Column,d1
@@ -22152,7 +21332,7 @@ RTS
 RTS
 
 ;.notypehelp
-.help_checkforif
+.help_checkforif:
   actline.l   = ?comPtr_CurrentSourceLine
   nestcount.b = 1
   Repeat
@@ -22194,138 +21374,9 @@ RTS
     *detokened.l = TEDDetoke{*textline}
     ;*detokened.l = TEDDetoke_(*textline)
     linestr$ = StripLead$(Peek$(*detokened),31)
-    PrintScreenTitle{"Corresponding Header: " + linestr$}
+    SetScreenTitle{"Corresponding Header: " + linestr$}
   EndIf
 Return
-
-; the bubble help is acutally not used (Thilo)
-.showbubblehelp
-; If ReadFile(0,HelpIndexFile$)
-;   FileInput 0
-;   b2$ = "!" + b$
-;   Repeat
-;     a$ = Edit$("",200)
-;     If Left$(a$,5) = "file " Then libfile$ = Mid$(a$,12)
-;     c$ = Mid$(a$,12,50)
-;     c$ = StripTrail$(c$,32)
-;     If c$ = b$ OR c$ = b2$
-;       command$ = c$ + Mid$(a$,62)
-;       c$ = c$+" ;"+Mid$(a$,62)
-;;       MOVE.l (a2),d1
-;;       MOVEQ #0,d0
-;;       JSR showtitle
-;       MOVE.l a0,-(a7)
-;       i = 0:help$(0) = ""
-;       fontHeight.l = Peek.w(?fontHeight)
-;       fontWidth.l = Peek.w(?fontWidth)
-;       textwidth.l = (StrLen(libfile$)+12) * fontWidth
-;       morehelp:
-;       a$ = Edit$("",200)
-;       If Left$(a$,2) = ";/"
-;         help$(i) = Mid$(a$,3)
-;         textwidth2.l = (StrLen(help$(i))+3)*fontWidth
-;         If textwidth2>textwidth Then textwidth = textwidth2
-;         i+1
-;         If i < 398 Then Goto morehelp
-;       End If
-;       For i2 = i To 398:help$(i2) = "" : Next
-;       CloseFile 0
-;       fontHeight.l = Peek.w(?fontHeight)
-;       sourcewiny.l = Peek.w(?win_TopEdge)
-;       ypos.l = Peek.l (?comLong_DisplayLine)*fontHeight+fontHeight*3+sourcewiny
-;       help2_y.l = ypos
-;
-;       DEFTYPE.List helpme
-;       WZListRemove helpme
-;       WZWindow WZID("WIN_CONTEXTHELP") ,?wzgui,4,8,help2_y,48 + textwidth,64 + (fontHeight+1) * (i+1),WZID("WIN_CONTEXTHELP")
-;       WTitle libfile$
-;       WZPrint "HELP_OBJECT",&command$
-;       If help$(0) <> ""
-;         For i = 0 To 398
-;           If help$(i)<>""
-;             WZListAdd helpme.List,help$(i),-2
-;           EndIf
-;           If help$(i+1) = "" Then i = 500
-;         Next
-;      Else
-;        WZListAdd helpme.List,"No context help available."
-;      End If
-;      WZPrint "HELPDESK",-1,&helpme
-;
-;       MOVE.l (a7)+,a0
-;       MOVE.l a0,d0
-;       RTS
-;     End If
-;   Until Eof(0) = True
-;  CloseFile 0
-; End If
-
-
-;   b2$ = "!" + b$
-  error{"Bubble hlep!?"}
-   ResetList HelpIndexCache()
-   While NextItemFast(HelpIndexCache())
-     If b$=HelpIndexCache()\name
-
-     End If
-   Wend
-;     a$ = Edit$("",200)
-;     If Left$(a$,5) = "file " Then libfile$ = Mid$(a$,12)
-;     c$ = Mid$(a$,12,50)
-;     c$ = StripTrail$(c$,32)
-;     If c$ = b$ OR c$ = b2$
-;       command$ = c$ + Mid$(a$,62)
-;       c$ = c$+" ;"+Mid$(a$,62)
-;;       MOVE.l (a2),d1
-;;       MOVEQ #0,d0
-;;       JSR showtitle
-;       MOVE.l a0,-(a7)
-;       i = 0:help$(0) = ""
-;       fontHeight.l = Peek.w(?fontHeight)
-;       fontWidth.l = Peek.w(?fontWidth)
-;       textwidth.l = (StrLen(libfile$)+12) * fontWidth
-;       morehelp:
-;       a$ = Edit$("",200)
-;       If Left$(a$,2) = ";/"
-;         help$(i) = Mid$(a$,3)
-;         textwidth2.l = (StrLen(help$(i))+3)*fontWidth
-;         If textwidth2>textwidth Then textwidth = textwidth2
-;         i+1
-;         If i < 398 Then Goto morehelp
-;       End If
-;       For i2 = i To 398:help$(i2) = "" : Next
-;       CloseFile 0
-;       fontHeight.l = Peek.w(?fontHeight)
-;       sourcewiny.l = Peek.w(?win_TopEdge)
-;       ypos.l = Peek.l (?comLong_DisplayLine)*fontHeight+fontHeight*3+sourcewiny
-;       help2_y.l = ypos
-;
-;       DEFTYPE.List helpme
-;       WZListRemove helpme
-;       WZWindow WZID("WIN_CONTEXTHELP") ,?wzgui,4,8,help2_y,48 + textwidth,64 + (fontHeight+1) * (i+1),WZID("WIN_CONTEXTHELP")
-;       WTitle libfile$
-;       WZPrint "HELP_OBJECT",&command$
-;       If help$(0) <> ""
-;         For i = 0 To 398
-;           If help$(i)<>""
-;             WZListAdd helpme.List,help$(i),-2
-;           EndIf
-;           If help$(i+1) = "" Then i = 500
-;         Next
-;      Else
-;        WZListAdd helpme.List,"No context help available."
-;      End If
-;      WZPrint "HELPDESK",-1,&helpme
-;
-;       MOVE.l (a7)+,a0
-;       MOVE.l a0,d0
-;       RTS
-;     End If
-;   Until Eof(0) = True
-;  CloseFile 0
-; End If
- MOVEQ #0,d0
-RTS
 
 .close_bubblehelp
   If WZ_CheckOpen{"WIN_CONTEXTHELP"}
@@ -22336,7 +21387,7 @@ RTS
 
 
 .close_popupwindow
-  If Peek.b(?use_intellisense)<>0
+  If use_intellisense
     WZ_PopUpCloseNonmodal{}   ; move the code to the new include function  tomsmart1
     popup_selected.l = 0
   EndIf
@@ -22374,6 +21425,7 @@ RTS
   str2$ = Peek$(i)
   a$ = str2$
   If NOT WZ_CheckOpen{"WIN_NEWTYPE"}
+    USEPATH wtemp
     WZWindow WZID("WIN_NEWTYPE"),?wzgui,255,\type_x,\type_y,\type_w,\type_h,WZID("WIN_NEWTYPE")
     AddedMenu2WZWin{"WIN_NEWTYPE"}
     ;GTSetMenuChecked 0,5,9,On
@@ -22832,7 +21884,7 @@ Return
   If popexit = True
     a$ = WZ_GetPopUpEntry{popup_selected}
     a$ = dos_Trim{Left$(a$,Instr(a$,"{")-1)}
-    PrintScreenTitle{a$ + " " + PED_GetIncludeHelp{a$} }    ; removed a$ test because it is not needed  tomsmart1
+    SetScreenTitle{a$ + " " + PED_GetIncludeHelp{a$} }    ; removed a$ test because it is not needed  tomsmart1
     a$ = UnRight$(a$,Len(poptok$)) + "{"
     Gosub insertstring
     Gosub close_popupwindow
@@ -23039,7 +22091,7 @@ Return
     ev.l = WaitEvent
 
     ; bubble onlinehelp for most windows
-   ; If Peek.b(?onlinehelp)<>0
+   ; If onlinehelp <> 0
    ;   If (ev<>#IDCMP_INTUITICKS) AND (ev<>#IDCMP_ACTIVEWINDOW) AND (ev<>#IDCMP_GADGETHELP)  AND (ev<>#IDCMP_CHANGEWINDOW)
    ;     WZ_HideHelp{}
    ;   EndIf
@@ -23755,7 +22807,7 @@ Return
           MOVE.w comWord_ColumnsOffset,oldcolumnsoffset
           CLR.w comWord_ColumnsOffset
           i = FLen(t$)
-          PrintScreenTitle{Str$(i)+" "+t$}
+          SetScreenTitle{Str$(i)+" "+t$}
           If i
              MOVE.l addcodepos@(a5),a0
              SUB.l textbufferaddr,a0
@@ -23831,10 +22883,10 @@ Return
 
 
 .do_windowlayout:
-  If *sourcewin
-    If *sourcewin<>0
-      ChangeWindowBox_ *sourcewin,Peek.w(?win_TopLeft),Peek.w(?win_TopEdge),Peek.w(?win_Width),Peek.w(?win_Height)
-      RefreshWindowFrame_ *sourcewin
+  If sourceWindow\win
+    If sourceWindow\win <> 0
+      ChangeWindowBox_ sourceWindow\win,Peek.w(?win_TopLeft),Peek.w(?win_TopEdge),Peek.w(?win_Width),Peek.w(?win_Height)
+      RefreshWindowFrame_ sourceWindow\win
       Delay_ 5
       !asm
       JSR resize_sourcewindow
@@ -24354,16 +23406,14 @@ Return                                                                        ; 
 
 
 .draw_tabs:
-  *rastp.RastPort = Peek.l(?rp_sourcewindow)
-  SetAPen_ *rastp, AB3Pen(#AB3_screenfill)
+  USEPATH sourceWindow
+  SetAPen_ \win\RPort, AB3Pen(#AB3_screenfill)
 
-  *tfont.TextFont = Peek.l(?ptr_sourcefont)
-  xpos_text.l = #filenamepos * *tfont\tf_XSize
-  ypos_sa.w = Peek.w(?ypos_statusarea) + 1
-  ypos_text.w = ypos_sa + 2 + *tfont\tf_Baseline
+  xpos_text.l = #filenamepos * \font\tf_XSize
+  ypos_sa.w = \statusAreaY + 1
+  ypos_text.w = ypos_sa + 2 + \font\tf_Baseline
 
-  *swin.Window = Peek.l(?ptr_sourcewindow)
-  RectFill_ *rastp,xpos_text - 4,ypos_sa + 2,*swin\Width-*swin\BorderRight,ypos_sa + 1 + *tfont\tf_YSize
+  RectFill_ \win\RPort,xpos_text - 4,ypos_sa + 2,\win\Width - \win\BorderRight,ypos_sa + 1 + \font\tf_YSize
 
   ; -- draw all sourcefilename tabs
   *loadedfiles.l = Peek(?loadedfilesbase)
@@ -24376,7 +23426,7 @@ Return                                                                        ; 
       modifiedFlag.b = False
       textlen.w = 10                        ; width of tab in characters
 
-      Move_ *rastp, xpos_text, ypos_text
+      Move_ \win\RPort, xpos_text, ypos_text
 
       If *actualfile = *sourcefile
         fcol.w = AB3Pen(#AB3_screentext)    ; selected
@@ -24392,16 +23442,16 @@ Return                                                                        ; 
 
       Gosub draw_bevel
 
-      SetDrMd_ *rastp, 1
-      SetAPen_ *rastp, fcol
-      SetBPen_ *rastp, bcol
+      SetDrMd_ \win\RPort, 1
+      SetAPen_ \win\RPort, fcol
+      SetBPen_ \win\RPort, bcol
 
       If stylestate = #FSF_BOLD
-        SetFont_ *rastp,Peek.l(?ptr_sourcefontb)
+        SetFont_ \win\RPort,\fontB ;Peek.l(?ptr_sourcefontb)
       Else
-        SetFont_ *rastp,Peek.l(?ptr_sourcefont)
+        SetFont_ \win\RPort,\font ;Peek.l(?ptr_sourcefont)
       EndIf
-      SetSoftStyle_ *rastp,stylestate.w,#FSF_BOLD
+      SetSoftStyle_ \win\RPort,stylestate.w,#FSF_BOLD
 
 
       If *actualfile = *sourcefile
@@ -24410,69 +23460,70 @@ Return                                                                        ; 
         If Peek.l(*sourcefile + $1e6) = $4D4F4449 Then modifiedFlag = True
       EndIf
       If modifiedFlag
-        Text_ *rastp,?modifymark, 1
+        Text_ \win\RPort,"*", 1
         textlen - 1
       EndIf
 
       sourcename$ = Peek$(*sourcefile + 222)
-      If sourcename$ = "" Then sourcename$ = Peek$(?none)
+      If sourcename$ = "" Then sourcename$ = "none"
       sourcename_len.w = Len(sourcename$)
 
       sourcename$ = StrLeft(sourcename$,16)
-      Text_  *rastp, &sourcename$, textlen    ;A1, A0, D0
+      Text_ \win\RPort, &sourcename$, textlen    ;A1, A0, D0
 
       If sourcename_len > textlen             ;indicator for more characters
-        WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y-4-*rastp\TxBaseline +*rastp\TxHeight/2
-        WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y-2-*rastp\TxBaseline +*rastp\TxHeight/2
-        WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y  -*rastp\TxBaseline +*rastp\TxHeight/2
-        WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y+2-*rastp\TxBaseline +*rastp\TxHeight/2
-        WritePixel_ *rastp,*rastp\cp_x+1,*rastp\cp_y+4-*rastp\TxBaseline +*rastp\TxHeight/2
+        WritePixel_ \win\RPort, \win\RPort\cp_x + 1 ,\win\RPort\cp_y - 4 - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2
+        WritePixel_ \win\RPort, \win\RPort\cp_x + 1, \win\RPort\cp_y - 2 - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2
+        WritePixel_ \win\RPort, \win\RPort\cp_x + 1, \win\RPort\cp_y     - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2
+        WritePixel_ \win\RPort, \win\RPort\cp_x + 1, \win\RPort\cp_y + 2 - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2
+        WritePixel_ \win\RPort, \win\RPort\cp_x + 1, \win\RPort\cp_y + 4 - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2
       EndIf
 
-      ;SetDrMd_ *rastp, 1
-      xpos_text = xpos_text + #filenameoffs * *tfont\tf_XSize
+      ;SetDrMd_ \win\RPort, 1
+      xpos_text = xpos_text + #filenameoffs * \font\tf_XSize
       *sourcefile = Peek.l(*sourcefile)
     Until *sourcefile = 0
   EndIf
 
-  SetBPen_ *rastp,Peek.l(?backgroundcolor)
-  SetFont_ *rastp,Peek.l(?ptr_sourcefont)
-  SetSoftStyle_ *rastp,#FS_NORMAL,#FSF_BOLD
+  SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground) ;Peek.l(?backgroundcolor)
+  SetFont_ \win\RPort,\font ;Peek.l(?ptr_sourcefont)
+  SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
 Return
 
 .draw_bevel:
-  xsa.l = *tfont\tf_XSize / 2
-  xsb.l = *tfont\tf_XSize - xsa
+  xsa.l = \font\tf_XSize / 2
+  xsb.l = \font\tf_XSize - xsa
   bx1.l = xpos_text - xsa
   by1.l = ypos_sa +1;+ 3
-  bx2.l = *tfont\tf_XSize * 10 + *tfont\tf_XSize-1 + bx1
-  by2.l = *tfont\tf_YSize + 1  + by1
-  cp_x.l = *rastp\cp_x
-  cp_y.l = *rastp\cp_y
+  bx2.l = \font\tf_XSize * 10 + \font\tf_XSize-1 + bx1
+  by2.l = \font\tf_YSize + 1  + by1
+  cp_x.l = \win\RPort\cp_x
+  cp_y.l = \win\RPort\cp_y
 
   If bevel_recessed = False
-    SetAPen_ *rastp,AB3Pen(#AB3_screenback)
-    RectFill_ *rastp,bx1+1,by1+1,bx2-1+1,by2
-    SetAPen_ *rastp,AB3Pen(#AB3_screentext)
-    Move_ *rastp,bx1,by1
-    Draw_ *rastp,bx1,by2
-    Draw_ *rastp,bx2+1,by2
-    Draw_ *rastp,bx2+1,by1
+    SetAPen_ \win\RPort,AB3Pen(#AB3_screenback)
+    RectFill_ \win\RPort,bx1+1,by1+1,bx2-1+1,by2
+    SetAPen_ \win\RPort,AB3Pen(#AB3_screentext)
+    Move_ \win\RPort,bx1,by1
+    Draw_ \win\RPort,bx1,by2
+    Draw_ \win\RPort,bx2+1,by2
+    Draw_ \win\RPort,bx2+1,by1
   Else
-    SetAPen_ *rastp,AB3Pen(#AB3_cbackground)
-    RectFill_ *rastp,bx1+1,by1-1,bx2-1+1,by2
-    SetAPen_ *rastp,AB3Pen(#AB3_cother)
-    Move_ *rastp,bx1,by1
-    Draw_ *rastp,bx1,by2+1
-    Draw_ *rastp,bx2+1,by2+1
-    Draw_ *rastp,bx2+1,by1
+    SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+    RectFill_ \win\RPort,bx1+1,by1-1,bx2-1+1,by2
+    SetAPen_ \win\RPort,AB3Pen(#AB3_cother)
+    Move_ \win\RPort,bx1,by1
+    Draw_ \win\RPort,bx1,by2+1
+    Draw_ \win\RPort,bx2+1,by2+1
+    Draw_ \win\RPort,bx2+1,by1
     cp_y+1
   EndIf
-  Move_ *rastp,cp_x,cp_y
+  Move_ \win\RPort,cp_x,cp_y
 Return
 
 
-.check_mouse_in_statusarea
+.check_mouse_in_statusarea:
+  ; a1: IntuiMessage
   MOVEM.l a0/a1/d0/d7,-(a7)
   !basic
 ;  MOVEQ #0,d0
@@ -24485,8 +23536,10 @@ Return
 
   CMP.w #$68,D0
   BEQ.w 'no
+
   MOVE.l loadedfilesbase,d0
   BEQ 'no
+
   MOVEQ #0,d6
   MOVEQ #0,d7
   MOVE.w $20(a1),d6           ; d6 = x-pos, d7 = y-pos  of  mouse
@@ -24503,10 +23556,10 @@ Return
 
  'again:
   MOVE.l d0,a0
-  TST.b $de(a0)
+  TST.b $de(a0)               ; filename
   ;BEQ 'n1
 
-  MOVEQ #0,d2                 ; load y-Position of statusarea + some pixels until button starts
+  MOVEQ #0,d2                 ; load y-Position of statusarea + some pixels until filetab starts
   MOVE.w ypos_statusarea,d2
   ADD.w win_BorTop,d2
 
@@ -25370,7 +24423,7 @@ Return
     comsettings_ev.l = WaitEvent
 
 
-    If Peek.b(?onlinehelp)<>0
+    If onlinehelp <> 0
       If (comsettings_ev <> #IDCMP_INTUITICKS) AND (comsettings_ev <> #IDCMP_ACTIVEWINDOW) AND (comsettings_ev <> #IDCMP_GADGETHELP) AND (comsettings_ev <> #IDCMP_CHANGEWINDOW)
         WZ_HideHelp{}
       EndIf
@@ -25635,8 +24688,8 @@ Return
     EndIf
     FlushEvents
   EndIf
-  !asm
   JSR print_availmem
+  !asm
   !stack2regs
 RTS
 
@@ -25658,25 +24711,15 @@ Return
 ; Declarations of Variables
 ; ---------------------------------------------------------------------
 .DECLARATIONS
-warningtitle:         Ds.b #MAX_STRINGSIZE
-short1                Dc.b "T"
-short2                Dc.b "B"
-short3                Dc.b 0
-Even
-
 wzgui:                IncBin "ped.wizard"
 
 instring              Dc.b 0
 instring2             Dc.b 0
 instring3             Dc.b 0
-modifymark            Dc.b "*"
-none                  Dc.b "unnamed",0 : Even
 historypointer:       Dc.l 0
 oldsearch             Dc.w 0
 ptr_deflibsfilename   Dc.l 0
 ptr_incdirname        Dc.l 0
-;ptr_runningTask       Dc.l 0
-str_spaces            Dcb.b 200,32
 
 .classiccommands
                       ; memory reservations for libs that where introduced with old blitz2
@@ -25712,52 +24755,34 @@ str_spaces            Dcb.b 200,32
                       Dc.w $4d08 ;get a shape
 
                       Dc.w 0     ;say end
-;othercolor            Dc.w 1
 classiccolor          Dc.l 1
 olddebugmode          Dc.w $0101
 cutmode               Dc.w 0
-Even
-dummystr              Dc.b ":",0,0
-
-Even
+dummystr              Dc.b ":",0,0 : Even
 
 BSS
 Even
-doresize              Ds.b 1
-blinkrate             Ds.b 1
-blinkcount            Ds.b 1
 foundf                Ds.w 1
 foundf2               Ds.w 1
-yhorizscroll          Ds.w 1
-clone_wbscreen        Ds.b 1
-no_welcome            Ds.b 1
+;clone_wbscreen        Ds.b 1
+;no_welcome            Ds.b 1
 tokenbackground       Ds.l 1
-use_wbscreen          Ds.b 1
-clipbuf               Ds.b 300
-no_scrollrate         Ds.b 1
-loadAsNew              Ds.w 1
-filebuff              Ds.b 256              ; used for display the filenames in status area
+;use_wbscreen          Ds.b 1
+;no_scrollrate         Ds.b 1
+loadAsNew             Ds.w 1
 nodelete              Ds.w 1
 menuload              Ds.w 1
 replacestartcolumn    Ds.w 1
 fontWidth             Ds.w 1
-topaz8                Ds.l 1
 messagestore          Ds.l 1
-;yposlow               Ds.w 1
-nestcount             Ds.l 1
-iffound               Ds.b 1
-pad                   Ds.b 1
-ctrlhelpline          Ds.l 1
+ctrlhelpline          Ds.l 1                ; insert text into sourcetext?
 oldcolumnsoffset      Ds.w 1
-menuitem_debugtoggle  Ds.l 1
 VerticalCopyMode      Ds.l 1                ; was firstcolumn  renamed to match is new purpos tomsmart1
-skipit                Ds.b 1
 redraw_ped            Ds.b 1
 foldnum               Ds.l 1
 VerticalPasteMode     Ds.w 1                ; was pastecolumn  renamed to match is new purpos  tomsmart1
 tempstore             Ds.l 1
 typestr               Ds.b 80
-regstore1             Ds.l 4
 colstore              Ds.w 1
 storeline1            Ds.l 1
 storeline2            Ds.l 1
@@ -25779,15 +24804,9 @@ macrocolor            Ds.l 1
 constantcolor         Ds.l 1
 functioncolor         Ds.l 1
 macro_                Ds.w 1
-;newcolormode          Ds.w 1
-remarkcolor           Ds.l 1
-remarkbgcolor         Ds.l 1
-;currdisplayaddr   ;same label
 backgroundcolor       Dc.l 0
-;oldcurrsourceline     Ds.l 1                              ; deactivate because it prevent somtimes jumps to the select item  tomsmart1
 helpstring            Ds.b 260
 searchmode            Ds.w 1
-auto_format           Ds.b 1
 columnstore           Ds.w 1
 ab2mode               Ds.w 1
 slen2                 Ds.l 1
@@ -25798,7 +24817,6 @@ constantbase          Dc.l 0
 newtypebase           Dc.l 0
 newsyntax             Dc.l 0
 nohelp                Dc.l 0
-;mempool               Dc.l 0 ; => moved to common.bb2/comPtr_MemPool
 str_oldsearchgadget   Ds.b 260
 instrtab              Ds.l 32769
 newted                Dc.l 0
@@ -25807,34 +24825,21 @@ message_code          Dc.l 0
 message_class         Dc.l 0
 olda4                 Dc.l 0
 history               Ds.l 10
-helpsourceline        Dc.l 0
-str_actualline        Dc.b 0,0,0,0,0,0,0,0,0,0
 tempbuf               Ds.b 260
 convert               Dc.b 0
-count                 Ds.l 1
 instru                Ds.w 1
 chartab               Ds.b 260      ;last
 lowerchartable        Ds.l 1
 casemode              Ds.w 1
 temp                  Ds.w 1
-;_Screen               Ds.l 1
-;rastport_             Ds.l 1
 namesizestore         Ds.l 1
 nodisplaybeep         Ds.l 1
 refreshonstore        Ds.w 1        ; zuruecksetzen von PED beim Speichern der Preferences
 deftypefound          Ds.w 1
-bold_tokens           Dc.b 0
-italic_remarks        Dc.b 0
 linenumbers           Dc.b 0
-onlinehelp            Dc.b 1
-onlinehelp_extended   Dc.b 0
 ;pos_vertiprop         Ds.w 1       ; obsolete
 pos_horizprop         Ds.w 1
 blockmarking          Dc.l 0
-correct_functions     Dc.b 0
 load_last_source      Dc.b 0
-use_intellisense      Dc.b 0
-auto_constructs       Dc.b 0
 wheelstep             Ds.l 1        ; moved to BSS section because it is now set by init with a default of 6 if it not set in the Icontooltypes  tomsmart1
 use_commandsintellisens      Dc.b 0      ; added   tomsmart1
-ask_before_quit       Dc.b 0
