@@ -1,0 +1,953 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "RAM:"
+; ExeFile         = "Prog.exe"
+; CreateIcon      = 0
+; Residents       = ""
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 0
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 1
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 32768
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 1
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 394
+; CursorColumn    = 1
+; LabelSearch     = "doclist"
+; LabelRemark     = 0
+; LabelAll        = 1
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max File        = 25
+; Max GadgetList  = 5
+; Max Queue       = 10
+; Max Screen      = 5
+; Max Shape       = 100
+; Max CopList     = 10
+; Max Sprite      = 20
+; Max Stencil     = 5
+; Max Module      = 5
+; Max Window      = 25
+; Max Anim        = 1
+; Max Sound       = 1
+; Max Bank        = 5
+; Max Buffer      = 10
+; Max Slice       = 10
+; Max Page        = 1
+; Max Tape        = 5
+; Max IntuiFont   = 5
+; Max MedModule   = 8
+; Max Palette     = 4
+; Max MenuList    = 5
+; Max BlitzFont   = 4
+; Max GTList      = 25
+; Max BitMap      = 10
+; Max IconInfo    = 1
+; Max NChunky     = 50
+; Max MUIObject   = 50
+; Max PTModule    = 5
+; Max AsyncReq    = 4
+; Max Req-Lib     = 5
+; Max GTMenuList  = 25
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max XBSound     = 10
+; Max Chunky      = 20
+; /XTRA
+
+.getCommandAddress:
+  arexxlist.l = ?ptr_arexxcmd_list
+  acom$ = "" : acom_found.b = False : acom_ptr.l = 0
+  While (NOT acom_found) AND Peek.l(arexxlist) <> 0
+    acom$ = Peek$(Peek.l(arexxlist))
+    If acom$ = ArexxCommand$
+      acom_found = True
+      acom_ptr = Peek.l(arexxlist + 4)
+    Else
+      arexxlist + 8
+    EndIf
+  Wend
+Return
+
+.arexx_event:
+  ArexxSenderName$ = arexx_GetSenderName{}
+  ArexxCommand$ = arexx_GetCommandString{}
+  log_Print{"received Arexxmessage from [" + ArexxSenderName$ + "]: <" + ArexxCommand$ + ">"}
+  SF checked_arexxcmd
+  Gosub getCommandAddress
+  If acom_ptr.l <> 0
+    log_Print{"arexx-command <" + ArexxCommand$ + "> found, calling ..."}
+    Call acom_ptr
+    log_Print{"function result: " + Str$(ArexxResult.b) + " - " + ArexxResultString$}
+  Else
+    ArexxResult = #RC_OK : ArexxResultString$ = "UNKNOWN COMMAND"
+    log_Print{"unknown arexx-command <" + ArexxCommand$ + ">, ignored..."}
+  EndIf
+  Gosub arexx_answer_message
+Return
+
+.arexx_answer_message:
+  If Peek.w(?checked_arexxcmd) = False
+    ;#RC_OK = 0
+    ;#RC_WARN = 5
+    ;#RC_ERROR = $A
+    ;#RC_FATAL = $14
+    log_Print{"answering arexxmessage... ["+ ArexxResultString$ +"]"}
+    If ArexxResultString$ <> ""
+      arexx_ReplyMsgString{ArexxResultString$}
+    Else
+      arexx_ReplyMsg{ArexxResult}
+    EndIf
+  Else
+    log_Print{"already answered."}
+  EndIf
+Return
+
+
+.arexx_init:
+  ArexxPortName$ = "N/A"
+  *ArexxPort.MsgPort = arexx_FindPort{"REXX"}
+  If *ArexxPort <> 0
+    ;-- bereits vorhandenen AB3-Port suchen
+    ArexxPortName$ = "PED"
+    For ArexxPortNumber.b = 1 To 9
+      If NOT FindPort_(ArexxPortname$ + "." + Str$(ArexxPortNumber))
+        Pop For : Goto exit_arexxloop2
+      EndIf
+    Next ArexxPortNumber
+    exit_arexxloop2:
+    ArexxPortName$ + "." + Str$(ArexxPortNumber)
+    *ArexxMsgPort.MsgPort = arexx_Init{ArexxPortName$}
+    If *ArexxMsgPort <> 0
+      ArexxPort_Available.b = True
+    EndIf
+  Else
+    log_Print{"AREXX not running."}
+  EndIf
+Return
+
+.arexx_free:
+  arexx_Free{}
+Return
+
+
+.arexx_sendmessage:
+  If ArexxMyMessage$ <> ""
+    log_Print{"sending message <" + ArexxMyMessage$ + "> to registered hosts"}
+    For ai.b = 0 To 7
+      If registeredArexxHosts$(ai) <> ""
+        log_Print{"- " + registeredArexxHosts$(ai)}
+        If arexx_SendMessage{registeredArexxHosts$(ai),ArexxMyMessage$}
+          log_Print{"send ok"}
+        Else
+          log_Print{"sending failed to " + registeredArexxHosts$(ai),#log_warning}
+        EndIf
+      EndIf
+    Next ai
+  EndIf
+Return
+
+
+ptr_tempstring:              Ds.l 1
+rexx_signalbits:             Ds.w 1
+arexx_number_of_parameters:  Ds.w 1
+checked_arexxcmd:            Ds.w 1
+ptr_arexx_sendername:        Ds.l 1
+ptr_arexx_commandstr:        Ds.l 1
+ptr_arexx_currsourceline:    Ds.l 1
+
+
+; --
+; -- Arexx-Command, pointer to function:
+; --
+.ptr_arexxcmd_list:
+ Dc.l AL_0_E66C
+ Dc.l arexxfunc_runexe             ;runfunc
+ Dc.l AL_0_E57C
+ Dc.l arexxfunc_compilerun         ;compilefunc
+ Dc.l AL_0_E600
+ Dc.l arexxfunc_prevsource         ;prevdoc
+ Dc.l AL_0_E608
+ Dc.l arexxfunc_nextsource         ;nextdoc
+ Dc.l AL_0_E6B6
+ Dc.l arexxfunc_cut                ;cut
+ Dc.l AL_0_E6BA
+ Dc.l arexxfunc_copy               ;copy
+ Dc.l AL_0_E6C0
+ Dc.l arexxfunc_paste              ;paste
+ Dc.l AL_0_E63C
+ Dc.l arexxfunc_load               ;load file
+ Dc.l AL_0_E636
+ Dc.l arexxfunc_quit               ;quit
+ Dc.l AL_0_E642
+ Dc.l arexxfunc_loadnew            ;loadnew
+ Dc.l AL_0_E64A
+ Dc.l arexxfunc_save               ;save
+ Dc.l AL_0_E632
+ Dc.l arexxfunc_new                ;new
+ Dc.l AL_0_E650
+ Dc.l arexxfunc_print              ;print
+ Dc.l AL_0_E61C
+ Dc.l arexxfunc_erase              ;erase
+ Dc.l AL_0_E5BC
+ Dc.l arexxfunc_topline            ;topline
+ Dc.l AL_0_E5C4
+ Dc.l arexxfunc_bottomline         ;bottomline
+ Dc.l AL_0_E5E0
+ Dc.l arexxfunc_nextline           ;nextline
+ Dc.l AL_0_E5D0
+ Dc.l arexxfunc_getline            ;getline
+ Dc.l AL_0_E5F6
+ Dc.l arexxfunc_prevline           ;prevline
+ Dc.l AL_0_E5EA
+ Dc.l arexxfunc_screentoback       ;hidescreen
+ Dc.l AL_0_E5D8
+ Dc.l arexxfunc_redraw             ;redraw
+ Dc.l AL_0_E610
+ Dc.l arexxfunc_screenname         ;screenname
+ Dc.l AL_0_E59C
+ Dc.l arexxfunc_iconify            ;iconify
+ Dc.l AL_0_E670
+ Dc.l arexxfunc_notifynewdoc       ;notifynewdoc
+ Dc.l AL_0_E67E
+ Dc.l arexxfunc_dontnotifynewdoc   ;dontnotifynewdoc
+ Dc.l AL_0_E690
+ Dc.l arexxfunc_getdoclist         ;getdoclist
+ Dc.l AL_0_E584
+ Dc.l arexxfunc_screentofront      ;showscreen
+ Dc.l AL_0_E574
+ Dc.l arexxfunc_getword
+ Dc.l AL_0_E622
+ Dc.l arexxfunc_help               ;help
+ Dc.l AL_0_E628
+ Dc.l arexxfunc_helptext           ;helptext
+ Dc.l AL_0_E6D0
+ Dc.l arexxfunc_activate           ;activate
+ Dc.l AL_0_E69C
+ Dc.l arexx_gotodoc                ;gotodoc
+; Dc.l AL_0_E6AC
+; Dc.l arexxfunc_getdocnum          ;getdocnum
+ Dc.l AL_0_E656
+ Dc.l arexxfunc_rememberme         ;rememberme
+ Dc.l AL_0_E662
+ Dc.l arexxfunc_forgetme           ;forgetme
+ Dc.l AL_0_E5A4
+ Dc.l arexxfunc_about              ;about
+ Dc.l AL_0_E5B4
+ Dc.l arexxfunc_version            ;version
+ Dc.l AL_0_E5AA
+ Dc.l arexxfunc_numlines           ;numlines
+ Dc.l AL_0_E590
+ Dc.l rebuild_menus                ;reloadmenus
+ Dc.l AL_0_E6F2
+ Dc.l arexxfunc_makeexec           ;makeexec
+ Ds.l 4
+
+ ; --
+ ; -- arexx-commandlabels
+ ; --
+ AL_0_E574:  Dc.b "GETWORD",0
+ AL_0_E57C:  Dc.b "COMPILE",0
+ AL_0_E584:  Dc.b "SHOWSCREEN",0,0
+ AL_0_E590:  Dc.b "RELOADMENUS",0
+ AL_0_E59C:  Dc.b "ICONIFY",0
+ AL_0_E5A4:  Dc.b "ABOUT",0
+ AL_0_E5AA:  Dc.b "NUMLINES",0,0
+ AL_0_E5B4:  Dc.b "VERSION",0
+ AL_0_E5BC:  Dc.b "TOPLINE",0
+ AL_0_E5C4:  Dc.b "BOTTOMLINE",0,0
+ AL_0_E5D0:  Dc.b "GETLINE",0
+ AL_0_E5D8:  Dc.b "REDRAW",0,0
+ AL_0_E5E0:  Dc.b "NEXTLINE",0,0
+ AL_0_E5EA:  Dc.b "HIDESCREEN",0,0
+ AL_0_E5F6:  Dc.b "PREVLINE",0,0
+ AL_0_E600:  Dc.b "PREVDOC",0
+ AL_0_E608:  Dc.b "NEXTDOC",0
+ AL_0_E610:  Dc.b "SCREENNAME",0,0
+ AL_0_E61C:  Dc.b "ERASE",0
+ AL_0_E622:  Dc.b "HELP",0,0
+ AL_0_E628:  Dc.b "HELPTEXT",0,0
+ AL_0_E632:  Dc.b "NEW",0
+ AL_0_E636:  Dc.b "QUIT",0,0
+ AL_0_E63C:  Dc.b "LOAD",0,0
+ AL_0_E642:  Dc.b "LOADNEW",0
+ AL_0_E64A:  Dc.b "SAVE",0,0
+ AL_0_E650:  Dc.b "PRINT",0
+ AL_0_E656:  Dc.b "REMEMBERME",0,0
+ AL_0_E662:  Dc.b "FORGETME",0,0
+ AL_0_E66C:  Dc.b "RUN",0
+ AL_0_E670:  Dc.b "NOTIFYNEWDOC",0,0
+ AL_0_E67E:  Dc.b "DONTNOTIFYNEWDOC",0,0
+ AL_0_E690:  Dc.b "GETDOCLIST",0,0
+ AL_0_E69C:  Dc.b "GOTODOC",0
+ AL_0_E6AC:  Dc.b "GETDOCNUM",0
+ AL_0_E6B6:  Dc.b "CUT",0
+ AL_0_E6BA:  Dc.b "COPY",0,0
+ AL_0_E6C0:  Dc.b "PASTE",0
+ AL_0_E6D0:  Dc.b "ACTIVATE",0,0
+ AL_0_E6F2:  Dc.b "MAKEEXEC",0,0
+
+
+
+; --
+; -- funtions to be executed by appropriate arexx-command
+; --
+.arexxfunc_activate:
+  If sourceWindow\win Then ActivateWindow_ sourceWindow\win
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+Return
+
+.arexxfunc_rememberme:
+  log_Print{"REMEMBERME from " + ArexxSenderName$}
+  already_registered.b = False
+  spare_entry.b = -1
+  For ai = 0 To 7
+    If registeredArexxHosts$(ai) = ArexxSenderName$
+      already_registered = True
+      Pop For : Pop If: Goto exit_registersearch
+    EndIf
+    If registeredArexxHosts$(ai) = ""
+      spare_entry.b = ai
+      Pop For : Pop If: Goto exit_registersearch
+    EndIf
+  Next ai
+  exit_registersearch:
+  If NOT already_registered AND spare_entry<>-1
+    registeredArexxHosts$(spare_entry) = ArexxSenderName$
+    ArexxResultString$ = "SUCCESSFULLY REGISTERED"
+  Else
+    ArexxResultString$ = ""
+  EndIf
+  ArexxResult = #RC_OK
+Return
+
+.arexxfunc_forgetme:
+  reg_found.b = 0
+  For ai = 0 To 7
+    If registeredArexxHosts$(ai) = ArexxSenderName$
+      reg_found = True
+      Pop For: Pop If : Goto exit_registersearch2
+    EndIf
+  Next ai
+  exit_registersearch2:
+  If reg_found
+    registeredArexxHosts$(ai) = ""
+    ArexxResultString$ = "SUCCESSFULLY UNREGISTERED"
+  Else
+    ArexxResultString$ = ""
+  EndIf
+  ArexxResult = #RC_OK
+Return
+
+.arexxfunc_iconify:
+  ArexxResult = 1 : ArexxResultString$ = ""
+  Gosub arexx_answer_message
+  !asm
+  JSR menu_iconify
+  ST checked_arexxcmd
+  !basic
+Return
+
+;
+;JL_0_E8C2:
+;  MOVEM.l D1-D7/A1-A6,-(A7)
+;  MOVEA.l actualfile,A1
+;  MOVEA.l loadedfilesbase,A0
+;  MOVEQ.l #$00,D0
+;
+;  JL_0_E8D4:
+;    CMPA.l A0,A1
+;     BEQ.w JL_0_E8E6
+;    MOVEA.l (A0),A0
+;    ADDQ.l #1,D0
+;    CMPA.l #$0,A0
+;  BNE.b JL_0_E8D4
+;
+;  JL_0_E8E6:
+;  MOVEA.l ptr_tempstring,A0
+;  CLR.l (A0)
+;  CLR.l $4(A0)
+;  JSR format_value
+;  MOVEM.l (A7)+,D1-D7/A1-A6
+;  MOVEQ.l #$00,D0
+;  MOVEA.l ptr_tempstring,A0
+;RTS
+
+.arexx_gotodoc:
+  !asm
+  MOVEA.l loadedfilesbase,A0
+  TST.l D0
+  BEQ.w JL_0_E918
+    JL_0_E912:
+      MOVEA.l (A0),A0
+      SUBQ.l #1,D0
+    BNE.b JL_0_E912
+  JL_0_E918:
+  MOVE.l A0,D0
+  CMP.l actualfile,D0
+  BEQ.w JL_0_E92A
+    JSR selectfile
+  JL_0_E92A:
+  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_getdoclist:
+  !asm
+  JSR StoreXtraData
+  MOVE.l loadedfilesbase,D0
+  MOVEA.l ptr_tempstring,A0
+  JSR generate_tempfilename
+  !basic
+
+  MOVEA.l ptr_tempstring,A0
+  MOVEQ.l #$00,D0
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_cut:
+  !asm
+  JSR menu_cut
+  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+Return
+
+.arexxfunc_copy:
+  !asm
+  JSR menu_copy
+  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+Return
+
+.arexxfunc_paste:
+  !asm
+  JSR menu_paste
+  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+Return
+
+.arexxfunc_notifynewdoc:
+;  !asm
+;  LEA str_arexx_message_doclist,A0
+;  MOVEQ.l #$1F,D0
+;
+;  JL_0_EA44:
+;    TST.l (A0)+
+;    BEQ.w JL_0_EA54
+;  DBF D0,JL_0_EA44
+;  MOVEQ.l #$00,D0
+;  SUBA.l A0,A0
+;  RTS
+;
+;  JL_0_EA54:
+;  MOVE.l ptr_arexx_sendername,-(A0)
+;  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_dontnotifynewdoc:
+;  !asm
+;  LEA str_arexx_message_doclist,A0
+;  MOVE.l ptr_arexx_sendername,D0
+;  MOVEQ.l #$1F,D1
+;
+;  JL_0_EA6C:
+;  CMP.l (A0)+,D0
+;   BEQ.w JL_0_EA7A
+;   DBF D1,JL_0_EA6C
+; BRA.w JL_0_EA7C
+;
+;  JL_0_EA7A:
+;  CLR.l -(A0)
+;  JL_0_EA7C:
+;  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_erase:
+  SF checked_arexxcmd
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+  Gosub arexx_answer_message
+  !asm
+  ST checked_arexxcmd
+  MOVEQ.l #$65,D6
+  MOVEQ.l #-$02,D7
+  !basic
+RTS
+
+.arexxfunc_quit:
+  SF checked_arexxcmd
+  ArexxResult = 1 : ArexxResultString$ = ""
+  Gosub arexx_answer_message
+  !asm
+  ST checked_arexxcmd
+  MOVEQ.l #$73,D6
+  MOVEQ.l #-$02,D7
+  !basic
+RTS
+
+.arexxfunc_new:
+  !asm
+  JSR menu_opennew
+  !basic
+   ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_loadnew:
+  CMPI.w #$2,arexx_number_of_parameters
+  BNE.w JL_0_EAF2
+    SUBA.l A0,A0
+    MOVEQ.l #$00,D0
+    JSR arexx_answer_message
+    ST checked_arexxcmd
+    JSR menu_opennew
+    MOVE.l arexx_parameterlist,D7
+    JSR load_source
+    MOVEQ.l #$00,D7
+    RTS
+  JL_0_EAF2:
+    SUBA.l A0,A0
+    MOVEQ.l #$00,D0
+    JSR arexx_answer_message
+    ST checked_arexxcmd
+    JSR menu_opennew
+    JSR menu_load
+    MOVEQ.l #$00,D7
+RTS
+
+.arexxfunc_load:
+  CMPI.w #$2,arexx_number_of_parameters
+  BNE.w JL_0_EB3A
+    SUBA.l A0,A0
+    MOVEQ.l #$00,D0
+    JSR arexx_answer_message
+    ST checked_arexxcmd
+    MOVE.l arexx_parameterlist,D7
+    JSR load_source
+    MOVEQ.l #$00,D7
+    RTS
+  JL_0_EB3A:
+    SUBA.l A0,A0
+    MOVEQ.l #$00,D0
+    JSR arexx_answer_message
+    ST checked_arexxcmd
+    JSR menu_load
+    MOVEQ.l #$00,D7
+RTS
+
+.arexxfunc_save:
+  !asm
+  SF check_existsfile
+  JSR menu_save
+  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_print:
+  !asm
+  JSR menu_print
+  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_prevsource:
+  !asm
+  JSR menu_previousfile
+  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_nextsource:
+  !asm
+  JSR menu_nextfile
+  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_screenname:
+  ArexxResult = #RC_OK : ArexxResultString$ = Peek$(?str_defaultpubscreen)
+RTS
+
+.arexxfunc_redraw:
+  !asm
+  JSR _redraw
+  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_about:
+  !asm
+  JSR menu_about
+  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_numlines:
+  ArexxResult = #RC_OK : ArexxResultString$ = Str$(Peek.l(?comLong_TotalLines))
+RTS
+
+.arexxfunc_version:
+  ArexxResult = #RC_OK : ArexxResultString$ = Peek$(?str_pedname)
+RTS
+
+.arexxfunc_topline:
+  Poke.l ?ptr_arexx_currsourceline, Peek.l(?comPtr_FirstSourceLine)
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_bottomline:
+  Poke.l ?ptr_arexx_currsourceline, Peek.l(?comPtr_LastSourceLine)
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_nextline:
+  *tempLine.sourceLine = Peek.l(?ptr_arexx_currsourceline)
+  If *tempLine <> 0
+    Poke.l ?ptr_arexx_currsourceline, *tempLine\nextLine
+  EndIf
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_screentoback:
+  ScreenToBack_ sourceWindow\pedScreen
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_screentofront:
+  ScreenToFront_ sourceWindow\pedScreen
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+.arexxfunc_getline:
+  *tempLine.sourceLine = Peek.l(?ptr_arexx_currsourceline)
+  If *tempLine <> 0
+    *detokened.l = TEDDetoke{*tempLine + 9}
+    ArexxResult = #RC_OK : ArexxResultString$ = Peek$(*detokened)
+  Else
+    ArexxResult = #RC_WARN : ArexxResultString$ = ""
+  EndIf
+RTS
+
+.arexxfunc_prevline:
+  !asm
+  MOVEA.l ptr_arexx_currsourceline,A0
+  CMPA.l #$0,A0
+  BEQ.w JL_0_EC88
+  TST.l $4(A0)
+  BEQ.w JL_0_EC88
+    MOVEA.l $4(A0),A0
+    MOVE.l A0,ptr_arexx_currsourceline
+  JL_0_EC88:
+  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+;.getwordnodetoke  ;a0  = cursor pos
+;  MOVEA.l ptr_tempstring,A1
+;  JSR JL_0_ECD6
+;  MOVEA.l ptr_tempstring,A0
+;  MOVE.w replacestartcolumn,d0
+;  ;SUBQ.w #1,d0
+;  MOVE.w d0,comWord_Column
+;  CLR.w comWord_ColumnsOffset
+;  MOVEQ.l #$00,D0
+;RTS
+
+.arexxfunc_getword:
+  !asm
+  MOVEA.l ptr_tempstring,A1
+  JSR JL_0_ECA2
+  !basic
+  ArexxResult = #RC_OK : ArexxResultString$ = Peek$(?ptr_tempstring)
+RTS
+
+JL_0_ECA2:
+  CLR.b macro_
+  MOVEA.l comPtr_CurrentSourceLine,A0
+  LEA $9(A0),A0
+
+  MOVE.l A1,-(A7)
+  MOVEA.l expandstore,A1
+  MOVEQ #120/4,d0
+ 'lo
+    CLR.l (a1)+
+  DBF d0,'lo
+  MOVEA.l expandstore,A1
+  JSR detokenize_line
+  MOVEA.l expandstore,A0
+  MOVE.l (A7)+,A1
+
+  MOVEQ.l #$00,D1
+  MOVE.w comWord_Column,D1
+  ADD.w comWord_ColumnsOffset,D1
+  ;SUBQ.w #1,D1
+  ADDA.l D1,A0
+
+  JL_0_ECD6:
+    TST.w D1
+    BMI.w JL_0_ED14
+
+    MOVE.b (A0),D0
+    CMP.b #"!",d0
+    BNE 'l1
+      MOVE.b #1,macro_
+   'l1
+    CMP.b #"_",d0
+     BEQ JL_0_ED0E
+    CMP.b #"z",D0
+     BGT.w JL_0_ED14
+    CMP.b #"a",D0
+     BGE.w JL_0_ED0E
+    CMP.b #"Z",D0
+     BGT.w JL_0_ED14
+    CMP.b #"A",D0
+     BGE.w JL_0_ED0E
+    CMP.b #"9",D0
+     BGT.w JL_0_ED14
+    CMP.b #"0",D0
+     BLT.w JL_0_ED14
+
+    JL_0_ED0E:
+    SUBQ.l #1,A0
+    SUBQ.w #1,D1
+  BRA.b JL_0_ECD6
+
+  JL_0_ED14:
+  ADDQ.l #1,a0
+  MOVE.w d1,replacestartcolumn
+
+  JL_0_ED14b:
+    MOVE.b (A0)+,D0
+    ;CMP.b #$20,d0
+    ;BEQ JL_0_ED46
+    CMP.b #"{",d0
+    BEQ JL_0_ED46
+    CMP.b #"_",d0
+    BEQ JL_0_ED48
+    CMP.b #"z",D0
+     BGT.w JL_0_ED46
+    CMP.b #"a",D0
+     BGE.w JL_0_ED48
+    CMP.b #"Z",D0
+     BGT.w JL_0_ED46
+    CMP.b #"A",D0
+     BGE.w JL_0_ED48
+    CMP.b #"9",D0
+     BGT.w JL_0_ED46
+    CMP.b #"0",D0
+     BGE.w JL_0_ED48
+
+    JL_0_ED46:
+    MOVEQ.l #$00,D0
+
+    JL_0_ED48:
+    MOVE.b D0,(A1)+
+  TST.b D0
+  BNE.b JL_0_ED14b
+RTS
+
+
+
+.arexxfunc_compilerun:
+  SUBA.l     A0,A0
+  MOVEQ.l    #$01,D0
+  JSR        arexx_answer_message
+  ST         checked_arexxcmd
+
+  MOVEM.l    D2-D7/A1-A6,-(A7)
+  MOVEQ.l    ##MENU_COMPILERUN,D6             ; replaced with the constant  tomsmart1
+  JSR        call_compilermenuitem
+  MOVEM.l    (A7)+,D2-D7/A1-A6
+RTS
+
+.arexxfunc_runexe:
+  SUBA.l     A0,A0
+  MOVEQ.l    #$01,D0
+  BSR.w      arexx_answer_message
+  ST         checked_arexxcmd
+  MOVEM.l    D2-D7/A1-A6,-(A7)
+  MOVEQ.l    ##MENU_RUN,D6                    ; replaced with the constant  tomsmart1
+  JSR        call_compilermenuitem
+  MOVEM.l    (A7)+,D2-D7/A1-A6
+RTS
+
+
+.arexxfunc_makeexec:
+  SUBA.l     A0,A0
+  MOVEQ.l    #$01,D0
+  BSR.w      arexx_answer_message
+  ST         checked_arexxcmd
+  MOVEM.l    D2-D7/A1-A6,-(A7)
+  MOVEQ.l    ##MENU_CREATEEXE,D6
+  JSR        call_compilermenuitem
+  MOVEM.l    (A7)+,D2-D7/A1-A6
+RTS
+
+
+
+.arexxfunc_help:
+  MOVEM.l    A0-A4,-(A7)
+  MOVEA.l    comPtr_CurrentSourceLine,A4
+  ; -- not implemented
+  MOVEM.l    (A7)+,A0-A4
+  MOVEQ.l    #$00,D0
+  SUBA.l     A0,A0
+RTS
+
+.arexxfunc_helptext:
+  MOVEM.l    A0-A4,-(A7)
+  MOVE.w     comWord_DoTokenize,D0
+  BEQ.w      JL_0_EE70
+  MOVEA.l    comPtr_CurrentSourceLine,A4
+  LEA        $9(A4),A4
+  MOVE.w     comWord_ColumnsOffset,D3
+  ADD.w      comWord_Column,D3
+  MOVEQ.l    #$00,D1
+  MOVEQ.l    #$00,D2
+
+  JL_0_EE10:
+  MOVEQ.l    #$00,D0
+  MOVE.b     (A4)+,D0
+  MOVE.b     (A4)+,D0
+  BEQ.w      JL_0_EE3E
+  BPL.w      JL_0_EE38
+  LSL.w      #8,D0
+  MOVE.b     (A4)+,D0
+;  MOVE.w     D0,AL_0_4658
+  JSR        token_to_ascii
+  MOVE.l     A3,D1
+
+  JL_0_EE2E:
+  ADDQ.w     #1,D2
+  TST.b      (A3)+
+  BNE.b      JL_0_EE2E
+  MOVEA.l    A3,A2
+  SUBQ.w     #2,D2
+
+  JL_0_EE38:
+  ADDQ.w     #1,D2
+  CMP.w      D3,D2
+  BLS.b      JL_0_EE10
+
+  JL_0_EE3E:
+  TST.l      D1
+  BEQ.w      JL_0_EE70
+  MOVEA.l    D1,A0
+  MOVEA.l    ptr_tempstring,A1
+
+  JL_0_EE4C:
+  MOVE.b     (A0)+,(A1)+
+  BNE.b      JL_0_EE4C
+  SUBQ.w     #1,A1
+  CMPI.b     #$28,(A2)
+  BEQ.w      JL_0_EE5E
+  MOVE.b     #$20,(A1)+
+
+  JL_0_EE5E:
+  MOVE.b     (A2)+,(A1)+
+  BNE.b      JL_0_EE5E
+  MOVEM.l    (A7)+,A0-A4
+  MOVEQ.l    #$00,D0
+  MOVEA.l    ptr_tempstring,A0
+RTS
+
+JL_0_EE70:
+  SUBA.l     A0,A0
+  MOVEQ.l    #$00,D0
+RTS
+
+.rebuild_menus:
+  Gosub init_menus
+  ArexxResult = #RC_OK : ArexxResultString$ = ""
+RTS
+
+
+arexx_table:        Ds.l 1
+arexx_parameterlist:Ds.l 15
+;L_0_EF02:           Ds.w 7
+
+;.arexx_count_parameters:
+;  MOVEA.l struct_RexxMsg,A1
+;  LEA $28(A1),A0              ; string: AREXX-Command
+;  LEA arexx_table,A1
+;  MOVEQ.l #$00,D6
+;
+;  JL_0_EF20:
+;    CMP.b #$10,D6
+;    BEQ.w exit_counting       ; if we have 16 entries, exit
+;
+;    JL_0_EF28:
+;    MOVEA.l (A0)+,A2
+;    CMPA.l #$0,A2             ; if end of string reached, exit
+;    BEQ.w exit_counting
+;
+;    JL_0_EF34:
+;    MOVEA.l (A1)+,A3
+;    MOVE.b (A2)+,D1
+;  BEQ.b JL_0_EF20
+;
+;  CMP.b #$22,D1               ; "
+;  BEQ.w JL_0_EF74
+;    CMP.b #$27,D1             ; single quote
+;    BEQ.w JL_0_EF60
+;      ADDQ.w #1,D6
+;      MOVE.b D1,(A3)+
+;      JL_0_EF4E:
+;        MOVE.b (A2)+,D0
+;        CLR.b (A3)
+;        TST.b D0
+;        BEQ.b JL_0_EF28       ; space
+;          CMP.b #$20,D0
+;          BEQ.b JL_0_EF34
+;            MOVE.b D0,(A3)+
+;      BRA.b JL_0_EF4E
+;    JL_0_EF60:
+;    ADDQ.w #1,D6
+;
+;    JL_0_EF62:
+;      MOVE.b (A2)+,D0
+;      CLR.b (A3)
+;      TST.b D0
+;      BEQ.b JL_0_EF28
+;        CMP.b #$22,D0        ; "
+;        BEQ.b JL_0_EF34
+;          MOVE.b D0,(A3)+
+;    BRA.b JL_0_EF62
+;  JL_0_EF74:
+;
+;  ADDQ.w #1,D6
+;
+;  JL_0_EF76:
+;    MOVE.b (A2)+,D0
+;    CLR.b (A3)
+;    TST.b D0
+;    BEQ.b JL_0_EF28
+;      CMP.b #$22,D0
+;      BEQ.b JL_0_EF34
+;        MOVE.b D0,(A3)+
+;  BRA.b JL_0_EF76
+;
+;  exit_counting:
+;  MOVE.w D6,arexx_number_of_parameters
+;RTS
