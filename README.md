@@ -5,7 +5,7 @@ What we have got here is the complete package of AmiBlitz3 - a BASIC-compiler fo
 - 35 MB of harddisc space
 - 8 MB RAM to do things, _12 MB RAM to do serious development_
 - MC 68020 processor
-- Workbench 2.1 (or, Workbench 2.04 with locale.library)
+- Workbench 2.1 (V38 or, Workbench 2.04 V37 with locale.library)
 
 ## Installation:
 To get started with AB3, just download the [current release](https://github.com/AmiBlitz/AmiBlitz3/releases/latest) and extract it somewhere on your harddisk.
