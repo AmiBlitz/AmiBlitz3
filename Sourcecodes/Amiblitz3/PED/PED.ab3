@@ -3,7 +3,7 @@
 ; 
 ; General Info
 ; -------------------------------------------------------
-; ExePath         = "///System"
+; ExePath         = "Blitz3:System"
 ; ExeFile         = "PED_beta"
 ; CreateIcon      = 0
 ; Residents       = "all.res"
@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.8.0
-; NumberOfBuilds  = 1459
+; NumberOfBuilds  = 1543
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 12355
-; CursorColumn    = 37
-; LabelSearch     = ""comment"
+; CursorLine      = 6747
+; CursorColumn    = 1
+; LabelSearch     = "call_compiler"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -194,15 +194,11 @@ XINCLUDE "/Shared/ted.include.ab3"
 
 XINCLUDE "v43+.definitions.ab3"                       ; for MouseWheel support  tomsmart1
 XINCLUDE "dos.include.ab3"
-XINCLUDE "asl.include.ab3"
-XINCLUDE "multilist.include.ab3"
-XINCLUDE "screen.include.ab3"
-XINCLUDE "semaphore.include.ab3"
-XINCLUDE "vvblank.include.ab3"
-XINCLUDE "cpu.include.ab3"
 XINCLUDE "file.include.ab3"
+XINCLUDE "asl.include.ab3"
 XINCLUDE "clipboard2.include.ab3"
 XINCLUDE "translation.include.ab3"
+XINCLUDE "vvblank.include.ab3"
 
 ; --------------------------------------------------- Wizard-Extensions
 optimize 5 : Syntax 6
@@ -299,6 +295,8 @@ NEWTYPE.pedconfig
   scroll_rate.b
 
   console_device.s
+  console_title.s
+  console_font.s
   console_wb.b
   console_wait.b
 
@@ -336,8 +334,28 @@ End NEWTYPE
 DEFTYPE.pedconfig pedconfig
 
 NEWTYPE.ped
+  currentDir.s
+  currentFile.s
+  filePattern.s
+  sourceFileComplete.s
 
+  check_existsfile.b
+  extention_info.s
+  extention_xtra.s
+  extention_bak.s
+
+  sourceFileHandle.l
+  convert.b
+  flag_tokenization.w
+  DoTokenize.w
+  amigaguide.b
+  debugmode.b
 End NEWTYPE
+DEFTYPE.ped ped
+ped\check_existsfile = False
+ped\extention_info = ".info"
+ped\extention_xtra = ".xtra"
+ped\extention_bak = ".bak"
 
 NEWTYPE.sourceWindow
   *pedScreen.Screen
@@ -364,8 +382,10 @@ NEWTYPE.sourceWindow
 
   cursorState.b
   ColumnsOffset.w
+  ColumnsOffsetTmp.w
   Column.w
   DisplayLine.l
+  Title.s
 End NEWTYPE
 DEFTYPE.sourceWindow sourceWindow
 DEFTYPE.RastPort *sourcerp
@@ -398,6 +418,9 @@ NEWTYPE.project
 End NEWTYPE
 DEFTYPE.project ab2_project
 Dim tempproject$(#MAX_SOURCEFILES,1)
+MaxLen project_changelog$         = 1024
+
+
 Dim rememberfiles$(5)
 
 NEWTYPE .pedfilelist
@@ -604,9 +627,6 @@ MaxLen tautodocdir$       = 192
 MaxLen templatefilename$  =  96      ; fuer laden von templates
 MaxLen temp_filename$     = 144      ; fuer laden von "jump_onclick"
 
-MaxLen changelog$         = 1024
-
-
 WZListAdd lst.List         ," "
 WZListAdd lst2.List        ," "
 WZListAdd list_labels.List ," "
@@ -734,7 +754,7 @@ SHARED *PreProcessor.preprocessor
   If Mid$(text$,textX,1) = "" Then Function Return ""
 
   If preproc
-    log_Print{"using preprocessor to find string in source: " + text$}
+    ;log_Print{"using preprocessor to find string in source: " + text$}
     Function Return preproc_CropToken{*PreProcessor,text$,textX}
   Else
     If removechars Then checklist.s = " .,+&!|(){}[]<>" Else checklist = ""
@@ -792,11 +812,11 @@ Statement Show_Helpfile{libname$,node$,helpdir$,pubscreenname$}
 End Statement
 
 Function.b CheckWindow{title$}
-
+SHARED pedconfig
   succ.b = True
   *thisscreen.Screen = Peek.l(Addr Screen(0))
   *conwin.Window = *thisscreen\FirstWindow
-  While (*conwin<>0) AND Peek$(*conwin\Title)<>console_title$
+  While (*conwin<>0) AND Peek$(*conwin\Title) <> pedconfig\console_title
     *conwin = Peek.l(*conwin)
   Wend
   If *conwin=0 Then succ = False
@@ -1069,6 +1089,33 @@ Function.s PED_GetMacroName{macrobase.l,mname$}
   Until *mpointer = 0
   Function Return ""
 End Function
+
+
+Statement PED_PrintTextStandard{tx.w, ty.w, *textaddr.l}
+SHARED pedconfig,sourceWindow,AB3Pen()
+
+ log_Print{"print_standard_text"}
+
+ ; copy the current line to a tempBuffer
+ ;For i = 0 To Len(Peek$(*textaddr))
+ ;  Poke.b Peek.l(?textbufferPrint) + i, Peek.b(*textaddr+i)
+ ;Next i
+
+ startPos.w = sourceWindow\ColumnsOffsetTmp
+ tmpString$ = UnRight$(Peek$(*textaddr),startPos)
+
+ tlength.w = Len(tmpString$)
+ If tlength > sourceWindow\visibleColumns Then tlength = sourceWindow\visibleColumns
+
+ tposy.w = tx * sourceWindow\font\tf_YSize + sourceWindow\font\tf_Baseline
+ tposx.w = ty * sourceWindow\font\tf_XSize + sourceWindow\BoxLeft
+
+ Move_ sourceWindow\win\RPort, tposx, tposy
+ SetAPen_ sourceWindow\win\RPort,AB3Pen(#AB3_cother)
+ Text_ sourceWindow\win\RPort,&tmpString$,tlength
+
+End Statement
+
 
 
 Statement PED_PrintText{*textaddr.l, xPos.w, yPos.w, textlength.w, textcolor.w}
@@ -1567,7 +1614,7 @@ End Function
 
 
 Statement savewinpref{num.l}
-  SHARED wpref(),wtemp,console_title$,sourceWindow
+  SHARED wpref(),wtemp,pedconfig,sourceWindow
 
   used_win.l = Used Window
   ret.l = ask{!TRANS{"The window settings have been saved.\\nPress appropriate FN-Key (F4-F6) to set window configuration."},!TRANS{"Ok"},!TRANS{"Info"}}
@@ -1641,10 +1688,10 @@ Statement savewinpref{num.l}
   *thisscreen.Screen = Peek.l(Addr Screen(0))
   *conwin.Window = *thisscreen\FirstWindow
 ;  message{"error"}
-  security.l=0
+  security.l = 0
   If *conwin
-    While (*conwin<>0)
-      If Peek$(*conwin\Title)<>console_title$
+    While *conwin <> 0
+      If Peek$(*conwin\Title) <> pedconfig\console_title
         If Peek.l(*conwin) Then *conwin = Peek.l(*conwin) Else *conwin = 0
       Else
         Pop While
@@ -2015,6 +2062,112 @@ Statement CloseWZWinWithMenu{wzwinname.s}
 End Statement
 
 
+Statement PED_CloseFile{fh.l}
+  SHARED ped
+  If fh
+    log_Print{"closing file handle: " + Hex$(fh)}
+    Close_ fh : ped\sourceFileHandle = 0
+  Else
+    log_Print{"file already closed."}
+  EndIf
+End Statement
+
+Function PED_OpenFile{fname$, accessmode.l, menuload.b}
+SHARED ped, pedconfig
+
+  ped\convert = False
+
+  ;If fname$="" Then fname$ = ped\sourceFileComplete
+  log_Print{"open_file <" + fname$ + ">"}
+
+  ; -- check extension
+  fext$ = LCase$(dos_GetExt{fname$})
+  log_Print{"checking file extention of file: " + fname$+ ">>>" + fext$}
+  If fext$ = "bb2" OR fext$ = "ab2" OR fext$ = "ab3" OR fext$ = "bb"
+    log_Print{"activating tokenization"}
+    ped\DoTokenize = $FFFF
+    ped\flag_tokenization = $FFFF
+  EndIf
+
+  If fext$ = "txt" OR fext$ = "guide"
+    log_Print{"deactivating tokenization"}
+    ped\DoTokenize = False
+    ped\flag_tokenization = False
+    If fext$ = "guide" Then ped\amigaguide = True
+  EndIf
+
+  If fext$ = "asm"
+    log_Print{"it seems to be an asm file, tokenization and conversion mode is active."}
+    If pedconfig\smart_tokenization Then ped\DoTokenize = $FFFF
+    ped\convert = True
+  EndIf
+
+  ; -- open file
+  *fh.l = Open_(&fname$, accessmode)
+  If *fh
+    log_Print{"file opened successfully, handle: " + Hex$(*fh)}
+    Function Return *fh
+  Else
+    log_Print{"could not open file <" + fname$ + ">"}
+    log_Print{"menuload: " + Str$(menuload)}
+
+    If menuload = False
+      error{"Couldn't open file!"}
+      ;MOVEA.l #comStr_ErrorOpenFile,A0
+      ;BRA.w show_errorrequester
+    Else
+      ;Poke.b ?menuload,0
+      ;log_Print{"showing load error requester"}
+      ;*easystruct.EasyStruct = ?easystruct_error
+      ;*easystruct\es_TextFormat = ?comStr_ErrorOpenFile
+      ;Gosub show_requester
+      error{"Couldn't open file!"}
+      ;UnlockAllOpenWZWin{}
+      ;Gosub set_pointer_normal_bas
+    EndIf
+  EndIf
+
+End Function
+
+
+
+Function.s PED_RequestFile{tmpdir$, tmpfile$, tmptitle$, tmppattern$}
+SHARED ped, pedconfig
+
+ ;If _a0<>0 Then tmpdir$   = Peek$(_a0)
+ ;If _a1<>0 Then tmpfile$  = Peek$(_a1)
+ ;If _a2<>0 Then tmptitle$ = Peek$(_a2)
+ If pedconfig\asl_use_filepattern <> 0
+   If tmppattern$ = "" Then tmppattern$ = "(#?.info)"
+ Else
+   tmppattern$ = ""
+ EndIf
+
+ If pedconfig\asl_use_dims
+   asl_SetRequesterDims{pedconfig\asl_x,pedconfig\asl_y,pedconfig\asl_w,pedconfig\asl_h}
+ EndIf
+
+ aslfr_SetRequesterTitle{1,!TRANS{tmptitle$},"",""}
+ aslfr_SetPattern{1,tmppattern$}
+ aslfr_SetPath{1,tmpdir$}
+ aslfr_SetFile{1,tmpfile$}
+
+ If aslfr_Request{1,False,False,False}
+   tempdir$      = aslfr_GetPath{1}
+   tempfile$     = aslfr_GetFile{1}
+   tempcomplete$ = dos_AddPart{tempdir$ , tempfile$}
+ Else
+   tempfile$ = ""
+ EndIf
+
+ If tempfile$ <> ""
+   ped\currentDir = tempdir$
+   ped\currentFile = tempfile$
+   ped\sourceFileComplete = tempcomplete$
+   Function Return tempcomplete$
+ EndIf
+End Function
+
 
 ;@@0
 ; -------------------------------------------------------------------------------------
@@ -2242,9 +2395,9 @@ If ( FindResident_("MorphOS") )        Then OSVersion = #MorphOS  ;: message{"RE
   al_rightspace.l  = dos_GetToolValue{"autolayout_right" ,0}
   al_bottomspace.l = dos_GetToolValue{"autolayout_bottom",0}
 
-  console_device$ = dos_GetToolString{"CON_DEVICE","CON:"}
-  console_font$   = dos_GetToolString{"CON_FONT",""}
-  console_title$  = !TRANS{"AmiBlitz3 Console Output"}
+  pedconfig\console_device = dos_GetToolString{"CON_DEVICE","CON:"}
+  pedconfig\console_font   = dos_GetToolString{"CON_FONT",""}
+  pedconfig\console_title  = !TRANS{"AmiBlitz3 Console Output"}
 
   pedconfig\cursorStyle = cursorStyleGetValue{dos_GetToolString{"cursorstyle","block"}}
   pedconfig\scroll_rate = dos_GetToolValue{"scrollrate",0}
@@ -2263,7 +2416,7 @@ If ( FindResident_("MorphOS") )        Then OSVersion = #MorphOS  ;: message{"RE
   pedconfig\asl_y = dos_GetToolValue{"ASLREQ_Y" ,20}
   pedconfig\asl_w = dos_GetToolValue{"ASLREQ_W",320}
   pedconfig\asl_h = dos_GetToolValue{"ASLREQ_H",200}
-  Poke.s ?comStr_FilePattern,dos_GetToolString{"ASLREQ_Pattern","#?.(bb2|ab2|ab3|asc|txt)"}
+  ;Poke.s ?comStr_FilePattern,dos_GetToolString{"ASLREQ_Pattern","#?.(bb2|ab2|ab3|asc|txt)"}
 
   If pedconfig\asl_use_dims <> 0
     asl_SetRequesterDims{pedconfig\asl_x,pedconfig\asl_y,pedconfig\asl_w,pedconfig\asl_h}
@@ -2308,7 +2461,7 @@ If ( FindResident_("MorphOS") )        Then OSVersion = #MorphOS  ;: message{"RE
   cstr$          = ""
   cstr2$         = ""
   str2b$         = ""
-  changelog$     = ""
+  project_changelog$ = ""
   oldfindstr$    = ""
   oldreplacestr$ = ""
 
@@ -2619,63 +2772,44 @@ begin1:
     If pedconfig\lastSourceFile <> ""
       currentdir$ = dos_PathPart{pedconfig\lastSourceFile}
       If Right$(currentdir$,1)<>":" Then currentdir$ + "/" ; dirty hack, but better than editing ASM
-      Poke.s ?comStr_SourceName,dos_FilePart{pedconfig\lastSourceFile}
+      ped\currentFile = dos_FilePart{pedconfig\lastSourceFile}
+      ped\currentDir = currentdir$
+      ped\sourceFileComplete =  pedconfig\lastSourceFile
       Poke.s ?comStr_CurrentDir,currentdir$
-      Poke.s ?comStr_SourceFileComplete, pedconfig\lastSourceFile
+      Poke.s ?comStr_SourceName,dos_FilePart{pedconfig\lastSourceFile}
     EndIf
   EndIf
-  !asm
+
   ; --
   ; -- jump to mainloop if no sourcename given, else
   ; -- load last Source
 .AUTOLOAD_SOURCE
-  MOVE.b comStr_SourceName,D0
-  BEQ.w skip_autoload
-
-;    ; build complete filestring and put in D7
-;    LEA comStr_CurrentDir,A0
-;    MOVEA.l comPtr_Temp_TokenString1,A1
-;    MOVE.l A1,D7
-;    JL_0_40E:
-;      MOVE.b (A0)+,(A1)+
-;    BNE.b JL_0_40E
-;    SUBQ.w #1,A1
-;
-;    LEA comStr_SourceName,A0
-;    JL_0_41A:
-;      MOVE.b (A0)+,(A1)+
-;    BNE.b JL_0_41A
-
-    JSR cursor_off
-
-    MOVE.l #comStr_SourceFileComplete,d7
-    JSR load_source
-    JSR update_vertscroller
-    JSR draw_statusarea
-    JSR update_labelstuff
-    !basic
-    Gosub cursor_onoff_force
+  If ped\currentFile <> ""
     !asm
-  skip_autoload:
+    JSR cursor_off
+    !basic
+    loadsourcefilename$ = ped\sourceFileComplete
+    Gosub load_source
+    ;!asm
+    ;JSR update_vertscroller
+    ;JSR draw_statusarea
+    ;JSR update_labelstuff
+    ;!basic
+    Gosub cursor_onoff_force
+  EndIf
 
-  ; --
   ; -- show welcome requester if option selected
-  .WELCOME_REQUESTER
-  !basic
-  log_Print{"check welcome requester"}
   If NOT pedconfig\no_welcome Then Gosub menu_about
 
   ; -- jump to main loop
   Gosub main_loop
 
-  !asm
-; ---------------------------------------------------------------------------------------------------
-Exit_main:                                           ; insert to remove the evil stackmagic by/for
-                                                     ; quit and have a clean way to exit the endless
-                                                     ; main_loop without modifing it  tomsmart1
-; --
-; -- shutdown PED after return of the mainloop
-  !basic
+  ; --
+  ; -- shutdown PED after return of the mainloop
+  CNIF #USE_AREXX=1
+  ArexxMyMessage$ = "QUITPLEASE" : Gosub arexx_sendmessage
+  CEND
+
   log_Print{"closing GUI..."}
   Gosub close_gui
   !asm
@@ -2739,206 +2873,209 @@ End
 
 ; ---------------------------------- THIS IS THE MAINLOOP -----------------------------------------
 .main_loop:
-  CLR.w comWord_LabelListChanged
-  CLR.b redraw_ped
+  exit_mainloop.b = False
+  While NOT exit_mainloop
+    CLR.w comWord_LabelListChanged
+    CLR.b redraw_ped
 
-  Gosub PED_events
+    Gosub PED_events
 
-  ; --- check if an exe is running and revert the entered key ---
-  If Peek.b(?comByte_RunningFlag)
-    If Peek.w(?comWord_KeyBeforeReturn)
-      log_Print{"as an exe is running, revert the entered key"}
-      !asm
-      JSR _redraw
-      !basic
-      Poke.w ?comWord_KeyBeforeReturn,0
-    EndIf
-  EndIf
-
-  If Peek.w(?comWord_KeyBeforeReturn) <> 0
-    log_Print{"** parse the line after event **"}
-    ; --- get address of actual source line ---
-    ;MOVE.l comLong_DisplayLine,D1 : ADD.l comLong_DisplayLineOffset,D1
-    ;MOVE.l d1,lastedited_line
-    Poke.l ?lastedited_line, Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
-    MOVE.w comWord_KeyBeforeReturn,D0 : MOVE.w D0,comWord_SourceChanged
-
-    ;MOVEQ #0,D0
-    ;MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
-    ;MOVE.l a2,d0 : lineaddr.l = PutD0
-    lineaddr.l = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
-    columnpos.w =  Peek.w(?comWord_Column) + Peek.w(?comWord_ColumnsOffset)
-    ;log_Print{Hex$(lineaddr)+ " column: " + Str$(columnpos)}
-    log_Print{Peeks$(lineaddr,34)}; #MAX_Columns)}
-
-    ; --- store cursor column position ---
-    ;MOVEQ #0,D0
-    ;MOVE.w comWord_Column,D0 : ADD.w comWord_ColumnsOffset,D0
-    ;columnpos.w = PutD0
-
-    ; --- format source line and get new column position ---
-    newcolumnpos.w = preparseline{columnpos, lineaddr, pedconfig\auto_format, pedconfig\correct_functions}
-    ;GetD0 newcolumnpos
-    ;SUB.w comWord_ColumnsOffset,D0 : MOVE.w D0,comWord_Column
-    Poke.w ?comWord_Column, newcolumnpos - Peek.w(?comWord_ColumnsOffset)
-    ;log_Print{"current Column: " + Str$(Peek.w(?comWord_Column))}
-    old_search_label$ = "|"
-
-    ; -- parse the current line
-    !asm
-    MOVEA.l comPtr_CurrentSourceLine,A4
-    MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
-    JSR parse_line
-
-    ; --- draw block mark if existing
-;    SF comByte_StateBlockMark
-;    TST.l comLong_BlockEndY
-;    BMI.w exit_updateblock
-;      MOVEM.l D0-D3/A0-A2,-(A7)
-;      MOVE.l comLong_DisplayLine,D1
-;      ADD.l comLong_DisplayLineOffset,D1
-;      CMP.l comLong_BlockStartY,D1
-;      BLT.w JL_0_C66
-;      CMP.l comLong_BlockEndY,D1
-;      BGT.w JL_0_C66
-;        !basic
-;        log_Print{"update block marking"}
-;        !asm
-;        MOVE.w comLong_BlockStartX,D0
-;        MOVE.l comLong_BlockStartY,D1
-;        MOVE.w comLong_BlockEndX,D2
-;        MOVE.l comLong_BlockEndY,D3
-;        CMP.l D1,D3
-;        BNE.w JL_0_C50
-;          CMP.w D0,D2
-;          BNE.w JL_0_C50
-;            MOVE.w visiblecolumns,D2
-;        JL_0_C50:
-;        SUB.l comLong_DisplayLineOffset,D3
-;        SUB.l comLong_DisplayLineOffset,D1
-;        JSR JL_0_59BC
-;        ST comByte_StateBlockMark
-;      JL_0_C66:
-;      MOVEM.l (A7)+,D0-D3/A0-A2
-;    exit_updateblock:
-
-    JSR JL_0_55AA  ; insert new parsed line into source
-;
-    MOVE.w comWord_DoTokenize,D0
-    BEQ.w JL_0_CC6
-      JSR print_current_sourceline
-;
-;      TST.b comByte_StateBlockMark
-;      BEQ.w JL_0_CC6
-;        MOVEM.l D0-D3/D7/A0-A2,-(A7)
-;        MOVE.w comLong_BlockStartX,D0
-;        MOVE.l comLong_BlockStartY,D1
-;        MOVE.w comLong_BlockEndX,D2
-;        MOVE.l comLong_BlockEndY,D3
-;        CMP.l D1,D3
-;        BNE.w JL_0_CB2
-;          CMP.w D0,D2
-;          BNE.w JL_0_CB2
-;            MOVE.w visiblecolumns,D2
-;        JL_0_CB2:
-;        SUB.l comLong_DisplayLineOffset,D3
-;        SUB.l comLong_DisplayLineOffset,D1
-;        JSR JL_0_59BC
-;        MOVEM.l (A7)+,D0-D3/D7/A0-A2
-    JL_0_CC6:
-    !basic
-  EndIf
-
-  ; -- check if an executable is running and prevent IDE from doing things
-  skip_update.b = False
-  If Peek.b(?comByte_RunningFlag)
-    If last_vankey.b = #VANILLAKEY_UP OR last_vankey= #VANILLAKEY_DOWN OR last_menuentry.l = #MENU_SAVEAS OR last_menuentry > #MENU_CUSTOMEDIT OR exit_loop_class.b = -3 OR last_vankey = #VANILLAKEY_HELP
-      Gosub check_panic
-    EndIf
-  EndIf
-
-  If NOT skip_update
-    Poke.b ?redraw_ped,0
-    If exit_loop_class.b = -3 Then Poke.b ?redraw_ped,1
-
-    ; -- call function selected in comArray_KeyTable
-    ;log_Print{"***** Last_vankey = " + Hex$(last_vankey.b)}
-    ;log_Print{"***** Last_Menuentry = " + Hex$(last_menuentry)}
-    ;log_Print{"***** exit class:" + Str$(exit_loop_class.b)}
-
-    If exit_loop_flag.b <> 0
-      log_Print{"***** executing actions hold back ..."}
-      Select last_vankey
-      Case #VANILLAKEY_RETURN: Gosub do_VANILLAKEY_RETURN
-      Case #VANILLAKEY_UP:     mqualifier.w = last_mqualifier.w : Gosub do_VANILLAKEY_UP
-      Case #VANILLAKEY_DOWN:   mqualifier = last_mqualifier : Gosub do_VANILLAKEY_DOWN
-      End Select
-
-      If exit_loop_class = -2
-        ; _menuitem will be set in the first menu event handler
-        Gosub event_menu
-      EndIf
-
-      If exit_loop_class = -3 OR exit_loop_class= -4
-        ; -4 is mouse up
-
-
-        ;log_Print{"do what mice do."}
-        GetD0 exit_loop_class
-        MOVE.l d0,-(a7)
+    ; --- check if an exe is running and revert the entered key ---
+    If Peek.b(?comByte_RunningFlag)
+      If Peek.w(?comWord_KeyBeforeReturn)
+        log_Print{"as an exe is running, revert the entered key"}
         !asm
-        MOVE.l (a7)+,d7
-        MOVEA.l comPtr_CurrentSourceLine,A4
-        JSR event_leftmousebutton
+        JSR _redraw
         !basic
+        Poke.w ?comWord_KeyBeforeReturn,0
       EndIf
     EndIf
 
-    ; -- check for some tokens and automatically add the closing token
-    ; --
-    If pedconfig\auto_constructs
-      If last_vankey.b = #VANILLAKEY_RETURN
-        a$ = check_constructs{?comPtr_CurrentSourceLine}
-        If a$<>""
-          Gosub insertstring
+    If Peek.w(?comWord_KeyBeforeReturn) <> 0
+      ;log_Print{"** parse the line after event **"}
+      ; --- get address of actual source line ---
+      ;MOVE.l comLong_DisplayLine,D1 : ADD.l comLong_DisplayLineOffset,D1
+      ;MOVE.l d1,lastedited_line
+      Poke.l ?lastedited_line, Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
+      MOVE.w comWord_KeyBeforeReturn,D0 : MOVE.w D0,comWord_SourceChanged
+
+      ;MOVEQ #0,D0
+      ;MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
+      ;MOVE.l a2,d0 : lineaddr.l = PutD0
+      lineaddr.l = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
+      columnpos.w =  Peek.w(?comWord_Column) + Peek.w(?comWord_ColumnsOffset)
+      ;log_Print{Hex$(lineaddr)+ " column: " + Str$(columnpos)}
+      log_Print{Peeks$(lineaddr,34)}; #MAX_Columns)}
+
+      ; --- store cursor column position ---
+      ;MOVEQ #0,D0
+      ;MOVE.w comWord_Column,D0 : ADD.w comWord_ColumnsOffset,D0
+      ;columnpos.w = PutD0
+
+      ; --- format source line and get new column position ---
+      newcolumnpos.w = preparseline{columnpos, lineaddr, pedconfig\auto_format, pedconfig\correct_functions}
+      ;GetD0 newcolumnpos
+      ;SUB.w comWord_ColumnsOffset,D0 : MOVE.w D0,comWord_Column
+      Poke.w ?comWord_Column, newcolumnpos - Peek.w(?comWord_ColumnsOffset)
+      ;log_Print{"current Column: " + Str$(Peek.w(?comWord_Column))}
+      old_search_label$ = "|"
+
+      ; -- parse the current line
+      !asm
+      MOVEA.l comPtr_CurrentSourceLine,A4
+      MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
+      JSR parse_line
+
+      ; --- draw block mark if existing
+  ;    SF comByte_StateBlockMark
+  ;    TST.l comLong_BlockEndY
+  ;    BMI.w exit_updateblock
+  ;      MOVEM.l D0-D3/A0-A2,-(A7)
+  ;      MOVE.l comLong_DisplayLine,D1
+  ;      ADD.l comLong_DisplayLineOffset,D1
+  ;      CMP.l comLong_BlockStartY,D1
+  ;      BLT.w JL_0_C66
+  ;      CMP.l comLong_BlockEndY,D1
+  ;      BGT.w JL_0_C66
+  ;        !basic
+  ;        log_Print{"update block marking"}
+  ;        !asm
+  ;        MOVE.w comLong_BlockStartX,D0
+  ;        MOVE.l comLong_BlockStartY,D1
+  ;        MOVE.w comLong_BlockEndX,D2
+  ;        MOVE.l comLong_BlockEndY,D3
+  ;        CMP.l D1,D3
+  ;        BNE.w JL_0_C50
+  ;          CMP.w D0,D2
+  ;          BNE.w JL_0_C50
+  ;            MOVE.w visiblecolumns,D2
+  ;        JL_0_C50:
+  ;        SUB.l comLong_DisplayLineOffset,D3
+  ;        SUB.l comLong_DisplayLineOffset,D1
+  ;        JSR JL_0_59BC
+  ;        ST comByte_StateBlockMark
+  ;      JL_0_C66:
+  ;      MOVEM.l (A7)+,D0-D3/A0-A2
+  ;    exit_updateblock:
+
+      JSR JL_0_55AA  ; insert new parsed line into source
+  ;
+      MOVE.w comWord_DoTokenize,D0
+      BEQ.w JL_0_CC6
+        JSR print_current_sourceline
+  ;
+  ;      TST.b comByte_StateBlockMark
+  ;      BEQ.w JL_0_CC6
+  ;        MOVEM.l D0-D3/D7/A0-A2,-(A7)
+  ;        MOVE.w comLong_BlockStartX,D0
+  ;        MOVE.l comLong_BlockStartY,D1
+  ;        MOVE.w comLong_BlockEndX,D2
+  ;        MOVE.l comLong_BlockEndY,D3
+  ;        CMP.l D1,D3
+  ;        BNE.w JL_0_CB2
+  ;          CMP.w D0,D2
+  ;          BNE.w JL_0_CB2
+  ;            MOVE.w visiblecolumns,D2
+  ;        JL_0_CB2:
+  ;        SUB.l comLong_DisplayLineOffset,D3
+  ;        SUB.l comLong_DisplayLineOffset,D1
+  ;        JSR JL_0_59BC
+  ;        MOVEM.l (A7)+,D0-D3/D7/A0-A2
+      JL_0_CC6:
+      !basic
+    EndIf
+
+    ; -- check if an executable is running and prevent IDE from doing things
+    skip_update.b = False
+    If Peek.b(?comByte_RunningFlag)
+      If last_vankey.b = #VANILLAKEY_UP OR last_vankey= #VANILLAKEY_DOWN OR last_menuentry.l = #MENU_SAVEAS OR last_menuentry > #MENU_CUSTOMEDIT OR exit_loop_class.b = -3 OR last_vankey = #VANILLAKEY_HELP
+        Gosub check_panic
+      EndIf
+    EndIf
+
+    If NOT skip_update
+      Poke.b ?redraw_ped,0
+      If exit_loop_class.b = -3 Then Poke.b ?redraw_ped,1
+
+      ; -- call function selected in comArray_KeyTable
+      ;log_Print{"***** Last_vankey = " + Hex$(last_vankey.b)}
+      ;log_Print{"***** Last_Menuentry = " + Hex$(last_menuentry)}
+      ;log_Print{"***** exit class:" + Str$(exit_loop_class.b)}
+
+      If exit_eventloop.b <> 0
+        log_Print{"***** executing actions hold back ..."}
+        Select last_vankey
+        Case #VANILLAKEY_RETURN: Gosub do_VANILLAKEY_RETURN
+        Case #VANILLAKEY_UP:     mqualifier.w = last_mqualifier.w : Gosub do_VANILLAKEY_UP
+        Case #VANILLAKEY_DOWN:   mqualifier = last_mqualifier : Gosub do_VANILLAKEY_DOWN
+        End Select
+
+        If exit_loop_class = -2
+          ; _menuitem will be set in the first menu event handler
+          Gosub event_menu
+        EndIf
+
+        If exit_loop_class = -3 OR exit_loop_class= -4
+          ; -4 is mouse up
+
+
+          ;log_Print{"do what mice do."}
+          GetD0 exit_loop_class
+          MOVE.l d0,-(a7)
           !asm
-          JSR insertreturn : JSR movecursorlineup
+          MOVE.l (a7)+,d7
+          MOVEA.l comPtr_CurrentSourceLine,A4
+          JSR event_leftmousebutton
           !basic
         EndIf
       EndIf
+
+      ; -- check for some tokens and automatically add the closing token
+      ; --
+      If pedconfig\auto_constructs
+        If last_vankey.b = #VANILLAKEY_RETURN
+          a$ = check_constructs{?comPtr_CurrentSourceLine}
+          If a$<>""
+            Gosub insertstring
+            !asm
+            JSR insertreturn : JSR movecursorlineup
+            !basic
+          EndIf
+        EndIf
+      EndIf
+
+      ; redraw ped if redraw_ped is set or mouseclick-event
+      If Peek.b(?redraw_ped)
+        !asm
+        MOVE.l a0,-(a7)
+        JSR _redraw
+        MOVE.l (a7)+,a0
+        !basic
+      EndIf
+
+      ; update diag_redraw on event $fffc
+      If exit_loop_code.l = -4
+        Gosub diag_redraw
+      EndIf
+
+    Else
+      log_Print{"update skipped"}
     EndIf
 
-    ; redraw ped if redraw_ped is set or mouseclick-event
-    If Peek.b(?redraw_ped)
-      !asm
-      MOVE.l a0,-(a7)
-      JSR _redraw
-      MOVE.l (a7)+,a0
-      !basic
-    EndIf
+    !asm
+    JL_0_CE2:                                              ;?? looks like double label ??
+    MOVE.w comWord_LabelListChanged,D0
+    BEQ.w JL_0_CFA
+      JSR update_labelstuff
+    JL_0_CFA:
 
-    ; update diag_redraw on event $fffc
-    If exit_loop_code.l = -4
-      Gosub diag_redraw
-    EndIf
-
-  Else
-    log_Print{"update skipped"}
-  EndIf
-
-  !asm
-  JL_0_CE2:                                              ;?? looks like double label ??
-  MOVE.w comWord_LabelListChanged,D0
-  BEQ.w JL_0_CFA
-    JSR update_labelstuff
-  JL_0_CFA:
-
-  ;MOVE.b (A7)+,D0                                         ; get flag from stack (from keytable)
-  ;TST.b D0
-  ;BEQ.w main_loop
-  JSR update_vertscroller
-  !basic
-Gosub main_loop
+    ;MOVE.b (A7)+,D0                                         ; get flag from stack (from keytable)
+    ;TST.b D0
+    ;BEQ.w main_loop
+    JSR update_vertscroller
+    !basic
+  Wend
+Return
 ; ----------------------------------------- END OF MAINLOOP -------------------------------------
 
 
@@ -3002,10 +3139,9 @@ Return
 ;_workbenchbase:          Dc.l 0
 ;str_libname_workb:       Dc.b "workbench.library",0 : Even
 ;ptr_AppMenuItem:         Ds.l 1
-
-ptr_sourcefont:          Dc.l 0
-ptr_sourcefonti:         Dc.l 0
-ptr_sourcefontb:         Dc.l 0
+;ptr_sourcefont:          Dc.l 0
+;ptr_sourcefonti:         Dc.l 0
+;ptr_sourcefontb:         Dc.l 0
 str_tempfilename:        Ds.b #MAX_STRINGSIZE
 
 str_pedname:             Dc.b "PED ",!versions,0: Even
@@ -3999,16 +4135,16 @@ RTS
 Return
 
 Even
-ptr_sourcefilename:      Ds.l 1
-str_extentionxtra:       Dc.b ".xtra",0
-str_extentioninfo:       Dc.b ".info",0
-str_bakextention:        Dc.b ".bak",0,0
+;ptr_sourcefilename:      Ds.l 1
+;str_extentionxtra:       Dc.b ".xtra",0
+;str_extentioninfo:       Dc.b ".info",0
+;str_bakextention:        Dc.b ".bak",0,0
 
 
 .write_infofile:
-  *icon_flock.l = Lock_(Peek$(Peek.l(?ptr_sourcefilename)) + Peek$(?str_extentioninfo), #ACCESS_READ)
+  *icon_flock.l = Lock_(ped\sourceFileComplete + ped\extention_info, #ACCESS_READ)
   If *icon_flock = 0
-    *icon_fh.l = Open_(Peek$(Peek.l(?ptr_sourcefilename)) + Peek$(?str_extentioninfo),#HUNK_RELOC_8__MODE_NEWFILE)
+    *icon_fh.l = Open_(ped\sourceFileComplete + ped\extention_info,#HUNK_RELOC_8__MODE_NEWFILE)
     Write_ *icon_fh,Peek.l(?sourceicon_datas),?sourceicondatas_end-?sourceicon_datas
     Close_ *icon_fh
   Else
@@ -4021,8 +4157,8 @@ RTS
 .open_xtrafile:
   !basic
   MOVE.l d2,d0 : accessmode.l = PutD0
-  log_Print{"open xtrafile: " + Peek$(Peek.l(?ptr_sourcefilename)) + Peek$(?str_extentionxtra)}
-  *xtra_fh.l = Open_(Peek$(Peek.l(?ptr_sourcefilename)) + Peek$(?str_extentionxtra),accessmode)
+  log_Print{"open xtrafile: " + ped\sourceFileComplete + ped\extention_xtra}
+  *xtra_fh.l = Open_(ped\sourceFileComplete + ped\extention_xtra,accessmode)
   MOVE.l d0,d7
  !asm
 RTS
@@ -4039,15 +4175,11 @@ RTS
   EndIf
 
   aslfr_SetRequesterTitle {1,!TRANS{"New File"},!TRANS{"Load"},!TRANS{"Cancel"}}
-  aslfr_SetPath  {1,Peek.s(?comStr_CurrentDir),Peek.s(?comStr_SourceName),Peek.s(?comStr_FilePattern),False}
+  aslfr_SetPath  {1,ped\currentDir,ped\currentFile,ped\filePattern,False}
   If aslfr_Request {1,False,False,False,-1,False}
-    actual_file$ = aslfr_GetNextFile{}
-    If actual_file$<> ""
-      Pop If : Pop If
-      GetD0 &actual_file$ : MOVE.l d0,-(a7)
-      !asm
-      MOVE.l (a7)+,D0 : MOVE.l d0,d7
-      BRA load_source
+    loadsourcefilename$ = aslfr_GetNextFile{}
+    If loadsourcefilename$ <> ""
+      Gosub load_source
     EndIf
   EndIf
   !asm
@@ -4055,45 +4187,41 @@ RTS
 
 
 .set_CurrentDir:
-  If Peek$(?comStr_CurrentDir) = "" Then GetCurrentDirName_ ?comStr_CurrentDir,$40
+  If ped\currentDir = "" Then GetCurrentDirName_ ped\currentDir,$40
 
   If *flock_currentDir Then UnLock_ *flock_currentDir
-  *flock_currentDir.l = Lock_(Peek$(?comStr_CurrentDir),#ACCESS_READ)
+  *flock_currentDir.l = Lock_(ped\currentDir,#ACCESS_READ)
   If *flock_currentDir Then CurrentDir_ *flock_currentDir
 Return
 
 
 
-.load_source:  ;D7: sourcefilename
-  MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
-  MOVE.b #1,menuload
-  MOVE.l D7,ptr_sourcefilename
-
-  !basic
+.load_source:  ;D7: sourcefilename: not used anymore
   Gosub set_pointer_busy_bas
   LockAllOpenWZWin{}
-  filenameP.l = Peek.l(?ptr_sourcefilename)
-  If filenameP
-    filename.s = Peek.s(filenameP)
-    log_Print{"loading source <" + filename.s + ">"}
-    ex.s = dos_GetExt{filename}
+  If loadsourcefilename$ <> ""
+    log_Print{"loading source <" + loadsourcefilename$ + ">"}
+    ex.s = dos_GetExt{loadsourcefilename$}
   Else
     ex.s = "???"
   End If
 
   If ex.s = "ab3" OR ex.s = "ab2" OR ex.s = "bb2"
+    ; call sourceload routine from compiler
+    GetD0 &loadsourcefilename$
     !asm
-    MOVE.l ptr_sourcefilename,D0
+    MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
     !ComData_JSR{comFunc_LoadSource}
     !basic
+
     log_Print{"loaded " + Str$(Peek.l(?comLong_TotalLines)) + " lines of text"}
+
     ;-- restore windows
     Gosub RestoreLabelAndNewtypeWin
-    changelog$ = ""
+    project_changelog$ = ""
     Gosub update_versiongadgets
-    !asm
-    JSR analyze_loadedsource
-    !basic
+    Gosub analyze_loadedsource
+
     ;-- update Sourcewindow
     Gosub calc_SourceWindowDimensions
     !asm
@@ -4104,40 +4232,49 @@ Return
     JSR save_tempprefs
     !basic
   Else
-    !asm
-    BSR other_loading_routine
-    BSR analyze_loadedsource
-    !basic
+    Gosub other_loading_routine
+    Gosub analyze_loadedsource
   EndIf
 
   !asm
   JSR StoreXtraData
   JSR draw_statusarea
-  JSR update_horizscroller
+  JSR update_scroller;horizscroller
   JSR update_labelstuff
   JSR _redraw
   !basic
   UnlockAllOpenWZWin{ }
   Gosub set_pointer_normal_bas
-  !asm
-  CLR.b convert
-RTS
+  Poke.b ?convert, 0
+Return
 
 .other_loading_routine:
-  JSR open_file
+  log_Print{"other loading routine called..."}
+
+  ped\sourceFileHandle = PED_OpenFile{loadsourcefilename$,#HUNK_RELOC_16__MODE_OLDFILE,True}
+  Poke.w ?comWord_DoTokenize, ped\DoTokenize
+  Poke.w ?flag_tokenization, ped\flag_tokenization
+  Poke.b ?convert, ped\convert
+
+  !asm
   JSR source_read_from_file_cached
   BNE.w JL_0_F50
-    JSR close_sourcefile
+    !basic
+    PED_CloseFile{ped\sourceFileHandle}
+    !asm
+    ;JSR close_sourcefile
   JL_0_F50:
 
   MOVEM.l D0-D7/A0-A5,-(A7)
   !basic
-  NameFromFH_ Peek.l(?comPtr_SourceFileHandle),?comStr_SourceFileComplete,$FE
+  NameFromFH_ ped\sourceFileHandle,&ped\sourceFileComplete,$FE
   If Peek.b(?convert) = 1
-    Poke.s ?comStr_SourceFileComplete, UnLeft$(Peek$(?comStr_SourceFileComplete),4) + ".bb2"
+    ped\sourceFileComplete = UnLeft$(ped\sourceFileComplete,4) + ".bb2"
   EndIf
-  Poke.s ?comStr_CurrentDir,dos_PathPart{Peek$(?comStr_SourceFileComplete)}
-  Poke.s ?comStr_SourceName,dos_FilePart{Peek$(?comStr_SourceFileComplete)}
+  ped\currentDir = dos_PathPart{ped\sourceFileComplete}
+  ped\currentFile = dos_FilePart{ped\sourceFileComplete}
+  Poke.s ?comStr_SourceName,dos_FilePart{ped\sourceFileComplete}
+  Poke.s ?comStr_CurrentDir,dos_PathPart{ped\sourceFileComplete}
   Gosub set_CurrentDir
 
   Gosub set_pointer_busy_bas
@@ -4169,7 +4306,10 @@ RTS
   BRA.b JL_0_FB4
   JL_0_FD6:
   ;JSR JL_0_4E4A
-  JSR close_sourcefile
+  !basic
+  PED_CloseFile{ped\sourceFileHandle}
+  !asm
+  ;JSR close_sourcefile
 
   CLR.w comWord_SourceChanged
   CLR.w comWord_TextBufferOffset
@@ -4192,8 +4332,8 @@ RTS
   MOVEA.l D0,A5
   JSR (A5)
 
-  JSR update_debuggertoggle
   !basic
+  Gosub update_debuggertoggle
   Read_ *xtra_fh, ?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin ; xtrabuf,36
 
 ;  stackSize.l = Peek.l(?comLong_StackSizeStore)
@@ -4230,7 +4370,7 @@ RTS
 
   ; -- restore windows
   Gosub RestoreLabelAndNewtypeWin
-  changelog$ = ""
+  project_changelog$ = ""
   Gosub update_versiongadgets
 
   Close_ *xtra_fh
@@ -4247,7 +4387,8 @@ RTS
   JSR delete_tempprefs
   JSR save_tempprefs
   skip_loadingxtrafile:
-RTS
+  !basic
+Return
 
 
 ;subroutine to restore Source_Browser(Label) and Definition_Browser(Newtype) window status after load and switch of Sourecode  tomsmart1
@@ -4274,17 +4415,20 @@ Return
 
 
 .analyze_loadedsource:
-  !regs2stack
-  !basic
   log_Print{"analyze_loadedsource"}
-  windowtitle$ = "File - "
-  If Peek.b(?comStr_SourceName) = 0
-    windowtitle$ + "unnamed "
+
+  ped\currentDir = Peek.s(?comStr_CurrentDir)
+  ped\currentFile = Peek.s(?comStr_SourceName)
+  ped\sourceFileComplete = dos_AddPart{ped\currentDir,ped\currentFile}
+
+  sourceWindow\Title = "File - "
+  If ped\currentFile = ""
+    sourceWindow\Title + "unnamed "
     If pedconfig\smart_tokenization Then Poke.w ?comWord_DoTokenize,$FFFF
   Else
-    windowtitle$ + Peek$(?comStr_SourceName) + " (" + Peek$(?comStr_CurrentDir) + ")"
+    sourceWindow\Title + ped\currentFile + " (" + ped\currentDir + ")"
     ; -- check extension
-    fext$ = LCase$(dos_GetExt{Peek$(?comStr_SourceName)})
+    fext$ = LCase$(dos_GetExt{ped\currentFile})
     log_Print{"checking file extention of loaded file: " + fext$}
     If fext$ = "bb2" OR fext$ = "ab2" OR fext$ = "ab3" OR fext$ = "bb"
       log_Print{"activating tokenization"}
@@ -4299,20 +4443,18 @@ Return
     EndIf
   EndIf
 
-  SetWindowTitles_ sourceWindow\win, &windowtitle$, -1
+  SetWindowTitles_ sourceWindow\win, &sourceWindow\Title, -1
 
   ; -- update tooltype "LAST_SOURCE"
   If pedconfig\load_last_source <> 0
-    pedconfig\lastSourceFile = Peek$(?comStr_SourceFileComplete)
+    pedconfig\lastSourceFile = ped\sourceFileComplete
     If pedconfig\lastSourceFile <> ""
-      If Instr(pedconfig\lastSourceFile,Peek$(?comStr_SourceName))<>0
+      If Instr(pedconfig\lastSourceFile, ped\currentFile) <> 0
         dos_SetToolString{"LAST_SOURCE",pedconfig\lastSourceFile}
       EndIf
     EndIf
   EndIf
-  !asm
-  !stack2regs
-RTS
+Return
 
 
 .delete_tempprefs:
@@ -4337,7 +4479,6 @@ RTS
       !asm
       MOVE.l (a7)+,D7
       MOVEA.l (a7)+,A5
-      ;MOVEA.l _dosbase,A6
       JSR (A5)
       !basic
       Close_ tpfhandle
@@ -4366,111 +4507,68 @@ RTS
   !asm
 Return
 
-;write_buffer:    Ds.l 1
-;write_length:    Ds.l 1
-check_existsfile:    Ds.w 1
-
-
 .menu_saveas:
-  ST check_existsfile
+  !asm
   JSR StoreXtraData
-  LEA comStr_ASLSaveFile,A2
-
-  MOVEM.l D1-D6/A0-A6,-(A7)
-  JSR do_aslsavefilerequest
-  MOVEM.l (A7)+,D1-D6/A0-A6
-
-  TST.l D0
-  BEQ.w JL_0_1158
-    JSR menu_save
-  JL_0_1158:
-
-  SF check_existsfile
-  TST.l D0
-RTS
-
-.saverout
-  !regs2stack
-  BSR menu_save
-  !stack2regs
-RTS
-
-
-.menu_save
-  !regs2stack
   !basic
+  filename$ = PED_RequestFile{Peek.s(?comStr_CurrentDir),Peek.s(?comStr_SourceName),Peek.s(?comStr_ASLLoadFile),"(#?.bb|#?.bb2|#?.asm|#?ab2|#?.txt|#?.guide)"}
+  ;Poke.s ?comStr_SourceFileComplete,BB2Filename$
+  If filename$ <> ""
+    ped\check_existsfile = True
+    Gosub menu_save
+    ped\check_existsfile = False
+ EndIf
+Return
+
+.menu_save:
   log_Print{"menu_save called."}
-  If Peek.b(?comStr_SourceName) = 0
-    !asm
-    LEA comStr_ASLSaveFile,A2
-    MOVEM.l D1-D6/A0-A6,-(A7)
-    JSR do_aslsavefilerequest     ; fills comStr_SourceFileComplete
-    MOVEM.l (A7)+,D1-D6/A0-A6
-    TST.l D0
-    BNE.w JL_0_1196
-      !stack2regs
-      RTS
-    JL_0_1196:
-    !basic
+  If ped\currentFile = ""
+    BB2Filename$ = PED_RequestFile{ped\currentDir,ped\currentFile,Peek.s(?comStr_ASLSaveFile),"(#?.bb|#?.bb2|#?.asm|#?ab2|#?.txt|#?.guide)"}
+    ;ped\sourceFileComplete will be set in function as wekk
+    Poke.s ?comStr_SourceName,ped\currentFile   ; info for compiler
+    Poke.s ?comStr_CurrentDir,ped\currentDir
   EndIf
+  If ped\currentFile = "" Then Return
 
-  BB2Filename$ = Peek$(?comStr_SourceFileComplete)
-  directory.s = dos_FilePart{dos_PathPart{BB2Filename$}}
-  If dos_Exist{BB2filename$} AND LCase$(directory) = "templates"
-    If ask{!TRANS{"Do you really want to save this file into the templates drawer?"},!TRANS{"Ok|Cancel"},!TRANS{"Question"}}
-      overwrite.l = True
-    Else
-      overwrite = False
+  directory.s = dos_FilePart{dos_PathPart{ped\sourceFileComplete}}
+  If dos_Exist{ped\sourceFileComplete} AND LCase$(directory) = "templates"
+    If NOT ask{!TRANS{"Do you really want to save this file into the templates drawer?"},!TRANS{"Ok|Cancel"},!TRANS{"Question"}}
+      Return
     EndIf
-  Else
-    overwrite = True
   EndIf
 
-  If NOT overwrite
-    Pop If
-    !asm
-    !stack2regs
-    RTS
-  EndIf
-
-  log_Print{Peek$(?comStr_CurrentDir)}
-  log_Print{Peek$(?comStr_SourceName)}
-  log_Print{Peek$(?comStr_SourceFileComplete)}
   Poke.b ?ab2mode, 0
-  ex.s = dos_GetExt{BB2Filename$}
+  ex.s = dos_GetExt{ped\sourceFileComplete}
   If LCase$(ex) = "ab2" Then Poke.b ?ab2mode, 1
   If LCase$(ex) = "ab3" Then Poke.b ?ab2mode, 3
-  If Len(Peek$(?comStr_SourceName)) > 27
-    dummy.l = ask{!TRANS{"Warning: Filename is longer than 27 characters.\\n" + Peek$(?comStr_SourceName) + "\\nThis may cause problems with some filesystems."},!TRANS{"Continue"},!TRANS{"Info"}}
+
+  If Len(ped\currentFile) > 27
+    dummy.l = ask{!TRANS{"Warning: Filename is longer than 27 characters.\\n" + ped\currentFile + "\\nThis may cause problems with some filesystems."},!TRANS{"Continue"},!TRANS{"Info"}}
   EndIf
+  log_Print{"ped\sourceFileComplete : " + ped\sourceFileComplete }
   !asm
-  MOVE.l #comStr_SourceFileComplete,D7
   JSR StoreXtraData
   !basic
-  If Peek.b(?check_existsfile) <> 0
-    log_Print{"check if file <" + Peek$(?comStr_SourceFileComplete) + "> already exists, requester if so  ..."}
-    *flock.l = Lock_(Peek$(?comStr_SourceFileComplete),#ACCESS_READ)
+
+  If ped\check_existsfile
+    log_Print{"check if file <" + ped\sourceFileComplete + "> already exists, requester if so  ..."}
+    *flock.l = Lock_(ped\sourceFileComplete,#ACCESS_READ)
     If *flock <> 0
-      *easystruct.EasyStruct = ?easystruct_saveas
-      req_title.s  = Peek$(*easystruct\es_Title)
-      req_text.s   = Peek$(*easystruct\es_TextFormat)
-      req_gadtex.s = Peek$(*easystruct\es_GadgetFormat)
-      If ask{!TRANS{req_text},!TRANS{req_gadtex},!TRANS{req_title}}
+      If ask{!TRANS{"File already exists!"},!TRANS{"Overwrite|Cancel"},!TRANS{"Save File As..."}}
         log_Print{"overwrite is ok"}
         UnLock_ *flock
       Else
         log_Print{"operation cancelled"}
         Pop If : Pop If
-        !asm
-        !stack2regs
-        RTS
+        Return
       EndIf
     EndIf
   EndIf
 
-  Poke.l ?ptr_sourcefilename, ?comStr_SourceFileComplete
-  DeleteFile_ Peek$(?comStr_SourceFileComplete) + ".bak"
-  Rename_  Peek$(?comStr_SourceFileComplete), Peek$(?comStr_SourceFileComplete)+".bak" ;(d1:oldname, d2:newname)
+  Poke.l ?comPtr_SourceName, &ped\currentFile
+  Poke.l ?comPtr_CurrentDir, &ped\currentDir
+  DeleteFile_ ped\sourceFileComplete + ped\extention_bak
+  Rename_ ped\sourceFileComplete, ped\sourceFileComplete + ped\extention_bak ;(d1:oldname, d2:newname)
 
   LockAllOpenWZWin{}
   Gosub set_pointer_busy_bas
@@ -4479,11 +4577,16 @@ RTS
   Case 1 : Gosub save_source_as_ab2
   Case 3 : Gosub save_source_as_ab3
   Default
-    !asm
-    MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
-    MOVE.b #1,menuload
-    JSR open_file                   ; returns comPtr_SourceFileHandle
-    !basic
+    ;!asm
+    ;MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
+    ;MOVE.b #1,menuload
+    ;JSR open_file                   ; returns comPtr_SourceFileHandle
+    ;!basic
+    ped\sourceFileHandle = PED_OpenFile{ped\sourceFileComplete,#HUNK_RELOC_8__MODE_NEWFILE,True}
+    Poke.w ?comWord_DoTokenize, ped\DoTokenize
+    Poke.w ?flag_tokenization, ped\flag_tokenization
+    Poke.b ?convert, ped\convert
+
     If Peek.w(?AL_0_B7E0) <> 0
       ; write tokenized source to file
       Gosub write_tokenized_source_cached
@@ -4508,12 +4611,9 @@ RTS
     Gosub update_rememberlist
   EndIf
 
-  !basic
   UnlockAllOpenWZWin{}
   Gosub set_pointer_normal_bas
-  !asm
-  !stack2regs
-RTS
+Return
 
 ;
 ;  TST.b ab2mode
@@ -4578,11 +4678,14 @@ RTS
 ;Return
 
 .save_source_as_ab3:
+  log_Print{"ped\sourceFileComplete = " + ped\sourceFileComplete + ">"}
+  GetD0 &ped\sourceFileComplete : MOVE.l D0,-(a7)
   !asm
-  MOVE.l #comStr_SourceFileComplete,d0
+  MOVE.l (a7)+,D0
   !ComData_JSR{comFunc_SaveSource}
-
-  JSR analyze_loadedsource
+  !basic
+  Gosub analyze_loadedsource
+  !asm
   CLR.w comWord_SourceModifiedFlag
   CLR.w comWord_KeyBeforeReturn
   CLR.w comWord_SourceChanged
@@ -4593,7 +4696,7 @@ Return
 .save_source_as_ab2:
   log_Print{"write ab2: opening file"}
   Gosub set_pointer_busy_bas
-  *write_fh.l = Open_(Peek$(?comStr_SourceFileComplete), #HUNK_RELOC_8__MODE_NEWFILE)
+  *write_fh.l = Open_(ped\sourceFileComplete, #HUNK_RELOC_8__MODE_NEWFILE)
   If *write_fh = 0
     UnlockAllOpenWZWin{}
     Gosub set_pointer_normal_bas
@@ -4779,7 +4882,10 @@ Return
   JL_0_1380:
 
 ;  JSR JL_0_4E4A
-  JSR close_sourcefile
+  !basic
+  PED_CloseFile{ped\sourceFileHandle}
+  !asm
+  ;JSR close_sourcefile
 
 .write_xtrafile:
   MOVE.l comFunc_WriteXtraFile,D0
@@ -4806,9 +4912,8 @@ Return
   skip_writingxtrafile:
   !basic
   If pedconfig\use_source_icon Then Gosub write_infofile
+  Gosub analyze_loadedsource
   !asm
-
-  JSR analyze_loadedsource
   CLR.w comWord_SourceModifiedFlag
   CLR.w comWord_KeyBeforeReturn
   CLR.w comWord_SourceChanged
@@ -5137,104 +5242,58 @@ JMP _redraw
 
 
 .menu_quitall:
-  MOVEA.l #str_newfile_req,A0
-  MOVE.l #$51756974,(A0)+            ; "Quit"
-  MOVE.b #$0,(A0)+
-  JSR show_newfilerequest
-  MOVEA.l #str_newfile_req,A0
-  MOVE.l #$4E657720,(A0)+            ; "New File"
-  MOVE.l #$46696C65,(A0)+
-  MOVE.b #$0,(A0)+
+  log_Print{"close all sources."}
+  If Peek.w(?comWord_SourceChanged)
+    dummy.l = ask{!TRANS{"You have unsaved changes!"},!TRANS{"Continue|Cancel"},!TRANS{"Quit"}}
+    If dummy = 0 Then Pop If: Return
+  EndIf
 
-  TST.l D0
-  BEQ.w exit_quitall
-
-    JSR dummy_compilercall
-    ;JSR clear_labellist    called in clear_actualsource
-    ; -- hier problem mit enforcer bei !newfree
-    JSR clear_actualsource
-    ; --
-    MOVEA.l actualfile,A0
-    JSR close_actualsource
-
-    !basic
-    Gosub draw_tabs
-    !asm
-
-    TST.l loadedfilesbase
-    BNE.b menu_quitall
-      CNIF #USE_AREXX=1
-      !basic
-      ArexxMyMessage$ = "QUITPLEASE" : Gosub arexx_sendmessage
-      !asm
-      CEND
-      ;  LEA $E(A7),A7                  ;This is pure evil stackmagic that work only for on case that the
-                                        ;jump to the routine comes form the asm event/message loop for the
-                                        ;Sourcewindow and not form the Basic loop for the other windows
-      JMP Exit_main                     ;Jump to real exit, this fix the Exit bug if the Sourcewindow not active  tomsmart1
-
-  exit_quitall:
-RTS
+  !asm
+  ;JSR dummy_compilercall
+  ; -- hier problem mit enforcer bei !newfree
+  JSR clear_actualsource
+  MOVEA.l actualfile,A0
+  JSR close_actualsource
+  !basic
+  Gosub draw_tabs
+  If Peek.l(?loadedfilesbase) <> 0 Then Goto menu_quitall
+  exit_eventloop = True : exit_mainloop = True
+Return
 
 
 .menu_quit:
-  ;MOVEA.l #str_newfile_req,A0         ; patch the requester name
-  ;MOVE.l #"Quit",(A0)+
-  ;MOVE.b #$0,(A0)+
-  ;JSR show_newfilerequest
-  ;MOVEA.l #str_newfile_req,A0         ; unpatch the requester name
-  ;MOVE.l #"New ",(A0)+
-  ;MOVE.l #"File",(A0)+
-  ;MOVE.b #$0,(A0)+
   log_Print{"close current source."}
   If Peek.w(?comWord_SourceChanged)
-    dummy.l = ask{!TRANS{"You have unsaved changes!"},!TRANS{"Continue|Cancel"},!TRANS{"Load File"}}
-    If dummy = 0
-      Pop If : Pop If
-      !asm
-      RTS
-    EndIf
+    dummy.l = ask{!TRANS{"You have unsaved changes!"},!TRANS{"Continue|Cancel"},!TRANS{"Quit"}}
+    If dummy = 0 Then Pop If : Return
   EndIf
 
-  ;TST.l D0
-  ;BEQ.w exit_quit
   !asm
   ;JSR dummy_compilercall
   JSR clear_actualsource            ;alle zeilen loeschen und freigeben
-
   MOVEA.l actualfile,A0
   JSR close_actualsource
+  !basic
 
-  TST.l loadedfilesbase
-  BNE.w exit_quit
-      !regs2stack
-      !basic
-      dummy.l = 1
-      If pedconfig\ask_before_quit
-        dummy.l = ask{!TRANS{"Closing last source, do you really want to quit?"},!TRANS{"Ok|Cancel"},!TRANS{"Question"}}
-      EndIf
-      If dummy = 0
-        Pop If
-        !stack2regs
-        !asm
-        JSR menu_opennew
-        BRA exit_quit
-      EndIf
-      !stack2regs
+  If Peek.l(?loadedfilesbase) = 0
+    dummy.l = 1
+    If pedconfig\ask_before_quit
+      dummy.l = ask{!TRANS{"Closing last source, do you really want to quit?"},!TRANS{"Ok|Cancel"},!TRANS{"Question"}}
+    EndIf
+    If dummy = 0
       !asm
-      CNIF #USE_AREXX=1
+      JSR menu_opennew
       !basic
-      ArexxMyMessage$ = "QUITPLEASE" : Gosub arexx_sendmessage
-      !asm
-      CEND
-      ;LEA $E(A7),A7                  ;This is pure evil stackmagic that work only for on case that the
-                                      ;jump to the routine comes form the asm event/message loop for the
-                                      ;Sourcewindow and not form the Basic loop for the other windows
-      JMP Exit_main                   ;Jump to real exit, this fix the Exit bug if the Sourcewindow not active  tomsmart1
-  exit_quit:
+    Else
+      log_Print{"telling mainloop to stop, no open file left"}
+      exit_eventloop = True : exit_mainloop = True
+    EndIf
+  EndIf
 
+  !basic
   JSR draw_statusarea
-RTS
+  !asm
+Return
 
 
 .menu_blockcomment:
@@ -5553,84 +5612,6 @@ RTS
   MOVE.l (A7)+,D0
 RTS
 
-
-.key_cursordown:
-  !basic
-    log_Print{"old cursor down"}
-  !asm
-  RTS
-
-;
-;  !regs2stack
-;  !basic
-;  mqualifier.w = Peek.w(?message_qualifier) AND (NOT #IEQUALIFIER_REPEAT) ; remove "repeat" flag
-;  mqualistor.w = Peek.w(?comWord_QualifierStore)
-;  ;log_Print{"cursordown: " +Hex$(mqualifier)}
-;
-;  ; convert right qualifiers to left qualifiers to make selectblock smarter
-;  If (mqualifier AND #IEQUALIFIER_RSHIFT)
-;    mqualifier = (mqualifier & (NOT #IEQUALIFIER_RSHIFT)) | #IEQUALIFIER_LSHIFT
-;  EndIf
-;  If (mqualifier AND #IEQUALIFIER_RALT)
-;    mqualifier = (mqualifier & (NOT #IEQUALIFIER_RALT)) | #IEQUALIFIER_LALT
-;  EndIf
-;
-;  Select mqualifier
-;    Case #IEQUALIFIER_RELATIVEMOUSE                         ; $8000: one line down
-;      Pop Select
-;      !asm
-;      !stack2regs
-;      MOVE.b #1,doedit2
-;      JMP movecursorlinedown
-;
-;    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LSHIFT   ; $8001: page down
-;      Pop Select
-;      !asm
-;      !stack2regs
-;      MOVE.l comLong_DisplayLineOffset,D0
-;      ADD.l comLong_DisplayLine,D0
-;      ADD.l viewablelines,D0
-;      CMP.l comLong_TotalLines,D0
-;      BCS.w gotoline
-;      MOVE.l comLong_TotalLines,D0
-;      SUBQ.l #1,D0
-;      BRA.w gotoline
-;
-;    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_CONTROL  ; $8008: jump to bottomline
-;      Pop Select
-;      !asm
-;      !stack2regs
-;      JMP menu_bottom
-;
-;    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LALT     ; $8010: move current line down
-;      Pop Select
-;      Goto movelinedown
-;
-;    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LSHIFT + #IEQUALIFIER_CONTROL  ; $8009: select block downwarts
-;      Pop Select
-;      Goto selectblockdown
-;
-;    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LSHIFT + #IEQUALIFIER_LALT     ; $800A: select block downwarts
-;      Pop Select
-;      Goto selectblockdown
-;
-;    Case $0000                         ; -- CURSOR DOWN FOR FREEWHEEL
-;      Pop Select
-;      !asm
-;      !stack2regs
-;      RTS
-;      ;partly disabled to prevent double event if FreeWheel active
-;      ;MOVE.l comLong_DisplayLineOffset,d0
-;      ;ADD.l comLong_DisplayLine,D0
-;      ;ADD.l wheelstep,d0
-;      ;JMP gotoline
-;
-;  End Select
-;
-;  !asm
-;  !stack2regs
-;BRA movecursorlinedown
-
 .selectblockdown:
   ; -- set startposition
   CMPI.l #$ffffFFFF,comLong_BlockEndY
@@ -5770,86 +5751,6 @@ JMP draw_new_sourceline_bottom
 
 JUMP_increase_DisplayLine:
 JMP increase_DisplayLine
-
-
-;AJL_0_2566:                          ;cursor_up
-.key_cursorup:
-!basic
-log_Print{"old cursor up"}
-!asm
-RTS
-;  !regs2stack
-;  !basic
-;  mqualifier.w = Peek.w(?message_qualifier) AND NOT $200; remove "pressing" flag
-;  mqualistor.w = Peek.w(?comWord_QualifierStore)
-;  ;log_Print{"cursorup: " +Hex$(mqualifier)}
-;
-;  ; convert right qualifiers to left qualifiers to make selctblock smarter
-;  If (mqualifier AND #IEQUALIFIER_RSHIFT)
-;    mqualifier = (mqualifier & (NOT #IEQUALIFIER_RSHIFT)) | #IEQUALIFIER_LSHIFT
-;  EndIf
-;  If (mqualifier AND #IEQUALIFIER_RALT)
-;    mqualifier = (mqualifier & (NOT #IEQUALIFIER_RALT)) | #IEQUALIFIER_LALT
-;  EndIf
-;
-;  Select mqualifier
-;    Case #IEQUALIFIER_RELATIVEMOUSE   ; $8000 (just the key)
-;      Pop Select
-;      !asm
-;      !stack2regs
-;      MOVE.b #1,doedit2
-;      JMP movecursorlineup
-;
-;    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LSHIFT   ; $8001
-;      Pop Select
-;      !asm
-;      !stack2regs
-;      MOVE.l comLong_DisplayLineOffset,D0
-;      ADD.l comLong_DisplayLine,D0
-;      CMP.l viewablelines,D0
-;      BCC.w JL_0_2588
-;        MOVEQ.l #$00,D0
-;        BRA.w gotoline
-;      JL_0_2588:
-;      SUB.l viewablelines,D0
-;      BRA.w gotoline
-;
-;    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_CONTROL  ; $8008
-;      Pop Select
-;      !asm
-;      !stack2regs
-;      JMP menu_top
-;
-;    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LALT     ; $8010
-;      Pop Select
-;      Goto movelineup
-;
-;    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LSHIFT + #IEQUALIFIER_CONTROL ; $8009
-;      Pop Select
-;      Goto selectblockup
-;
-;    Case #IEQUALIFIER_RELATIVEMOUSE + #IEQUALIFIER_LSHIFT + #IEQUALIFIER_LALT    ; $800A: select block upwarts
-;      Pop Select
-;      Goto selectblockup
-;
-;
-;    Case $0000                         ; cursor_up for freewheel
-;      Pop Select
-;      !asm
-;      !stack2regs
-;      RTS
-;      ;partly disabled to prevent double event if FreeWheel active  tomsmart1
-;      ;MOVE.l comLong_DisplayLineOffset,d0
-;      ;ADD.l comLong_DisplayLine,D0
-;      ;SUB.l wheelstep,d0
-;      ;JMP gotoline
-;
-;  End Select
-;
-;  !asm
-;  !stack2regs
-;;  MOVE.b #1,doedit2
-;BRA.w movecursorlineup
 
 
 .selectblockup:
@@ -6845,8 +6746,8 @@ JMP update_horizscroller
        Gosub newtype_updatelist
     End If
     UnlockAllOpenWZWin{}
+    Gosub update_debuggertoggle
     !asm
-    JSR update_debuggertoggle
     JSR save_tempprefs
     !basic
     Gosub set_pointer_normal_bas
@@ -6861,16 +6762,12 @@ JMP update_horizscroller
 
   Case #MENU_SAVECREATEEXE
     log_Print{"savecreateexe"}
-    !asm
-    JSR saverout
-    !basic
+    Gosub menu_save
     Gosub call_compiler
 
   Case #MENU_SAVECOMPILERUN
-    !asm
-    JSR menu_save
-    !basic
-    Delay_ 50
+    Gosub menu_save
+    _menuitem = #MENU_COMPILERUN
     Gosub call_compiler
 
   Case #MENU_RELOAD_USERLIBS
@@ -6894,6 +6791,7 @@ JMP update_horizscroller
   End Select
 
   Gosub update_title_sourcewindow
+  log_Print{"checking compiler return state " + Str$(compile_state) }
 
   ; handle compile error??
   Select compile_state.l
@@ -6915,11 +6813,15 @@ JMP update_horizscroller
 Return
 
 .call_compiler:
- ; set infos for Compiler to run functions
-  If Peek.l(?comFunc_CallMenuEntry) = 0 Then Return
+  ; set infos for Compiler to run functions
+  If Peek.l(?comFunc_CallMenuEntry) = 0
+    error{"Compiler not available!"}
+    Return
+  EndIf
 
   CompileMenuCallID.l = _menuitem - #MENU_COMPILERUN
-  log_Print{"call compiler with function id [" + Hex$(CompileMenuCallID)+"]"}
+  log_Print{"calling compiler with function id [" + Hex$(CompileMenuCallID) + "]"}
+
   LockAllOpenWZWin{}
   Gosub Open_CompileStatus_Window                         ; open Compile status window if we need it
   Gosub set_CurrentDir
@@ -6933,9 +6835,7 @@ Return
   JSR (A0)                                                 ; call compilerfunction for the menuentry
   !basic
   compile_state.l = PutD0                                  ; get the return code of compiler
-  !asm
-  JSR update_debuggertoggle                                ; set the state to the commenu "Create Debug Code"
-  !basic
+  Gosub update_debuggertoggle                                ; set the state to the commenu "Create Debug Code"
   previoussearch_instruction$ = "|"
   Gosub update_versiongadgets
   Gosub Close_CompileStatus_Window                         ; close compile status window if it is open
@@ -7110,9 +7010,9 @@ JL_0_2Dca8:
   JSR update_labelstuff
 
   JSR update_scroller
-
-  JSR analyze_loadedsource
-
+  !basic
+  Gosub analyze_loadedsource
+  !asm
   ;TST.b refreshonstore
   ;BNE 'l2
     TST.b AL_0_4734
@@ -7140,13 +7040,12 @@ RTS
   Next
   If NextItem(templates())
     templatefilename$ = templates()\filename
-    GetD0 &templatefilename$
+    GetD0 &templatefilename$   ; cann be removed ?
     !asm
-    MOVE.l d0,-(a7)
     JSR menu_opennew
-    MOVE.l (a7)+,d7
-    JSR load_source
     !basic
+    loadsourcefilename$ = templatefilename$
+    Gosub load_source
   Else
     templatefilename$ = !TRANS{"unknown"}
     MOVE.l d0,-(a7)
@@ -7245,11 +7144,11 @@ RTS
   MOVE.l comLong_Label1VisableItem,comLong_Label1VisableItemStore             ; to update both for a unified LabelList restore routine that work by load and switch of a Sourcecode  tomsmart1
   !asm
   MOVEA.l actualfile,A0
+
   ADDQ.l #8,A0                       ; jump over list node header to xtra data
   LEA comLongLong_XtraBegin,A1
   MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin,d0; #$504+72,D0
   SUBQ.w #1,D0
-
  'copyloop
     MOVE.b (A1)+,(A0)+
   DBF D0,'copyloop
@@ -7264,7 +7163,6 @@ RTS
   LEA comLongLong_XtraBegin,A1
   MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin ,D0  ;MOVE.l #$504+72,D0
   SUBQ.w #1,D0
-
  'copyloop:
     MOVE.b (A0)+,(A1)+
   DBF D0,'copyloop
@@ -7645,25 +7543,28 @@ JMP _redraw
 
 
 
-str_title_ascreq: Dc.b "Select file to save as ASCII...",0
+;str_title_ascreq: Dc.b "Select file to save as ASCII...",0
 ptr_asciifile:    Ds.l 1
 
-.saveab2
-  MOVE.l A2,-(a7)
-BRA saveab
+;.saveab2
+;  MOVE.l A2,-(a7)
+;BRA saveab
 
 .menu_saveascii:
-  MOVE.l A2,-(A7)
-  LEA str_title_ascreq,A2
-  JSR do_aslfilerequest
-  TST.l D0
-  BEQ.w saveascii_exit
+  ;MOVE.l A2,-(A7)
+  filename$ = PED_RequestFile{"", "", "Select file to save as ASCII...", "(#?.info)"}
+  If filename$ ="" Then Return
+  ;Poke.s ?comStr_SourceFileComplete,filename$
+  ;LEA str_title_ascreq,A2
+  ;JSR do_aslfilerequest
+  ;TST.l D0
+  ;BEQ.w saveascii_exit
 
- .saveab:
-  !basic
+; .saveab:
+;  !basic
   log_Print{"write ab2: opening file"}
   Gosub set_pointer_busy_bas
-  *write_fh.l = Open_(Peek$(?comStr_SourceFileComplete), #HUNK_RELOC_8__MODE_NEWFILE)
+  *write_fh.l = Open_(filename$, #HUNK_RELOC_8__MODE_NEWFILE)
   If *write_fh = 0
     UnlockAllOpenWZWin{}
     Gosub set_pointer_normal_bas
@@ -7725,9 +7626,10 @@ BRA saveab
     Close_ *write_fh : *write_fh = 0
   EndIf
 
-  !asm
-  MOVEA.l (A7)+,A2
-RTS
+  ;!asm
+  ;MOVEA.l (A7)+,A2
+;RTS
+Return
 
 
 saveascii_exit:
@@ -7747,11 +7649,7 @@ JMP update_vertscroller
 .menu_saveblockas:
   !basic
   If Peek.l(?comLong_BlockEndY) > -1
-    !asm
-    LEA comStr_ASLSaveBlock,A2
-    JSR do_aslfilerequest                   ; returns d0 and d7: filename
-    !basic
-    blockfn$ = Peek$(?comStr_SourceFileComplete)
+    blockfn$ = PED_RequestFile{"","",Peek.s(?comStr_ASLSaveBlock),"(#?.info)"}
     If blockfn$ <> ""
       *write_fh.l = Open_(&blockfn$, #HUNK_RELOC_8__MODE_NEWFILE)
       If *write_fh <> 0
@@ -7824,99 +7722,112 @@ JMP update_vertscroller
   !asm
 RTS
 
-.menu_saveblockas_old:
-  CMPI.l #$ffffFFFF,comLong_BlockEndY
-  BEQ.w setpointer_to_normal
-  LEA comStr_ASLSaveBlock,A2
-  JSR do_aslfilerequest                   ; returns d0 and d7: filename
-  TST.l D0
-  BEQ.w JL_0_3732
-  MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
-  MOVE.b #1,menuload
-  JSR open_file
-  ;MOVE.l comPtr_SourceFileHandle,D7       ; patch, as routine does not return handle anymore
-
-  MOVE.l D7,-(A7)
-  MOVEA.l comPtr_CurrentSourceLine,A4
-  JSR JL_0_5524                                   ; move to Blockbegin, returns pointer in A5, detoke first line ?
-                                                  ; d5 = BlockStartX
-                                                  ; d6 = currentlinenumber
-  MOVE.l (A7)+,D7
-  MOVE.w #$FFFF,comWord__AL_0_8AD8
-
-  JL_0_36A2:
-    JSR JL_0_5630
-    BMI.w JL_0_372E                               ; nothing to write left
-    BEQ.w JL_0_36C4                               ; empty line
-      MOVE.b D0,comLong_LinePosStartX
-      MOVE.l #comLong_LinePosStartX,D2
-      !basic
-      Write_ *fh,?comLong_LinePosStartX,1
-      !asm
-      BRA.b JL_0_36A2
-    JL_0_36C4:
-
-    MOVE.b #$A,comLong_LinePosStartX
-    !basic
-    Write_ *fh,?comLong_LinePosStartX,1
-    !asm
-    ;Write_ d1:file, d2:buffer ,d3:length
-
-    MOVEQ.l #$00,D5
-    JL_0_36Dca:                                   ; check if end if block is reached
-    CMP.l comLong_BlockEndY,D6
-    BCS.w JL_0_36F4
-      MOVE.w comWord_DoTokenize,D0
-      BEQ.b JL_0_36A2
-        JSR JL_0_553A                         ; detokenize line
-        MOVEQ.l #$00,D5
-  BRA.b JL_0_36A2
-
-  JL_0_36F4:
-  JSR JL_0_553A
-  ;MOVE.l D7,D1
-  ;MOVEA.l comPtr_Temp_TokenString3,A0
-  ;MOVEQ.l #$00,D3
-  ;MOVE.b (A0),D3
-  ;MOVE.b #$A,$0(A0,D3.W)
-  ;ADDQ.w #1,A0
-  ;MOVE.l A0,D2
-  ;MOVE.l D7,D1
-  ;JSR _Write(A6)
-  !basic
-  tmplen.b = Peek.b(Peek.l(?comPtr_Temp_TokenString3))
-  log_Print{Str$(tmplen) + ": " + Peek$(Peek.l(?comPtr_Temp_TokenString3))}
-  strLine$ = Peeks$(Peek.l(?comPtr_Temp_TokenString3) + 1, tmplen - 1) + Chr$(10)
-  Write_ *fh,&strLine$, tmplen
-  !asm
-  TST.l D0
-  BPL.w JL_0_3728
-    SUBA.l A0,A0
-    MOVEA.l #comStr_ErrorWriteFile,A0
-    JSR show_errorrequester
-    BRA.w JL_0_372E
-  JL_0_3728:
-    MOVEA.l (A5),A5
-    ADDQ.l #1,D6
-    BRA.b JL_0_36Dca
-  JL_0_372E:
-
-  BRA.w JMP_closefile
-
-  JL_0_3732:
-RTS
+;.menu_saveblockas_old:
+;  CMPI.l #$ffffFFFF,comLong_BlockEndY
+;  BEQ.w setpointer_to_normal
+;  LEA comStr_ASLSaveBlock,A2
+;  JSR do_aslfilerequest                   ; returns d0 and d7: filename
+;  TST.l D0
+;  BEQ.w JL_0_3732
+;  MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
+;  MOVE.b #1,menuload
+;  JSR open_file
+;  ;MOVE.l comPtr_SourceFileHandle,D7       ; patch, as routine does not return handle anymore
+;
+;  MOVE.l D7,-(A7)
+;  MOVEA.l comPtr_CurrentSourceLine,A4
+;  JSR JL_0_5524                                   ; move to Blockbegin, returns pointer in A5, detoke first line ?
+;                                                  ; d5 = BlockStartX
+;                                                  ; d6 = currentlinenumber
+;  MOVE.l (A7)+,D7
+;  MOVE.w #$FFFF,comWord__AL_0_8AD8
+;
+;  JL_0_36A2:
+;    JSR JL_0_5630
+;    BMI.w JL_0_372E                               ; nothing to write left
+;    BEQ.w JL_0_36C4                               ; empty line
+;      MOVE.b D0,comLong_LinePosStartX
+;      MOVE.l #comLong_LinePosStartX,D2
+;      !basic
+;      Write_ *fh,?comLong_LinePosStartX,1
+;      !asm
+;      BRA.b JL_0_36A2
+;    JL_0_36C4:
+;
+;    MOVE.b #$A,comLong_LinePosStartX
+;    !basic
+;    Write_ *fh,?comLong_LinePosStartX,1
+;    !asm
+;    ;Write_ d1:file, d2:buffer ,d3:length
+;
+;    MOVEQ.l #$00,D5
+;    JL_0_36Dca:                                   ; check if end if block is reached
+;    CMP.l comLong_BlockEndY,D6
+;    BCS.w JL_0_36F4
+;      MOVE.w comWord_DoTokenize,D0
+;      BEQ.b JL_0_36A2
+;        JSR JL_0_553A                         ; detokenize line
+;        MOVEQ.l #$00,D5
+;  BRA.b JL_0_36A2
+;
+;  JL_0_36F4:
+;  JSR JL_0_553A
+;  ;MOVE.l D7,D1
+;  ;MOVEA.l comPtr_Temp_TokenString3,A0
+;  ;MOVEQ.l #$00,D3
+;  ;MOVE.b (A0),D3
+;  ;MOVE.b #$A,$0(A0,D3.W)
+;  ;ADDQ.w #1,A0
+;  ;MOVE.l A0,D2
+;  ;MOVE.l D7,D1
+;  ;JSR _Write(A6)
+;  !basic
+;  tmplen.b = Peek.b(Peek.l(?comPtr_Temp_TokenString3))
+;  log_Print{Str$(tmplen) + ": " + Peek$(Peek.l(?comPtr_Temp_TokenString3))}
+;  strLine$ = Peeks$(Peek.l(?comPtr_Temp_TokenString3) + 1, tmplen - 1) + Chr$(10)
+;  Write_ *fh,&strLine$, tmplen
+;  !asm
+;  TST.l D0
+;  BPL.w JL_0_3728
+;    SUBA.l A0,A0
+;    MOVEA.l #comStr_ErrorWriteFile,A0
+;    JSR show_errorrequester
+;    BRA.w JL_0_372E
+;  JL_0_3728:
+;    MOVEA.l (A5),A5
+;    ADDQ.l #1,D6
+;    BRA.b JL_0_36Dca
+;  JL_0_372E:
+;
+;  BRA.w JMP_closefile
+;
+;  JL_0_3732:
+;RTS
 
 .menu_includeblock:
-  CLR.w comWord__AL_0_8AD8
-  LEA comStr_ASLLoadBlock,A2
-  JSR do_aslfilerequest
-  TST.l D0
-  BNE.b do_paste
-    RTS
+  Poke.w ?comWord__AL_0_8AD8,0
+  includeblockfile$ = PED_RequestFile{"","",Peek.s(?comStr_ASLLoadBlock),"(#?.info)"}
+  If includeblockfile$ <> ""
+    !asm
+    BSR do_paste
+  EndIf
+Return
+;  LEA comStr_ASLLoadBlock,A2
+;  JSR do_aslfilerequest
+;  TST.l D0
+;  BNE.b do_paste
+;    RTS
+
+
+
 
 .JMP_closefile:
+  !basic
+  PED_CloseFile{ped\sourceFileHandle}
+  !asm
+RTS
 ;JMP JL_0_4E4A
-JMP close_sourcefile
+;JMP close_sourcefile
 
 
 .do_paste:
@@ -7924,9 +7835,15 @@ JMP close_sourcefile
 
   TST.w comWord_PasteMode
   BNE.w do_the_paste:
-    CLR.b menuload
-    MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
-    JSR open_file           ; only needed when pastemode = $0
+    !basic
+    ped\sourceFileHandle = PED_OpenFile{includeblockfile$,#HUNK_RELOC_16__MODE_OLDFILE,False}
+    Poke.w ?comWord_DoTokenize, ped\DoTokenize
+    Poke.w ?flag_tokenization, ped\flag_tokenization
+    Poke.b ?convert, ped\convert
+
+    ;MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
+    ;JSR open_file           ; only needed when pastemode = $0
+    !asm
     JSR source_read_from_file_cached
     BEQ.w JMP_closefile
     BRA.b end_paste
@@ -8038,7 +7955,10 @@ JMP close_sourcefile
 
   JL_0_37F6:
   ;JSR JL_0_4E4A
-  JSR close_sourcefile
+  !basic
+  PED_CloseFile{ped\sourceFileHandle}
+  !asm
+  ;JSR close_sourcefile
   MOVEA.l (A7)+,A2
   CLR.b instring
 
@@ -8920,7 +8840,7 @@ Return
   Else
     exescr$ = Peek$(?str_defaultpubscreen)
   EndIf
-  exe.s = "NEWCLI WINDOW = \\22"+console_device$+"///196/AmiBlitz Shell/CLOSE/SCREEN "+exescr$+"\\22"   ; use select Consoledevice for Shell
+  exe.s = "NEWCLI WINDOW = \\22"+pedconfig\console_device + "///196/AmiBlitz Shell/CLOSE/SCREEN "+exescr$+"\\22"   ; use select Consoledevice for Shell
   Execute_ &exe,0,0
 Return
 
@@ -8929,18 +8849,18 @@ CLI_output_stream: Ds.l 1
 CLI_output_file:   Ds.l 1
 
 .console_open:
-  SUBA.l A1,A1
-  MOVEA.l _execbase,A6
-  JSR _FindTask(A6)
-  MOVEA.l D0,A3
-  MOVE.l $9C(A3),CLI_input_stream
-  MOVE.l $A0(A3),CLI_output_stream
+  ;SUBA.l A1,A1
+  ;MOVEA.l _execbase,A6
+  ;JSR _FindTask(A6)
+  ;MOVEA.l D0,A3
+  ;MOVE.l $9C(A3),CLI_input_stream
+  ;MOVE.l $A0(A3),CLI_output_stream
 
   MOVEM.l A2-A3,-(A7)
   !basic
-  ;*thisProcess.Process = FindTask_("")
-  ;CLI_input_stream.l = *thisProcess\pr_CIS
-  ;CLI_output_stream.l = *thisProcess\pr_COS
+  *exeProcess.Process = FindTask_("")
+  Poke.l ?CLI_input_stream,  *exeProcess\pr_CIS
+  Poke.l ?CLI_output_stream, *exeProcess\pr_COS
 
   console_dontclose.l = False
   If pedconfig\console_wb = True Then WBenchToFront_
@@ -8955,57 +8875,61 @@ CLI_output_file:   Ds.l 1
   EndIf
 
   ; -- build the window path for opening the con:-device
-  con_windowpath$ = dos_PathPart{console_device$}
-  con_windowpath$ + Str$(\console_x)
-  con_windowpath$ + "/"+Str$(\console_y)
-  con_windowpath$ + "/"+Str$(\console_w)
-  con_windowpath$ + "/"+Str$(\console_h)
-  con_windowpath$ + "/"+console_title$
-  con_windowpath$ + "/ZOOM"
-  If pedconfig\console_wb = True
-    con_windowpath$ + "/SCREEN Workbench"
+  con_windowpath.s = Trim$(dos_PathPart{pedconfig\console_device})
+  If con_windowpath = "" Then con_windowpath = "CON:"
+  con_windowpath + Str$(\console_x)
+  con_windowpath + "/"+Str$(\console_y)
+  con_windowpath + "/"+Str$(\console_w)
+  con_windowpath + "/"+Str$(\console_h)
+  con_windowpath + "/" + pedconfig\console_title
+  con_windowpath + "/ZOOM"
+  If pedconfig\console_wb = True OR (screen_GetModeID{}=#scr_mode_wb_use)
+    con_windowpath + "/SCREEN Workbench"
   Else
-    con_windowpath$ + "/SCREEN "+Peek$(?str_defaultpubscreen)
+    con_windowpath + "/SCREEN "+Peek$(?str_defaultpubscreen)
   EndIf
   If pedconfig\console_device = "VNC:"
-    con_windowpath$ + "/DRAG/QUIET/NOCLOSE/NOBUTTONS"
-    If console_font$<>"" Then con_windowpath$ + "/FONT"+console_font$
+    con_windowpath + "/DRAG/QUIET/NOCLOSE/NOBUTTONS"
+    If pedconfig\console_font <> "" Then con_windowpath + "/FONT" + pedconfig\console_font
   EndIf
 ;  If console_wait = True
 ;    con_windowpath$ + "/CLOSE"
 ;    con_windowpath$ + "/WAIT"
 ;  EndIf
 
-  con_windowpath$ + Chr$(0)
+  con_windowpath + Chr$(0)
   If Peek.l(?CLI_output_file) = 0
-    Poke.l ?CLI_output_file, Open_( con_windowpath$,#HUNK_RELOC_8__MODE_NEWFILE)
+    log_Print{"opening console: " + con_windowpath}
+
+    Poke.l ?CLI_output_file, Open_( con_windowpath,#HUNK_RELOC_8__MODE_NEWFILE)
   EndIf
-;  If CLI_output_file <> 0
-;    *thisProcess\pr_CIS = CLI_output_file
-;    *thisProcess\pr_COS = CLI_output_file
-;  EndIf
+  If Peek.l(?CLI_output_file) <> 0
+    *exeProcess\pr_CIS = Peek.l(?CLI_output_file)
+    *exeProcess\pr_COS = Peek.l(?CLI_output_file)
+  EndIf
   !asm
   MOVEM.l (A7)+,A2-A3
 
-  MOVE.l CLI_output_file,D0
-  BEQ.w JL_0_442A
-    MOVE.l D0,$9C(A3) ; pr_CIS
-    MOVE.l D0,$A0(A3) ; pr_COS
-  JL_0_442A:
+;  MOVE.l CLI_output_file,D0
+;  BEQ.w JL_0_442A
+;    MOVE.l D0,$9C(A3) ; pr_CIS
+;    MOVE.l D0,$A0(A3) ; pr_COS
+ ; JL_0_442A:
 RTS
 
 .console_close:
-  SUBA.l A1,A1
-  MOVEA.l _execbase,A6
-  JSR _FindTask(A6)
-  MOVEA.l D0,A3
-  MOVE.l CLI_input_stream,$9C(A3)
-  MOVE.l CLI_output_stream,$A0(A3)
+  ;SUBA.l A1,A1
+  ;MOVEA.l _execbase,A6
+  ;JSR _FindTask(A6)
+  ;MOVEA.l D0,A3
+  ;MOVE.l CLI_input_stream,$9C(A3)
+  ;MOVE.l CLI_output_stream,$A0(A3)
   ;
   !basic
-;  *thisProcess.Process = FindTask_("")
-;  *thisProcess\pr_CIS = CLI_input_stream
-;  *thisProcess\pr_COS = CLI_output_stream
+  log_Print{"console close"}
+  *exeProcess.Process = FindTask_("")
+  *exeProcess\pr_CIS = Peek.l(?CLI_input_stream)
+  *exeProcess\pr_COS = Peek.l(?CLI_output_stream)
                                                                                                                                                                                                                                                         
   If pedconfig\console_wb   = True Then WBenchToFront_
   If pedconfig\console_wait = True
@@ -9019,14 +8943,18 @@ RTS
     If KickVersion(39)
       SetWindowPointerA_ sourceWindow\win, ?taglist_mousepointerbusy
     EndIf
+
+    log_Print{"console close: waiting for input..."}
     console_dummy.b = 0
     ; (CheckWindow{console_title$} = True)
     While Read_(Peek.l(?CLI_output_file),&console_dummy,1) = 0
       Delay_ 2
     Wend
   EndIf
+  log_Print{"closing console"}
   Close_ Peek.l(?CLI_output_file) : Poke.l ?CLI_output_file,0
   If KickVersion(39) Then SetWindowPointerA_ sourceWindow\win, ?taglist_mousepointernormal
+
   Gosub activatesourcewindow
   If pedconfig\console_wb = True Then ScreenToFront_ sourceWindow\pedScreen
   !asm
@@ -9517,13 +9445,9 @@ AllocPoolMem:
 memAlert_CloseSource:
   JSR display_memoryalert
   !basic
-  If Peek.l(?comPtr_SourceFileHandle) <> 0 Then Close_ Peek.l(?comPtr_SourceFileHandle)
+  PED_CloseFile{ped\sourceFileHandle}
   !asm
-  ;MOVE.l comPtr_SourceFileHandle,D1
-  ;BEQ.w JL_0_4956
-  ;  MOVEA.l _dosbase,A6
-  ;  JSR _Close(A6)
-  ;JL_0_4956:
+
   CLR.l comLong_DisplayLineOffset
   CLR.l comLong_DisplayLine
   MOVE.l comPtr_FirstSourceLine,comPtr_CurrentSourceLine
@@ -9699,35 +9623,39 @@ JL_0_4E36:
   SUBQ.w #1,A3
 RTS
 
-.close_sourcefile:
-  TST.w comWord_PasteMode
-  BNE.w JL_0_4E64
-;    CLR.l comPtr_SourceFileHandle
-;    MOVE.l D7,D1
-;    MOVEA.l _dosbase,A6
-;    JMP _Close(A6)
-  MOVE.l d7,-(a7)
-  !basic
-  MOVE.l (a7)+,D0 : *cfh.l = PutD0
-  log_Print{"closing file handle: " + Hex$(*cfh)}
-  Close_ *cfh
-  Poke.l ?comPtr_SourceFileHandle,0
-  !asm
-  JL_0_4E64:
-RTS
+;.close_sourcefile:
+;  TST.w comWord_PasteMode
+;  BNE.w JL_0_4E64
+;;    CLR.l comPtr_SourceFileHandle
+;;    MOVE.l D7,D1
+;;    MOVEA.l _dosbase,A6
+;;    JMP _Close(A6)
+;  MOVE.l d7,-(a7)
+;  !basic
+;  MOVE.l (a7)+,D0 : *cfh.l = PutD0
+;  log_Print{"closing file handle: " + Hex$(*cfh)}
+;  Close_ *cfh
+;  ped\sourceFileHandle = 0
+;  !asm
+;  JL_0_4E64:
+;RTS
 
 
 .update_title_sourcewindow:
-  log_Print{"update_title_sourcewindow"}
-  SetWindowTitles_ sourceWindow\win,&windowtitle$,-1
+  log_Print{"update_title_sourcewindow: "  + sourceWindow\Title}
+  SetWindowTitles_ sourceWindow\win,&sourceWindow\Title,-1
+;error{"1"}
   If pedconfig\load_last_source <> 0
-    pedconfig\lastSourceFile = Peek$(?comStr_SourceFileComplete)
+    pedconfig\lastSourceFile = ped\sourceFileComplete
     If pedconfig\lastSourceFile <> ""
-      If Instr(pedconfig\lastSourceFile,Peek$(?comStr_SourceName))<>0
+      If Instr(pedconfig\lastSourceFile,Peek.s(?comStr_SourceName)) <> 0
+;error{"2"}
+
         dos_SetToolString{"LAST_SOURCE",pedconfig\lastSourceFile}
       EndIf
     EndIf
   EndIf
+;  error{"3"}
 Return
 
 
@@ -9807,84 +9735,87 @@ Return
 ;  MOVE.l D7,comPtr_SourceFileHandle
 ;RTS
 ;
-.open_file:             ; D7: filename & Path, D2: accessmode
-  !regs2stack
-  ;
-  MOVEM.l d2/d7,-(a7)
-  !basic
-  MOVE.l (a7)+,d0 : accessmode.l = PutD0
-  MOVE.l (a7)+,d0 : fptr.l = PutD0
-  ;
-  fname$ = Peek$(fptr)
-  log_Print{"open_file d7 <" + fname$ + ">"}
 
-  Poke.l ?convert,0
-  If fname$ <> ""
-    f$ = fname$
-  Else
-    f$ = Peek$(?comStr_SourceFileComplete)
-  EndIf
-  log_Print{"open_file <" + f$ + ">"}
 
-  ; -- check extension
-  fext$ = LCase$(dos_GetExt{f$})
-  log_Print{"checking file extention of file: " + f$+ ">>>" + fext$}
-  If fext$ = "bb2" OR fext$ = "ab2" OR fext$ = "ab3" OR fext$ = "bb"
-    log_Print{"activating tokenization"}
-    Poke.w ?comWord_DoTokenize, $FFFF
-    Poke.w ?flag_tokenization, $FFFF
-  EndIf
-  If fext$ = "txt" OR fext$ = "guide"
-    log_Print{"deactivating tokenization"}
-    Poke.w ?comWord_DoTokenize, 0
-    Poke.w ?flag_tokenization, 0
-    If fext$ = "guide" Then Poke.b ?amigaguide,1
-  EndIf
-  If fext$ = "asm"
-    log_Print{"it seems to be an asm file, tokenization and conversion mode is active."}
-    If pedconfig\smart_tokenization Then Poke.w ?comWord_DoTokenize, $FFFF
-    Poke.b ?convert, 1
-  EndIf
 
-  ; -- open file
-  *fh.l = Open_(&f$, accessmode)
-  If *fh
-    Pop If
-    log_Print{"file opened successfully, handle: " + Hex$(*fh)}
-    Poke.l ?comPtr_SourceFileHandle,*fh
-    ;GetD0 *fh : MOVE.l d0,d7
-    !asm
-    !stack2regs
-    MOVE.l comPtr_SourceFileHandle,D7
-    RTS
-  Else
-    log_Print{"could not open file <" + fname$ + ">"}
-    log_Print{"menuload: " + Str$(Peek.b(?menuload))}
-
-    If Peek.b(?menuload) = 0
-      log_Print{"using compileerrorrequester ???"}
-      Pop If : Pop If
-      !asm
-      !stack2regs
-      ADDQ.w #4,A7              ; dont know why the stack pointer has to be changed ?
-      MOVE #00,d7
-      MOVEA.l #comStr_ErrorOpenFile,A0
-      BRA.w show_errorrequester
-    Else
-      Poke.b ?menuload,0
-      log_Print{"showing load error requester"}
-      *easystruct.EasyStruct = ?easystruct_error
-      *easystruct\es_TextFormat = ?comStr_ErrorOpenFile
-      Gosub show_requester
-      UnlockAllOpenWZWin{}
-      Gosub set_pointer_normal_bas
-      MOVE.l #00,d7
-      ADDQ.w #4,A7              ; dont know why the stack pointer has to be changed ?
-    EndIf
-  EndIf
-  !asm
-  !stack2regs
-RTS
+;.open_file:             ; D7: filename & Path, D2: accessmode
+;  !regs2stack
+;  ;
+;  MOVEM.l d2/d7,-(a7)
+;  !basic
+;  MOVE.l (a7)+,d0 : accessmode.l = PutD0
+;  MOVE.l (a7)+,d0 : fptr.l = PutD0
+;  ;
+;  fname$ = Peek$(fptr)
+;  log_Print{"open_file d7 <" + fname$ + ">"}
+;
+;  Poke.l ?convert,0
+;  If fname$ <> ""
+;    f$ = fname$
+;  Else
+;    f$ = ped\sourceFileComplete
+;  EndIf
+;  log_Print{"open_file <" + f$ + ">"}
+;
+;  ; -- check extension
+;  fext$ = LCase$(dos_GetExt{f$})
+;  log_Print{"checking file extention of file: " + f$+ ">>>" + fext$}
+;  If fext$ = "bb2" OR fext$ = "ab2" OR fext$ = "ab3" OR fext$ = "bb"
+;    log_Print{"activating tokenization"}
+;    Poke.w ?comWord_DoTokenize, $FFFF
+;    Poke.w ?flag_tokenization, $FFFF
+;  EndIf
+;  If fext$ = "txt" OR fext$ = "guide"
+;    log_Print{"deactivating tokenization"}
+;    Poke.w ?comWord_DoTokenize, 0
+;    Poke.w ?flag_tokenization, 0
+;    If fext$ = "guide" Then Poke.b ?amigaguide,1
+;  EndIf
+;  If fext$ = "asm"
+;    log_Print{"it seems to be an asm file, tokenization and conversion mode is active."}
+;    If pedconfig\smart_tokenization Then Poke.w ?comWord_DoTokenize, $FFFF
+;    Poke.b ?convert, 1
+;  EndIf
+;
+;  ; -- open file
+;  *fh.l = Open_(&f$, accessmode)
+;  If *fh
+;    Pop If
+;    log_Print{"file opened successfully, handle: " + Hex$(*fh)}
+;    Poke.l ?comPtr_SourceFileHandle,*fh
+;    ;GetD0 *fh : MOVE.l d0,d7
+;    !asm
+;    !stack2regs
+;    MOVE.l comPtr_SourceFileHandle,D7
+;    RTS
+;  Else
+;    log_Print{"could not open file <" + fname$ + ">"}
+;    log_Print{"menuload: " + Str$(Peek.b(?menuload))}
+;
+;    If Peek.b(?menuload) = 0
+;      ;log_Print{"using compileerrorrequester ???"}
+;      Pop If : Pop If
+;      !asm
+;      !stack2regs
+;      ADDQ.w #4,A7              ; dont know why the stack pointer has to be changed ?
+;      MOVE #00,d7
+;      MOVEA.l #comStr_ErrorOpenFile,A0
+;      BRA.w show_errorrequester
+;    Else
+;      Poke.b ?menuload,0
+;      log_Print{"showing load error requester"}
+;      *easystruct.EasyStruct = ?easystruct_error
+;      *easystruct\es_TextFormat = ?comStr_ErrorOpenFile
+;      Gosub show_requester
+;      UnlockAllOpenWZWin{}
+;      Gosub set_pointer_normal_bas
+;      MOVE.l #00,d7
+;      ADDQ.w #4,A7              ; dont know why the stack pointer has to be changed ?
+;    EndIf
+;  EndIf
+;  !asm
+;  !stack2regs
+;RTS
 
 .readbyte:
     SUBQ.w #1,D6
@@ -9977,7 +9908,7 @@ clipboard_copybuffer: Dc.l 0
 .source_read_from_file_cached:
   !basic
   log_Print{"read file..."}
-  rc_fp.l         = Peek.l(?comPtr_SourceFileHandle)     ; file
+  rc_fp.l         = ped\sourceFileHandle     ; file
   rc_destptr.l    = Peek.l(?comPtr_DosBuffer)             ; membuffer
   rc_blocklen.l   = $2000                                 ; length
   rc_readlen.l    = Peek.l(?readcache_readlen)
@@ -10028,7 +9959,7 @@ clipboard_copybuffer: Dc.l 0
   MOVE.l readcache_chunklen,d0
   MOVE.l readcache_chunklen,d6
   MOVEA.l comPtr_DosBuffer,A5
-  MOVE.l comPtr_SourceFileHandle,D7
+  ;MOVE.l comPtr_SourceFileHandle,D7
   TST.l D6
 RTS
 
@@ -10498,32 +10429,30 @@ JL_0_5060:
     CLR.b instring2
  'l1
   TST.b comWord__AL_0_8668
-   BEQ.w JL_0_5072
-
-  JL_0_506A:
-    MOVE.b (A0)+,(A1)+
-  BNE.b JL_0_506A
-  SUBQ.w #1,A1
-RTS
-
-JL_0_5072:
-JL_0_5072a
+  BEQ.w JL_0_5072
+    JL_0_506A:
+      MOVE.b (A0)+,(A1)+
+    BNE.b JL_0_506A
+    SUBQ.w #1,A1
+    RTS
+  JL_0_5072:
+  JL_0_5072a
   MOVEQ.l #$00,D0
   MOVE.b (A0)+,D0
   BEQ.w JL_0_5096
   CMP.b #$22,d0
   BNE 'l10
-  NOT.b instring2
+    NOT.b instring2
  'l10
   TST.b instring2
   BNE 'l11
-  TST.b d0
-  BMI.w JL_0_5082                    ;morechar
+    TST.b d0
+    BMI.w JL_0_5082                    ;morechar
  'l11
-  MOVE.b D0,(A1)+
-  BNE.b JL_0_5072a
-
+    MOVE.b D0,(A1)+
+    BNE.b JL_0_5072a
   JL_0_5082:
+
   LSL.w #8,D0
   MOVE.b (A0)+,D0
   JSR token_to_ascii
@@ -10579,20 +10508,20 @@ RTS
 RTS
 
 
-.do_aslfilerequest:
-  LEA comStr_ASLDummyPath,A0
-  LEA comStr_ASLDummyDir,A1
-  LEA comStr_FilePattern_NoInfo,A3
-BRA.w aslrequest_file
+;.do_aslfilerequest:
+;  LEA comStr_ASLDummyPath,A0
+;  LEA comStr_ASLDummyDir,A1
+;  LEA comStr_FilePattern_NoInfo,A3
+;BRA.w aslrequest_file
 
 
-.do_aslloadfilerequest:
-  LEA comStr_ASLLoadFile,A2          ; asl title
-  do_aslsavefilerequest:
-  LEA comStr_CurrentDir,A0           ; asl dir
-  LEA comStr_SourceName,A1           ; asl path
-  LEA comStr_FilePattern,A3          ; file pattern (*.bb2 etc.)
-BRA.b aslrequest_file
+;.do_aslloadfilerequest:
+;  LEA comStr_ASLLoadFile,A2          ; asl title
+;  do_aslsavefilerequest:
+;  LEA comStr_CurrentDir,A0           ; asl dir
+;  LEA comStr_SourceName,A1           ; asl path
+;  ;LEA comStr_FilePattern,A3          ; file pattern (*.bb2 etc.)
+;BRA.b aslrequest_file
 
 
 .aslrequest_file:
@@ -10622,7 +10551,7 @@ BRA.b aslrequest_file
     If _a3<>0
       tmppattern$ = Peek$(_a3)
     Else
-      tmppattern$ = Peek$(?comStr_FilePattern_NoInfo)
+      tmppattern$ = "(#?.info)"
     EndIf
   Else
     tmppattern$ = ""
@@ -10643,10 +10572,10 @@ BRA.b aslrequest_file
   EndIf
   pedconfig\asl_use_filepattern = False
   If tempfile$<>""
-    Poke.s ?comStr_SourceFileComplete,tempcomplete$
+    ;Poke.s ?comStr_SourceFileComplete,tempcomplete$
     Poke.s _a0,tempdir$
     Poke.s _a1,tempfile$
-    GetD0 ?comStr_SourceFileComplete
+    ;GetD0 ?comStr_SourceFileComplete
   Else
     MOVEQ.l #0,D0
   EndIf
@@ -11238,9 +11167,9 @@ RTS
   JSR save_cursorposition
   JSR clear_sourcetextbuffer
 
-CNIF #hardfold = 1
-  JSR getfoldstatus
-CEND
+  CNIF #hardfold = 1
+    JSR getfoldstatus
+  CEND
 
   MOVE.l comLong_DisplayLine,D1
 
@@ -11251,9 +11180,9 @@ CEND
     BEQ JL_0_58C6
     MOVE.l d0,a2
 
-CNIF #hardfold = 0
-    BRA 'l3
-CEND
+    CNIF #hardfold = 0
+      BRA 'l3
+    CEND
 
     CMP.w #";@",9(a2)
     BNE 'l2
@@ -11271,7 +11200,6 @@ CEND
   JL_0_58C6:
 
   MOVE.l D1,comLong_DisplayLine+2
-;  CLR.l comLong__AL_0_868A
   CLR.w comWord_TextBufferOffset
   CLR.l foldnum
   MOVE.l #-1,ClearEndOfLine
@@ -11317,27 +11245,26 @@ CEND
   DBF D7,JL_0_58E8
   JL_0_5902:
 
-  ; -- better refresh: clear bottom
   MOVE.l #0,ClearEndOfLine
+
+  ; -- better refresh: clear bottom
   !basic
   ;log_Print{"redraw: clear rest of window"}
   USEPATH sourceWindow
-  SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
-  rectx.w = \BoxLeft
-  recty.w = Peek.l(?comLong_DisplayLine) * \font\tf_YSize
-  rectw.w = \BoxWidth
-  recth.w = \statusAreaY
-  If (rectw => rectx) AND (recth => recty)
-    ;log_Print{Str$(rectx) + ", " + Str$(rectw)}
-    ;log_Print{Str$(recty) + ", " + Str$(recth)}
-    RectFill_ \win\RPort, rectx, recty, rectw, recth
-  Else
-    ;SetAPen_ \win\RPort,3
-    ;Move_ \win\RPort,rectx,recty
-    ;Draw_ \win\RPort,rectx + rectw,recth
-    log_Print{"illegal area for clear bottom:",#log_error}
-    log_Print{Str$(rectx) + ", " + Str$(rectw)}
-    log_Print{Str$(recty) + ", " + Str$(recth)}
+  If Peek.l(?comLong_DisplayLine)+1 <= Peek.l(?viewablelines)-1
+    SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
+    rectx.w = \BoxLeft
+    recty.w = (Peek.l(?comLong_DisplayLine)+1) * \font\tf_YSize
+    rectw.w = \BoxWidth
+    recth.w = \statusAreaY
+    If (rectw => rectx) AND (recth => recty)
+      RectFill_ \win\RPort, rectx, recty, rectw, recth
+    Else
+      log_Print{"illegal area for clear bottom:",#log_error}
+      log_Print{"displayline: " + Str$(Peek.l(?comLong_DisplayLine)+1) + "   viewablelines: " + Str$(Peek.l(?viewablelines)-1)}
+      log_Print{Str$(rectx) + ", " + Str$(rectw),#log_error}
+      log_Print{Str$(recty) + ", " + Str$(recth),#log_error}
+    EndIf
   EndIf
   !asm
 
@@ -11347,8 +11274,6 @@ CEND
   JL_0_590C:
   TST.l comLong_BlockEndY                                 ; draw block if existing
   BMI.w JL_0_59BA
-    ;MOVEA.l _graphicsbase,A6
-    ;MOVEA.l rp_rectfill,A1
     MOVE.w comLong_BlockStartX,D0
     MOVE.w comLong_BlockEndX,D2
     MOVE.l comLong_BlockEndY,D3
@@ -11499,8 +11424,8 @@ Return
     textY = -1
   EndIf
 
-  msg$ =  Str$(mx) +  ", " + Str$(my) + "      " + Str$(textX) + ", " + Str$(textY) + "  DisplayLineOff:"  + Str$(Peek.l(?comLong_DisplayLineOffset)) + " total" + Str$(Peek.l(?comLong_TotalLines))
-  SetScreenTitle{msg$}
+  ; msg$ =  Str$(mx) +  ", " + Str$(my) + "      " + Str$(textX) + ", " + Str$(textY) + "  DisplayLineOff:"  + Str$(Peek.l(?comLong_DisplayLineOffset)) + " total" + Str$(Peek.l(?comLong_TotalLines))
+  ; SetScreenTitle{msg$}
 Return
 
 JL_0_5B00:
@@ -11581,6 +11506,8 @@ RTS
   MOVEA.l comPtr_CurrentSourceLine,A2
 BRA.w print_sourceline
 
+
+
 AL_0_5B9A:    Ds.l 1
 AL_0_5B9E:    Ds.l 1
 AL_0_5BA2:    Ds.l 1        ; not used anymore ?
@@ -11589,35 +11516,95 @@ textbufferPrint:    Ds.l 1
 expandstore:  Ds.l 1
 lineundeletestore:    Ds.l 1
 
-.print_complete_line:                  ; d0:x, d1:y, a0: text
+
+
+
+;.print_complete_line:                  ; d0:x, d1:y, a0: text
+;  MOVE.l D2,-(A7)
+;
+;  MOVEA.l textbufferPrint,A2           ; textbufferPrint leeren
+;  MOVE.l #MAX_Columns/4,D2
+;  SUBQ.l #1,d2
+;  JL_0_5C20:
+;    CLR.l (A2)+
+;  DBF D2,JL_0_5C20
+;
+;  TST.w comWord_DoTokenize
+;  BNE.w tokenized_text
+;    JSR print_standard_text            ; print standard, non-tokenized text >> d0:x, d1:y, a0: text, d3, length
+;    BRA.w exit_print_complete_line
+;  tokenized_text:
+;   MOVE.w #MAX_Columns,D4 : SUBQ.w #1,D4
+;    MOVEA.l AL_0_5BA6,A1
+;    JL_0_5C48:
+;      MOVE.b (A0)+,(A1)+               ;copy text to tempbuffer
+;      BEQ.w JL_0_5C52
+;    DBF D4,JL_0_5C48
+;    JL_0_5C52:
+;    MOVE.b #$0,(A1)+
+;    JSR print_tokenized_text
+;  exit_print_complete_line:
+;
+;  !basic
+;  If Peek.l(?ClearEndOfLine)
+;    !regs2stack
+;    USEPATH sourceWindow
+;    SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
+;
+;    rectx.w = \win\RPort\cp_x
+;    recty.w = Peek.l(?comLong_DisplayLine) * \font\tf_YSize
+;    rectw.w = \BoxWidth
+;    recth.w = recty + \font\tf_YSize-1
+;    If (rectw => rectx) AND (recth => recty)
+;      RectFill_ \win\RPort, rectx, recty, rectw, recth
+;    Else
+;      log_Print{"illegal area for clear bottom:",#log_error}
+;      log_Print{Str$(rectx) + ", " + Str$(rectw)}
+;      log_Print{Str$(recty) + ", " + Str$(recth)}
+;    EndIf
+;
+;    !stack2regs
+;  EndIf
+;  !asm
+;
+;  MOVE.l (A7)+,D2
+;RTS
+
+
+
+
+
+.print_complete_line_bas:                  ; d0:x, d1:y, a0: text
   MOVE.l D2,-(A7)
-
-  MOVEA.l textbufferPrint,A2           ; textbufferPrint leeren
-  MOVE.l #MAX_Columns/4,D2
-  SUBQ.l #1,d2
-  JL_0_5C20:
-    CLR.l (A2)+
-  DBF D2,JL_0_5C20
-
-  TST.w comWord_DoTokenize
-  BNE.w tokenized_text
-    JSR print_standard_text            ; print standard, non-tokenized text >> d0:x, d1:y, a0: text, d3, length
-    BRA.w exit_print_complete_line
-  tokenized_text:
-   MOVE.w #MAX_Columns,D4 : SUBQ.w #1,D4
-    MOVEA.l AL_0_5BA6,A1
-    JL_0_5C48:
-      MOVE.b (A0)+,(A1)+               ;copy text to tempbuffer
-      BEQ.w JL_0_5C52
-    DBF D4,JL_0_5C48
-    JL_0_5C52:
-    MOVE.b #$0,(A1)+
-    JSR print_tokenized_text
-  exit_print_complete_line:
-
+  !regs2stack
+  MOVE.l A0,-(a7)   ; string
+  MOVE.l D0,-(a7)   ; x-pos
+  MOVE.l D1,-(a7)   ; y-pos
   !basic
+  MOVE.l (a7)+,d0 : tposy.w = PutD0
+  MOVE.l (a7)+,d0 : tposx.w = PutD0
+  MOVE.l (a7)+,d0 : *textaddr.l = PutD0
+
+  If Peek.w(?comWord_DoTokenize)
+    ; copy the current line to a tempBuffer
+    tmpAddr.l = Peek.l(?textbufferPrint)
+    For i = 0 To #MAX_Columns/4-1 Step 4
+      Poke.l  tmpAddr + i, 0
+    Next i
+    ; copy the current line to a tempBuffer
+    For i = 0 To #MAX_Columns - 1
+      Poke.b Peek.l(?AL_0_5BA6) + i, Peek.b(*textaddr+i)
+    Next i
+    Poke.b Peek.b(?AL_0_5BA6) + #MAX_Columns-1, 0
+    !asm
+    JSR print_tokenized_text
+    !basic
+  Else
+    sourceWindow\ColumnsOffsetTmp = Peek.w(?comWord_ColumnsOffsetTmp)
+    PED_PrintTextStandard{tposx, tposy, *textaddr}
+  EndIf
+
   If Peek.l(?ClearEndOfLine)
-    !regs2stack
     USEPATH sourceWindow
     SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
 
@@ -11632,11 +11619,9 @@ lineundeletestore:    Ds.l 1
       log_Print{Str$(rectx) + ", " + Str$(rectw)}
       log_Print{Str$(recty) + ", " + Str$(recth)}
     EndIf
-                                                                                                                                                                                                                                                    
-    !stack2regs
   EndIf
   !asm
-
+  !stack2regs
   MOVE.l (A7)+,D2
 RTS
 
@@ -11645,11 +11630,15 @@ ClearEndOfLine: Dc.l 0
 
 
 .print_tokenized_text:
+  ; get tetokenized text
   MOVEA.l AL_0_5BA6,A0
   MOVEA.l textbufferPrint,A1
-
   MOVEM.l D0-D1/A1,-(A7)
   JSR JL_0_5060                               ;copy whole line from A0 to A1 and detokenize
+  ;!basic
+  ;log_Print{"1: " + Peeks$(Peek.l(?AL_0_5BA6),40)}
+  ;log_Print{"2: " + Peeks$(Peek.l(?textbufferPrint),40)}
+  ;!asm
   MOVEM.l (A7)+,D0-D1/A1
 
   TST.b keepstring
@@ -11681,7 +11670,7 @@ ClearEndOfLine: Dc.l 0
   MOVEA.l expandstore,A2
   MOVEA.l A1,A0
 
-  EXT.l d0 : DIVU fontWidth,d0
+  EXT.l d0 : DIVU fontWidth,d0                          ; d0: xPos
 
   JL_0_5C9C:
   MOVE.b (A1)+,D2
@@ -11722,6 +11711,7 @@ ClearEndOfLine: Dc.l 0
     MOVE.l (a7)+,d0 : tposx.w = PutD0
     MOVE.l (a7)+,d0 : *textaddr.l = PutD0
     PED_PrintText{*textaddr,tposx,tposy,tlength,AB3Pen(#AB3_cother)}
+    ;log_Print{Str$(tposy) + " : " + Peeks$(*textaddr,20)}
     !asm
     MOVE.w (A7)+,D0
     MOVEM.l (a7)+,a6/d0-d1/a0/a1
@@ -11790,6 +11780,7 @@ ClearEndOfLine: Dc.l 0
     SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
   EndIf
   PED_PrintText{*textaddr,tposx,tposy,tlength,tcolor}
+  ;log_Print{"T: " + Peeks$(*textaddr,20)}
   SetBPen_ \win\RPort, AB3Pen(#AB3_cbackground)
   If pedconfig\bold_tokens
     SetFont_ \win\RPort, \font
@@ -12059,12 +12050,11 @@ RTS
     MOVEA.l A2,A0
 
     MOVEQ.l #$00,D0
-    MOVEQ.l #$00,D1
-    MOVE.l comLong_DisplayLine,D1 ;: MULU fontHeight,D1
+    MOVEQ.l #$00,D1 : MOVE.l comLong_DisplayLine,D1
 
     MOVE.w comWord_ColumnsOffset,comWord_ColumnsOffsetTmp
     ;MOVE.l textbufferPrint,templine
-    JSR print_complete_line            ; inputs: d0:x, d1:y, a0: text
+    JSR print_complete_line_bas            ; inputs: d0:x, d1:y, a0: text
     ;CLR.l templine
     MOVEM.l (A7)+,D1/A0-A3/A6
     MOVEA.l textbufferPrint,A2
@@ -12920,18 +12910,10 @@ RTS
 
 .increase_DisplayLine:
   ADDQ.l #1,comLong_DisplayLine
-  MOVEQ.l #$00,D0
-;  MOVE.w comWord__AL_0_86CC,D0
-;  ADD.l D0,comLong__AL_0_868A
-  MOVE.w #MAX_Columns,D0
-  ADD.w D0,comWord_TextBufferOffset
+  MOVEQ.l #$00,D0 : MOVE.w #MAX_Columns,D0 : ADD.w D0,comWord_TextBufferOffset
 RTS
 
 .decrease_DisplayLine:
-  ; decrease DisplayLine
-  ;Poke.l ?comLong_DisplayLine, Peek.l(?comLong_DisplayLine)-1
-  ;Poke.w ?comWord_TextBufferOffset, Peek.w(?comWord_TextBufferOffset)-Peek.w(?comWord_MaxColumns)
-
   SUBQ.l #1,comLong_DisplayLine
   MOVEQ.l #$00,D0 : MOVE.w #MAX_Columns,D0 : SUB.w D0,comWord_TextBufferOffset
 RTS
@@ -13159,7 +13141,7 @@ Return
     MOVEM.l (a7)+,d0-d2/a0
 
     MOVE.b #$1,keepstring
-    JSR print_complete_line          ; print the text ; d0:x, d1:y, a0: text
+    JSR print_complete_line_bas          ; print the text ; d0:x, d1:y, a0: text
     CLR.b keepstring
     MOVEM.l (A7)+,D2/A5
     BSR process_highlightning        ; beim markieren nicht verwenden, da sonst
@@ -13362,7 +13344,7 @@ Return
     MOVEM.l (a7)+,d0-d2/a0
 
     MOVE.b #1,keepstring
-    JSR print_complete_line               ; inputs d0:x, d1:y, a0: text
+    JSR print_complete_line_bas               ; inputs d0:x, d1:y, a0: text
     CLR.b keepstring
     BSR process_highlightning
     SF comWord__AL_0_8668
@@ -13892,7 +13874,7 @@ Return
   If Peek.l(?addr_menustrip) Then SetMenuStrip_ sourceWindow\win,Peek.l(?addr_menustrip)
 
   log_Print{"setting sourcefont"}
-  SetFont_ sourceWindow\win\RPort,\font ;Peek.l(?ptr_sourcefont)
+  SetFont_ sourceWindow\win\RPort,\font
 
   ; attach sourcewindow to peds process
   log_Print{"find current task"}
@@ -14032,12 +14014,10 @@ RTS
 
 
 .update_statusarea:
-  !basic
   Gosub print_availmem
   Gosub print_actualsourceline
   Gosub print_actualsourcecolumn
-  !asm
-RTS
+Return
 
 .draw_statusarea:
   !basic
@@ -14063,9 +14043,8 @@ RTS
   PED_PrintStatus{"Line:        ", 24}
   PED_PrintStatus{"Column:    ", 11}
   log_Print{"drawing statusarea"}
+  Gosub update_statusarea
   !asm
-
-  BRA.b update_statusarea
 RTS
 
 .free_textbuffer:
@@ -14297,7 +14276,7 @@ RTS
   textaddr.l = &enteredChar ;?comByte_EnteredCharacter
 
   If Peek.w(?comWord_CursorInMarkedBlock)
-     dummy.l=ask{!TRANS{"print_entered_char subroutine is called"},!TRANS{"OK"},!TRANS{"INFO"} } ; replaced "Request" command with a error include function  tomsmart1
+    log_Print{"cursor in block, routine called."}
      ; --- print actual character with blockbackgroundcolor
      SetBPen_ \win\RPort,3
      PED_PrintText{&enteredChar,tposx,tposy,1,AB3Pen(#AB3_cother)}
@@ -14511,7 +14490,7 @@ JL_0_7962_bas:
     MOVE.l (a7)+,A0
     MOVEQ.l #0,D0
 
-    JSR print_complete_line                             ; d0:x, d1:y, a0: text
+    JSR print_complete_line_bas                             ; d0:x, d1:y, a0: text
     !basic
     Poke.b ?keepstring,0
     !asm
@@ -14664,9 +14643,9 @@ RTS
 
 .PED_events:
   CLR.w comWord_KeyBeforeReturn
-  exit_loop_flag.b = False
+  exit_eventloop.b = False
 
-  While exit_loop_flag = False
+  While exit_eventloop = False
     !asm
     JSR checkedit2      ; if new editmode, delete a marked block if inserchar or deletechar happens
     CLR.b doedit2
@@ -14953,6 +14932,8 @@ RTS
       *detokened.l = TEDDetoke{*textline}
       tokname$ = PED_GetWordAtPos{Peek$(*detokened), Peek.w(?comWord_Column),True}
       If tokname$ <> ""
+        log_Print{"HELP on <" + tokname$ + ">"}
+
         If StrLower(tokname$) = "endif"
           Gosub help_checkforif
         Else
@@ -15788,16 +15769,16 @@ Return
 
 
 
-.update_debuggertoggle
-  MOVEM.l d0-d1/a0-a1/a6,-(a7)
-  !basic
-  If Peek.b(?comByte_DebugMode) <> Peek.b(?olddebugmode)
-    Poke.b ?olddebugmode,Peek.b(?comByte_DebugMode)
+.update_debuggertoggle:
+  ;MOVEM.l d0-d1/a0-a1/a6,-(a7)
+
+  If Peek.b(?comByte_DebugMode) <> ped\debugmode
+    ped\debugmode = Peek.b(?comByte_DebugMode)
   EndIf
-  GTSetMenuChecked 0,4,12,Peek.b(?comByte_DebugMode)
-  !asm
-  MOVEM.l (a7)+,d0-d1/a0-a1/a6
-RTS
+  GTSetMenuChecked 0,4,12,ped\debugmode
+
+  ;MOVEM.l (a7)+,d0-d1/a0-a1/a6
+Return
 
 
 .event_sourcewindow:
@@ -15843,7 +15824,7 @@ RTS
   Case #IDCMP_GADGETDOWN
     *gadget.Gadget = *intuimessage\IAddress
     log_Print{"GADGETDOWN"}
-    log_Print{"GadgetID " + Str$(*gadget\GadgetID) + ", Type " + Hex$(*gadget\GadgetType) + ", Activation " + Hex$(*gadget\Activation)}
+    ;log_Print{"GadgetID " + Str$(*gadget\GadgetID) + ", Type " + Hex$(*gadget\GadgetType) + ", Activation " + Hex$(*gadget\Activation)}
     ;log_Print{"byte type " + Str$(*gadget\GadgetType AND $00FF)}
 
     Select *gadget\GadgetID
@@ -15861,8 +15842,8 @@ RTS
           !asm
           MOVE.l (a7)+,D1
           JSR moveCursorToX
-          JSR update_statusarea
           !basic
+          Gosub update_statusarea
           If *intuimessage Then ReplyMsg_ *intuimessage
           *intuimessage.IntuiMessage = GetMsg_(sourceWindow\win\UserPort)
         Wend
@@ -15891,8 +15872,8 @@ RTS
               MOVE.l comLong_LinePosStartX,D0
               MOVEA.l comPtr_CurrentSourceLine,A4
               JSR gotoline
-              JSR update_statusarea
               !basic
+              Gosub update_statusarea
             EndIf
             If *intuimessage Then ReplyMsg_ *intuimessage
             *intuimessage.IntuiMessage = GetMsg_(sourceWindow\win\UserPort)
@@ -15924,7 +15905,7 @@ RTS
 
   Case #IDCMP_MENUPICK
     Gosub handle_event_menupick
-    exit_loop_flag = True
+    exit_eventloop = True
 
   Case #IDCMP_MOUSEBUTTONS
     Gosub handle_event_mousebuttons
@@ -15933,12 +15914,12 @@ RTS
     Gosub handle_event_rawkey
     ; some events are converted to vanilla events, handle them now:
     If last_vankey <> 0 Then Gosub handle_event_vanillakey
-    ;exit_loop_flag = True
+    ;exit_eventloop = True
 
   Case #IDCMP_VANILLAKEY
     last_vankey = 0
     Gosub handle_event_vanillakey
-    ;exit_loop_flag = True
+    ;exit_eventloop = True
 
   Case #IDCMP_EXTENDEDMOUSE
     Gosub handle_event_extendedmouse
@@ -16061,7 +16042,7 @@ Return
     _ItemAddress.l = ItemAddress_(Peek.l(?addr_menustrip),_menuNumber AND #MaxWord)
     _menuitem.l = Peek.l(_ItemAddress + $22)             ; Userdata of GadTools, longword right after MenuItem-struct
     exit_loop_class.b = -2
-    exit_loop_flag.b = True
+    exit_eventloop.b = True
   EndIf
 Return
 
@@ -16081,7 +16062,7 @@ Return
       log_Print{"Mouse-Event SELECTUP",#log_debug}
       was_selectdown_before = False
       exit_loop_class = -4 ; AJL_0_7FCC
-      exit_loop_flag = True
+      exit_eventloop = True
     EndIf
 
   Case #SELECTDOWN
@@ -16105,7 +16086,7 @@ Return
         MOVE.w #$FFFF,comWord_LabelListChanged
       EndIf
     EndIf
-   exit_loop_flag = True
+   exit_eventloop = True
 
   Case #MIDDLEDOWN
     log_Print{"Mouse-Event MIDDLEDOWN",#log_debug}
@@ -16173,7 +16154,7 @@ Return
   Case #VANILLAKEY_RETURN
     Gosub immediate_syntaxhelp
     ;Gosub do_VANILLAKEY_RETURN
-    exit_loop_flag.b = True
+    exit_eventloop.b = True
     Pop Select: Return
 
   Case #VANILLAKEY_HELP
@@ -16202,12 +16183,12 @@ Return
 
   Case #VANILLAKEY_DELETE
     Gosub do_VANILLAKEY_DELETE
-    exit_loop_flag = True
+    exit_eventloop = True
     Pop Select : Return
 
   Case #VANILLAKEY_BACKSPACE
     Gosub do_VANILLAKEY_BACKSPACE
-    exit_loop_flag.b = True
+    exit_eventloop.b = True
     Pop Select : Return
 
   Case #VANILLAKEY_TAB
@@ -16285,20 +16266,20 @@ Return
 
     EndIf
 
-    exit_loop_flag.b = True
+    exit_eventloop.b = True
     Pop Select : Return
 
   Case #VANILLAKEY_UP       ; ---------------------------------------------------------------- Cursor Up
     mqualifier = mqualifier AND NOT #IEQUALIFIER_REPEAT; remove "pressing" flag
     ;gosub do_VANILLAKEY_UP
-    exit_loop_flag.b = True
+    exit_eventloop.b = True
     Pop Select : Return
 
   Case #VANILLAKEY_DOWN    ; ------------------------------------------------------------------------------------- Cursor Down
     mqualifier.w = mqualifier AND (NOT #IEQUALIFIER_REPEAT); remove "repeat" flag
     ;log_Print{"cursordown: " +Hex$(mqualifier)}
     ;gosub do_VANILLAKEY_DOWN
-    exit_loop_flag.b = True
+    exit_eventloop.b = True
     Pop Select: Return
 
   Case #VANILLAKEY_LEFT         ; -------------------------------------------------------------- Cursor Left
@@ -16529,7 +16510,7 @@ log_Print{""}
       last_vankey = 0               ; clear Key
       Gosub intellisense            ; update popupwin
     End Select
-    exit_loop_flag = True
+    exit_eventloop = True
 
     Pop Select : Return
 
@@ -16636,7 +16617,7 @@ log_Print{""}
     log_Print{"no special handling of vanillakey: " + Hexw$(last_vankey) + " *** INSERT CHAR*"}
     Gosub insertchar
     ;exit_loop_class = last_vankey
-    ;exit_loop_flag.b = True
+    ;exit_eventloop.b = True
   End Select
 Return
 
@@ -16727,7 +16708,6 @@ Return
       mqualifier = (mqualifier & (NOT #IEQUALIFIER_RALT)) | #IEQUALIFIER_LALT
     EndIf
 
-    log_Print{"cursor up" + Hex$(mqualifier)}
     Select mqualifier
     Case 0;#IEQUALIFIER_RELATIVEMOUSE   ; $8000 (just the key)
   ;    log_Print{"no other key"}
@@ -17299,8 +17279,8 @@ RTS
      JSR menu_load
      TST.l D0
      BEQ.w JL_0_BD5A
-       JSR analyze_loadedsource
        !basic
+       Gosub analyze_loadedsource
        Gosub set_remembered_filename
        !asm
        JSR draw_statusarea
@@ -17355,18 +17335,11 @@ RTS
       RTS
     EndIf
   EndIf
-  ;JSR show_newfilerequest
-  ;TST.l D0
-  ;  BNE.w JL_0_BDBA
-  ;RTS
-  ;JL_0_BDBA:
 
-  ;!basic
-  Poke.s ?comStr_SourceFileComplete, rememberfiles$(_rememberitem)
+  loadsourcefilename$ = rememberfiles$(_rememberitem)
+  Gosub load_source
+  Gosub analyze_loadedsource
   !asm
-  MOVE.l #comStr_SourceFileComplete,d7
-  JSR load_source
-  JSR analyze_loadedsource
   JSR draw_statusarea
   !basic
 Return
@@ -18097,13 +18070,13 @@ RTS
             vercode$ + Str$((version_code LSL 8) LSR 24 )+"."
             vercode$ + Str$((version_code LSL 16)LSR 24 )+" (build: "
             vercode$ + Str$(anz_builds)+")"
-            changelog$ =  "V"+vercode$ + ":\\0a\\0a" + changelog$
-            WZPrint "CHANGELOG_TEXTFIELD",&changelog$
+            project_changelog$ =  "V"+vercode$ + ":\\0a\\0a" + project_changelog$
+            WZPrint "CHANGELOG_TEXTFIELD",&project_changelog$
           EndIf
         EndIf
 
       Case "CHANGELOG_TEXTFIELD"
-        changelog$ = WZ_GetStringField{"CHANGELOG_TEXTFIELD"}
+        project_changelog$ = WZ_GetStringField{"CHANGELOG_TEXTFIELD"}
 
       End Select
 
@@ -18278,7 +18251,7 @@ Return
         WZPrint "INTEGER_VER_MINOR",(version_code LSL 8) LSR 24
         WZPrint "INTEGER_VER_PATCH",(version_code LSL 16)LSR 24
         WZPrint "INTEGER_VER_BUILD",anz_builds
-        WZPrint "CHANGELOG_TEXTFIELD",&changelog$
+        WZPrint "CHANGELOG_TEXTFIELD",&project_changelog$
       EndIf
     EndIf
   EndIf
@@ -18817,8 +18790,8 @@ RTS
         !asm
         JSR loadfile
         JSR update_vertscroller
-        JSR update_statusarea
         !basic
+        Gosub update_statusarea
         *currLine = Peek.l(?comPtr_CurrentSourceLine)
         ;-- jump upwards and search again in file ...
         Goto jump_search
@@ -18990,6 +18963,31 @@ RTS
 
 
 .help_checkfortype:
+;!basic
+;  curcharptr.l = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset) + Peek.w(?comWord_Column)
+;  curchar.w = Peek.b(curcharptr)
+;  lastchar.w = Peek.b(curcharptr-1)
+;  log_Print{"check current char <" + Chr$(curchar) + "> for type help"}
+;  If lastchar = Asc("\")
+;    curcharptr - 1
+;  Else If curchar <> Asc("\")
+;    !asm
+;    RTS
+;  EndIf
+;
+;  While Peek.b(curchar-1) = $20
+;    curchar - 1
+;  Wend
+;
+;  If Peek.b(curchar) = Asc(")")
+;    While Peek.b(curchar-1) <> Asc("(")
+;      curchar - 1
+;    Wend
+;  EndIf
+;
+;!asm
+;RTS
+;
   MOVE.w comWord_Column,d1
   MOVE.w d1,columnstore
   SUBQ.w #2,d1
@@ -18997,9 +18995,14 @@ RTS
     MOVEQ #1,d1
  'w1
   MOVE.l textbufferaddr,a0 : ADD.w comWord_TextBufferOffset,a0
-  MOVE.l a0,a1
-  SUBQ.l #1,a1
+  MOVE.l a0,a1 : SUBQ.l #1,a1
   ADD.w comWord_Column,a0
+  ;!regs2stack
+  ;!basic
+  ;lineaddr.l = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset) + Peek.w(?comWord_Column)
+  ;log_Print{"check current char: <" + Peeks$(lineaddr,1) + ">"}
+  ;!asm
+  ;!stack2regs
   CMP.b #"\",-1(a0)
   BEQ typehelp1
     CMP.b #"\",(a0)
@@ -19015,6 +19018,7 @@ RTS
     CMP.l a0,a1
     BNE typehelp2
  't2b
+
   CMP.b #")",(a0)
   BNE 't2
    'rb
@@ -19025,6 +19029,7 @@ RTS
    't2c
     SUBQ.l #1,a0
  't2
+
   CMP.b #"_",(a0)
   BEQ 'ok
     CMP.b #$30,(a0)
@@ -19051,20 +19056,21 @@ RTS
 
   CMP.b #".",d0
   BNE 't1
-    !regs2stack
-    !basic
-    log_Print{"typehelp"}
-    !asm
-    !stack2regs
-    CNIF #USE_AREXX = 1
-    MOVE.w d1,comWord_Column
-    JSR arexxfunc_getword
-    MOVE.w columnstore,comWord_Column
-    BRA typehelp
-    CELSE
-      RTS
-    CEND
+    ;!regs2stack
+    ;!basic
+    ;log_Print{"typehelp"}
+    ;!asm
+    ;!stack2regs
+    ;CNIF #USE_AREXX = 1
+    ;  MOVE.w d1,comWord_Column
+    ;  JSR arexxfunc_getword
+    ;  MOVE.w columnstore,comWord_Column
+      BRA typehelp
+    ;CELSE
+    ;  RTS
+    ;CEND
  't1
+
   MOVE.l a2,-(a7)
   LEA typestr,a2
   ADDQ.l #1,a0
@@ -19309,9 +19315,10 @@ RTS
 RTS
 
 .typehelp
-  MOVE.l a0,d0
+  ;MOVE.l a0,d0
   !basic
-  i = PutD0 : str2$ = Peek$(i) : a$ = str2$
+  ;i = PutD0 : str2$ = Peek$(i) : a$ = str2$
+  str2$ = tokname$ : a$ = str2$
   log_Print{"typehelp [" + a$ + "]"}
   If NOT WZ_CheckOpen{"WIN_NEWTYPE"}
     USEPATH wtemp
@@ -19326,7 +19333,7 @@ RTS
         WTitle "Compile the file to see all"
      'nocompile
     'oldped
-    Gosub activatesourcewindow
+     Gosub activatesourcewindow
   End If
   Use Window WZID("WIN_NEWTYPE")
   WZPrint "STRING2",&str2$
@@ -19334,11 +19341,11 @@ RTS
   WZPrint "newtype_var",0
   WZPrint "newtype_struct",1
   newtype_mode = 2
-
   lev.l = 0
   find.l = 0
   Gosub newtype_selecttype
   lev = 1
+
   MOVE.l newtypebase,d0
   *nt.l = PutD0
   If *nt
@@ -19346,7 +19353,8 @@ RTS
     While *nt
       b$ = Peek$(*nt+11)
       If b$ = a$:
-        quicktype = 1:Gosub newtype_listsubtype:find = 1:Pop If:Goto f1ab
+        quicktype = 1 : Gosub newtype_listsubtype
+        find = 1 : Pop If : Goto f1ab
       End If
       *nt = Peek.l(*nt)
     Wend
@@ -21315,9 +21323,9 @@ Return                                                                        ; 
       SetBPen_ \win\RPort, bcol
 
       If stylestate = #FSF_BOLD
-        SetFont_ \win\RPort,\fontB ;Peek.l(?ptr_sourcefontb)
+        SetFont_ \win\RPort,\fontB
       Else
-        SetFont_ \win\RPort,\font ;Peek.l(?ptr_sourcefont)
+        SetFont_ \win\RPort,\font
       EndIf
       SetSoftStyle_ \win\RPort,stylestate.w,#FSF_BOLD
 
@@ -21353,8 +21361,8 @@ Return                                                                        ; 
     Until *sourcefile = 0
   EndIf
 
-  SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground) ;Peek.l(?backgroundcolor)
-  SetFont_ \win\RPort,\font ;Peek.l(?ptr_sourcefont)
+  SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+  SetFont_ \win\RPort,\font
   SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
 Return
 
@@ -21502,10 +21510,9 @@ Return
   !asm
   JSR menu_opennew
   !basic
-  Poke.s ?comStr_SourceFileComplete, fileToLoad
+  loadsourcefilename$ = fileToLoad
+  Gosub load_source
   !asm
-  MOVE.l #comStr_SourceFileComplete,d7
-  JSR load_source
 RTS
 
 
@@ -22448,7 +22455,7 @@ ptr_incdirname        Dc.l 0
                       Dc.w 0     ;say end
 
 ;classiccolor          Dc.l 1
-olddebugmode          Dc.w $0101
+;olddebugmode          Dc.w $0101
 cutmode               Dc.w 0
 dummystr              Dc.b ":",0,0 : Even
 
@@ -22456,7 +22463,7 @@ BSS
 Even
 loadAsNew             Ds.w 1
 nodelete              Ds.w 1
-menuload              Ds.w 1
+;menuload              Ds.w 1
 replacestartcolumn    Ds.w 1                ; used in an arexx function code
 fontWidth             Ds.w 1
 ctrlhelpline          Ds.l 1                ; insert text into sourcetext?
@@ -22522,4 +22529,5 @@ deftypefound          Ds.w 1
 blockmarking          Dc.l 0
 ;load_last_source      Dc.b 0
 wheelstep             Ds.l 1        ; moved to BSS section because it is now set by init with a default of 6 if it not set in the Icontooltypes  tomsmart1
-
+;comment1
+;comment2
