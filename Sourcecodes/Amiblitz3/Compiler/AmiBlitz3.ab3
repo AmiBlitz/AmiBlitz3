@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.8.0
-; NumberOfBuilds  = 327
+; NumberOfBuilds  = 331
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1970
+; CursorLine      = 175
 ; CursorColumn    = 1
-; LabelSearch     = "openc"
+; LabelSearch     = "path_deflibs"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -143,6 +143,7 @@ End Macro
 NEWTYPE.configuration
   start_without_libs.b            ; skip loading of libfiles at startup
   start_with_acidlibs_only.b      ; just load acidlibs at startup
+  localization.b
   OnePassCompiling.b
 
   blitz3assign.s
@@ -151,6 +152,7 @@ NEWTYPE.configuration
   path_residents.s
   path_acidlibs.s
   path_deflibs.s
+  path_oslibs.s
   path_userlibs.s
   pedfile.s
   ptr_seg_ped.l
@@ -165,6 +167,9 @@ NEWTYPE.libdata
 
   size_deflibs.l
   ptr_deflibs.l
+
+  size_oslibs.l
+  ptr_oslibs.l
 
   ptr_userlibs.l
 End NEWTYPE
@@ -244,6 +249,7 @@ If dynassign <> ""
   config\default_debugger= dos_AddPart{dynassign,"Debug/DefaultDBug"}     ; /REDDebugger"}
   config\path_acidlibs = dos_AddPart{dynassign, "BlitzLibs/AcidLibs"}
   config\path_deflibs  = dos_AddPart{dynassign, "BlitzLibs/DefLibs" }
+  config\path_oslibs  = dos_AddPart{dynassign, "BlitzLibs/OsLibs" }
   config\path_userlibs = dos_AddPart{dynassign, "BlitzLibs/UserLibs"}
   Poke$ ?str_path_includes,dos_AddPart{dynassign, "Sourcecodes/Includes"}
   config\path_system    = dos_AddPart{dynassign, "System"}
@@ -257,15 +263,18 @@ EndIf
 ; --
 ; -- check, if there is an alternative PED-executable set via Tooltype
 config\pedfile = dos_GetToolString{"EDITOR",dos_AddPart{config\path_system,"PED"}}
-;Poke.s ?str_pedfile,pedfile$
-
 config\start_without_libs = dos_GetToolState{"START_WITHOUT_LIBS"}
 config\start_with_acidlibs_only = dos_GetToolState{"LOAD_ONLY_ACIDLIBS"}
 
 ; -- check if One pass compiling is set as Tooltype to use big buffers for compiling  tomsmart1
 config\OnePassCompiling = dos_GetToolState{"ONEPASSCOMPILING"}
 
-!TRANS_INIT{"AmiBlitz3"}     ; init localization via translation.include
+If dos_GetToolState{"DISABLE_LOCALIZATION"}  = -1
+  config\localization = False
+Else
+  config\localization = True
+  !TRANS_INIT{"AmiBlitz3"}     ; init localization via translation.include
+EndIf
 
 ;--- MorphOS Check to use the CacheClearE function because it is faster under MorphOS as CacheClearU
 If ( FindResident_("MorphOS") )
@@ -1058,29 +1067,6 @@ End Function
     MOVE.l #$FFFFffff,linenumat   ; was -1
     !basic
 
-    ; --
-    ; -- get size of acidlibs/deflibs
-    libdata\size_acidlibs = dos_GetFileSize{config\path_acidlibs}
-    If libdata\size_acidlibs < 0
-      error{"ACIDLIBS [" + config\path_acidlibs + "] not found, none of the stored functions will be available."}
-    EndIf
-
-    If config\start_with_acidlibs_only <> -1
-      deflibNameP.l = Peek.l(?deflib)
-      If deflibNameP
-        If Peek.s(deflibNameP)<>""
-          libdata\size_deflibs = dos_GetFileSize{Peek.s(Peek.l(?deflib))}
-        Else
-          libdata\size_deflibs = dos_GetFileSize{config\path_deflibs}
-        End If
-      Else
-        libdata\size_deflibs = dos_GetFileSize{config\path_deflibs}
-        error{"INTERNAL: Invalid deflib name pointer!"}
-      EndIf
-      If libdata\size_deflibs < 0
-        error{"DEFLIBS [" + config\path_deflibs + "] not found, none of the stored functions will be available."}
-      End If
-    EndIf
     Gosub scan_for_userlibs
     Gosub load_all_libraries
     !asm
@@ -1283,13 +1269,13 @@ unload_ped:    ;was fail3 org source
 
 .old_version_of_PED:
   !basic
-  error{!TRANS{"Old version of the Editor found at:\n"} + pedfile$ + !TRANS{"\n must quit, sorry!"} }  ; show error message  tomsmart1
+  error{!TRANS{"Old version of the Editor found at:\\n"} + pedfile$ + !TRANS{"\\nProgram will quit now."} }  ; show error message  tomsmart1
   !asm
   BRA freemem_and_quit
 
 .cant_load_PED:
   !basic
-  error{!TRANS{"Can't load the Editor:\n"} + pedfile$ + !TRANS{"\n must quit, sorry!"} }  ; show error message  tomsmart1
+  error{!TRANS{"Can't load the Editor:\\n"} + pedfile$ + !TRANS{"\\nProgram will quit now."} }  ; show error message  tomsmart1
   !asm
 
 
@@ -10567,12 +10553,13 @@ JUMP_writeword JMP writeword
 ;ptr_userlibs:   Ds.l 1                                     ;blitzlibsat org source  ;;start of blitzlibs list!
 ptr_EndOfLibs.l = 0
 
-Function.l load_libsfile{libfilename.s, libfilesize.l, libpointer.l, mempool.l}
+Function.l load_libsfile{libfilename.s, libpointer.l, mempool.l}
 SHARED ptr_EndOfLibs.l
 
   If libfilename <> ""
+    libfilesize.l = dos_GetFileSize{libfilename}
     libfilehandle.l = Open_(libfilename,#HUNK_RELOC_16__MODE_OLDFILE)
-    If libfilehandle
+    If libfilehandle AND (libfilesize > 0)
       tmp_buffer.l = AllocPooled_(mempool, libfilesize)
       tmp_size.l = Read_(libfilehandle, tmp_buffer, libfilesize)
       If tmp_size > 0
@@ -10789,15 +10776,39 @@ End Function
   fid.l = file_Open{tempmapping$,#file_forcewrite}
 
   ;-- load acidlibs
-  libdata\ptr_acidlibs = load_libsfile{config\path_acidlibs,libdata\size_acidlibs,?libpointer,Peek.l(?mempool)}
-
+  libdata\size_acidlibs = dos_GetFileSize{config\path_acidlibs}
+  If libdata\size_acidlibs < 0
+    error{"ACIDLIBS [" + config\path_acidlibs + "] not found, none of the stored functions will be available."}
+  Else
+    libdata\ptr_acidlibs = load_libsfile{config\path_acidlibs,?libpointer,Peek.l(?mempool)}
+  EndIf
 
   ;-- load deflibs
-  tmp_mem.l = load_libsfile{config\path_deflibs,libdata\size_deflibs,ptr_EndOfLibs,Peek.l(?mempool)}
-  libdata\ptr_deflibs = tmp_mem
-
-;  !cout{Hex$(ptr_EndOfLibs) + "  " + Hex$(tmp_mem + libdata\size_deflibs)}
+  If config\start_with_acidlibs_only <> -1
+    libdata\size_deflibs = dos_GetFileSize{config\path_deflibs}
+    If libdata\size_deflibs < 0
+      error{"DEFLIBS [" + config\path_deflibs + "] not found, none of the stored functions will be available."}
+    Else
+      tmp_mem.l = load_libsfile{config\path_deflibs,ptr_EndOfLibs,Peek.l(?mempool)}
+      libdata\ptr_deflibs = tmp_mem
+    End If
+  EndIf
   libdata\ptr_userlibs = ptr_EndOfLibs
+
+  ;-- load oslibs
+  If config\start_with_acidlibs_only <> -1
+    libdata\size_oslibs = dos_GetFileSize{config\path_oslibs}
+    If libdata\size_oslibs < 0
+      error{"OSLIBS [" + config\path_oslibs + "] not found, none of the stored functions will be available."}
+    Else
+      tmp_mem.l = load_libsfile{config\path_oslibs,ptr_EndOfLibs,Peek.l(?mempool)}
+      libdata\ptr_oslibs = tmp_mem
+    End If
+  EndIf
+  libdata\ptr_userlibs = ptr_EndOfLibs
+
+
+
 
 .load_userlibs:
   ResetList userlibslist()
@@ -29441,7 +29452,7 @@ End Function
   incLock.l   = ab3_GetIncludeLock{incFile}                 ; check if file exist
 
   If incLock = False ; not found => check default Include Directory
-    incDirP.l = Peek.l(?incd)
+    incDirP.l = Peek.l(?ptr_incdirname)
     If incDirP
       incDir_.s = Peek.s(incDirP)
     Else
@@ -29461,7 +29472,7 @@ End Function
   End If
 
   If incLock = False ; still not found => check default Include Directory and name only
-    incDirP.l = Peek.l(?incd)
+    incDirP.l = Peek.l(?ptr_incdirname)
     If incDirP
       incDir_.s = Peek.s(incDirP)
     Else
@@ -29874,8 +29885,8 @@ teddata:        Dc.l tokens
                 Dc.l "NEW1"
                 Dc.l newtypebase
 realconstbase:  Dc.l labelbase
-deflib          Dc.l 0
-incd            Dc.l 0
+ptr_deflibfilename: Dc.l 0
+ptr_incdirname:     Dc.l 0
                 Dc.l 0
                 Dc.l 0
                 Dc.l 0
