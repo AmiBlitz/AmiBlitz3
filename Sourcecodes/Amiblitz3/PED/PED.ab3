@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.0
-; NumberOfBuilds  = 1687
+; NumberOfBuilds  = 1809
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 747
-; CursorColumn    = 46
-; LabelSearch     = "show_help"
+; CursorLine      = 1259
+; CursorColumn    = 1
+; LabelSearch     = "blockdims"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -388,6 +388,8 @@ ped\extention_bak = ".bak"
 NEWTYPE.sourceWindow
   *pedScreen.Screen
   *win.Window
+  *rp.RastPort
+
   *font.TextFont
   *fontI.TextFont
   *fontB.TextFont
@@ -417,6 +419,24 @@ NEWTYPE.sourceWindow
 End NEWTYPE
 DEFTYPE.sourceWindow sourceWindow
 DEFTYPE.RastPort *sourcerp
+
+NEWTYPE.bmark
+  xMin.w
+  yMin.l
+  xMax.w
+  yMax.l
+End NEWTYPE
+DEFTYPE.bmark bmark
+;DEFTYPE.bmark BlockDims
+DEFTYPE.bmark oldBlockDims
+
+NEWTYPE.mousePos
+  X.w
+  Y.w
+  textX.w
+  textY.w
+End NEWTYPE
+DEFTYPE.mousePos mousePos
 
 NEWTYPE.sourceLine              ; offset
   *nextLine.sourceLine          ; 0000
@@ -1122,10 +1142,10 @@ SHARED pedconfig,sourceWindow,AB3Pen()
 
  log_Print{"print_standard_text"}
 
- ; copy the current line to a tempBuffer
- ;For i = 0 To Len(Peek$(*textaddr))
- ;  Poke.b Peek.l(?textbufferPrint) + i, Peek.b(*textaddr+i)
- ;Next i
+ ; copy the current Line To a tempBuffer
+ For i.w = 0 To Len(Peek$(*textaddr))
+   Poke.b Peek.l(?textbufferPrint) + i, Peek.b(*textaddr+i)
+ Next i
 
  startPos.w = sourceWindow\ColumnsOffsetTmp
  tmpString$ = UnRight$(Peek$(*textaddr),startPos)
@@ -1312,6 +1332,122 @@ SHARED sourceWindow
   yMax.w = yMin + \font\tf_YSize - 1
   ScrollRaster_ \win\RPort,dx,dy,xMin,yMin,xMax,yMax
   WaitBlit_
+End Statement
+
+Statement PED_GetMousePos{*mp.mousePos}
+  SHARED sourceWindow
+  USEPATH sourceWindow
+
+  *mp\X = \win\MouseX - \win\BorderLeft + 1
+  *mp\Y = \win\MouseY - \win\BorderTop + 1
+  If *mp\X < 0 Then *mp\X = 0
+  If *mp\Y < 0 Then *mp\Y = 0
+
+  If (*mp\X > \BoxLeft)
+    *mp\textX = *mp\X - \BoxLeft
+    If *mp\textX < 0 Then *mp\textX = 0
+    *mp\textX = *mp\textX / \font\tf_XSize
+  Else
+    *mp\textX = 0
+  EndIf
+
+  If (*mp\Y > 0) AND (*mp\Y < \statusAreaY)
+    *mp\textY = *mp\Y / \font\tf_YSize
+  Else
+    *mp\textY = -1
+  EndIf
+
+  ;msg$ = Str$(*mp\X) +  ", " + Str$(*mp\Y) + " - "
+  ;msg$ + Str$(*mp\textX) + ", " + Str$(*mp\textY)
+  ;msg$ + " / storeXY: " + Str$(storeX.w) + ", " + Str$(storeY.l)
+  ;SetScreenTitle{msg$}
+End Statement
+
+
+Statement AbsDimensions{*bm.bmark}
+
+  If *bm\yMin < *bm\yMax Then Statement Return
+
+  If (*bm\yMin = *bm\yMax) OR (*bm\xMin > *bm\xMax)
+    Exchange *bm\xMin,*bm\xMax
+    Exchange *bm\yMin,*bm\yMax
+  EndIf
+
+End Statement
+
+Statement PED_DrawBlock{*bmark.bmark, ColumnsOffset.w} ;xMin.w,yMin.w, xMax.w, yMax.w, absolute.b}
+SHARED sourceWindow
+
+  CopyType *bmark,bm.bmark
+  ;msg$ = "PED_DrawBlock() 1 called: "
+  ;msg$ + Str$(bmark\xMin) + ", " + Str$(bmark\yMin) + " - "
+  ;msg$ + Str$(bmark\xMax) + ", " + Str$(bmark\yMax)
+  ;log_Print{msg$}
+
+  If bm\xMin < 0 Then bm\xMin = 0
+  If bm\xMax < 0 Then bm\xMax = 0 : Else : bm\xMax + 1
+  If bm\yMin < 0 Then bm\yMin = 0
+  If bm\yMax < 0 Then bm\yMax = 0
+
+  bm\xMax - ColumnsOffset
+  bm\xMin - ColumnsOffset
+
+  If bm\xMax > \visibleColumns Then bm\xMax = \visibleColumns
+  If bm\yMax > \visibleLines - 1 Then bm\yMax = \visibleLines - 1
+  If bm\yMin > \visibleLines - 1 Then bm\yMin = \visibleLines - 1
+
+  bm\xMin * \font\tf_XSize
+  bm\yMin * \font\tf_YSize
+  bm\xMax * \font\tf_XSize
+  bm\yMax * \font\tf_YSize
+
+  If bm\yMin > bm\yMax Then Exchange bm\yMax,bm\yMin
+  If bm\xMin > bm\xMax Then Exchange bm\xMax,bm\xMin
+
+  If bm\yMin = bm\yMax
+    bm\yMax = bm\yMax + \font\tf_YSize - 1
+    Gosub rectfill2
+  Else
+    ; draw three parts of the block: first line, block of full marked lines, last line
+    DEFTYPE.bmark bmOld
+    CopyType bm, bmOld
+
+    bm\yMax = bm\yMin + \font\tf_YSize - 1
+    bm\xMax = \visibleColumns * \font\tf_XSize
+    Gosub rectfill2
+
+    CopyType bmOld, bm
+
+    bm\yMin = bm\yMin + \font\tf_YSize
+    If bm\yMin < bm\yMax
+        CopyType bm, bmOld
+        bm\xMin = 0
+        bm\xMax = \visibleColumns * \font\tf_XSize
+        bm\yMax - 1
+        Gosub rectfill2
+
+        CopyType bmOld,bm
+        bm\xMin = 0
+        bm\yMin = bm\yMax
+    EndIf
+
+    bm\xMin = 0
+    bm\yMax + \font\tf_YSize - 1
+    Gosub rectfill2
+  EndIf
+
+  ;msg$ = "PED_DrawBlock() 2 called: "
+  ;msg$ + Str$(bm\xMin) + ", " + Str$(bm\yMin) + " - "
+  ;msg$ + Str$(bm\xMax) + ", " + Str$(bm\yMax)
+  ;log_Print{msg$}
+
+  Statement Return
+
+  rectfill2:
+  If (bm\xMax >= bm\xMin) AND (bm\yMax >= bm\yMin)
+    RectFill_ \rp, sourceWindow\BoxLeft + bm\xMin, bm\yMin, sourceWindow\BoxLeft + bm\xMax - 1, bm\yMax
+  EndIf
+  Return
 End Statement
 
 
@@ -2806,9 +2942,9 @@ begin1:
   MOVE.l A0,-(A7)
   !basic
   MOVE.l (a7)+,d0
-  tempD0.l = PutD0
-  If tempD0
-    compiler_source$ = Peek$(tempD0)
+  tmpD0.l = PutD0
+  If tmpD0
+    compiler_source$ = Peek$(tmpD0)
   Else
     error{"NULL Pointer in compiler_source$!"}
   End If
@@ -3021,9 +3157,9 @@ End
   ;        !basic
   ;        log_Print{"update block marking"}
   ;        !asm
-  ;        MOVE.w comLong_BlockStartX,D0
+  ;        MOVE.w comWord_BlockStartX,D0
   ;        MOVE.l comLong_BlockStartY,D1
-  ;        MOVE.w comLong_BlockEndX,D2
+  ;        MOVE.w comWord_BlockEndX,D2
   ;        MOVE.l comLong_BlockEndY,D3
   ;        CMP.l D1,D3
   ;        BNE.w JL_0_C50
@@ -3048,9 +3184,9 @@ End
   ;      TST.b comByte_StateBlockMark
   ;      BEQ.w JL_0_CC6
   ;        MOVEM.l D0-D3/D7/A0-A2,-(A7)
-  ;        MOVE.w comLong_BlockStartX,D0
+  ;        MOVE.w comWord_BlockStartX,D0
   ;        MOVE.l comLong_BlockStartY,D1
-  ;        MOVE.w comLong_BlockEndX,D2
+  ;        MOVE.w comWord_BlockEndX,D2
   ;        MOVE.l comLong_BlockEndY,D3
   ;        CMP.l D1,D3
   ;        BNE.w JL_0_CB2
@@ -4362,10 +4498,10 @@ Return
   Gosub set_CurrentDir
 
   Gosub set_pointer_busy_bas
+  Gosub reset_Blockflag
   !asm
   MOVEM.l (A7)+,D0-D7/A0-A5
 
-  JSR reset_Blockflag
   JSR clear_actualsource
 
   MOVE.l #$0001,comLong_TotalLines
@@ -6065,9 +6201,9 @@ JMP decrease_DisplayLine
 
   JL_0_262E:
   MOVE.l D1,comLong_BlockStartY
-  CLR.w comLong_BlockStartX
+  CLR.w comWord_BlockStartX
   MOVE.l D2,comLong_BlockEndY
-  MOVE.w #MAX_Columns,D0 : SUBQ.w #1,D0 : MOVE.w D0,comLong_BlockEndX
+  MOVE.w #MAX_Columns,D0 : SUBQ.w #1,D0 : MOVE.w D0,comWord_BlockEndX
 
   ;JSR JL_0_56BA
 
@@ -6098,7 +6234,7 @@ Return
         Gosub menu_cut
         !asm
         MOVE.l comLong_BlockStartY,d0 : JSR gotoline
-        MOVE.w comLong_BlockStartX,comWord_Column
+        MOVE.w comWord_BlockStartX,comWord_Column
 
         !basic
         If pedconfig\no_display_beep = False Then DisplayBeep_ sourceWindow\pedScreen
@@ -6293,46 +6429,45 @@ Return
 
   CMPI.l #$ffffFFFF,comLong_BlockEndY
   BEQ.w JL_0_2880
-  MOVE.l comLong_DisplayLineOffset,D1
-  ADD.l comLong_DisplayLine,D1
-  CMP.l comLong_BlockEndY,D1
-  BCC.w JL_0_2880
-  ADDQ.l #1,D1
-  CMP.l comLong_BlockStartY,D1
-  BEQ.w JL_0_282C
-  BCS.w JL_0_2874
-  CMP.l comLong_BlockEndY,D1
-  BEQ.w JL_0_283E
-  BRA.w JL_0_287A
+    MOVE.l comLong_DisplayLineOffset,D1 : ADD.l comLong_DisplayLine,D1
+    CMP.l comLong_BlockEndY,D1
+    BCC.w JL_0_2880
+      ADDQ.l #1,D1
+      CMP.l comLong_BlockStartY,D1
+      BEQ.w JL_0_282C
+        BCS.w JL_0_2874
+          CMP.l comLong_BlockEndY,D1
+          BEQ.w JL_0_283E
+            BRA.w JL_0_287A
+      JL_0_282C:
+      CMP.l comLong_BlockEndY,D1
+      BEQ.w JL_0_2854
+        ADD.w D0,comWord_BlockStartX
+        BRA.w JL_0_2870
 
-  JL_0_282C:
-  CMP.l comLong_BlockEndY,D1
-  BEQ.w JL_0_2854
-  ADD.w D0,comLong_BlockStartX
-  BRA.w JL_0_2870
+      JL_0_283E:
+      CMP.l comLong_BlockStartY,D1
+      BEQ.w JL_0_2854
+        ADD.w D0,comWord_BlockEndX
+        JSR JL_0_7A14
+        BRA.w JL_0_287A
+      JL_0_2854:
+      MOVE.w comWord_BlockEndX,D3
+      SUB.w comWord_BlockStartX,D3
+      MOVE.w comWord_BlockStartX,D2
+      ADD.w D0,D2
+      MOVE.w D2,comWord_BlockStartX
+      ADD.w D3,D2
+      MOVE.w D2,comWord_BlockEndX
 
-  JL_0_283E:
-  CMP.l comLong_BlockStartY,D1
-  BEQ.w JL_0_2854
-    ADD.w D0,comLong_BlockEndX
-    JSR JL_0_7A14
-    BRA.w JL_0_287A
-  JL_0_2854:
-  MOVE.w comLong_BlockEndX,D3
-  SUB.w comLong_BlockStartX,D3
-  MOVE.w comLong_BlockStartX,D2
-  ADD.w D0,D2
-  MOVE.w D2,comLong_BlockStartX
-  ADD.w D3,D2
-  MOVE.w D2,comLong_BlockEndX
-  JL_0_2870:
-  JSR JL_0_7A14
+      JL_0_2870:
+      JSR JL_0_7A14
 
-  JL_0_2874:
-  SUBQ.l #1,comLong_BlockStartY
+      JL_0_2874:
+      SUBQ.l #1,comLong_BlockStartY
 
-  JL_0_287A:
-  SUBQ.l #1,comLong_BlockEndY
+      JL_0_287A:
+      SUBQ.l #1,comLong_BlockEndY
   JL_0_2880:                                    ; **********************************
 
 
@@ -6409,39 +6544,39 @@ JL_0_2906:
    BNE.w JL_0_29B6
   CMP.l comLong_BlockEndY,D2
    BEQ.w JL_0_2982
-  CMP.w comLong_BlockStartX,D0
+  CMP.w comWord_BlockStartX,D0
    BHI.w JL_0_29B6
-  MOVE.w comLong_BlockStartX,D2
+  MOVE.w comWord_BlockStartX,D2
   SUB.w D0,D2
-  MOVE.w D2,comLong_BlockStartX
+  MOVE.w D2,comWord_BlockStartX
 BRA.w JL_0_29B0
 
  JL_0_2962:
   CMP.l comLong_BlockStartY,D2
    BEQ.w JL_0_2982
-  CMP.w comLong_BlockEndX,D0
+  CMP.w comWord_BlockEndX,D0
    BHI.w JL_0_29BC
 
  JL_0_2972:
-  MOVE.w comLong_BlockEndX,D2
+  MOVE.w comWord_BlockEndX,D2
   SUB.w D0,D2
-  MOVE.w D2,comLong_BlockEndX
+  MOVE.w D2,comWord_BlockEndX
 BRA.w JL_0_29B6
 
  JL_0_2982:
-  CMP.w comLong_BlockEndX,D0
+  CMP.w comWord_BlockEndX,D0
   BHI.w JL_0_29BC
 
-  CMP.w comLong_BlockStartX,D0
+  CMP.w comWord_BlockStartX,D0
   BHI.b JL_0_2972
 
-  MOVE.w comLong_BlockEndX,D3
-  SUB.w comLong_BlockStartX,D3
-  MOVE.w comLong_BlockStartX,D2
+  MOVE.w comWord_BlockEndX,D3
+  SUB.w comWord_BlockStartX,D3
+  MOVE.w comWord_BlockStartX,D2
   SUB.w D0,D2
-  MOVE.w D2,comLong_BlockStartX
+  MOVE.w D2,comWord_BlockStartX
   ADD.w D3,D2
-  MOVE.w D2,comLong_BlockEndX
+  MOVE.w D2,comWord_BlockEndX
   JSR JL_0_7A14
 
  JL_0_29B0:
@@ -7428,11 +7563,11 @@ Return
   ;log_Print{Peek$(*detokened)}
 
   If getCountOfMarkedLines.l < 2
-    If strlng >= Peek.w(?comLong_BlockEndX)
-      strlng = Peek.w(?comLong_BlockEndX) - Peek.w(?comLong_BlockStartX) + 2
+    If strlng >= Peek.w(?comWord_BlockEndX)
+      strlng = Peek.w(?comWord_BlockEndX) - Peek.w(?comWord_BlockStartX) + 2
     EndIf
     strlng = strlng - 1
-    strline$ = Peeks$(*detokened + Peek.w(?comLong_BlockStartX), strlng) ;+ Chr$(10)
+    strline$ = Peeks$(*detokened + Peek.w(?comWord_BlockStartX), strlng) ;+ Chr$(10)
     ;log_Print{">>" + strline$}
     clipboard_WriteText{&strline$}
 
@@ -7446,13 +7581,13 @@ Return
           If (PushChunk_ (*iff, #ID_FTXT, #ID_FORM, #IFFSIZE_UNKNOWN)=0)
             If (PushChunk_ (*iff, 0, #ID_CHRS, #IFFSIZE_UNKNOWN)=0)
               ; VerticalCopyMode mssing ??
-              If strlng <= Peek.w(?comLong_BlockStartX)
+              If strlng <= Peek.w(?comWord_BlockStartX)
                 ; end of String...
                 strlng = 1
                 strline$ = Chr$(10)
               Else
-                strlng = strlng - Peek.w(?comLong_BlockStartX)
-                strline$ = Peeks$(*detokened + Peek.w(?comLong_BlockStartX), strlng) + Chr$(10)
+                strlng = strlng - Peek.w(?comWord_BlockStartX)
+                strline$ = Peeks$(*detokened + Peek.w(?comWord_BlockStartX), strlng) + Chr$(10)
               EndIf
               ;log_Print{Str$(Len(strline$))}
               ;log_Print{">"+strline$+"<"}
@@ -7465,8 +7600,8 @@ Return
                   *tempLine = *tempLine\nextLine
                   detokened.l = TEDDetoke{*tempLine + 9}
                   strlng.w = Len(Peek$(*detokened))
-                  If Peek.b(?VerticalCopyMode)<>0 AND (strlng > Peek.w(?comLong_BlockStartX))
-                    strline$ = Peeks$(*detokened + Peek.w(?comLong_BlockStartX), strlng - Peek.w(?comLong_BlockStartX)) + Chr$(10)
+                  If Peek.b(?VerticalCopyMode)<>0 AND (strlng > Peek.w(?comWord_BlockStartX))
+                    strline$ = Peeks$(*detokened + Peek.w(?comWord_BlockStartX), strlng - Peek.w(?comWord_BlockStartX)) + Chr$(10)
                   Else
                     strline$ = Peeks$(*detokened, strlng) + Chr$(10)
                   EndIf
@@ -7481,10 +7616,10 @@ Return
               *tempLine = *tempLine\nextLine
               If *tempLine
                 *detokened.l = TEDDetoke{*tempLine + 9}
-                strline$ = Left$(Peek$(*detokened),Peek.w(?comLong_BlockEndX))
+                strline$ = Left$(Peek$(*detokened),Peek.w(?comWord_BlockEndX))
                 strlng = Len(strline$)
-                If Peek.b(?VerticalCopyMode)<>0 AND (strlng > Peek.w(?comLong_BlockStartX))
-                  strline$ = UnRight$(strline$,Peek.w(?comLong_BlockStartX)-1) + Chr$(10)
+                If Peek.b(?VerticalCopyMode)<>0 AND (strlng > Peek.w(?comWord_BlockStartX))
+                  strline$ = UnRight$(strline$,Peek.w(?comWord_BlockStartX)-1) + Chr$(10)
                 Else
                   strline$ = strline$ + Chr$(10)
                 EndIf
@@ -7535,8 +7670,8 @@ Macro updateBlockMark ;{d1 = currentLine, d0 = currentColumn}
   SF comByte_StateBlockMark
 
   If Peek.l(?comLong_BlockEndY) <> $ffffFFFF
-    If (Peek.l(?comLong_BlockStartY) < `1) OR (Peek.l(?comLong_BlockStartY) = `1 AND Peek.l(?comLong_BlockStartX) <= `2)
-      If (Peek.l(?comLong_BlockEndY) > `1) OR (Peek.l(?comLong_BlockEndY) = `1 AND Peek.l(?comLong_BlockEndX) <= `2)
+    If (Peek.l(?comLong_BlockStartY) < `1) OR (Peek.l(?comLong_BlockStartY) = `1 AND Peek.w(?comWord_BlockStartX) <= `2)
+      If (Peek.l(?comLong_BlockEndY) > `1) OR (Peek.l(?comLong_BlockEndY) = `1 AND Peek.w(?comWord_BlockEndX) <= `2)
         ST comByte_StateBlockMark
       EndIf
     EndIf
@@ -7550,13 +7685,13 @@ JL_0_3154:
     CMP.l comLong_BlockStartY,D1
     BLT.w JL_0_319A
     BNE.w JL_0_317C
-      CMP.w comLong_BlockStartX,D0
+      CMP.w comWord_BlockStartX,D0
       BLT.w JL_0_319A
     JL_0_317C:
     CMP.l comLong_BlockEndY,D1
     BGT.w JL_0_319A
     BNE.w JL_0_3194
-      CMP.w comLong_BlockEndX,D0
+      CMP.w comWord_BlockEndX,D0
       BGT.w JL_0_319A
     JL_0_3194:
     ST comByte_StateBlockMark
@@ -7644,9 +7779,7 @@ Return
   EndIf
 
   Poke.l ?comPtr_CurrentSourceLine, *previousLine
-  !asm
-  JSR reset_Blockflag
-  !basic
+  Gosub reset_Blockflag
 
   If Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine) > Peek.l(?comLong_TotalLines)
     Poke.l ?comLong_TotalLines, Peek.l(?comLong_TotalLines) - 1
@@ -7684,7 +7817,7 @@ RTS
   MOVEQ.l #$00,D5
   MOVEA.l comPtr_Temp_TokenString2,A0
   JL_0_3498:
-    CMP.w comLong_BlockStartX,D5                ; save the string before BlockStartX to TokenString2
+    CMP.w comWord_BlockStartX,D5                ; save the string before BlockStartX to TokenString2
     BCC.w JL_0_34A8
       JSR JL_0_5650
       MOVE.b D0,(A0)+
@@ -7708,7 +7841,7 @@ RTS
   JL_0_34CA:
   MOVEA.l (A7)+,A0
 
-  MOVE.w comLong_BlockEndX,D5
+  MOVE.w comWord_BlockEndX,D5
   JL_0_34D0:
     ADDQ.w #1,D5
     CMP.w #MAX_Columns,D5
@@ -7724,9 +7857,9 @@ RTS
   BRA.b JL_0_34E4
   JL_0_34F2:
 
-  MOVE.w comLong_BlockStartX,D0
+  MOVE.w comWord_BlockStartX,D0
   BNE.w JL_0_3510
-    MOVE.w comLong_BlockEndX,D0
+    MOVE.w comWord_BlockEndX,D0
     ADDQ.w #1,D0
     CMP.w #MAX_Columns,D0
     BCS.w JL_0_3510
@@ -7738,7 +7871,9 @@ RTS
     JSR JL_0_55A2                                  ; parse the newline in TokenString2 and allocate memory for it
   JL_0_351C:
 
-  JSR reset_Blockflag
+  !basic
+  Gosub reset_Blockflag
+  !asm
 
   MOVE.l comLong_DisplayLineOffset,D0 : ADD.l comLong_DisplayLine,D0
   CMP.l comLong_TotalLines,D0
@@ -7883,23 +8018,23 @@ RTS
         strlng.w = Len(Peek$(*detokened))
 
         If getCountOfMarkedLines.l < 2
-          If strlng >= Peek.w(?comLong_BlockEndX)
-            strlng = Peek.w(?comLong_BlockEndX) - Peek.w(?comLong_BlockStartX) + 2
+          If strlng >= Peek.w(?comWord_BlockEndX)
+            strlng = Peek.w(?comWord_BlockEndX) - Peek.w(?comWord_BlockStartX) + 2
           EndIf
           strlng = strlng - 1
-          strline$ = Peeks$(*detokened + Peek.w(?comLong_BlockStartX), strlng) ;+ Chr$(10)
+          strline$ = Peeks$(*detokened + Peek.w(?comWord_BlockStartX), strlng) ;+ Chr$(10)
           ;log_Print{">>" + strline$}
           Write_ *write_fh,&strline$,Len(strline$)
         Else
-          If strlng <= Peek.w(?comLong_BlockStartX)
+          If strlng <= Peek.w(?comWord_BlockStartX)
             ; end of String...
             strline$ = Chr$(10)
             WriteChunkBytes_ *write_fh, &strline$,1
           EndIf
 
            ; copy first line
-           strlng = strlng - Peek.w(?comLong_BlockStartX)
-           strline$ = Peeks$(*detokened + Peek.w(?comLong_BlockStartX), strlng) + Chr$(10)
+           strlng = strlng - Peek.w(?comWord_BlockStartX)
+           strline$ = Peeks$(*detokened + Peek.w(?comWord_BlockStartX), strlng) + Chr$(10)
            Write_ *write_fh, &strline$, Len(strline$)
 
            ; copy most lines
@@ -7908,8 +8043,8 @@ RTS
                *tempLine = *tempLine\nextLine
                detokened.l = TEDDetoke{*tempLine + 9}
                strlng.w = Len(Peek$(*detokened))
-               If Peek.b(?VerticalCopyMode)<>0 AND (strlng > Peek.w(?comLong_BlockStartX))
-                 strline$ = Peeks$(*detokened + Peek.w(?comLong_BlockStartX), strlng - Peek.w(?comLong_BlockStartX)) + Chr$(10)
+               If Peek.b(?VerticalCopyMode)<>0 AND (strlng > Peek.w(?comWord_BlockStartX))
+                 strline$ = Peeks$(*detokened + Peek.w(?comWord_BlockStartX), strlng - Peek.w(?comWord_BlockStartX)) + Chr$(10)
                Else
                  strline$ = Peeks$(*detokened, strlng) + Chr$(10)
                EndIf
@@ -7923,10 +8058,10 @@ RTS
            *tempLine = *tempLine\nextLine
            If *tempLine
              *detokened.l = TEDDetoke{*tempLine + 9}
-             strline$ = Left$(Peek$(*detokened),Peek.w(?comLong_BlockEndX))
+             strline$ = Left$(Peek$(*detokened),Peek.w(?comWord_BlockEndX))
              strlng = Len(strline$)
-             If Peek.b(?VerticalCopyMode)<>0 AND (strlng > Peek.w(?comLong_BlockStartX))
-               strline$ = UnRight$(strline$,Peek.w(?comLong_BlockStartX)-1) + Chr$(10)
+             If Peek.b(?VerticalCopyMode)<>0 AND (strlng > Peek.w(?comWord_BlockStartX))
+               strline$ = UnRight$(strline$,Peek.w(?comWord_BlockStartX)-1) + Chr$(10)
              Else
                strline$ = strline$ + Chr$(10)
              EndIf
@@ -7968,17 +8103,17 @@ Return
 ;    JSR JL_0_5630
 ;    BMI.w JL_0_372E                               ; nothing to write left
 ;    BEQ.w JL_0_36C4                               ; empty line
-;      MOVE.b D0,comLong_LinePosStartX
-;      MOVE.l #comLong_LinePosStartX,D2
+;      MOVE.b D0,comWord_LinePosStartX
+;      MOVE.l #comWord_LinePosStartX,D2
 ;      !basic
-;      Write_ *fh,?comLong_LinePosStartX,1
+;      Write_ *fh,?comWord_LinePosStartX,1
 ;      !asm
 ;      BRA.b JL_0_36A2
 ;    JL_0_36C4:
 ;
-;    MOVE.b #$A,comLong_LinePosStartX
+;    MOVE.b #$A,comWord_LinePosStartX
 ;    !basic
-;    Write_ *fh,?comLong_LinePosStartX,1
+;    Write_ *fh,?comWord_LinePosStartX,1
 ;    !asm
 ;    ;Write_ d1:file, d2:buffer ,d3:length
 ;
@@ -8084,7 +8219,7 @@ RTS
   MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
   MOVEA.l A2,A0
   ADDA.w #MAX_Columns,A0
-  MOVE.l A0,comLong_LinePosStartX
+  MOVE.l A0,comWord_LinePosStartX
   MOVE.w comWord_ColumnsOffset,D1 : ADD.w comWord_Column,D1
   MOVEA.l comPtr_Temp_TokenString1,A3
   MOVEQ.l #$00,D4
@@ -8191,13 +8326,13 @@ RTS
   CLR.b instring
 
   JL_0_37FC:
-    CMPA.l comLong_LinePosStartX,A2
-     BCC.w JL_0_3816
-    CMPA.l comPtr_Temp_TokenString2,A3
-     BCC.w JL_0_3816
-    MOVE.b (A2)+,D0
-    ;MOVE.b #44,d0
-      ;BCLR #$7,D0                    ;morechar ?????????
+    CMPA.l comWord_LinePosStartX,A2
+    BCC.w JL_0_3816
+      CMPA.l comPtr_Temp_TokenString2,A3
+      BCC.w JL_0_3816
+        MOVE.b (A2)+,D0
+        ;MOVE.b #44,d0
+          ;BCLR #$7,D0                    ;morechar ?????????
    'l2
     MOVE.b D0,(A3)+
   BRA.b JL_0_37FC
@@ -8207,7 +8342,9 @@ RTS
   JSR parse_line
   JSR JL_0_55AA
   JSR update_currsourceline
-  JSR reset_Blockflag
+  !basic
+  Gosub reset_Blockflag
+  !asm
   JSR _redraw
 RTS
 
@@ -8363,19 +8500,19 @@ JL_0_39A8:
   CMP.l comLong_BlockEndY,D7
    BHI.w JL_0_3A42
    BNE.w JL_0_39D0
-  CMP.w comLong_BlockEndX,D0
+  CMP.w comWord_BlockEndX,D0
    BHI.w JL_0_3A42
 JL_0_39D0:
   MOVE.l comLong_BlockEndY,D1
   SUB.l comLong_BlockStartY,D1
-  MOVE.w comLong_BlockEndX,D2
+  MOVE.w comWord_BlockEndX,D2
   ADDQ.w #1,D2
   CMP.w #MAX_Columns,D2
    BCS.w JL_0_39FA
   ADDQ.l #1,D1
   CMP.l comLong_BlockStartY,D7
    BCS.w JL_0_3A36
-  SUB.w D0,comLong_BlockStartX
+  SUB.w D0,comWord_BlockStartX
  BRA.w JL_0_3A36
 
 JL_0_39FA:
@@ -8383,18 +8520,18 @@ JL_0_39FA:
    BCS.w JL_0_3A36
   CMP.l comLong_BlockEndY,D7
    BEQ.w JL_0_3A1C
-  MOVE.w comLong_BlockEndX,D2
+  MOVE.w comWord_BlockEndX,D2
   SUB.w D0,D2
   ADDQ.w #1,D2
-  ADD.w D2,comLong_BlockStartX
+  ADD.w D2,comWord_BlockStartX
  BRA.w JL_0_3A32
 
 JL_0_3A1C:
-  MOVE.w comLong_BlockEndX,D2
-  SUB.w comLong_BlockStartX,D2
+  MOVE.w comWord_BlockEndX,D2
+  SUB.w comWord_BlockStartX,D2
   ADDQ.w #1,D2
-  ADD.w D2,comLong_BlockStartX
-  ADD.w D2,comLong_BlockEndX
+  ADD.w D2,comWord_BlockStartX
+  ADD.w D2,comWord_BlockEndX
 
   JL_0_3A32:
   JSR JL_0_7A14
@@ -8416,8 +8553,8 @@ Return
     Gosub set_pointer_normal_bas
     Pop If : Return
   EndIf
+  Gosub reset_Blockflag
   !asm
-  JSR reset_Blockflag
   JSR _redraw
   !basic
 Return
@@ -8451,351 +8588,363 @@ Return
  'exit
 RTS
 
-
-
 .event_leftmousebutton:
-  Gosub get_TextPosMouse
-  If (textY.w < 0) OR (textY + Peek.l(?comLong_DisplayLineOffset)>Peek.l(?comLong_TotalLines))
-    Pop If : Return
+  ;log_Print{"event left mousebutton"}
+  PED_GetMousePos{mousePos}
+  If (mousePos\textY < 0) OR (mousePos\textY + Peek.l(?comLong_DisplayLineOffset) > Peek.l(?comLong_TotalLines))
+    Return
   EndIf
 
   If Peek.l(?comLong_BlockEndY) <> $ffffFFFF     ; if blockmark is set, clear the block
+    Gosub reset_Blockflag
     !asm
-    JSR reset_Blockflag
     JSR _redraw
     !basic
   EndIf
+  oldBlockDims\xMin = Peek.w(?comWord_BlockStartX) ; why store the old block ?? it has been killed with the clause above
+  oldBlockDims\yMin = Peek.l(?comLong_BlockStartY)
+  oldBlockDims\xMax = Peek.w(?comWord_BlockEndX)
+  oldBlockDims\yMax = Peek.l(?comLong_BlockEndY)
+
+  Gosub cursor_off
+
+  Poke.w ?comWord_LinePosStartX, mousePos\textX + Peek.w(?comWord_ColumnsOffset)
+  Poke.l ?comLong_LinePosStartY, mousePos\textY + Peek.l(?comLong_DisplayLineOffset)
+  Poke.w ?comWord_LinePosEndX, Peek.w(?comWord_LinePosStartX)
+  Poke.l ?comLong_LinePosEndY, Peek.l(?comLong_LinePosStartY)
+
   !asm
-  MOVE.w comLong_BlockStartX,-(a7)
-  MOVE.l comLong_BlockStartY,-(a7)
-  MOVE.w comLong_BlockEndX,-(a7)
-  MOVE.l comLong_BlockEndY,-(a7)
-  !basic
-  GetD0 textX.w : MOVE.l d0,-(a7)                ; D2
-  GetD0 textY.w : MOVE.l d0,-(a7)                ; D3
-  tempa.l = Peek.l(?comLong_DisplayLineOffset) + textY
-  log_Print{"======================================================= click in line: " + Str$(tempa)}
-  !asm
-  MOVE.l (a7)+,D3                                ; textY
-  MOVE.l (a7)+,D2                                ; textX + LeftOffset
-  MOVE.l D3,D1 : ADD.l comLong_DisplayLineOffset,D1        ; d3: textY -> d1: textY + Offset
-  MOVE.l D1,comLong_LinePosStartY
-  MOVE.l D1,comLong_LinePosEndY
-  ADD.w comWord_ColumnsOffset,D2                           ; d2: TextX + Offset
-  MOVE.w D2,comLong_LinePosStartX
-  MOVE.w D2,comWord_LinePosEndX
   JSR update_scroller
+  !basic
 
-  MOVE.w D2,D5                 ;textX
-  MOVE.l D3,D6                 ;textY
-  MOVE.w D2,D0
-  MOVE.l D3,D1
+  storeDisplayLineOffset.l = Peek.l(?comLong_DisplayLineOffset)
+  storeColumnsOffset.w = Peek.w(?comWord_ColumnsOffset)
+  storeCurrentSourceLine.l = Peek.l(?comPtr_CurrentSourceLine)
 
-  CLR.w comWord__AL_0_86B8
-  MOVE.l comLong_DisplayLineOffset,-(A7)             ; store current displaylineoffset
-  MOVE.w comWord_ColumnsOffset,-(A7)                 ; store current columnsoffset
-  MOVE.l A4,-(A7)                                    ; store currentsourceline
-  ;JSR JL_0_59BC                ; draw block
+  ;log_Print{"initial block draw"}
+  Poke.w ?comWord__AL_0_86B8, 0
+  storeX.w = mousePos\textX + Peek.w(?comWord_ColumnsOffset)
+  storeY.l = mousePos\textY
 
-  mouse_loop:
-    !basic
+  bmark\xMin = storeX
+  bmark\yMin = storeY
+  bmark\xMax = storeX
+  bmark\yMax = storeY
+  AbsDimensions{bmark}
+  PED_DrawBlock{bmark, Peek.w(?comWord_ColumnsOffset)}
+
+  exit_mouse_loop.b = False
+  Repeat
     *intuimessage.IntuiMessage = GetMsg_(sourceWindow\win\UserPort)
     If *intuimessage\Code = #SELECTUP
       mqualifier.w = *intuimessage\Qualifier
-      Pop If : Goto mouseclick_in_source
+      If (mqualifier AND #IEQUALIFIER_RSHIFT) Then mqualifier = (mqualifier & (NOT #IEQUALIFIER_RSHIFT)) | #IEQUALIFIER_LSHIFT
+      If (mqualifier AND #IEQUALIFIER_RALT) Then mqualifier = (mqualifier & (NOT #IEQUALIFIER_RALT)) | #IEQUALIFIER_LALT
+      exit_mouse_loop = True
+    Else
+      If *intuimessage Then ReplyMsg_ *intuimessage : *intuimessage = 0
+
+      PED_GetMousePos{mousePos}
+
+      If mousePos\textY => 0
+        Gosub mouse_scrollno
+      Else
+        If mousePos\Y <= 0
+          Gosub mouse_scrollup
+        Else
+          If Peek.l(?viewablelines) + Peek.l(?comLong_DisplayLineOffset) <= Peek.l(?comLong_TotalLines)
+            Gosub mouse_scrolldown
+          EndIf
+        EndIf
+      EndIf
     EndIf
-    If *intuimessage
-      ReplyMsg_ *intuimessage : *intuimessage = 0
-    EndIf
+  Until exit_mouse_loop
 
-    Gosub get_TextPosMouse
+  Gosub mouseclick_in_source
+Return
 
-    If textY.w > 0                            ; not scroll
-       ;log_Print{"mouse scroll no"}
 
-       Pop If
-       GetD0 mx.w    : MOVE.l d0,-(a7)
-       GetD0 textX.w : MOVE.l d0,-(a7)
-       GetD0 textY.w : MOVE.l d0,-(a7)
-       !asm
-       MOVE.l (a7)+,D3
-       MOVE.l (a7)+,D2
-       MOVE.l (a7)+,D0
-       BRA.w mouse_scrollno
-    EndIf
+.mouse_scrolldown:
+  ;log_Print{"scroll down"}
+  tmpX.w = #MAX_Columns               ;D2
+  tmpY.l = Peek.l(?viewablelines) - 1 ;D3
 
-    If (textY = 0 OR my.w = 0)                            ; scroll up
-      log_Print{"mouse scrollup"}
-
-      Pop If
-      !asm
-      BRA mouse_scrollup
-    EndIf
-                                                                                                                                                                                                                                                      
-
-    If Peek.l(?viewablelines) + Peek.l(?comLong_DisplayLineOffset) > Peek.l(?comLong_TotalLines)
-      Pop If
-      !asm
-      BRA mouse_loop
-    EndIf
-    log_Print{"mouse scroll down"}
-    GetD0 textX.w : MOVE.l d0,-(a7)
+  If Peek.l(?comLong_DisplayLineOffset) + Peek.l(?viewablelines) <= Peek.l(?comLong_TotalLines)
     !asm
-    MOVE.l (a7)+,D2
-    MOVE.l viewablelines,D3 : SUBQ.l #1,D3
-    MOVE.w #MAX_Columns,D2
-    MOVE.l comLong_DisplayLineOffset,D0 : ADD.l viewablelines,D0
-    CMP.l comLong_TotalLines,D0
-    BCC.w JL_0_3D06
+    JSR source_fullscroll_down
+    !basic
 
-          MOVEM.l D5-D6,-(A7)
-          JSR source_fullscroll_down
-          MOVEA.l (A4),A4
-          MOVE.l A4,comPtr_CurrentSourceLine
-          ADDQ.l #1,comLong_DisplayLineOffset
-          JSR draw_new_sourceline_bottom
-          MOVEM.l (A7)+,D5-D6
+    *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
+    Poke.l ?comPtr_CurrentSourceLine, *currentLine\nextLine
+    Poke.l ?comLong_DisplayLineOffset, Peek.l(?comLong_DisplayLineOffset) + 1
 
-          SUBQ.w #1,D6
-          MOVE.w #MAX_Columns,D2
-          MOVE.l viewablelines,D3 : SUBQ.l #1,D3
-          MOVE.l D3,D1 : ADD.l comLong_DisplayLineOffset,D1
-          CMP.l comLong_LinePosStartY,D1
-          BHI.w JL_0_3D06
+    !asm
+    JSR draw_new_sourceline_bottom
+    !basic
 
-          MOVE.l D1,-(A7)
-          MOVE.w D5,D2                     ;textX
-          MOVE.w D6,D3                     ;textY
-          MOVE.w #MAX_Columns,D0
-          MOVE.l viewablelines,D1 : SUBQ.l #2,D1
-          JSR JL_0_59BC                          ;redraw blockmark
-          MOVE.w #MAX_Columns,D5
-          MOVE.l viewablelines,D6 : SUBQ.l #1,D6
-          MOVE.l D6,D3
-          MOVEQ.l #-$01,D2
-          MOVE.l (A7)+,D1
+    storeY - 1
 
-          CMP.l comLong_LinePosStartY,D1
-          BNE.w JL_0_3D06
+    If tmpY + Peek.l(?comLong_DisplayLineOffset) <= Peek.l(?comLong_LinePosStartY)
+      bmark\xMin = #MAX_Columns
+      bmark\yMin = Peek.l(?viewablelines) - 2
+      bmark\xMax = storeX
+      bmark\yMax = storeY
+      PED_DrawBlock{bmark, Peek.w(?comWord_ColumnsOffset)}
+      storeX = #MAX_Columns
+      storeY = Peek.l(?viewablelines) - 1
+      If tmpY + Peek.l(?comLong_DisplayLineOffset) = Peek.l(?comLong_LinePosStartY)
+        storeX = Peek.l(?comWord_LinePosStartX) - 1
+      EndIf
+      tmpX = -1
+      tmpY = storeY
 
-          MOVE.w comLong_LinePosStartX,D5 : ADDQ.w #1,D5
-          BRA.w JL_0_3D06
+    EndIf
 
+  EndIf
 
-          JL_0_3D06:
-          CMP.w D5,D2
-          BNE.w JL_0_3D12
-            CMP.w D6,D3
-            BEQ.w mouse_loop                     ; JUMP UP
-          JL_0_3D12:
-
-          JSR update_scroller
-
-          MOVE.w D2,comWord_LinePosEndX
-          MOVE.l D3,D1 : ADD.l comLong_DisplayLineOffset,D1
-          MOVE.l D1,comLong_LinePosEndY
-          CMP.l comLong_LinePosStartY,D1
-          BCS.w JL_0_3D5A
-          BNE.w JL_0_3D3C
-            CMP.w comLong_LinePosStartX,D2
-            BLT.w JL_0_3D5A
-
-        JL_0_3D3C:
-        MOVE.w comWord__AL_0_86B8,D4
-        BNE.w JL_0_3D78
-          MOVE.w D5,D0
-          MOVE.l D6,D1
-          MOVE.w D2,D5
-          MOVE.w D3,D6
-          JSR AbsDimensions
-          ADDQ.w #1,D0
-          JSR draw_blockselection
-          BRA.w mouse_loop                        ; JUMP UP
-
-          JL_0_3D5A:
-          MOVE.w comWord__AL_0_86B8,D4
-          BEQ.w JL_0_3D78
-          MOVE.w D5,D0
-          MOVE.l D6,D1
-          MOVE.w D2,D5
-          MOVE.w D3,D6
-          JSR AbsDimensions
-          SUBQ.w #1,D2
-          JSR draw_blockselection
-          BRA.w mouse_loop            ; JUMP UP
-        JL_0_3D78:
-
-        NOT.w comWord__AL_0_86B8
-        MOVEM.w D2-D3,-(A7)
-        MOVE.w D5,D2
-        MOVE.w D6,D3
-        MOVE.w comLong_LinePosStartX,D0
-        MOVE.l comLong_LinePosStartY,D1
-        SUB.l comLong_DisplayLineOffset,D1
-        BPL.w JL_0_3D9E
-          MOVEQ.l #$00,D0
-          MOVEQ.l #$00,D1
-          BRA.w JL_0_3DB2
-        JL_0_3D9E:
-          CMP.l viewablelines,D1
-          BCS.w JL_0_3DB2
-            MOVE.l viewablelines,D1 : SUBQ.l #1,D1
-            MOVE.w #MAX_Columns,D0 : SUBQ.w #1,D0
-        JL_0_3DB2:
-
-        MOVEM.w D0-D1,-(A7)
-        JSR JL_0_59BC
-        MOVEM.w (A7)+,D0-D1
-
-        MOVEM.w (A7)+,D2-D3
-        MOVE.w D2,D5
-        MOVE.w D3,D6
-        JSR JL_0_59BC                 ;redraw blockmark
-
-  BRA.w mouse_loop                     ; jump upwarts until no leftmousebutton pressed
-
+  Gosub update_blockmark
+Return
 
 .mouse_scrollup:
-          MOVEQ.l #$00,D2
-          MOVEQ.l #$00,D3
-          MOVE.l comLong_DisplayLineOffset,D0
-          BEQ.w JL_0_3D06
+  ;log_Print{"scroll up"}
+  tmpX.w = 0  ;D2
+  tmpY.l = 0  ;D3
 
-          MOVEM.l D5-D6,-(A7)
-          JSR source_fullscroll_up
-          MOVEA.l $4(A4),A4
-          MOVE.l A4,comPtr_CurrentSourceLine
-          SUBQ.l #1,comLong_DisplayLineOffset
-          JSR draw_new_sourceline_top
-          MOVEM.l (A7)+,D5-D6
-          ADDQ.w #1,D6
-          MOVEQ.l #$00,D3
-          MOVEQ.l #$00,D2
-          MOVE.l comLong_DisplayLineOffset,D1
-          CMP.l comLong_LinePosStartY,D1
-          BCS.w JL_0_3D06
+  If Peek.l(?comLong_DisplayLineOffset) > 0
+    !asm
+    JSR source_fullscroll_up
+    !basic
 
-          MOVE.w D5,D2
-          MOVE.w D6,D3
-          MOVEQ.l #$00,D0
-          MOVEQ.l #$01,D1
-          JSR JL_0_59BC                         ;redraw blockmark
-          MOVE.w #MAX_Columns,D2
-          MOVEQ.l #$00,D3
-          MOVEQ.l #-$01,D5
-          MOVEQ.l #$00,D6
-          MOVE.l comLong_DisplayLineOffset,D1
-          CMP.l comLong_LinePosStartY,D1
-          BNE.w JL_0_3D06
+    *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
+    Poke.l ?comPtr_CurrentSourceLine, *currentLine\previousLine
+    Poke.l ?comLong_DisplayLineOffset, Peek.l(?comLong_DisplayLineOffset) - 1
 
-          MOVE.w comLong_LinePosStartX,D5 : SUBQ.w #1,D5
-BRA.w JL_0_3D06
+    !asm
+    JSR draw_new_sourceline_top
+    !basic
+
+    storeY + 1
+
+    If Peek.l(?comLong_DisplayLineOffset) >= Peek.l(?comLong_LinePosStartY)
+      bmark\xMin = 0
+      bmark\yMin = 1
+      bmark\xMax = storeX
+      bmark\yMax = storeY
+      PED_DrawBlock{bmark, Peek.w(?comWord_ColumnsOffset)}
+      tmpX = #MAX_Columns
+      tmpY = 0
+      storeX = -1
+      storeY = 0
+      If Peek.l(?comLong_DisplayLineOffset) = Peek.l(?comLong_LinePosStartY)
+        storeX = Peek.l(?comWord_LinePosStartX) - 1
+      EndIf
+
+    EndIf
+
+  EndIf
+
+  Gosub update_blockmark
+Return
 
 .mouse_scrollno:
-          ADD.w comWord_ColumnsOffset,D2         ; textX
-          MOVE.l D3,D1
-          ADD.l comLong_DisplayLineOffset,D1
-          CMP.l comLong_TotalLines,D1
-          BCS.w JL_0_3C54
-            MOVE.l comLong_TotalLines,D3 : SUB.l comLong_DisplayLineOffset,D3 : SUBQ.l #1,D3
-          JL_0_3C54:
+;  log_Print{"scroll no"}
+  tmpX = mousePos\textX + Peek.w(?comWord_ColumnsOffset)     ; >D2
+  tmpY = mousePos\textY ; >D3
+  If tmpY + Peek.l(?comLong_DisplayLineOffset) > Peek.l(?comLong_TotalLines)
+    tmpY = Peek.l(?comLong_TotalLines) - Peek.l(?comLong_DisplayLineOffset) - 1
+  EndIf
 
-          TST.w D0                              ; mx (mouse x)
-          BNE.w JL_0_3CA6
-            SUBQ.w #1,D2
-            MOVE.w comWord_ColumnsOffset,D0
-            BEQ.w JL_0_3D06
+  If mousePos\X = 0        ; mouse is left of source, scroll to right if not at column 1
+    tmpX - 1
+    If Peek.w(?comWord_ColumnsOffset) > 0
+      tmpX - 1
+      Poke.w ?comWord_LinePosEndX, storeX
+      Poke.l ?comLong_LinePosEndY, storeY + Peek.l(?comLong_DisplayLineOffset) ; mousePos\textY
 
-            SUBQ.w #1,D2
-            MOVEM.w D2-D3/D5-D6,-(A7)
-            MOVE.w D5,comWord_LinePosEndX
-            EXT.l d6
-            MOVE.l D6,D1
-            ADD.l comLong_DisplayLineOffset,D1
-            MOVE.l D1,comLong_LinePosEndY
-            MOVE.w comLong_LinePosStartX,comLong_BlockStartX
-            MOVE.l comLong_LinePosStartY,comLong_BlockStartY
-            MOVE.w comWord_LinePosEndX,comLong_BlockEndX
-            MOVE.l comLong_LinePosEndY,comLong_BlockEndY
-            JSR AbsBlockDimensions
-            SUBQ.w #2,comWord_ColumnsOffset
-            JSR scroll_right
-            JSR reset_Blockflag
-            MOVEM.w (A7)+,D2-D3/D5-D6
-            BRA.w JL_0_3D06
-          JL_0_3CA6:
-            MOVE.w D2,D0
-            SUB.w comWord_ColumnsOffset,D0
+      Poke.w ?comWord_BlockStartX, Peek.w(?comWord_LinePosStartX)
+      Poke.l ?comLong_BlockStartY, Peek.l(?comLong_LinePosStartY)
+      Poke.w ?comWord_BlockEndX, Peek.w(?comWord_LinePosEndX)
+      Poke.l ?comLong_BlockEndY, Peek.l(?comLong_LinePosEndY)
+      Gosub AbsBlockDimensions_bas
 
-            CMP.w visiblecolumns,D0
-            BCS.w JL_0_3D06
-              MOVE.w comWord_ColumnsOffset,D2 : ADD.w visiblecolumns,D2
-              CMP.w #MAX_Columns,D2
-              BCC.w JL_0_3D06
-                ADDQ.w #1,D2
-                MOVEM.l D2-D3/D5-D6,-(A7)
-                MOVE.w D5,comWord_LinePosEndX
-                MOVE.l D6,D1 : ADD.l comLong_DisplayLineOffset,D1
-                MOVE.l D1,comLong_LinePosEndY
-                MOVE.w comLong_LinePosStartX,comLong_BlockStartX
-                MOVE.l comLong_LinePosStartY,comLong_BlockStartY
-                MOVE.w comWord_LinePosEndX,comLong_BlockEndX
-                MOVE.l comLong_LinePosEndY,comLong_BlockEndY
-                JSR AbsBlockDimensions
-                ADDQ.w #2,comWord_ColumnsOffset
-                JSR scroll_left
-                JSR reset_Blockflag
-                MOVEM.l (A7)+,D2-D3/D5-D6
-BRA.w JL_0_3D06
+      Poke.w ?comWord_ColumnsOffset, Peek.w(?comWord_ColumnsOffset) - 2
+      Gosub scroll_right
+      Gosub reset_Blockflag
+    EndIf
+  Else            ; scroll to left if where are not at the rightmost column
+    If (mousePos\textX - Peek.w(?comWord_ColumnsOffset)) => Peek.w(?visiblecolumns)
+      tmpX = Peek.w(?comWord_ColumnsOffset) + Peek.w(?visiblecolumns)
+      If tmpX < #MAX_Columns
+        tmpX + 1
+        Poke.w ?comWord_LinePosEndX, mousePos\textX
+        Poke.l ?comLong_LinePosEndY, mousePos\textY + Peek.l(?comLong_DisplayLineOffset)
+
+        Poke.w ?comWord_BlockStartX, Peek.w(?comWord_LinePosStartX)
+        Poke.l ?comLong_BlockStartY, Peek.l(?comLong_LinePosStartY)
+        Poke.w ?comWord_BlockEndX, Peek.w(?comWord_LinePosEndX)
+        Poke.l ?comLong_BlockEndY, Peek.l(?comLong_LinePosEndY)
+        Gosub AbsBlockDimensions_bas
+
+        Poke.w ?comWord_ColumnsOffset, Peek.w(?comWord_ColumnsOffset) + 2
+        Gosub scroll_left
+        Gosub reset_Blockflag
+      EndIf
+    EndIf
+  EndIf
+
+  Gosub update_blockmark
+Return
+
+.update_blockmark:
+      If (storeX = mousePos\textX) AND (storeY = mousePos\textY)
+        Return
+      EndIf
+      ;log_Print{"update block ..."}
+
+      !asm
+      JSR update_scroller
+      !basic
+
+      ;msg$ = "tmpX: " + Str$(tmpX) + ", tmpY: " + Str$(tmpY)
+      ;log_Print{msg$}
+      Poke.w ?comWord_LinePosEndX, tmpX
+      Poke.l ?comLong_LinePosEndY, tmpY + Peek.l(?comLong_DisplayLineOffset)
+
+      If Peek.l(?comLong_LinePosEndY) <= Peek.l(?comLong_LinePosStartY)
+        ;log_Print{"lineposendy < lineposstarty " + Str$(storeY)}
+        If (Peek.l(?comWord_LinePosEndX) => Peek.l(?comWord_LinePosStartX)) OR (Peek.l(?comLong_LinePosEndY) = Peek.l(?comLong_LinePosStartY))
+          If Peek.w(?comWord__AL_0_86B8) = 0
+            bmark\xMin = storeX
+            bmark\yMin = storeY
+            bmark\xMax = tmpX
+            bmark\yMax = tmpY
+            storeX = tmpX
+            storeY = tmpY
+            AbsDimensions{bmark}
+            bmark\xMin + 1
+            PED_DrawBlock{bmark, Peek.w(?comWord_ColumnsOffset)}
+            Return
+          EndIf
+        Else
+          Goto other_path
+        EndIf
+      Else
+        other_path:
+        ;log_Print{"lineposendy > lineposstarty"}
+        If Peek.w(?comWord__AL_0_86B8) = 0
+          bmark\xMin = storeX
+          bmark\yMin = storeY
+          bmark\xMax = tmpX
+          bmark\yMax = tmpY
+          storeX = tmpX
+          storeY = tmpY
+          AbsDimensions{bmark}
+          bmark\xMax - 1
+          PED_DrawBlock{bmark, Peek.w(?comWord_ColumnsOffset)}
+          Return
+        EndIf
+      EndIf
+
+      ;------------------------------------------------------------------------
+      log_Print{"mouseclick in same line"}
+      Poke.w ?comWord__AL_0_86B8, NOT Peek.w(?comWord__AL_0_86B8)
+
+      bmark\xMax = storeX
+      bmark\yMax = storeY
+      bmark\xMin = Peek.w(?comWord_LinePosStartX)
+      bmark\yMin = Peek.l(?comLong_LinePosStartY) - Peek.l(?comLong_DisplayLineOffset)
+      If bmark\yMin < 0
+        bmark\xMin = 0
+        bmark\yMin = 0
+      Else
+        If bmark\yMin >= Peek.l(?viewablelines)
+          bmark\yMin = Peek.l(?viewablelines) - 1
+          bmark\xMin = #MAX_Columns - 1
+        EndIf
+      EndIf
+      ;obx.w = bmark\xMin
+      ;oby.l = bmark\yMin
+      PED_DrawBlock{bmark, Peek.w(?comWord_ColumnsOffset)}
+
+      ;bmark\xMin = obx
+      ;bmark\yMin = oby
+      bmark\xMax = tmpX
+      bmark\yMax = tmpY
+      PED_DrawBlock{bmark, Peek.w(?comWord_ColumnsOffset)}
+
+      storeX = tmpX
+      storeY = tmpY
+Return
 
 
 .mouseclick_in_source:
-  log_Print{"mousebutton released in source"}
-  !asm
-  MOVE.l (A7)+,comPtr_CurrentSourceLine
-  MOVE.w (A7)+,comWord_ColumnsOffset
-  MOVE.l (A7)+,comLong_DisplayLineOffset
-  !basic
+  log_Print{"mousebutton released in source, qualifier: " + Hex$(mqualifier) }
+  ;!asm
+  ;MOVE.l (A7)+,comPtr_CurrentSourceLine
+  ;MOVE.w (A7)+,comWord_ColumnsOffset
+  ;MOVE.l (A7)+,comLong_DisplayLineOffset
+  ;!basic
+  Poke.l ?comLong_DisplayLineOffset, storeDisplayLineOffset
+  Poke.w ?comWord_ColumnsOffset, storeColumnsOffset
+  Poke.l ?comPtr_CurrentSourceLine, storeCurrentSourceLine
+                                                                                                                                                                                                                                                        
   Poke.l ?comLong_DisplayLineOffsetStore, Peek.l(?comLong_DisplayLineOffset)
   Poke.w ?ColumnsOffsetStore, Peek.w(?comWord_ColumnsOffset)
 
   tempX.w = Peek.w(?comWord_LinePosEndX)
-  If tempX <= 0
+  If tempX < 1
     If Peek.l(?comLong_LinePosEndY) > Peek.l(?comLong_LinePosStartY)
       Poke.l ?comLong_LinePosEndY, Peek.l(?comLong_LinePosEndY) - 1
+      Goto jump_crude
     Else
       tempX = 0
     EndIf
   EndIf
-  If tempX > #MAX_Columns Then tempX = #MAX_Columns - 1
+  If tempX > #MAX_Columns
+    jump_crude:
+    tempX = #MAX_Columns - 1
+  EndIf
   Poke.w ?comWord_LinePosEndX, tempX
 
-  If Peek.w(?comLong_LinePosStartX) <> Peek.w(?comWord_LinePosEndX)
-    If Peek.l(?comLong_LinePosStartY) <> Peek.l(?comLong_LinePosEndY)
-      log_Print{"LinePosEnd not equals LinePosStart"}
+  msg$ = "LinePosStartX " + Str$(Peek.w(?comWord_LinePosStartX)) + ", "
+  msg$ + Str$(Peek.l(?comLong_LinePosStartY))  + " - "
+  msg$ + Str$(Peek.w(?comWord_LinePosEndX)) + ", "
+  msg$ + Str$(Peek.l(?comLong_LinePosEndY))
+  log_Print{msg$}
+
+  ; if a block is marked, then quit routine
+  If (Peek.w(?comWord_LinePosStartX) <> Peek.w(?comWord_LinePosEndX)) OR (Peek.l(?comLong_LinePosStartY) <> Peek.l(?comLong_LinePosEndY))
+      ;log_Print{"LinePosEnd  equals not LinePosStart"}
+
+      Poke.w ?comWord_BlockStartX, Peek.w(?comWord_LinePosStartX)
+      Poke.l ?comLong_BlockStartY, Peek.l(?comLong_LinePosStartY)
+      Poke.w ?comWord_BlockEndX, Peek.w(?comWord_LinePosEndX)
+      Poke.l ?comLong_BlockEndY, Peek.l(?comLong_LinePosEndY)
+      Gosub AbsBlockDimensions_bas
       !asm
-      ADD.w #12,A7                                          ; remove stored Blockdims from stack
-      MOVE.l comLong_LinePosStartY,comLong_BlockStartY
-      MOVE.w comLong_LinePosStartX,comLong_BlockStartX
-      MOVE.l comLong_LinePosEndY,comLong_BlockEndY
-      MOVE.w comWord_LinePosEndX,comLong_BlockEndX
-      JSR AbsBlockDimensions
       JSR update_horizscroller
       JSR _redraw
       !basic
-      Pop If : Pop If
       Return
-    EndIf
   EndIf
 
-  !asm
-  MOVE.l (a7)+,comLong_BlockEndY                        ; restore stored Blockdims via stack
-  MOVE.w (a7)+,comLong_BlockEndX
-  MOVE.l (a7)+,comLong_BlockStartY
-  MOVE.w (a7)+,comLong_BlockStartX
-  !basic
+  ; it was just a click...
+  log_Print{"just a click, no block marked."}
+  Poke.w ?comWord_BlockStartX, oldBlockDims\xMin
+  Poke.l ?comLong_BlockStartY, oldBlockDims\yMin
+  Poke.w ?comWord_BlockEndX, oldBlockDims\xMax
+  Poke.l ?comLong_BlockEndY, oldBlockDims\yMax
 
-  Poke.w ?comWord_Column, Peek.w(?comLong_LinePosStartX) - Peek.w(?comWord_ColumnsOffset)
+  msg$ = "Blockdimensions:" + Chr$(10)
+  msg$ + Str$(Peek.w(?comWord_BlockStartX)) + ", "
+  msg$ + Str$(Peek.l(?comLong_BlockStartY))  + " - "
+  msg$ + Str$(Peek.w(?comWord_BlockEndX)) + ", "
+  msg$ + Str$(Peek.l(?comLong_BlockEndY))
+  log_Print{msg$}
+
+
+
+  Poke.w ?comWord_Column, Peek.w(?comWord_LinePosStartX) - Peek.w(?comWord_ColumnsOffset)
   Poke.l ?foldnum,0
 
   ;-- todo: add hardfold support (compare with old asm code at this place!
@@ -8822,26 +8971,30 @@ BRA.w JL_0_3D06
   !basic
 
   ; -- check if some keys are pressed aswell
-  If mqualifier AND $3                                  ; lshift or rshift
+  If mqualifier AND #IEQUALIFIER_LSHIFT                 ; lshift or rshift
+    log_Print{">> SHIFT pressed aswell!"}
+
     !asm
     MOVE.b #1,doedit2 : JSR checkedit2
     !basic
     If Peek.l(?comLong_BlockStartY) <= Peek.l(?comLong_LinePosStartY)
       If Peek.l(?comLong_BlockEndY) => Peek.l(?comLong_LinePosStartY)
-        If Peek.l(?comLong_BlockStartY) = Peek.l(?comLong_LinePosStartY) AND Peek.w(?comLong_BlockStartX) <= Peek.w(?comLong_LinePosStartX)
-          If Peek.l(?comLong_BlockEndY) = Peek.l(?comLong_LinePosStartY) AND Peek.w(?comLong_BlockEndX) <= Peek.w(?comLong_LinePosStartX)
+        If Peek.l(?comLong_BlockStartY) = Peek.l(?comLong_LinePosStartY) AND Peek.w(?comWord_BlockStartX) <= Peek.w(?comWord_LinePosStartX)
+          If Peek.l(?comLong_BlockEndY) = Peek.l(?comLong_LinePosStartY) AND Peek.w(?comWord_BlockEndX) <= Peek.w(?comWord_LinePosStartX)
             Poke.l ?comLong_BlockEndY, $ffffFFFF
           EndIf
         EndIf
       EndIf
     EndIf
   Else                                                  ; enhance the block
-    Poke.w ?comLong_BlockEndX, Peek.l(?comLong_LinePosStartX)
+    Poke.w ?comWord_BlockEndX, Peek.w(?comWord_LinePosEndX)
     Poke.l ?comLong_BlockStartY, Peek.l(?comLong_LinePosStartY)
   EndIf
 
   If Peek.l(?comLong_BlockEndY) <> $ffffFFFF
-    If mqualifier AND $30                               ; LeftAlt or RightAlt
+    If mqualifier AND #IEQUALIFIER_LALT                ; LeftAlt or RightAlt
+      log_Print{">> ALT pressed aswell!"}
+
       !asm
       JSR jump_onclick
       !basic
@@ -8851,22 +9004,26 @@ BRA.w JL_0_3D06
       !basic
     EndIf
   Else
-    If Peek.l(?comLong_DisplayLineOffset) = Peek.l(?comLong_DisplayLineOffsetStore)
+    If Peek.l(?comLong_DisplayLineOffset) <> Peek.l(?comLong_DisplayLineOffsetStore)
       !asm
       JSR _redraw
       !basic
     Else
-      If Peek.w(?comWord_ColumnsOffset) = Peek.w(?ColumnsOffsetStore)
+      If Peek.w(?comWord_ColumnsOffset) <> Peek.w(?ColumnsOffsetStore)
         !asm
         JSR _redraw
         !basic
       Else
-        If mqualifier AND $30
+        If mqualifier AND #IEQUALIFIER_LALT ;$30
           !asm
           JSR jump_onclick
           !basic
+       Else
+        !asm
+        JSR _redraw
+        !basic
        EndIf
-        Gosub cursor_on_bas
+       Gosub cursor_on_bas
       EndIf
     EndIf
   EndIf
@@ -8899,7 +9056,7 @@ Return
   JL_0_3E24:
   MOVE.w D0,comWord_LinePosEndX
 
-  MOVE.w comLong_LinePosStartX,d0
+  MOVE.w comWord_LinePosStartX,d0
   MOVE.w comWord_LinePosEndX,d1
   CMP.w d1,d0
   BNE 'l10
@@ -8910,20 +9067,20 @@ Return
  'l10:
   ADD.w #12,A7                                          ; remove stored Blockdims from stack
   MOVE.l comLong_LinePosStartY,comLong_BlockStartY
-  MOVE.w comLong_LinePosStartX,comLong_BlockStartX
+  MOVE.w comWord_LinePosStartX,comWord_BlockStartX
   MOVE.l comLong_LinePosEndY,comLong_BlockEndY
-  MOVE.w comWord_LinePosEndX,comLong_BlockEndX
+  MOVE.w comWord_LinePosEndX,comWord_BlockEndX
   JSR AbsBlockDimensions
   JSR update_horizscroller
   BRA.w JUMP_redraw2
 
   JL_0_3E5E:
   MOVE.l (a7)+,comLong_BlockEndY                        ; restore stored Blockdims via stack
-  MOVE.w (a7)+,comLong_BlockEndX
+  MOVE.w (a7)+,comWord_BlockEndX
   MOVE.l (a7)+,comLong_BlockStartY
-  MOVE.w (a7)+,comLong_BlockStartX
+  MOVE.w (a7)+,comWord_BlockStartX
 
-  MOVE.w comLong_LinePosStartX,D0 : SUB.w comWord_ColumnsOffset,D0 : MOVE.w D0,comWord_Column
+  MOVE.w comWord_LinePosStartX,D0 : SUB.w comWord_ColumnsOffset,D0 : MOVE.w D0,comWord_Column
   CLR.l foldnum
 
 
@@ -9025,25 +9182,25 @@ CEND
   MOVE.w message_qualifier,d1
   AND.w #$3,d1                                            ; lshift or rshift
   BEQ 'l9
-    MOVE.w comLong_LinePosStartX,comLong_BlockEndX        ;enhance block
+    MOVE.w comWord_LinePosStartX,comWord_BlockEndX        ;enhance block
     MOVE.l comLong_LinePosStartY,comLong_BlockEndY
     BRA 'l1
  'l9
     MOVE.b #1,doedit2 : JSR checkedit2
     MOVE.l comLong_LinePosStartY,d0
-    MOVE.w comLong_LinePosStartX,d1
+    MOVE.w comWord_LinePosStartX,d1
     CMP.l comLong_BlockStartY,d0
     BLT 'l1
       CMP.l comLong_BlockEndY ,d0
       BGT 'l1
         CMP.l comLong_BlockStartY,d0
         BNE 'l3
-          CMP.w comLong_BlockStartX,d1
+          CMP.w comWord_BlockStartX,d1
           BLT 'l1
        'l3
         CMP.l comLong_BlockEndY,d0
         BNE 'l2
-          CMP.w comLong_BlockEndX,d1
+          CMP.w comWord_BlockEndX,d1
           BGT 'l1
        'l2
         MOVE.l #$ffffffff,comLong_BlockEndY
@@ -9146,7 +9303,7 @@ RTS
   BMI.w JUMP_setpointer_to_normal
 
   MOVE.l D0,-(a7)
-  MOVE.w D0,comLong_BlockStartX
+  MOVE.w D0,comWord_BlockStartX
   MOVE.l comLong_BlockStartDisplayLine,D3
   MOVE.l comLong_DisplayLineOffset,D1 : ADD.l comLong_DisplayLine,D1
   MOVE.l (a7)+,D0
@@ -9156,7 +9313,9 @@ RTS
   BNE.w JL_0_42D8
     CMP.l D1,D3
     BNE.w JL_0_42D8
-      JSR reset_Blockflag
+      !basic
+      Gosub reset_Blockflag
+      !asm
       JMP _redraw
   JL_0_42D8:
 
@@ -9174,18 +9333,18 @@ RTS
 ;        MOVE.w #MAX_Columns,D0
   JL_0_42EA:
 
-  MOVE.w D0,comLong_BlockEndX
+  MOVE.w D0,comWord_BlockEndX
   MOVE.l D1,comLong_BlockEndY
-  MOVE.w D2,comLong_BlockStartX
+  MOVE.w D2,comWord_BlockStartX
   MOVE.l D3,comLong_BlockStartY
 
   JSR AbsBlockDimensions
 
 ;!regs2stack
 ;!basic
-;log_Print{"BlockStartX: " + Str$(Peek.w(?comLong_BlockStartX))}
+;log_Print{"BlockStartX: " + Str$(Peek.w(?comWord_BlockStartX))}
 ;log_Print{"BlockStartY: " + Str$(Peek.l(?comLong_BlockStartY))}
-;log_Print{"BlockEndX:   " + Str$(Peek.w(?comLong_BlockEndX))}
+;log_Print{"BlockEndX:   " + Str$(Peek.w(?comWord_BlockEndX))}
 ;log_Print{"BlockEndY:   " + Str$(Peek.l(?comLong_BlockEndY))}
 ;!asm
 ;!stack2regs
@@ -11177,7 +11336,7 @@ RTS
 
 JL_0_5524:
   BSR.b move_to_blockstarty
-  MOVE.w comLong_BlockStartX,D5
+  MOVE.w comWord_BlockStartX,D5
 
   MOVE.w comWord_DoTokenize,D0
   BEQ.w JL_0_5538
@@ -11339,7 +11498,7 @@ JL_0_5630:
     CMP.l comLong_BlockEndY,D6
     BCS.w JL_0_5650
     BNE.w JL_0_564C
-      CMP.w comLong_BlockEndX,D5
+      CMP.w comWord_BlockEndX,D5
       BLS.w JL_0_5650
     JL_0_564C:
   MOVEQ.l #-$01,D0
@@ -11375,9 +11534,16 @@ JL_0_5650:
 RTS
 
 .reset_Blockflag:
-  MOVE.w #$FFFF,store_BlockStartX
-  MOVE.l #$ffffFFFF,comLong_BlockEndY
+  Poke.w ?store_BlockStartX, $FFFF
+  Poke.l ?comLong_BlockEndY, $ffffFFFF
+Return
+
+.reset_Blockflag_asm:
+  MOVE.w #$FFFF, store_BlockStartX
+  MOVE.l #$ffffFFFF, comLong_BlockEndY
 RTS
+
+
 
 .block_updatePosY:
   CMPI.l #$ffffFFFF,comLong_BlockEndY
@@ -11409,20 +11575,44 @@ RTS
 
   MOVE.w D2,comWord_Column
   MOVE.w D3,comLong_DisplayLine+2
+
   JSR update_horizscroller
   !basic
   Gosub update_vertscroller
   !asm
+
   MOVEM.w (A7)+,D2-D3/D5
   MOVE.l (A7)+,comLong_DisplayLine
   MOVE.w (A7)+,comWord_Column
 RTS
 
+.AbsBlockDimensions_bas:
+  tempD0.w = Peek.w(?comWord_BlockStartX)
+  tempD1.l = Peek.l(?comLong_BlockStartY)
+  tempD2.w = Peek.w(?comWord_BlockEndX)
+  tempD3.l = Peek.l(?comLong_BlockEndY)
+  If tempD1 > tempD3
+    If tempD1 <> tempD3
+      absloop:
+      Exchange tempD0, tempD2
+      Exchange tempD1, tempD3
+      Poke.w ?comWord_BlockStartX, tempD0
+      Poke.l ?comLong_BlockStartY, tempD1
+      Poke.w ?comWord_BlockEndX, tempD2
+      Poke.l ?comLong_BlockEndY, tempD3
+    Else
+      If tempD0 > tempD2
+        Goto absloop
+      EndIf
+    EndIf
+  EndIf
+
+Return
 
 .AbsBlockDimensions:
-  MOVE.w comLong_BlockStartX,D0
+  MOVE.w comWord_BlockStartX,D0
   MOVE.l comLong_BlockStartY,D1
-  MOVE.w comLong_BlockEndX,D2
+  MOVE.w comWord_BlockEndX,D2
   MOVE.l comLong_BlockEndY,D3
   CMP.l D3,D1
   BCS.w JL_0_5872
@@ -11430,9 +11620,9 @@ RTS
       JL_0_5850:
       EXG.l D0,D2
       EXG.l D1,D3
-      MOVE.w D0,comLong_BlockStartX
+      MOVE.w D0,comWord_BlockStartX
       MOVE.l D1,comLong_BlockStartY
-      MOVE.w D2,comLong_BlockEndX
+      MOVE.w D2,comWord_BlockEndX
       MOVE.l D3,comLong_BlockEndY
       RTS
     JL_0_586E:
@@ -11597,7 +11787,7 @@ RTS
     CEND
 
     MOVE.l (A2),-(A7)
-    JSR print_sourceline
+    JSR print_sourceline_old
     JSR update_modifiermark
     MOVE.l (A7)+,D0
 
@@ -11634,61 +11824,114 @@ RTS
   MOVE.l (A7)+,comLong_BlockEndY
 
   JL_0_590C:
-  TST.l comLong_BlockEndY                                 ; draw block if existing
-  BMI.w JL_0_59BA
-    MOVE.w comLong_BlockStartX,D0
-    MOVE.w comLong_BlockEndX,D2
-    MOVE.l comLong_BlockEndY,D3
-    MOVE.l comLong_BlockStartY,D1
-    MOVE.l comLong_DisplayLineOffset,D4
-    MOVE.l D4,D5
-    ADD.l viewablelines,D5
-    SUB.w comWord_ColumnsOffset,D0
-    BPL.w JL_0_5954
-      MOVEQ.l #$00,D0
-    JL_0_5954:
-
-    CMP.l D4,D3
-    BLT.w JL_0_59BA
-      SUB.l comLong_DisplayLineOffset,D1
-      BPL.w JL_0_5968
-        MOVEQ.l #$00,D0
-        MOVEQ.l #$00,D1
-      JL_0_5968:
-
-      SUB.w comWord_ColumnsOffset,D2
-      BPL.w JL_0_5974
-        MOVEQ.l #$00,D2
-      JL_0_5974:
-
-      SUB.l comLong_DisplayLineOffset,D3
-      BPL.w JL_0_5980
-        MOVEQ.l #$00,D3
-      JL_0_5980:
-
-      MOVE.l viewablelines,D5
-      CMP.l D5,D1
-      BGE.w JL_0_59BA
-        CMP.l D5,D3
-        BLE.w JL_0_5998
-          MOVE.l viewablelines_m1,D3
-        JL_0_5998:
-
-        CMP.w visiblecolumns,D2
-        BLT.w JL_0_59AA
-          MOVE.w visiblecolumns,D2
-          SUBQ.w #1,D2
-        JL_0_59AA:
-
-        ADD.w comWord_ColumnsOffset,D0
-        ADD.w comWord_ColumnsOffset,D2
-        BRA.w draw_blockselection
-  JL_0_59BA:
   !basic
+  If Peek.l(?comLong_BlockEndY) <> $ffffFFFF
+    log_Print{"draw block (after refresh.)"}
+    bmark\xMin = Peek.w(?comWord_BlockStartX)
+    bmark\yMin = Peek.l(?comLong_BlockStartY)
+    bmark\xMax = Peek.w(?comWord_BlockEndX)
+    bmark\yMax = Peek.l(?comLong_BlockEndY)
+
+    If bmark\xMin - Peek.w(?comWord_ColumnsOffset) < 0
+      bmark\xMin = 0
+    End If
+
+    If bmark\yMax >= Peek.l(?comLong_DisplayLineOffset)
+      bmark\yMin - Peek.l(?comLong_DisplayLineOffset)
+      If bmark\yMin < 0
+        bmark\xMin = 0
+        bmark\yMin = 0
+      EndIf
+
+      bmark\xMax - Peek.w(?comWord_ColumnsOffset)
+      If bmark\xMax < 0 Then bmark\xMax = 0
+
+      bmark\yMax - Peek.l(?comLong_DisplayLineOffset)
+      If bmark\yMax < 0 Then bmark\yMax = 0
+
+      If bmark\yMin < Peek.l(?viewablelines)
+        If bmark\yMax > Peek.l(?viewablelines)
+          bmark\yMax = Peek.l(?viewablelines) - 1
+        EndIf
+
+        If bmark\xMax > Peek.w(?visiblecolumns)
+          bmark\xMax = Peek.w(?visiblecolumns) - 1
+        EndIf
+
+        bmark\xMin + Peek.w(?comWord_ColumnsOffset)
+        bmark\xMax + Peek.w(?comWord_ColumnsOffset)
+
+        ;msg$ = Str$(bmark\xMin) + ", "
+        ;msg$ + Str$(bmark\yMin) + " - "
+        ;msg$ + Str$(bmark\xMax) + ", "
+        ;msg$ + Str$(bmark\yMax)
+        ;log_Print{msg$}
+
+        PED_DrawBlock{bmark, Peek.w(?comWord_ColumnsOffset)}
+      EndIf
+    EndIf
+  EndIf
   Gosub cursor_on_bas
-  ;log_Print{"end of redraw"}
   !asm
 RTS
+
+;  TST.l comLong_BlockEndY                                 ; draw block if existing
+;  BMI.w JL_0_59BA
+;    MOVE.w comWord_BlockStartX,D0
+;    MOVE.w comWord_BlockEndX,D2
+;    MOVE.l comLong_BlockEndY,D3
+;    MOVE.l comLong_BlockStartY,D1
+;    MOVE.l comLong_DisplayLineOffset,D4
+;    MOVE.l D4,D5
+;    ADD.l viewablelines,D5
+;    SUB.w comWord_ColumnsOffset,D0
+;    BPL.w JL_0_5954
+;      MOVEQ.l #$00,D0
+;    JL_0_5954:
+;
+;    CMP.l D4,D3
+;    BLT.w JL_0_59BA
+;      SUB.l comLong_DisplayLineOffset,D1
+;      BPL.w JL_0_5968
+;        MOVEQ.l #$00,D0
+;        MOVEQ.l #$00,D1
+;      JL_0_5968:
+;
+;      SUB.w comWord_ColumnsOffset,D2
+;      BPL.w JL_0_5974
+;        MOVEQ.l #$00,D2
+;      JL_0_5974:
+;
+;      SUB.l comLong_DisplayLineOffset,D3
+;      BPL.w JL_0_5980
+;        MOVEQ.l #$00,D3
+;      JL_0_5980:
+;
+;      MOVE.l viewablelines,D5
+;      CMP.l D5,D1
+;      BGE.w JL_0_59BA
+;        CMP.l D5,D3
+;        BLE.w JL_0_5998
+;          MOVE.l viewablelines_m1,D3
+;        JL_0_5998:
+;
+;        CMP.w visiblecolumns,D2
+;        BLT.w JL_0_59AA
+;          MOVE.w visiblecolumns,D2
+;          SUBQ.w #1,D2
+;        JL_0_59AA:
+;
+;        ADD.w comWord_ColumnsOffset,D0
+;        ADD.w comWord_ColumnsOffset,D2
+;        BRA.w draw_blockselection
+;  JL_0_59BA:
+;
+;  !basic
+;  Gosub cursor_on_bas
+;  ;log_Print{"end of redraw"}
+;  !asm
+;RTS
+;
 
 
 .JL_0_59BC:                           ;redraw blockmark
@@ -11752,46 +11995,14 @@ RTS
   MOVEM.l (A7)+,D0-D3/A0-A1
 RTS
 
-rectfill:
+.rectfill:
   If (xMax >= xMin) AND (yMax >= yMin)
     xMin = sourceWindow\BoxLeft + xMin
     xMax = sourceWindow\BoxLeft + xMax - 1
-;    msg$ =  Str$(xMin) + ", " + Str$(yMin) + ", " + Str$(xMax) + ", " + Str$(yMax)
- ;   log_Print{msg$}
+    ;    msg$ =  Str$(xMin) + ", " + Str$(yMin) + ", " + Str$(xMax) + ", " + Str$(yMax)
+    ;   log_Print{msg$}
     RectFill_ *sourcerp, xMin, yMin, xMax, yMax
-;              SetBPen_ Peek.l(?rp_rectfill),3
-;               SetDrMd_ Peek.l(?rp_rectfill),#JAM1
-  ;               Move_ Peek.l(?rp_rectfill), xMin,yMin
-;               Draw_ Peek.l(?rp_rectfill), xMax,yMax
-;               SetDrMd_ Peek.l(?rp_rectfill),#COMPLEMENT
-
   EndIf
-Return
-
-
-.get_TextPosMouse:
-  USEPATH sourceWindow
-  mx.w = \win\MouseX - \win\BorderLeft + 1
-  my.w = \win\MouseY - \win\BorderTop + 1
-  If mx < 0 Then mx = 0
-  If my < 0 Then my = 0
-
-  If (mx > \BoxLeft)
-    textX.w = mx - \BoxLeft
-    If textX < 0 Then textX = 0
-    textX = textX / \font\tf_XSize                                                                                ;
-  Else
-    textX = 0
-  EndIf
-
-  If (my > 0) AND (my < \statusAreaY)
-    textY.w = my / \font\tf_YSize
-  Else
-    textY = -1
-  EndIf
-
-  ; msg$ =  Str$(mx) +  ", " + Str$(my) + "      " + Str$(textX) + ", " + Str$(textY) + "  DisplayLineOff:"  + Str$(Peek.l(?comLong_DisplayLineOffset)) + " total" + Str$(Peek.l(?comLong_TotalLines))
-  ; SetScreenTitle{msg$}
 Return
 
 JL_0_5B00:
@@ -11829,7 +12040,7 @@ RTS
   BRA.b JL_0_5B3C
   JL_0_5B4E:                           ;Print 1 Line down
   MOVE.w D1,comLong_DisplayLine+2
-  JSR print_sourceline
+  JSR print_sourceline_old
 
   JL_0_5B58:
   JSR restore_cursorposition
@@ -11857,7 +12068,7 @@ RTS
   BRA.b JL_0_5B68
   JL_0_5B84:
 
-  JSR print_sourceline     ;print 1 line up
+  JSR print_sourceline_old     ;print 1 line up
 
   JL_0_5B88:
   JSR restore_cursorposition
@@ -11872,7 +12083,7 @@ RTS
 
 .print_current_sourceline:
   MOVEA.l comPtr_CurrentSourceLine,A2
-BRA.w print_sourceline
+BRA.w print_sourceline_old
 
 
 
@@ -11884,65 +12095,7 @@ textbufferPrint:    Ds.l 1
 expandstore:  Ds.l 1
 lineundeletestore:    Ds.l 1
 
-
-
-
-;.print_complete_line:                  ; d0:x, d1:y, a0: text
-;  MOVE.l D2,-(A7)
-;
-;  MOVEA.l textbufferPrint,A2           ; textbufferPrint leeren
-;  MOVE.l #MAX_Columns/4,D2
-;  SUBQ.l #1,d2
-;  JL_0_5C20:
-;    CLR.l (A2)+
-;  DBF D2,JL_0_5C20
-;
-;  TST.w comWord_DoTokenize
-;  BNE.w tokenized_text
-;    JSR print_standard_text            ; print standard, non-tokenized text >> d0:x, d1:y, a0: text, d3, length
-;    BRA.w exit_print_complete_line
-;  tokenized_text:
-;   MOVE.w #MAX_Columns,D4 : SUBQ.w #1,D4
-;    MOVEA.l AL_0_5BA6,A1
-;    JL_0_5C48:
-;      MOVE.b (A0)+,(A1)+               ;copy text to tempbuffer
-;      BEQ.w JL_0_5C52
-;    DBF D4,JL_0_5C48
-;    JL_0_5C52:
-;    MOVE.b #$0,(A1)+
-;    JSR print_tokenized_text
-;  exit_print_complete_line:
-;
-;  !basic
-;  If Peek.l(?ClearEndOfLine)
-;    !regs2stack
-;    USEPATH sourceWindow
-;    SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
-;
-;    rectx.w = \win\RPort\cp_x
-;    recty.w = Peek.l(?comLong_DisplayLine) * \font\tf_YSize
-;    rectw.w = \BoxWidth
-;    recth.w = recty + \font\tf_YSize-1
-;    If (rectw => rectx) AND (recth => recty)
-;      RectFill_ \win\RPort, rectx, recty, rectw, recth
-;    Else
-;      log_Print{"illegal area for clear bottom:",#log_error}
-;      log_Print{Str$(rectx) + ", " + Str$(rectw)}
-;      log_Print{Str$(recty) + ", " + Str$(recth)}
-;    EndIf
-;
-;    !stack2regs
-;  EndIf
-;  !asm
-;
-;  MOVE.l (A7)+,D2
-;RTS
-
-
-
-
-
-.print_complete_line_bas:                  ; d0:x, d1:y, a0: text
+.print_complete_line:                  ; d0:x, d1:y, a0: text
   MOVE.l D2,-(A7)
   !regs2stack
   MOVE.l A0,-(a7)   ; string
@@ -12173,128 +12326,6 @@ ClearEndOfLine: Dc.l 0
   MOVE.b comByte__AL_0_8662,$0(A1,D4.W)
 RTS
 
-
-;.print_highlight:                             ;a0 = text,d0 = x,d2 = charslen,d3 = color, d5 = style
-;  MOVEM.l D0-D4/A0-A1/A4/A6,-(A7)
-;  MOVE.l a0,-(a7)
-;  !basic
-;  xPos.w = PutD0
-;  MOVE.l d2,d0 : textlen.w = PutD0
-;  MOVE.l d3,d0 : textcolor.w = PutD0
-;  MOVE.l d5,d0 : textstyle.w = PutD0
-;  MOVE.l (a7)+,d0: lineaddr.l = PutD0
-;
-;  If Peek.l(?textlinestart) > lineaddr
-;    textlen = textlen - (Peek.l(?textlinestart) - lineaddr)
-;    lineaddr = Peek.l(?textlinestart)
-;    xPos = 0
-;  Else
-;    xPos = xPos - Peek.w(?comWord_ColumnsOffset)
-;  EndIf
-;
-;  If textlen > 0
-;    If (textlen + xPos) > \visibleColumns
-;      textlen = \visibleColumns - xPos
-;    EndIf
-;    If textlen > 0
-;      xText.w = \BoxLeft + xPos * \font\tf_XSize
-;      yText.w = Peek.l(?comLong_DisplayLine) * \font\tf_YSize + \font\tf_Baseline
-;      Move_ \win\RPort, xText, yText
-;
-;      SetAPen_ \win\RPort,textcolor
-;      ;SetSoftStyle_ \win\RPort,textstyle,textstyle
-;      Text_ \win\RPort,lineaddr, textlen
-;    EndIf
-;  EndIf
-;  !asm
-;  MOVEM.l (A7)+,D0-D4/A0-A1/A4/A6
-;RTS
-
-;.print_text:
-;  !regs2stack
-;  MOVE.l A0,-(a7)   ; string
-;  MOVE.l D0,-(a7)   ; x-pos
-;  MOVE.l D1,-(a7)   ; y-pos
-;  MOVE.l D2,-(a7)   ; textlength
-;  MOVE.l D3,-(a7)   ; foregroundcolor
-;  !basic
-;  MOVE.l (a7)+,d0 : tcolor.w = PutD0
-;  MOVE.l (a7)+,d0 : tlength.w = PutD0
-;  MOVE.l (a7)+,d0 : tposy.w = (PutD0 AND $FFFF) * \font\tf_YSize + \font\tf_Baseline
-;  MOVE.l (a7)+,d0 : tposx.w = PutD0 * \font\tf_XSize + \BoxLeft
-;  MOVE.l (a7)+,d0 : *textaddr.l = PutD0
-;  ;log_Print{Str$(tposx) + " " + Str$(tposy) +  "   " + Peeks$(*textaddr,20)}
-;  Move_ \win\RPort, tposx, tposy
-;  SetAPen_ \win\RPort, tcolor
-;
-;  ; -- clip text to visible columns
-;  If (tlength > \visibleColumns) Then tlength = \visibleColumns
-;
-;  If remarkcolor.l OR remarkbgcolor.l
-;;    Gosub print_textcomments
-;  Else
-;    Text_ \win\RPort,Peek$(*textaddr), tlength
-;  EndIf
-;
-;  !asm
-;  !stack2regs
-;RTS
-
-;.print_textcomments:
-;  semi_position.w = 0
-;  in_string.b = 0
-;  columnsoff.w = Peek.w(?comWord_ColumnsOffset)
-;  mytext$ = Peek$(*textaddr)
-;
-;  ; -- search for a comment and save the starting position
-;  search_again2:
-;  semi_position = Instr(mytext$,";",semi_position + 1)
-;  If semi_position > 0
-;    ; -- check if the comment-char +++ ; +++ is in a string
-;    acount.b = 0
-;    For i = 1 To semi_position
-;      If Mid$(mytext$,i,1) = Chr$($22) Then acount + 1
-;    Next i
-;    If (acount MOD 2) = 1
-;      ; -- ungerade Anzahl von +++ " +++ impliziert, das +++ ; +++ in einem String steckt...
-;      semi_position = 0
-;    Else
-;      If Mid$(mytext$,semi_position + 1,2)=":"
-;        ; -- nachschauen, ob dahinter ein echter Kommentar kommt
-;        Goto search_again2
-;      EndIf
-;    EndIf
-;    If semi_position > tlength Then semi_position = 0
-;  EndIf
-;  If semi_position > 0
-;    semi_position - 1 ; highlight +++ ; ++ as well
-;    ; -- print text before +++ ; +++
-;    Text_ \win\RPort,mytext$,semi_position
-;
-;    ; -- set remarks color
-;    SetAPen_ \win\RPort, AB3Pen(#AB3_cremarkforeground)
-;    SetBPen_ \win\RPort, AB3Pen(#AB3_cremarkbackground)
-;
-;    ; -- optional switch italic on
-;    If pedconfig\italic_remarks
-;      SetFont_ \win\RPort,\fontI
-;      SetSoftStyle_ \win\RPort, #FSF_ITALIC,#FSF_ITALIC
-;    EndIf
-;
-;    Text_ \win\RPort,UnRight$(mytext$,semi_position),tlength-semi_position
-;
-;    ; -- restore standard backgroundcolor and font if changed
-;    SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
-;    If pedconfig\italic_remarks
-;      SetFont_ \win\RPort,\font
-;      SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_ITALIC
-;    EndIf
-;  Else
-;    Text_ \win\RPort,mytext$, tlength
-;  EndIf
-;
-;Return
-
 .print_linenumber:
   USEPATH sourceWindow
 
@@ -12315,82 +12346,99 @@ RTS
   Draw_ \win\RPort,\BoxLeft-2,ly + \font\tf_YSize
 Return
 
-.print_standard_text:         ;d0:x, d1:y, a0: text
-  MOVE.l A0,-(a7)   ; string
-  MOVE.l D0,-(a7)   ; x-pos
-  MOVE.l D1,-(a7)   ; y-pos
+.print_sourceline:                     ; a2: pointer to sourceline
+  !regs2stack
+  MOVE.l a2, d0
   !basic
-  MOVE.l (a7)+,d0 : tposy.w = PutD0 * \font\tf_YSize + \font\tf_Baseline
-  MOVE.l (a7)+,d0 : tposx.w = PutD0 * \font\tf_XSize + \BoxLeft
-  MOVE.l (a7)+,d0 : *textaddr.l = PutD0
+  *sourceline.sourceLine = PutD0
 
-  log_Print{"print_standard_text"}
+  If pedconfig\linenumbers Then Gosub print_linenumber
 
-  ; copy the current line to a tempBuffer
-  For i = 0 To Len(Peek$(*textaddr))
-    Poke.b Peek.l(?textbufferPrint) + i, Peek.b(*textaddr+i)
-  Next i
+  If Peek.l(*sourceline) = 0
+    Pop If
+    !asm
+    !stack2regs
+    RTS
+  EndIf
 
-  Move_ \win\RPort, tposx, tposy
-  SetAPen_ \win\RPort,AB3Pen(#AB3_cother)
+  If *sourceline\strLength > 0
+    If Peek.b(*sourceline + 9) <> 0   ; first character of text
+      ;log_Print{"print_sourceline " + Str$(*sourceline\strLength)}
+      ;*detokened.l = TEDDetoke{*sourceline + 9}
+      ;strline$ = Left$(Peek$(*detokened),32);Peek.w(?comWord_BlockEndX))
+      ;log_Print{">>>" + strline$}
 
-  startPos.w = Peek.w(?comWord_ColumnsOffsetTmp)
-  tmpString$ = UnRight$(Peek$(*textaddr),startPos)
-  tlength = Len(tmpString$)
-  If tlength > \visibleColumns Then tlength = \visibleColumns
-  Text_ \win\RPort,&tmpString$,tlength
+      Poke.w ?comWord_ColumnsOffsetTmp,Peek.w(?comWord_ColumnsOffset)
+      GetD0 *sourceline + 9
+      MOVE.l d0,-(a7)
+      !asm
+      MOVE.l (a7)+,A0
+      MOVEQ.l #0,D0
+      MOVE.l comLong_DisplayLine,d1
+      JSR print_complete_line         ; d0:x, d1:y, a0: text
+      !basic
+    Else
+      USEPATH sourceWindow
+      SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+      xMin = \BoxLeft
+      yMin = Peek.l(?comLong_DisplayLine) * \font\tf_YSize
+      xMax = \BoxWidth
+      yMax = yMin + \font\tf_YSize - 1
+      RectFill_ \win\RPort, xMin, yMin, xMax, yMax
+      Move_ \win\RPort, 0, Peek.l(?comLong_DisplayLine) * \font\tf_YSize + \font\tf_YSize
+
+      Poke.l Peek.l(?textbufferPrint),0
+      Poke &*sourceline, 0
+    EndIf
+  EndIf
+
+
+  tmpColumn.w = Peek.w(?comWord_Column)                           ; save Columnpos as it is changed for process_highlighting
+
+  char.b = Peek.b(Peek.l(?textbufferPrint))
+  If char <> 0
+    tmpD3.w = 0
+    textBufferX.w = 0
+    textBufferAddr.l = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset) -1
+    tempCount.w = 0
+    ;log_Print{"TBP: " + Peek$(Peek.l(?textbufferPrint))}
+    If Peek.b(?comByte_LabelIdentifier) <> char Then Goto jump_in
+    Gosub copy_to_textBuffer
+    Repeat
+      textBufferX + 1
+      char = Peek.b(Peek.l(?textbufferPrint) + tempCount)
+      If char <> 0
+        tempCount + 1
+jump_in:
+        Gosub copy_to_textBuffer
+      End If
+    Until char = 0
+    ;log_Print{Str$(Peek.w(?comWord_TextBufferOffset))}
+    ;log_Print{">" + Peek$(Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset) )}
+  EndIf
+
   !asm
+  BSR process_highlighting
+  !basic
+  Poke.w ?comWord_Column,tmpColumn                            ; restore Columnpos
+  !asm
+  !stack2regs
 RTS
 
-.print_sourceline:                     ; a2: pointer to sourceline
-;  !regs2stack
-;  MOVE.l a2, d0
-;  !basic
-;  *sourceline.sourceLine = PutD0
-;  log_Print{"print_sourceline"}
-;  log_Print{">" + Peek$(*sourceline+9)}
-;
-;  If Peek.b(?linenumbers)
-;    !asm
-;    Gosub print_linenumber
-;    !basic
-;  EndIf
-;
-;  If *sourceline <> 0
-;    MOVEA.l textbufferaddr,A3
-;    ADDA.w comWord_TextBufferOffset,A3
-;
-;    If Peek.b(*sourceline + 9)<>0   ; first character of text
-;      Poke.w ?comWord_ColumnsOffsetTmp,Peek.w(?comWord_ColumnsOffset)
-;;      Poke.l ?templine,Peek.l(?textbufferPrint)
-;      GetD0 *sourceline + 9
-;      !asm
-;      MOVEA.l d0,A0
-;      MOVEQ.l #0,d0
-;      MOVE.l comLong_DisplayLine,d1
-;      MULU fontHeight,D1
-;      JSR print_complete_line         ; d0:x, d1:y, d3, length, a0: text
-;      !basic
-;;      Poke.l ?templine,0
-;      *sourceline = Peek.l(?textbufferPrint)
-;    Else
-;      USEPATH sourceWindow
-;      SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
-;      xMin = Peek.w(?source_BoxLeft)
-;      yMin = Peek.l(?comLong_DisplayLine) * \font\tf_YSize
-;      xMax = Peek.w(?source_BoxWidth)
-;      yMax = yMin + \font\tf_YSize - 1
-;      RectFill_ \win\RPort, xMin, yMin, xMax, yMax
-;      Move_ \win\RPort, 0, Peek.l(?comLong_DisplayLine) * \font\tf_YSize + \font\tf_YSize
-;
-;      *sourceline = Peek.l(?textbufferPrint)
-;    EndIf
-;  EndIf
-;  !asm
-;  !stack2regs
-;RTS
+.copy_to_textBuffer:
+  textBufferPos.l = textBufferAddr + textBufferX
+  Poke.b textBufferPos, char
+  If textBufferX < Peek.w(?comWord_ColumnsOffset)
+    If tmpD3 => Peek.w(?visiblecolumns)
+      Poke.w ?comWord_Column,tmpD3
+      tmpD3 + 1
+    EndIf
+  EndIf
+Return
 
-;  !regs2stack
+
+
+.print_sourceline_old:
   MOVE.l A2,-(a7)
   !basic
   If pedconfig\linenumbers Then Gosub print_linenumber
@@ -12415,7 +12463,7 @@ RTS
 
     MOVE.w comWord_ColumnsOffset,comWord_ColumnsOffsetTmp
     ;MOVE.l textbufferPrint,templine
-    JSR print_complete_line_bas            ; inputs: d0:x, d1:y, a0: text
+    JSR print_complete_line            ; inputs: d0:x, d1:y, a0: text
     ;CLR.l templine
     MOVEM.l (A7)+,D1/A0-A3/A6
     MOVEA.l textbufferPrint,A2
@@ -12424,7 +12472,7 @@ RTS
     !basic
     USEPATH sourceWindow
     SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
-    xMin = \BoxLeft
+    xMin.w = \BoxLeft
     yMin = Peek.l(?comLong_DisplayLine) * \font\tf_YSize
     xMax = \BoxWidth
     yMax = yMin + \font\tf_YSize - 1
@@ -12435,7 +12483,7 @@ RTS
       log_Print{Str$(xMin) + ", " + Str$(xMax)}
       log_Print{Str$(yMin) + ", " + Str$(yMax)}
     EndIf
-                                                                                                                                                                                                                                                         
+
     Move_ \win\RPort, 0, Peek.l(?comLong_DisplayLine) * \font\tf_YSize + \font\tf_YSize ; move cursor to next line
     !asm
     MOVEA.l textbufferPrint,A2
@@ -13018,12 +13066,12 @@ RTS
   If Peek.l(?comLong_BlockEndY) > -1
     If (yPos <= Peek.l(?comLong_BlockEndY)) AND (yPos >= Peek.l(?comLong_BlockStartY))
       If yPos = Peek.l(?comLong_BlockStartY)
-        If xPos <= Peek.w(?comLong_BlockStartX) Then Poke.w ?comLong_BlockStartX, Peek.w(?comLong_BlockStartX) - 1
-        If Peek.w(?comLong_BlockEndX) <> #MAX_Columns - 1
-          If xPos <= Peek.w(?comLong_BlockEndX)
-            Poke.w ?comLong_BlockEndX, Peek.w(?comLong_BlockEndX) - 1
+        If xPos <= Peek.w(?comWord_BlockStartX) Then Poke.w ?comWord_BlockStartX, Peek.w(?comWord_BlockStartX) - 1
+        If Peek.w(?comWord_BlockEndX) <> #MAX_Columns - 1
+          If xPos <= Peek.w(?comWord_BlockEndX)
+            Poke.w ?comWord_BlockEndX, Peek.w(?comWord_BlockEndX) - 1
             xPos = \visibleColumns + Peek.w(?comWord_ColumnsOffset)
-            If xPos > Peek.w(?comLong_BlockEndX)
+            If xPos > Peek.w(?comWord_BlockEndX)
               sourceWindow\Column = Peek.w(?comWord_Column)
               sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
               PED_ScrollSourceLine{-\font\tf_XSize} ;dx.w = \font\tf_XSize : Gosub source_scroll_line
@@ -13048,9 +13096,6 @@ Return
 
 
 .scroll_right:
-  ;MOVE.l #1,blockmarking
-
-  !basic
   Gosub cursor_off_bas
   USEPATH sourceWindow
   dx.w = -(\font\tf_XSize * 2)
@@ -13067,7 +13112,6 @@ Return
   JSR draw_new_columns_left        ; draw text after scroll
   !basic
   Gosub update_blockmark_left          ; blockmark selected text after scrolling
-  !asm
   ;MOVE.l #0,blockmarking
   ;JSR cursor_on
 RTS
@@ -13075,9 +13119,9 @@ RTS
 
 .update_blockmark_left:
   If Peek.l(?comLong_BlockEndY) > -1
-    ;        log_Print{" blockendX: " + Str$(Peek.w(?comLong_BlockEndX))}
+    ;        log_Print{" blockendX: " + Str$(Peek.w(?comWord_BlockEndX))}
     ;        log_Print{" blockendy: " + Str$(Peek.w(?comLong_BlockEndY))}
-    ;        log_Print{" blockstartX: " + Str$(Peek.w(?comLong_BlockStartX))}
+    ;        log_Print{" blockstartX: " + Str$(Peek.w(?comWord_BlockStartX))}
     xMin = Peek.w(?comWord_ColumnsOffset)
     yMin = Peek.l(?comLong_DisplayLineOffset)
     yMax = yMin + Peek.l(?viewablelines)
@@ -13124,7 +13168,7 @@ Return
 
 
 JL_0_6658:      ; draw missing blockparts in first line when scrolling left
-  If xMin >= Peek.w(?comLong_BlockStartX)
+  If xMin >= Peek.w(?comWord_BlockStartX)
     yMaxold = yMax : xMaxold = xMax : yMinold = yMin : xMinold = xMin
 
     xMin = 0
@@ -13143,10 +13187,10 @@ Return
 
 
 JL_0_669A:  ; update missing blockmark in last line
-  If xMin <= Peek.w(?comLong_BlockEndX)
+  If xMin <= Peek.w(?comWord_BlockEndX)
     ;yMaxold = yMax : xMaxold = xMax : yMinold = yMin : xMinold = xMin
     xMin      = 0
-    xmax_temp.w = (Peek.w(?comLong_BlockEndX)-Peek.w(?comWord_ColumnsOffset)+1) * \font\tf_XSize - 1
+    xmax_temp.w = (Peek.w(?comWord_BlockEndX)-Peek.w(?comWord_ColumnsOffset)+1) * \font\tf_XSize - 1
     If xmax_temp < 2 Then xmax_temp = 2
     xmax_temp = xmax_temp * \font\tf_XSize - 1
     xMax      = xMin + xmax_temp
@@ -13162,11 +13206,11 @@ JL_0_669A:  ; update missing blockmark in last line
 Return
 
 JL_0_66F2:
-  If (xMin >= Peek.w(?comLong_BlockStartX)) AND (xMin <= Peek.w(?comLong_BlockEndX))
+  If (xMin >= Peek.w(?comWord_BlockStartX)) AND (xMin <= Peek.w(?comWord_BlockEndX))
     ;yMaxold = yMax : xMaxold = xMax : yMinold = yMin : xMinold = xMin
 
     xMin      = 0
-    xmax_temp.w = (Peek.w(?comLong_BlockEndX)-Peek.w(?comWord_ColumnsOffset)+1) * \font\tf_XSize - 1
+    xmax_temp.w = (Peek.w(?comWord_BlockEndX)-Peek.w(?comWord_ColumnsOffset)+1) * \font\tf_XSize - 1
     If xmax_temp < $2 Then xmax_temp = $2
     xmax_temp = xmax_temp * \font\tf_XSize - 1
     xMax      = xMin + xmax_temp
@@ -13224,7 +13268,7 @@ Return
     MOVEM.l (a7)+,d0-d2/a0
 
     MOVE.b #$1,keepstring
-    JSR print_complete_line_bas          ; print the text ; d0:x, d1:y, a0: text
+    JSR print_complete_line          ; print the text ; d0:x, d1:y, a0: text
     CLR.b keepstring
     MOVEM.l (A7)+,D2/A5
     BSR process_highlighting        ; beim markieren nicht verwenden, da sonst
@@ -13242,7 +13286,6 @@ RTS
 
 
 .scroll_left:
-  !basic
   Gosub cursor_off_bas
   USEPATH sourceWindow
   dx.w = \font\tf_XSize * 2
@@ -13260,8 +13303,7 @@ RTS
   !basic
   Gosub update_blockmark_right
   ;Gosub cursor_on_bas
-  !asm
-RTS
+Return
 
 
 .update_blockmark_right:
@@ -13271,9 +13313,9 @@ RTS
     yMin = Peek.l(?comLong_DisplayLineOffset)       ;d1
     yMax = yMin + Peek.l(?viewablelines)            ;d2
 
-    ;log_Print{"blockstartX: " + Str$(Peek.w(?comLong_BlockStartX))}
+    ;log_Print{"blockstartX: " + Str$(Peek.w(?comWord_BlockStartX))}
     ;log_Print{"blockstartY: " + Str$(Peek.l(?comLong_BlockStartY))}
-    ;log_Print{"blockendX: " + Str$(Peek.w(?comLong_BlockEndX))}
+    ;log_Print{"blockendX: " + Str$(Peek.w(?comWord_BlockEndX))}
     ;log_Print{"blockendY: " + Str$(Peek.l(?comLong_BlockEndY))}
     ;log_Print{"xmin:" + Str$(xMin)+" yMin:" + Str$(yMin)+ " yMax: " + Str$(yMax)}
     If (yMin <= Peek.l(?comLong_BlockEndY)) AND (yMax >= Peek.l(?comLong_BlockStartY))
@@ -13308,7 +13350,7 @@ RTS
 Return
 
 .JL_0_68C4:
-  If xMin >= Peek.w(?comLong_BlockStartX)
+  If xMin >= Peek.w(?comWord_BlockStartX)
     yMaxold.l = yMax : xMaxold.l = xMax : yMinold.l = yMin : xMinold.l = xMin
 
     xMin = (xMin - Peek.w(?comWord_ColumnsOffset)) * \font\tf_XSize
@@ -13327,10 +13369,10 @@ Return
 Return
 
 .JL_0_6906: ; update mission block last line
-  If xMin <= Peek.w(?comLong_BlockEndX) + 1
+  If xMin <= Peek.w(?comWord_BlockEndX) + 1
     yMaxold.l = yMax : xMaxold.l = xMax : yMinold.l = yMin : xMinold.l = xMin
 
-    d4.l = Peek.w(?comLong_BlockEndX) - xMin + 1 + 2
+    d4.l = Peek.w(?comWord_BlockEndX) - xMin + 1 + 2
     If d4 > 2 Then d4 = 2     ; we scroll always 2 characters
     d4 = d4 * \font\tf_XSize
 
@@ -13340,9 +13382,9 @@ Return
     yMin = Peek.l(?comLong_BlockEndY) - Peek.l(?comLong_DisplayLineOffset)
     yMin = yMin * \font\tf_YSize
     yMax = yMin + \font\tf_YSize - 1
-    ;log_Print{"d4: " +Str$(d4) + " blockendX: " + Str$(Peek.w(?comLong_BlockEndX))}
+    ;log_Print{"d4: " +Str$(d4) + " blockendX: " + Str$(Peek.w(?comWord_BlockEndX))}
     ;log_Print{"d4: " +Str$(d4) + " blockendy: " + Str$(Peek.l(?comLong_BlockEndY))}
-    ;log_Print{"d4: " +Str$(d4) + " blockstartX: " + Str$(Peek.w(?comLong_BlockStartX))}
+    ;log_Print{"d4: " +Str$(d4) + " blockstartX: " + Str$(Peek.w(?comWord_BlockStartX))}
     ;log_Print{">> xMin:"+Str$(xMin) + " ymin:"+Str$(yMin) + " xMax:"+Str$(xMax) + " ymax:"+Str$(yMax)}
     If (xMax => xMin) AND (yMax => yMin)
       RectFill_ *sourcerp, sourceWindow\BoxLeft + xMin, yMin, sourceWindow\BoxLeft + xMax, yMax
@@ -13356,9 +13398,9 @@ Return
 Return
 
 .JL_0_695E: ; all in the same line
-  If (xMin >= Peek.w(?comLong_BlockStartX)) AND (xMin <= Peek.w(?comLong_BlockEndX))
+  If (xMin >= Peek.w(?comWord_BlockStartX)) AND (xMin <= Peek.w(?comWord_BlockEndX))
     log_Print{"JL_0_695E"}
-    d4.l = Peek.w(?comLong_BlockEndX) - xMin + 1
+    d4.l = Peek.w(?comWord_BlockEndX) - xMin + 1
     If d4 > 2 Then d4 = 2
     d4 = d4 * \font\tf_XSize
 
@@ -13418,7 +13460,7 @@ Return
     MOVEM.l (a7)+,d0-d2/a0
 
     MOVE.b #1,keepstring
-    JSR print_complete_line_bas               ; inputs d0:x, d1:y, a0: text
+    JSR print_complete_line               ; inputs d0:x, d1:y, a0: text
     CLR.b keepstring
     BSR process_highlighting
     SF comWord__AL_0_8668
@@ -13450,7 +13492,9 @@ RTS
 RTS
 
 .clear_sourcebuffer:
-  JSR reset_Blockflag
+  !basic
+  Gosub reset_Blockflag
+  !asm
   CLR.w comWord_Column
   CLR.l comLong_DisplayLine
   CLR.w comWord_TextBufferOffset
@@ -13991,9 +14035,9 @@ Return
   MOVEQ.l #$64,D0
   !newalloc
   !basic
-
   *sourcerp.RastPort = PutD0
-  Poke.l ?rp_rectfill,*sourcerp      ; only for easy clearing later
+  sourceWindow\rp = *sourcerp
+  Poke.l ?rp_rectfill,*sourcerp      ; for easy clearing sourcewindow and drawing blockmark
   CopyMem_ \win\RPort,*sourcerp,$64
   SetDrMd_ *sourcerp, #COMPLEMENT
 
@@ -14027,13 +14071,13 @@ Return
   \visibleLines - 2                                  ; subtract two lines for status area
   \statusAreaY = \visibleLines * \font\tf_YSize + 1
   \visibleColumns = (\BoxWidth - \BoxLeft) / \font\tf_XSize
-  \visibleColumns = \visibleColumns BitClr 0
+  ;\visibleColumns = \visibleColumns BitClr 0
 
   Poke.l ?viewablelines,\visibleLines
   Poke.l ?viewablelines_m1, \visibleLines - 1
   Poke.w ?visiblecolumns,\visibleColumns
 
-  Poke.w ?comWord__AL_0_8670, (\visibleColumns-1) BitClr 0
+  ;Poke.w ?comWord__AL_0_8670, (\visibleColumns-1) BitClr 0
   !asm
   BCLR #0,comWord_BoundLinesX
   ;MOVE.w comWord_LabelSize,comWord_LabelSizeC
@@ -14560,7 +14604,7 @@ JL_0_7962_bas:
     MOVE.l (a7)+,A0
     MOVEQ.l #0,D0
 
-    JSR print_complete_line_bas                             ; d0:x, d1:y, a0: text
+    JSR print_complete_line                             ; d0:x, d1:y, a0: text
     !basic
     Poke.b ?keepstring,0
     !asm
@@ -14581,7 +14625,7 @@ RTS
 Macro checkBeforeBlockStartX
   `1 = False
   If Peek.l(?comLong_BlockStartY) = Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine)
-    If Peek.l(?comLong_BlockStartX) > Peek.l(?comWord_ColumnsOffset) + Peek.l(?comWord_Column)
+    If Peek.l(?comWord_BlockStartX) > Peek.l(?comWord_ColumnsOffset) + Peek.l(?comWord_Column)
       `1 = True
     EndIf
   EndIf
@@ -14590,7 +14634,7 @@ End Macro
 Macro checkBeforeBlockEndX
   `1 = False
   If Peek.l(?comLong_BlockEndY) = Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine)
-    If Peek.l(?comLong_BlockEndX) > Peek.l(?comWord_ColumnsOffset) + Peek.l(?comWord_Column)
+    If Peek.l(?comWord_BlockEndX) > Peek.l(?comWord_ColumnsOffset) + Peek.l(?comWord_Column)
       `1 = True
     EndIf
   EndIf
@@ -14606,7 +14650,7 @@ End Macro
   BNE.w JL_0_79EE
     MOVE.w comWord_Column,D2                             ;   d2 = current Columnnumber
     ADD.w comWord_ColumnsOffset,D2
-    CMP.w comLong_BlockStartX,D2                         ;   if d2 <= blockstartX
+    CMP.w comWord_BlockStartX,D2                         ;   if d2 <= blockstartX
     BHI.w JL_0_79EE
       MOVEQ.l #$00,D3                                    ;     d3 = 0
                                                          ;   endif
@@ -14621,7 +14665,7 @@ checkBeforeBlockEndX:
   BNE.w JL_0_7A12
     MOVE.w comWord_Column,D2                             ;   d2 = current Columnnumber
     ADD.w comWord_ColumnsOffset,D2
-    CMP.w comLong_BlockEndX,D2                           ;   if d2 <= blockEndX
+    CMP.w comWord_BlockEndX,D2                           ;   if d2 <= blockEndX
     BHI.w JL_0_7A12
       MOVEQ.l #$00,D3                                    ;     d3 = 0
   JL_0_7A12:                                             ;   endif
@@ -14630,75 +14674,69 @@ RTS                                                      ; endif
 
 
 .adjustBlockPosition:
-  If Peek.w(?comLong_BlockStartX) >= #MAX_Columns
-    Poke.w ?comLong_BlockStartX,0
+  If Peek.w(?comWord_BlockStartX) >= #MAX_Columns
+    Poke.w ?comWord_BlockStartX,0
     Poke.l ?comLong_BlockStartY , Peek.l(?comLong_BlockStartY) + 1
     If Peek.w(?comLong_BlockStartY) > Peek.l(?comLong_BlockEndY)
-      !asm
-      JSR reset_Blockflag
-      !basic
+      Gosub reset_Blockflag
       Return
     EndIf
   EndIf
 
-  If Peek.w(?comLong_BlockEndX) > Peek.w(?comLong_BlockStartX)
-    Poke.w ?comLong_BlockEndX,#MAX_Columns-1
+  If Peek.w(?comWord_BlockEndX) > Peek.w(?comWord_BlockStartX)
+    Poke.w ?comWord_BlockEndX,#MAX_Columns-1
     Poke.l ?comLong_BlockStartY , Peek.l(?comLong_BlockStartY) - 1
     If Peek.w(?comLong_BlockStartY) <= Peek.l(?comLong_BlockEndY)
       Return
     Else
-      !asm
-      JSR reset_Blockflag
-      !basic
+      Gosub reset_Blockflag
       Return
     EndIf
   EndIf
 
   If Peek.w(?comLong_BlockStartY) = Peek.l(?comLong_BlockEndY)
-    If Peek.w(?comLong_BlockEndX) <= Peek.l(?comLong_BlockStartX)
-      !asm
-      JSR reset_Blockflag
-      !basic
+    If Peek.w(?comWord_BlockEndX) <= Peek.l(?comWord_BlockStartX)
+      Gosub reset_Blockflag
       Return
     EndIf
   EndIf
 
-  If Peek.w(?comLong_BlockEndX) >= #MAX_Columns
-    Poke.l ?comLong_BlockEndX, #MAX_Columns-1
+  If Peek.w(?comWord_BlockEndX) >= #MAX_Columns
+    Poke.l ?comWord_BlockEndX, #MAX_Columns-1
   EndIf
 Return
 
 .JL_0_7A14:
-  MOVE.w comLong_BlockStartX,D2
+  MOVE.w comWord_BlockStartX,D2
   CMP.w #MAX_Columns,D2
   BCS.w JL_0_7A3C                                                       ; if d2 < Maxcolumns   isLower
-    CLR.w comLong_BlockStartX
+    CLR.w comWord_BlockStartX
     ADDQ.l #1,comLong_BlockStartY
     MOVE.l comLong_BlockStartY,D2
     CMP.l comLong_BlockEndY,D2
     BLS.w JL_0_7A3C                                                     ; if d2 <= BlockendY  isLowerOrSame
-      JMP reset_Blockflag
+      JMP reset_Blockflag_asm
   JL_0_7A3C:
 
-  MOVE.w comLong_BlockEndX,D2
+  MOVE.w comWord_BlockEndX,D2
   BPL.w JL_0_7A66                                                       ; if d2 >= BlockEndX  isGreater
     MOVE.w #MAX_Columns,D2
     SUBQ.w #1,D2
-    MOVE.w D2,comLong_BlockEndX
+    MOVE.w D2,comWord_BlockEndX
     SUBQ.l #1,comLong_BlockEndY
     MOVE.l comLong_BlockEndY,D2
     CMP.l comLong_BlockStartY,D2
     BCC.w JL_0_7A90                                                     ; if d2 >= BlockStartY  isHigherOrSame
 
     JL_0_7A62:
-    JMP reset_Blockflag
+    JMP reset_Blockflag_asm
   JL_0_7A66:
 
   MOVE.l comLong_BlockStartY,D2
   CMP.l comLong_BlockEndY,D2
   BNE.w JL_0_7A7C                                                      ; if d2 <> BlockEndY    isNotEqual
-    MOVE.w comLong_BlockEndX,D2
-    CMP.w comLong_BlockStartX,D2
+    MOVE.w comWord_BlockEndX,D2
+    CMP.w comWord_BlockStartX,D2
     BLT.b JL_0_7A62                                                    ; if d2 <= BlockStartX   isLessOrEqual
   JL_0_7A7C:
 
@@ -14706,7 +14744,7 @@ Return
   BCS.w JL_0_7A90                                                      ; if d2 < MaxColumns    isLower
     MOVE.w #MAX_Columns,D2
     SUBQ.w #1,D2
-    MOVE.w D2,comLong_BlockEndX
+    MOVE.w D2,comWord_BlockEndX
   JL_0_7A90:
 RTS
 
@@ -14815,23 +14853,23 @@ Return
     !updateBlockMark{currentLine,currentColumn}
 
     If Peek.l(?comLong_BlockStartY) <> currentLine AND Peek.l(?comLong_BlockEndY) <> currentLine
-      If Peek.l(?comLong_BlockStartX) > currentColumn
+      If Peek.l(?comWord_BlockStartX) > currentColumn
         If Peek.b(?comByte_StateBlockMark) <> 0
-          Poke.w ?comLong_BlockEndX, Peek.w(?comLong_BlockEndX) + 1
-          If Peek.w(?comLong_BlockEndX) > #MAX_Columns-1
-            Poke.w ?comLong_BlockEndX, #MAX_Columns-1
+          Poke.w ?comWord_BlockEndX, Peek.w(?comWord_BlockEndX) + 1
+          If Peek.w(?comWord_BlockEndX) > #MAX_Columns-1
+            Poke.w ?comWord_BlockEndX, #MAX_Columns-1
           EndIf
         EndIf
       EndIf
-      If Peek.w(?comLong_BlockEndX) < currentColumn
-        Poke.w ?comLong_BlockEndX, Peek.w(?comLong_BlockEndX) + 1
-        If Peek.w(?comLong_BlockEndX) > #MAX_Columns-1
-          Poke.w ?comLong_BlockEndX, #MAX_Columns-1
+      If Peek.w(?comWord_BlockEndX) < currentColumn
+        Poke.w ?comWord_BlockEndX, Peek.w(?comWord_BlockEndX) + 1
+        If Peek.w(?comWord_BlockEndX) > #MAX_Columns-1
+          Poke.w ?comWord_BlockEndX, #MAX_Columns-1
         EndIf
       EndIf
 
-      Poke.w ?comLong_BlockStartX, (Peek.w(?comLong_BlockStartX) + 1) AND $7F
-      Poke.w ?comLong_BlockEndX, (Peek.w(?comLong_BlockEndX) + 1) AND $7F
+      Poke.w ?comWord_BlockStartX, (Peek.w(?comWord_BlockStartX) + 1) AND $7F
+      Poke.w ?comWord_BlockEndX, (Peek.w(?comWord_BlockEndX) + 1) AND $7F
 
     EndIf
 
@@ -15526,7 +15564,9 @@ RTS
     TST.w d1
     BEQ 'l10
       MOVE.w #0,comWord_ColumnsOffset
-      JSR scroll_right
+      !basic
+      Gosub scroll_right
+      !asm
       JSR _redraw
    'l10
     TST.w D0
@@ -15534,7 +15574,9 @@ RTS
       RTS
   JL_0_7F5E:
   SUBQ.w #2,comWord_ColumnsOffset
-  JSR scroll_right
+  !basic
+  Gosub scroll_right
+  !asm
   ADDQ.w #1,comWord_Column
 RTS
 
@@ -15563,7 +15605,9 @@ RTS
     RTS
   JL_0_7FA6:
     ADDQ.w #2,comWord_ColumnsOffset
-    JSR scroll_left
+    !basic
+    Gosub scroll_left
+    !asm
     SUBQ.w #1,comWord_Column
 RTS
 
@@ -15868,6 +15912,9 @@ Return
   Case #IDCMP_NEWSIZE
     Gosub handle_event_newsizewindow
 
+  Case #IDCMP_CHANGEWINDOW
+    Gosub handle_event_newsizewindow
+
   Case #IDCMP_ACTIVEWINDOW
     Use Window 0
     Gosub cursor_on_bas
@@ -15908,7 +15955,7 @@ Return
 
       Case #GID_YPROP     ; vertical
         If Peek.l(?comLong_DisplayLineOffset)<Peek.l(?comLong_TotalLines)
-          Poke.l ?comLong_LinePosStartX, Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine)
+          Poke.l ?comWord_LinePosStartX, Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine)
           Gosub switch_cursordisplay
           While *intuimessage\Class <> #IDCMP_GADGETUP
             GetAttr_ #PGA_Top    ,*vertiprop,&slider_top.l
@@ -15920,10 +15967,10 @@ Return
             End If
             realline + Peek.l(?comLong_DisplayLine)
 
-            If Peek.l(?comLong_LinePosStartX) <> realline
-              Poke.l ?comLong_LinePosStartX, realline
+            If Peek.l(?comWord_LinePosStartX) <> realline
+              Poke.l ?comWord_LinePosStartX, realline
               !asm
-              MOVE.l comLong_LinePosStartX,D0
+              MOVE.l comWord_LinePosStartX,D0
               MOVEA.l comPtr_CurrentSourceLine,A4
               JSR gotoline
               !basic
@@ -16269,9 +16316,9 @@ Return
       If Peek.l(?comLong_BlockEndY) <> $ffffFFFF
         result.b = 0
         !checkBeforeBlockStartX{result}
-        If result Then Poke.w ?comLong_BlockStartX, Peek.l(?comLong_BlockStartX) + moveCount
+        If result Then Poke.w ?comWord_BlockStartX, Peek.l(?comWord_BlockStartX) + moveCount
         !checkBeforeBlockEndX{result}
-        If result Then Poke.w ?comLong_BlockEndX, Peek.l(?comLong_BlockEndX) + moveCount
+        If result Then Poke.w ?comWord_BlockEndX, Peek.l(?comWord_BlockEndX) + moveCount
         Gosub adjustBlockPosition  ; JL_0_7A14
       EndIf
 
@@ -21039,9 +21086,9 @@ RTS
    BLT.w JL_0_C66a
   CMP.l comLong_BlockEndY,D1
    BGT.w JL_0_C66a
-  MOVE.w comLong_BlockStartX,D0
+  MOVE.w comWord_BlockStartX,D0
   MOVE.l comLong_BlockStartY,D1
-  MOVE.w comLong_BlockEndX,D2
+  MOVE.w comWord_BlockEndX,D2
   MOVE.l comLong_BlockEndY,D3
   CMP.l D1,D3
    BNE.w JL_0_C50a
@@ -21064,9 +21111,9 @@ RTS
     TST.b comByte_StateBlockMark
     BEQ.w JL_0_CC6b
       MOVEM.l D0-D3/D7/A0-A2,-(A7)
-      MOVE.w comLong_BlockStartX,D0
+      MOVE.w comWord_BlockStartX,D0
       MOVE.l comLong_BlockStartY,D1
-      MOVE.w comLong_BlockEndX,D2
+      MOVE.w comWord_BlockEndX,D2
       MOVE.l comLong_BlockEndY,D3
       CMP.l D1,D3
       BNE.w JL_0_CB2a
