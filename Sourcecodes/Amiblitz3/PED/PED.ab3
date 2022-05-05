@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.2
-; NumberOfBuilds  = 1853
+; NumberOfBuilds  = 1868
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 17220
+; CursorLine      = 13741
 ; CursorColumn    = 1
-; LabelSearch     = "remember"
+; LabelSearch     = "open_sour"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -118,6 +118,7 @@ DEBUG
 #WZ_singletable      = 1     ; only on table at the same time
 #Max_WZWindows       = 22    ; max of WZ windows (IDs) needed for the functions to (un)lock all WZ windows, at the moment IDs 1-22 are used ( 0 = source window)  tomsmart1
 
+#slowdown            = 0     ; reduce scrolling speed (for very fast machines)
 
 ; OS Version to enable/disable various features
 #AmigaOS3 = 1
@@ -161,11 +162,15 @@ DEBUG
 ;Keycodes
 ;Raw
 #RAWKEY_TAB        = $42
+#RAWKEY_RETURN     = $44
 #RAWKEY_ESC        = $45
 #RAWKEY_UP         = $4C
 #RAWKEY_DOWN       = $4D
 #RAWKEY_RIGHT      = $4E
 #RAWKEY_LEFT       = $4F
+#RAWKEY_F1         = $50
+#RAWKEY_F10        = $59
+#RAWKEY_HELP       = $5F
 
 ; Vanilla
 #VANILLAKEY_BACKSPACE = $08
@@ -354,6 +359,7 @@ NEWTYPE.ped
   currentFile.s
   filePattern.s
   sourceFileComplete.s
+  amiblitzmode.b
 
   check_existsfile.b
   extention_info.s
@@ -401,6 +407,9 @@ NEWTYPE.sourceWindow
   *fontI.TextFont
   *fontB.TextFont
 
+  redrawFlag.b
+  deleteMode.b
+
   statusAreaY.w
   visibleLines.w
   visibleColumns.w
@@ -420,8 +429,15 @@ NEWTYPE.sourceWindow
   cursorState.b
   ColumnsOffset.w
   ColumnsOffsetTmp.w
+  ColumnsOffsetStore.w
   Column.w
   DisplayLine.l
+
+  lastEditedLine.l
+  bookmarkLine1.l
+  bookmarkLine2.l
+  bookmarkLine3.l
+
   Title.s
 End NEWTYPE
 DEFTYPE.sourceWindow sourceWindow
@@ -1241,19 +1257,9 @@ End Statement
 
 Statement PED_PrintHighlight{lineaddr.l, xPos.w, textlen.w, textcolor.w, textstyle.w}
 SHARED pedconfig,sourceWindow
-
-  If Peek.l(?textlinestart) > lineaddr
-    log_Print{"testlinestart available"}
-
-    textlen = textlen - (Peek.l(?textlinestart) - lineaddr)
-    lineaddr = Peek.l(?textlinestart)
-    xPos = 0
-  Else
-    xPos = xPos - sourceWindow\ColumnsOffset
-  EndIf
-
   If textlen > 0
     ;log_Print{"macro to print: " + Peeks$(lineaddr,textlen)}
+    xPos = xPos - sourceWindow\ColumnsOffset
 
     If (textlen + xPos) > sourceWindow\visibleColumns
       textlen = sourceWindow\visibleColumns - xPos
@@ -3110,7 +3116,7 @@ End
   exit_mainloop.b = False
   While NOT exit_mainloop
     CLR.w comWord_LabelListChanged
-    CLR.b redraw_ped
+    sourceWindow\redrawFlag = False
 
     Gosub PED_events
 
@@ -3128,9 +3134,7 @@ End
     If Peek.w(?comWord_KeyBeforeReturn) <> 0
       ;log_Print{"** parse the line after event **"}
       ; --- get address of actual source line ---
-      ;MOVE.l comLong_DisplayLine,D1 : ADD.l comLong_DisplayLineOffset,D1
-      ;MOVE.l d1,lastedited_line
-      Poke.l ?lastedited_line, Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
+      Poke.l sourceWindow\lastEditedLine, Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
       MOVE.w comWord_KeyBeforeReturn,D0 : MOVE.w D0,comWord_SourceChanged
 
       ;MOVEQ #0,D0
@@ -3230,8 +3234,8 @@ End
     EndIf
 
     If NOT skip_update
-      Poke.b ?redraw_ped,0
-      If exit_loop_class.b = -3 Then Poke.b ?redraw_ped,1
+      sourceWindow\redrawFlag = False
+      If exit_loop_class.b = -3 Then sourceWindow\redrawFlag = True
 
       ; -- call function selected in comArray_KeyTable
       ;log_Print{"***** Last_vankey = " + Hex$(last_vankey.b)}
@@ -4795,10 +4799,10 @@ Return
     EndIf
   EndIf
 
-  Poke.b ?ab2mode, 0
+  ped\amiblitzmode = 0
   ex.s = dos_GetExt{ped\sourceFileComplete}
-  If LCase$(ex) = "ab2" Then Poke.b ?ab2mode, 1
-  If LCase$(ex) = "ab3" Then Poke.b ?ab2mode, 3
+  If LCase$(ex) = "ab2" Then ped\amiblitzmode = 2
+  If LCase$(ex) = "ab3" Then ped\amiblitzmode = 3
 
   If Len(ped\currentFile) > 27
     dummy.l = ask{!TRANS{"Warning: Filename is longer than 27 characters.\\n" + ped\currentFile + "\\nThis may cause problems with some filesystems."},!TRANS{"Continue"},!TRANS{"Info"}}
@@ -4836,7 +4840,7 @@ Return
   LockAllOpenWZWin{}
   Gosub set_pointer_busy_bas
 
-  Select Peek.b(?ab2mode)
+  Select ped\amiblitzmode
   Case 1 : Gosub save_source_as_ab2
   Case 3 : Gosub save_source_as_ab3
   Default
@@ -4860,7 +4864,7 @@ Return
   End Select
   Poke.w ?comWord_SourceChanged,0
 
-  If Peek.b(?ab2mode) <> 3
+  If ped\amiblitzmode <> 3
     log_Print{"writing_xtrafile for " + ped\currentFile}
     !asm
     JSR write_xtrafile
@@ -4879,10 +4883,10 @@ Return
 Return
 
 ;
-;  TST.b ab2mode
+;  TST.b ab2mode; amiblitzmode
 ;  BEQ old_saveroutine
 ;    MOVE.l #comStr_SourceFileComplete,d0
-;    CMP.b #1,ab2mode
+;    CMP.b #1,ab2mode;amiblitzmode
 ;    BNE 'saveab3
 ;      JSR saveab2
 ;      JSR write_xtrafile
@@ -6257,7 +6261,10 @@ JMP decrease_DisplayLine
 Return
 
 .checkedit2
-  CLR.b nodelete
+  !basic
+  sourceWindow\deleteMode = 0
+  !asm
+  ;CLR.b nodelete
   TST.b doedit2
   BEQ 'l1
     MOVE.b doedit2,d0
@@ -6285,7 +6292,10 @@ Return
     'l2
      MOVE.l #$ffffffff,comLong_BlockEndY
      JSR cursor_off
-     MOVE.b #1,nodelete
+     !basic
+     sourceWindow\deleteMode = True
+     !asm
+     ;MOVE.b #1,nodelete
      JSR _redraw
      !stack2regs
  'l1
@@ -6754,11 +6764,13 @@ indent:
 RTS
 
 .insertreturn:                       ;return_key
-  MOVE.b #1,redraw_ped
+  !basic
+  sourceWindow\redrawFlag = True
+  !asm
 
   MOVE.l comPtr_CurrentSourceLine,a4
 
-  MOVE.w comWord_QualifierStore,D0 : ANDI.w #$3,D0  ; SHIFT ppressed as well ?
+  MOVE.w comWord_QualifierStore,D0 : ANDI.w #$3,D0  ; SHIFT pressed as well ?
   BEQ.w JL_0_2906                                   ; if not pressed, dont split current line at cursor pos
 
   AJL_0_2A82b
@@ -8900,17 +8912,12 @@ Return
 
 .mouseclick_in_source:
   log_Print{"mousebutton released in source, qualifier: " + Hex$(mqualifier) }
-  ;!asm
-  ;MOVE.l (A7)+,comPtr_CurrentSourceLine
-  ;MOVE.w (A7)+,comWord_ColumnsOffset
-  ;MOVE.l (A7)+,comLong_DisplayLineOffset
-  ;!basic
   Poke.l ?comLong_DisplayLineOffset, storeDisplayLineOffset
   Poke.w ?comWord_ColumnsOffset, storeColumnsOffset
   Poke.l ?comPtr_CurrentSourceLine, storeCurrentSourceLine
-                                                                                                                                                                                                                                                        
+
   Poke.l ?comLong_DisplayLineOffsetStore, Peek.l(?comLong_DisplayLineOffset)
-  Poke.w ?ColumnsOffsetStore, Peek.w(?comWord_ColumnsOffset)
+  sourceWindow\ColumnsOffsetStore = Peek.w(?comWord_ColumnsOffset)
 
   tempX.w = Peek.w(?comWord_LinePosEndX)
   If tempX < 1
@@ -9026,11 +9033,11 @@ Return
     EndIf
   Else
     If Peek.l(?comLong_DisplayLineOffset) <> Peek.l(?comLong_DisplayLineOffsetStore)
-      !asm
+     !asm
       JSR _redraw
       !basic
     Else
-      If Peek.w(?comWord_ColumnsOffset) <> Peek.w(?ColumnsOffsetStore)
+      If Peek.w(?comWord_ColumnsOffset) <> sourceWindow\ColumnsOffsetStore
         !asm
         JSR _redraw
         !basic
@@ -9049,227 +9056,6 @@ Return
     EndIf
   EndIf
 Return
-
-.mouseclick_in_source_old:
-  log_Print{"mousebutton released"}
-  !asm
-  MOVE.l (A7)+,comPtr_CurrentSourceLine
-  MOVE.w (A7)+,comWord_ColumnsOffset
-  MOVE.l (A7)+,comLong_DisplayLineOffset
-  MOVE.l comLong_DisplayLineOffset,comLong_DisplayLineOffsetStore
-  MOVE.w comWord_ColumnsOffset,ColumnsOffsetStore
-
-  MOVE.w comWord_LinePosEndX,D0
-  BPL.w JL_0_3E16
-    MOVE.l comLong_LinePosEndY,D1
-    CMP.l comLong_LinePosStartY,D1
-    BLS.w JL_0_3E10
-      SUBQ.l #1,comLong_LinePosEndY
-      BRA.w JL_0_3E1E
-    JL_0_3E10:
-      MOVEQ.l #$00,D0
-      BRA.w JL_0_3E24
-  JL_0_3E16:
-  CMP.w #MAX_Columns,D0
-  BCS.w JL_0_3E24
-  JL_0_3E1E:
-  MOVE.w #MAX_Columns,D0 : SUBQ.w #1,D0
-  JL_0_3E24:
-  MOVE.w D0,comWord_LinePosEndX
-
-  MOVE.w comWord_LinePosStartX,d0
-  MOVE.w comWord_LinePosEndX,d1
-  CMP.w d1,d0
-  BNE 'l10
-    MOVE.l comLong_LinePosStartY,d0
-    MOVE.l comLong_LinePosEndY,d1
-    CMP.l D1,D0
-    BEQ.w JL_0_3E5E
- 'l10:
-  ADD.w #12,A7                                          ; remove stored Blockdims from stack
-  MOVE.l comLong_LinePosStartY,comLong_BlockStartY
-  MOVE.w comWord_LinePosStartX,comWord_BlockStartX
-  MOVE.l comLong_LinePosEndY,comLong_BlockEndY
-  MOVE.w comWord_LinePosEndX,comWord_BlockEndX
-  JSR AbsBlockDimensions
-  JSR update_horizscroller
-  BRA.w JUMP_redraw2
-
-  JL_0_3E5E:
-  MOVE.l (a7)+,comLong_BlockEndY                        ; restore stored Blockdims via stack
-  MOVE.w (a7)+,comWord_BlockEndX
-  MOVE.l (a7)+,comLong_BlockStartY
-  MOVE.w (a7)+,comWord_BlockStartX
-
-  MOVE.w comWord_LinePosStartX,D0 : SUB.w comWord_ColumnsOffset,D0 : MOVE.w D0,comWord_Column
-  CLR.l foldnum
-
-
-  !asm
-  MOVE.l comLong_DisplayLineOffset,D0 : ADD.l comLong_DisplayLine,D0
-  MOVEA.l comPtr_CurrentSourceLine,A4
-
-CNIF #hardfold = 1
- 'l11
-  CMP.l comLong_LinePosStartY,d0
-  BCS JL_0_3E98b
-    CMP.w #";@",9(a4)
-    BNE JL_0_3E84
-      MOVE.l a2,-(a7)
-      MOVE.l a4,a2
-      JSR doreverse
-      MOVE.l (a7)+,a2
-
-    JL_0_3E84:                           ;mouseclick get comPtr_CurrentSourceLine
-    CMP.l comLong_LinePosStartY,D0
-    BEQ.w JL_0_3E9E
-      MOVE.l $4(A4),d1
-      BEQ JL_0_3E9E
-        MOVE.l d1,a4
-        CMP.w #";@",9(a4)
-        BNE 'l2
-          MOVE.l a2,-(a7)
-          MOVE.l a4,a2
-          JSR doreverse
-          MOVE.l (a7)+,a2
-          CMP.w #"@0",11(a4)
-          BNE 'l2
-         'l1a
-            TST.l foldnum
-            BNE 'l1
-         'l2
-          TST.l foldnum
-          BNE JL_0_3E84
-          ;SUBQ.l #1,comLong_DisplayLineOffset
-          ;SUBQ.l #1,comLong_LinePosStartY
-         'l1
-          SUBQ.l #1,D0
-    BRA.b JL_0_3E84
-  JL_0_3E98b:
-
-  CMP.l #";@@1",9(a4)
-  BNE 'l10
-    MOVE.l #1,foldnum
- 'l10
-  CMP.l #";@@0",9(a4)
-  BNE 'l11
-    MOVE.l #0,foldnum
- 'l11
-  JL_0_3E98:
-  CMP.l comLong_LinePosStartY,D0
-  BEQ.w JL_0_3E9E
-    MOVE.l (A4),d1                     ;forward ok
-    BEQ JL_0_3E9E
-      MOVE.l d1,a4
-      CMP.l #";@@1",9(a4)
-      BNE 'l1
-        MOVE.l #1,foldnum
-        BRA 'l3
-     'l1
-        CMP.l #";@@0",9(a4)
-        BNE 'l2
-          CLR.l foldnum
-       'l2
-        TST.l foldnum
-        BNE JL_0_3E98
-        ;ADDQ.l #1,comLong_DisplayLineOffset
-        ;ADDQ.l #1,comLong_LinePosStartY
-     'l3
-      ADDQ.l #1,D0
-  BRA.b JL_0_3E98
-CELSE
-  JL_0_3E84:
-    CMP.l comLong_LinePosStartY,D0
-    BEQ.w JL_0_3E9E
-      BCS.w JL_0_3E98
-        MOVEA.l $4(A4),A4
-        SUBQ.l #1,D0
-    BRA.b JL_0_3E84
-    JL_0_3E98:
-    MOVEA.l (A4),A4
-    ADDQ.l #1,D0
-  BRA.b JL_0_3E84
-CEND
-
-  JL_0_3E9E:
-  SUB.l comLong_DisplayLineOffset,D0 : MOVE.w D0,comLong_DisplayLine+2
-  MOVE.l A4,comPtr_CurrentSourceLine
-
-  old_click:
-!asm
-  JSR update_TextBufferOffset
-
-
-  MOVE.w message_qualifier,d1
-  AND.w #$3,d1                                            ; lshift or rshift
-  BEQ 'l9
-    MOVE.w comWord_LinePosStartX,comWord_BlockEndX        ;enhance block
-    MOVE.l comLong_LinePosStartY,comLong_BlockEndY
-    BRA 'l1
- 'l9
-    MOVE.b #1,doedit2 : JSR checkedit2
-    MOVE.l comLong_LinePosStartY,d0
-    MOVE.w comWord_LinePosStartX,d1
-    CMP.l comLong_BlockStartY,d0
-    BLT 'l1
-      CMP.l comLong_BlockEndY ,d0
-      BGT 'l1
-        CMP.l comLong_BlockStartY,d0
-        BNE 'l3
-          CMP.w comWord_BlockStartX,d1
-          BLT 'l1
-       'l3
-        CMP.l comLong_BlockEndY,d0
-        BNE 'l2
-          CMP.w comWord_BlockEndX,d1
-          BGT 'l1
-       'l2
-        MOVE.l #$ffffffff,comLong_BlockEndY
- 'l1
-
-  CMPI.l #$ffffFFFF,comLong_BlockEndY        ; redraw mark
-  BEQ.w JL_0_3EC6
-    ;JSR JL_0_56BA
-    MOVE.w message_qualifier,d1              ; check LeftAlt or RightAlt
-    AND.w #$30,d1
-    BEQ 'l10
-      JSR jump_onclick
-      ;JSR cursor_off
-      ;JSR _redraw
-      ;JSR cursor_onoff_force
-      !basic
-      Return
-   'l10:
-    BSR.w _redraw
-    !basic
-    Return
-  JL_0_3EC6:
-    MOVE.l comLong_DisplayLineOffset,D0
-    CMP.l comLong_DisplayLineOffsetStore,D0
-    BNE.w JUMP_redraw2
-      MOVE.w comWord_ColumnsOffset,D0
-      CMP.w ColumnsOffsetStore,D0
-      BNE.w JUMP_redraw2
-        MOVE.w message_qualifier,d1             ; alt + lmb
-        AND.w #$30,d1
-        BEQ 'l10
-          ;  MOVE.w #-1,state_of_cursor
-          JSR jump_onclick
-          !basic
-          Return
-       'l10:
-        MOVEM.l D0-D3/A0-A1/A6,-(A7)
-        JSR cursor_on
-        MOVEM.l (A7)+,D0-D3/A0-A1/A6
-
-JUMP_redraw2:
-  JSR _redraw
-  !basic
-Return
-
-
-ColumnsOffsetStore:    Ds.w 1
-
 
 .menu_gotoline:                      ;goto line
   Gosub set_pointer_busy_bas
@@ -13781,7 +13567,6 @@ Return
   If Used Screen < 0 Then WbToScreen 0
   *myscreen = Peek.l(Addr Screen(Used Screen))
   If *myscreen = 0
-    Pop If
     Gosub close_gui
     ped\errorCode = #PEDERROR_OPENWINDOW
     Return
@@ -13979,9 +13764,7 @@ Return
   If (*vertiprop=0) OR( *horizprop=0)
     dummy.l = ask{Hex$(*vertiprop),Hex$(*horizprop),!TRANS{"Info"}}
     sourceWindow\win = 0
-    Pop If
-    !asm
-    BRA.w error_opensourcewindow                   ; bei Fehler ...
+    Goto error_opensourcewindow                   ; bei Fehler ...
   EndIf
 
   ; only added OS4 only IDCMP Flags if we are running on OS4  tomsmart1
@@ -14000,6 +13783,22 @@ Return
 
 
   ; --- OPEN the WINDOW
+;  Use Screen 0
+;  WindowTags 0,SourceWindowWFlags,"AmiBlitz3",Tags(@@
+;                      #WA_Left       ,sourceWindow\WinLeft,@@
+;                      #WA_Top        ,sourceWindow\WinTop,@@
+;                      #WA_Height     ,sourceWindow\WinHeight,@@
+;                      #WA_Width      ,sourceWindow\WinWidth,@@
+;                      #WA_MinWidth   ,320,@@
+;                      #WA_MaxWidth   ,-1,@@
+;                      #WA_MinHeight  ,120,@@
+;                      #WA_MaxHeight  ,-1,@@
+;                      #WA_IDCMP      ,SourceWindowIDCMPFlags,@@
+;                      #WA_Gadgets    ,*darrowbutton,@@
+;                      #WA_PubScreen  ,*myscreen,@@
+;                      (#WA_Dummy + $60),-1)
+;  sourceWindow\win = Peek.l(Addr Window(0))
+
   sourceWindow\win = OpenWindowTagList_(0,Tags(@@
                       #WA_Title      ,"AmiBlitz3",@@
                       #WA_Left       ,sourceWindow\WinLeft,@@
@@ -14015,10 +13814,9 @@ Return
                       #WA_Gadgets    ,*darrowbutton,@@
                       #WA_PubScreen  ,*myscreen,@@
                       (#WA_Dummy + $60),-1  ))
+
   If sourceWindow\win = 0
-    Pop If
-    !asm
-    BRA.w error_opensourcewindow                   ; bei Fehler ...
+    Goto error_opensourcewindow                   ; bei Fehler ...
   EndIf
 
   log_Print{"setting window pointers for asmcode"}
@@ -14115,9 +13913,10 @@ Return
 
 
 .error_opensourcewindow:
+  !asm
   JSR free_textbuffer
-
   !basic
+
   Gosub close_sourcewindow
   dummy.l = ask{!TRANS{"Unable to open window!"},!TRANS{"Ok"},!TRANS{"Error"}}
   !asm
@@ -14246,7 +14045,9 @@ Return
 .close_sourcewindow:
   If sourceWindow\win
     Gosub flush_intuimessages
-    CloseWindow_ sourceWindow\win : sourceWindow\win = 0
+    CloseWindow_ sourceWindow\win
+    ;CloseWindow 0
+    sourceWindow\win = 0
     Poke.l Addr Window(0),0  ; to clear the window structure of BlitzBasic to prevent a crash at exit.
     DisposeObject_ *larrowbutton
     DisposeObject_ *larrowimage
@@ -14374,13 +14175,15 @@ RTS
 RTS
 
 .ScrollDelay:
-  If no_scrollrate
-    Delay_ 1
-  Else
-    vvblank_Wait{}
-    ;vvblank_WaitSync{1}
-    ;vvblank_ResetSync{}
-  EndIf
+  CNIF #slowdown <> 0
+    If no_scrollrate
+      Delay_ 1
+    Else
+      vvblank_Wait{}
+      vvblank_WaitSync{1}
+      vvblank_ResetSync{}
+    EndIf
+  CEND
 Return
 
 .print_entered_char:      ; D0: char
@@ -14787,14 +14590,11 @@ RTS
     !basic
     Gosub print_actualsourceline
 
-    ;---  eventhandler
-    CLR.w message_qualifier
-
     exit_event_loop.b = False
     While NOT exit_event_loop
       ; Event: sourceWindow
       If sourceWindow\win <> 0
-        Delay_ 1
+        CNIF #slowdown <> 0 : Delay_ 1 : CEND
         *pedevent.Message = GetMsg_(sourceWindow\win\UserPort)
         last_event.l = 0
         If *pedevent <> 0
@@ -15473,7 +15273,8 @@ Return
   Poke.b ?doedit2,2
   Poke.w ?comWord_KeyBeforeReturn,last_vankey
 
-  If Peek.b(?nodelete) = 0
+  ;If Peek.b(?nodelete) = 0
+  If sourceWindow\deleteMode = False
     ; -- scroll to left by 1
     Gosub cursor_off_bas
     Gosub scroll_rest_of_line_left
@@ -15838,6 +15639,7 @@ RTS
     Else
       Use Window EventWindow
       Select EventWindow
+        ;Case 0                              : Gosub event_sourcewindow_bas
         Case WZID("WIN_SEARCH")             : Gosub event_find
         Case WZID("WIN_CONTEXTHELP")        : If ev = #IDCMP_CLOSEWINDOW Then Gosub close_bubblehelp
         Case WZID("WIN_NEWTYPE")            : Gosub event_newtype
@@ -15918,7 +15720,6 @@ Return
   last_menuentry.l = 0
   *intuimessage.IntuiMessage = *pedevent
   last_event = *intuimessage\Class
-  Poke.w ?message_qualifier, *intuimessage\Qualifier
 
   ;If *intuimessage\Class<>$400000
   ;  log_Print{"source window event: " +Hex$(*intuimessage\Class) + ", " + Hex$(*intuimessage\Qualifier)+ ", " + Hex$(*intuimessage\Code)}
@@ -16024,7 +15825,6 @@ Return
         EndIf
     End Select
 
-
   Case #IDCMP_GADGETUP
     ;*gadget.Gadget = *intuimessage\IAddress
     ;log_Print{"GADGETUP"}
@@ -16069,12 +15869,7 @@ Return
   End Select
 
   If *intuimessage
-    ReplyMsg_ *intuimessage
-    ;If *intuimessage\Class <> #IDCMP_INTUITICKS
-    ;  log_Print{"replied to message " + Hex$(Peek.l(*intuimessage)) + " / Class: " + Hex$(*intuimessage\Class) + " / Code: " + Hex$(*intuimessage\Code)}
-    ;EndIf
-    ;Poke.l ?messagestore,0
-    *intuimessage = 0
+    ReplyMsg_ *intuimessage : *intuimessage = 0
   EndIf
 Return
 
@@ -16263,21 +16058,11 @@ Return
   End Select
 
   ; check for F-Keys / HELP / RETURN / CURSOR
-  If (mcode => $50) AND (mcode <= $59)
-    last_vankey = mcode + $31 ; convert to vanillakey
-  EndIf
-  If mcode = $5F          ; "HELP"
-    last_vankey = $8B           ; Vanillacode for "HELP"
-  EndIf
-  If mcode = #RAWKEY_TAB
-    last_vankey = #VANILLAKEY_TAB
-  EndIf
-  If mcode = $44          ; "RETURN"
-    last_vankey = $0D           ; Vanillacode for "RETURN"
-  EndIf
-  If (mcode => #RAWKEY_UP) AND (mcode <= #RAWKEY_LEFT)     ; Cursor
-    last_vankey = mcode - $30
-  EndIf
+  If mcode = #RAWKEY_HELP Then last_vankey = #VANILLAKEY_HELP
+  If mcode = #RAWKEY_TAB Then last_vankey = #VANILLAKEY_TAB
+  If mcode = #RAWKEY_RETURN Then last_vankey = #VANILLAKEY_RETURN
+  If (mcode => #RAWKEY_F1) AND (mcode <= #RAWKEY_F10) Then last_vankey = mcode + $31 ; convert F-KEYs to vanillakey
+  If (mcode => #RAWKEY_UP) AND (mcode <= #RAWKEY_LEFT) Then last_vankey = mcode - $30
 Return
 
 .handle_event_vanillakey:
@@ -16640,13 +16425,13 @@ Return
     log_Print{"lcommand and lshift"}
     Select last_vankey
     Case $21                                ; check for "L-AMiGA_!", "LEFT AMIGA + SHIFT + 1"
-      Poke.l ?storeline1, Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
+      sourceWindow\bookmarkLine1 = Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
 
     Case $22                                ; check for "L-AMiGA_!", "LEFT AMIGA + SHIFT + 2"
-      Poke.l ?storeline2, Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
+      sourceWindow\bookmarkLine2 = Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
 
     Case $23                                ; check for "L-AMiGA_!", "LEFT AMIGA + SHIFT + 3"
-      Poke.l ?storeline3, Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
+      sourceWindow\bookmarkLine3 = Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
     End Select
 
     Pop Select : Return
@@ -16665,16 +16450,16 @@ Return
        savewinpref{2} : Gosub write_newprefs
 
     Case $61                       ; L-AMIGA-A
-      goto_line = Peek.l(?lastedited_line)
+      goto_line = sourceWindow\lastEditedLine
 
     Case $31                       ; L-AMIGA-1
-      goto_line = Peek.l(?storeline1)
+      goto_line = sourceWindow\bookmarkLine1
 
     Case $32                       ; L-AMIGA-2
-      goto_line = Peek.l(?storeline2)
+      goto_line = sourceWindow\bookmarkLine2
 
     Case $33                       ; L-AMIGA-3
-      goto_line = Peek.l(?storeline3)
+      goto_line = sourceWindow\bookmarkLine3
 
     End Select
 
@@ -18758,8 +18543,9 @@ RTS
 Return
 
 
-.diag_redraw
+.diag_redraw:
   If diag = 0 Then Return
+
   *textline.l = TEDGetCurrentLine{} + 9
   *detokened.l = TEDDetoke{*textline}
   actualword$ = PED_GetWordAtPos{Peek$(*detokened), Peek.w(?comWord_Column),True}
@@ -18792,7 +18578,7 @@ Return
       token = Peek.l(token)
     Wend
   End If
-  addcodesize.l = 0:linesize.l = 0
+  diag_addcodesize.l = 0:linesize.l = 0
   If res$<>""
        Use Window WZID("WIN_HELPDIAG")
        tokname$ + "   " + res$
@@ -18865,8 +18651,8 @@ Return
        BEQ 'la3
        ADDQ.l #3,a0
 'la2   MOVE.l a0,d0
-       addcodepos.l = PutD0-1
-       MOVE.l addcodepos@(a5),a0
+       diag_addcodepos.l = PutD0-1
+       MOVE.l diag_addcodepos@(a5),a0
        SUBQ #2,a0
        SUB.l textbufferaddr,A0
        SUB.w comWord_TextBufferOffset,A0
@@ -18874,7 +18660,7 @@ Return
        SUB.l d0,linesize@(a5)
 
        If linesize > 1 Then linesize - 1
-       If linesize > 0 Then res$ = Peeks$(addcodepos,linesize):Else res$ = ""
+       If linesize > 0 Then res$ = Peeks$(diag_addcodepos,linesize) : Else res$ = ""
        i.l = 0 : i2.l = 0
        Repeat
        w.l = PeekUB(&res$+i)
@@ -18885,15 +18671,15 @@ Return
        End If
        i+1
        Until w = 0
-       addcodesize.l = i
-       addstr$ = ""
+       diag_addcodesize.l = i
+       diag_addstr$ = ""
        If i Then res$ = Left$(res$,i-1)
-       If Peek.b (&res$) = @"(" Then res$ = Right$(res$,Len(res$)-1):addstr$ = "("
-       If Peek.b (&res$) = @"{" Then res$ = Right$(res$,Len(res$)-1):addstr$ = "{"
+       If Peek.b (&res$) = @"(" Then res$ = Right$(res$,Len(res$)-1) : diag_addstr$ = "("
+       If Peek.b (&res$) = @"{" Then res$ = Right$(res$,Len(res$)-1) : diag_addstr$ = "{"
 nopeek:  InitArgParse res$
        For i = 1 To 12
          diag_val$(i) = NextArgChar$(@",","{[(\\22",")]}\\22")
-         If diag_lab$(i)<>"" Then WZPrint "val"+UStr$(i),&diag_val$(i)
+         If diag_lab$(i)<>"" Then WZPrint "val" + UStr$(i),&diag_val$(i)
        Next
  EndIf
 RTS
@@ -18926,7 +18712,7 @@ RTS
 ;RTS
 ;
   MOVE.w comWord_Column,d1
-  MOVE.w d1,columnstore
+  ;MOVE.w d1,columnstore
   SUBQ.w #2,d1
   BGT 'w1
     MOVEQ #1,d1
@@ -19839,8 +19625,7 @@ Return
            WZ_AddRow{"SHORTCUTS",!TRANS{"CTRL+U"}                    ,!TRANS{"undo delete current line"} }
            WZ_AddRow{"SHORTCUTS",!TRANS{"ALT+UpArrow"}               ,!TRANS{"Move Line Up"} }
            WZ_AddRow{"SHORTCUTS",!TRANS{"ALT+DownArrow"}             ,!TRANS{"Move Line Down"} }
-
-           WZ_AddRow{"SHORTCUTS",!TRANS{"CTRL+E"}                    ,!TRANS{"Insert 'end if'"} }
+           WZ_AddRow{"SHORTCUTS",!TRANS{"CTRL+E"}                    ,!TRANS{"Insert 'End If'"} }
            WZ_AddRow{"SHORTCUTS",!TRANS{"CTRL+F"}                    ,!TRANS{"Insert a 'Function' skeleton"} }
            WZ_AddRow{"SHORTCUTS",!TRANS{"CTRL+N"}                    ,!TRANS{"Insert a 'Newtype' skeleton"} }
            WZ_AddRow{"SHORTCUTS",!TRANS{"CTRL+S"}                    ,!TRANS{"Insert a 'Statement' skeleton"} }
@@ -20602,53 +20387,49 @@ Return
       Select LCase$(WZGadName)
 
         Case "addcode"
-          MOVE.l comLong_DisplayLineOffset,d0
-          ADD.l comLong_DisplayLine,d0
-          CMP.l ctrlhelpline,d0
-          BNE skip2
-          a$ = addstr$
-          For i =  1 To 12
-           diag_val$(i) = WZGetString("val"+UStr$(i))
-          Next
-          Gosub diag_close
-          Gosub activatesourcewindow
-          For i = 1 To 12
-           a$ = a$+diag_val$(i):If diag_val$(i+1) <>"" Then a$ = a$+","
-          Next
-          If addcodesize >1 Then t$ = Peeks$(addcodepos,addcodesize):Else t$ = ""
-          t$ = StripLead$(t$,32)
-          MOVE.w comWord_Column,colstore
-          JSR cursor_off
-          MOVE.l addcodepos@(a5),a0
-          SUB.l textbufferaddr,a0
-          SUB.w comWord_TextBufferOffset,a0
-          MOVE.w a0,comWord_Column
-          MOVE.w comWord_ColumnsOffset,oldcolumnsoffset
-          CLR.w comWord_ColumnsOffset
-          i = FLen(t$)
-          PED_SetScreenTitle{Str$(i)+" "+t$}
-          If i
-             MOVE.l addcodepos@(a5),a0
-             SUB.l textbufferaddr,a0
-             SUB.w comWord_TextBufferOffset,a0
-             MOVE.w a0,comWord_Column
-             For i2 = 1 To i-1
-               Gosub deletechar
-             Next
-          End If
-          Gosub insertstring
-          ;Gosub diag_close
-          MOVE.w oldcolumnsoffset,comWord_ColumnsOffset
-          MOVE.w colstore,comWord_Column
-          ;Gosub activatesourcewindow
-          Gosub cursor_on_bas
+            a$ = diag_addstr$
+            For i =  1 To 12
+              diag_val$(i) = WZGetString("val" + UStr$(i))
+            Next
+            Gosub diag_close
+            Gosub activatesourcewindow
+            Gosub cursor_off_bas
 
-         skip2:
+            For i = 1 To 12
+              a$ = a$ + diag_val$(i)
+              If diag_val$(i+1) <>"" Then a$ = a$ + ","
+            Next
+
+
+            tmpColumn.w = Peek.w(?comWord_Column)
+            tmpColumnsOffset.w = Peek.w(?comWord_ColumnsOffset)
+
+            MOVE.l diag_addcodepos@(a5),a0 : SUB.l textbufferaddr,a0 : SUB.w comWord_TextBufferOffset,a0
+            MOVE.w a0,comWord_Column
+            CLR.w comWord_ColumnsOffset
+
+            ; remove code to be replaced by diag code
+            If diag_addcodesize > 1 Then t$ = Peeks$(diag_addcodepos,diag_addcodesize) : Else t$ = ""
+            t$ = StripLead$(t$,32) : i = FLen(t$)
+            If i > 0
+               MOVE.l diag_addcodepos@(a5),a0 : SUB.l textbufferaddr,a0 : SUB.w comWord_TextBufferOffset,a0
+               MOVE.w a0,comWord_Column
+               For i2 = 1 To i - 1
+                 Gosub deletechar
+               Next
+            End If
+
+            ; insert new code
+            Gosub insertstring
+
+            Poke.w ?comWord_ColumnsOffset,tmpColumnsOffset
+            Poke.w ?comWord_Column,tmpColumn
+            Gosub cursor_on_bas
 
         Case "diagclear"
           For i = 1 To 12
             diag_val$(i) = ""
-            WZPrint "val"+UStr$(i),diag_val$(i)
+            WZPrint "val" + UStr$(i), diag_val$(i)
           Next
           ActivateWZGadget{"val1"}
 
@@ -22406,31 +22187,18 @@ dummystr              Dc.b ":",0,0 : Even
 BSS
 Even
 loadAsNew             Ds.w 1
-nodelete              Ds.w 1
-replacestartcolumn    Ds.w 1                ; used in an arexx function code
+;nodelete              Ds.w 1
 fontWidth             Ds.w 1
-ctrlhelpline          Ds.l 1                ; insert text into sourcetext?
-oldcolumnsoffset      Ds.w 1
 VerticalCopyMode      Ds.b 1                ; was firstcolumn  renamed to match is new purpos tomsmart1
-redraw_ped            Ds.b 1
 foldnum               Ds.l 1
 VerticalPasteMode     Ds.w 1                ; was pastecolumn  renamed to match is new purpos  tomsmart1
 tempstore             Ds.l 1
 typestr               Ds.b 80
-colstore              Ds.w 1
-storeline1            Ds.l 1
-storeline2            Ds.l 1
-storeline3            Ds.l 1
-lastedited_line       Ds.l 1
-textlinestart         Ds.l 1
 doedit2               Ds.b 1
 is_stat_func_macro    Ds.b 1                ; labellist identifier for statement, function or macro  tomsmart1 ; was isfunction
 keepstring            Ds.b 1
-macro_                Ds.w 1
 helpstring            Ds.b 260
 searchmode            Ds.w 1
-columnstore           Ds.w 1
-ab2mode               Ds.w 1
 slen2                 Ds.l 1
 straddr2              Dc.l 0
 straddr               Dc.l 0
@@ -22441,8 +22209,6 @@ newsyntax             Dc.l 0
 str_oldsearchgadget   Ds.b 260
 instrtab              Ds.l 32769
 newted                Dc.l 0
-message_qualifier     Dc.l 0
-olda4                 Dc.l 0
 history               Ds.l 10
 tempbuf               Ds.b 260
 convert               Dc.b 0
