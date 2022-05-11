@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.2
-; NumberOfBuilds  = 1916
+; NumberOfBuilds  = 1966
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 15881
-; CursorColumn    = 12
-; LabelSearch     = "ped_showm"
+; CursorLine      = 9828
+; CursorColumn    = 1
+; LabelSearch     = "gid_ypro"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -373,6 +373,7 @@ NEWTYPE.ped
   amigaguide.b
   debugmode.b
 
+  lastLayout.b
   newtype_mode.b
 
   baselibFileSize.l
@@ -711,7 +712,20 @@ Dim tokentable.b(65536)
 ; -------------------------------------- structs for source window
 DEFTYPE.Screen       *myscreen        ; pointer to a screen
 DEFTYPE.DrawInfo     *drawinfo        ; drawing information of that screen
-DEFTYPE.IntuiMessage *intuimessage
+
+NEWTYPE.pedMessage
+  _Class.l
+  _Code.w
+  _Qualifier.w
+  _IAddress.l
+  _MouseX.w
+  _MouseY.w
+  _Seconds.l
+  _Micros.l
+  _Window.l
+End NEWTYPE
+
+DEFTYPE.pedMessage pedMessage
 
 ; ------------------------------------------------------
 ; MACRODEFINITIONS
@@ -1573,9 +1587,9 @@ Statement window_welcome{txt0$,@txt1$,@txt2$,@txt3$,@txt4$,@txt5$,@txt6$}
 
   welcome_Exit.b = False
   Repeat
-    ev.l = WaitEvent
+    welcome_ev.l = WaitEvent
 
-    Select ev
+    Select welcome_ev
     Case #IDCMP_VANILLAKEY:
       ;error{"VAN: " + Hexw$(EventCode)}
       If EventCode = #VANILLAKEY_ESC Then welcome_Exit = True
@@ -1585,6 +1599,7 @@ Statement window_welcome{txt0$,@txt1$,@txt2$,@txt3$,@txt4$,@txt5$,@txt6$}
 
     Case #IDCMP_CLOSEWINDOW
       welcome_Exit = True
+
     End Select
   Until welcome_Exit
 
@@ -1855,7 +1870,7 @@ Function.w preparseline{columnpos.w,lineaddr.l,auto_format.b,correct_funcnames.b
 End Function
 
 
-Statement savewinpref{winconfignum.l}
+Statement savewinpref{layoutNum.l}
   SHARED wpref(),wtemp,pedconfig,sourceWindow
 
   used_win.l = Used Window
@@ -1952,7 +1967,7 @@ Statement savewinpref{winconfignum.l}
     \console_h = *conwin\Height
   EndIf
   Use Window used_win
-  CopyMem_ &wtemp,&wpref(winconfignum),SizeOf .winprefs
+  CopyMem_ &wtemp,&wpref(layoutNum),SizeOf .winprefs
 End Statement
 
 
@@ -2414,6 +2429,36 @@ SHARED ped, pedconfig
    ped\sourceFileComplete = tempcomplete$
    Function Return tempcomplete$
  EndIf
+End Function
+
+Function.l PED_GetMessage{_wait.b}
+SHARED pedMessage
+
+  pedMessage\_Class = 0
+  pedMessage\_Code  = 0
+  pedMessage\_Qualifier = 0
+  pedMessage\_IAddress  = 0
+  pedMessage\_MouseX    = 0
+  pedMessage\_MouseY    = 0
+  pedMessage\_Window    = 0
+  pedMessage\_Seconds   = 0
+  pedMessage\_Micros    = 0
+
+  If _wait = True
+  pedMessage\_Class      = WaitEvent
+  Else
+  pedMessage\_Class     = Event
+  EndIf
+  pedMessage\_Code      = EventCode
+  pedMessage\_Qualifier = EventQualifier
+  pedMessage\_IAddress  = EventiAddress
+  pedMessage\_MouseX    = EMouseX
+  pedMessage\_MouseY    = EMouseY
+  pedMessage\_Window    = EventWindow
+  pedMessage\_Seconds   = EventSeconds
+  pedMessage\_Micros    = EventMicros
+
+  Function Return pedMessage\_Class
 End Function
 
 
@@ -3134,7 +3179,7 @@ End
     CLR.w comWord_LabelListChanged
     sourceWindow\redrawFlag = False
 
-    Gosub PED_events
+    Gosub handlePedEvents
 
     ; --- check if an exe is running and revert the entered key ---
     If Peek.b(?comByte_RunningFlag)
@@ -3272,19 +3317,9 @@ End
           Gosub event_menu
         EndIf
 
-;        If exit_loop_class = -3 OR exit_loop_class= -4
-;          ; -4 is mouse up
-;
-;
-;          ;log_Print{"do what mice do."}
-;          GetD0 exit_loop_class
-;          MOVE.l d0,-(a7)
-;          !asm
-;          MOVE.l (a7)+,d7
-;          MOVEA.l comPtr_CurrentSourceLine,A4
-;          JSR event_leftmousebutton
-;          !basic
-;        EndIf
+        If exit_loop_class = -3 OR exit_loop_class= -4
+          Gosub event_leftmousebutton
+        EndIf
       EndIf
 
       ; -- check for some tokens and automatically add the closing token
@@ -5553,13 +5588,11 @@ Return
 
 
 .menu_quit:
-  If *intuimessage
-    If *intuimessage\Code = 1
-      log_Print{"new Iconify message was send by intuition"}
-      ReplyMsg_ *intuimessage : *intuimessage = 0
-      Gosub menu_iconify
-      Return
-    EndIf
+
+  If pedMessage\_Code = 1
+    log_Print{"new Iconify message was send by intuition"}
+    Gosub menu_iconify
+    Return
   EndIf
 
   log_Print{"close current source."}
@@ -7314,8 +7347,8 @@ JL_0_2Dca8:
   !basic
   log_Print{"JL_0_2Dca8 called."}
   Gosub calc_SourceWindowDimensions
+  Gosub clear_sourcewindow
   !asm
-  JSR clear_sourcewindow
   JSR update_labelstuff
   JSR update_scroller
   !basic
@@ -8635,7 +8668,7 @@ Return
 RTS
 
 .event_leftmousebutton:
-  ;log_Print{"event left mousebutton"}
+  log_Print{"event left mousebutton"}
   PED_GetMousePos{mousePos}
   If (mousePos\textY < 0) OR (mousePos\textY + Peek.l(?comLong_DisplayLineOffset) > Peek.l(?comLong_TotalLines))
     Return
@@ -8681,16 +8714,15 @@ RTS
 
   exit_mouse_loop.b = False
   Repeat
-    *mouseMessage.IntuiMessage = GetMsg_(sourceWindow\win\UserPort)
-    If *mouseMessage
-      If *mouseMessage\Code = #SELECTUP
-        mqualifier.w = *mouseMessage\Qualifier
+    PED_GetMessage{True}
+
+    If pedMessage\_Class <> 0
+      If pedMessage\_Code = #SELECTUP
+        mqualifier.w = pedMessage\_Qualifier
         If (mqualifier AND #IEQUALIFIER_RSHIFT) Then mqualifier = (mqualifier & (NOT #IEQUALIFIER_RSHIFT)) | #IEQUALIFIER_LSHIFT
         If (mqualifier AND #IEQUALIFIER_RALT) Then mqualifier = (mqualifier & (NOT #IEQUALIFIER_RALT)) | #IEQUALIFIER_LALT
         exit_mouse_loop = True
       Else
-        ReplyMsg_ *mouseMessage : *mouseMessage = 0
-
         PED_GetMousePos{mousePos}
 
         If mousePos\textY => 0
@@ -8706,7 +8738,6 @@ RTS
         EndIf
       EndIf
     EndIf
-    VWait 1
   Until exit_mouse_loop
 
   Gosub mouseclick_in_source
@@ -11077,13 +11108,14 @@ RTS
 
 
 .flush_intuimessages:
-  If sourceWindow\win
-    *intuimessage.IntuiMessage = GetMsg_(sourceWindow\win\UserPort)
-    While *intuimessage
-      ReplyMsg_ *intuimessage : *intuimessage = 0
-      *intuimessage.IntuiMessage = GetMsg_(sourceWindow\win\UserPort)
-    Wend
-  EndIf
+  FlushEvents
+  ;If sourceWindow\win
+  ;  *intuimessage.IntuiMessage = GetMsg_(sourceWindow\win\UserPort)
+  ;  While *intuimessage
+  ;    ReplyMsg_ *intuimessage : *intuimessage = 0
+  ;    *intuimessage.IntuiMessage = GetMsg_(sourceWindow\win\UserPort)
+  ;  Wend
+  ;EndIf
 Return
 
 JL_0_5474:
@@ -11387,19 +11419,19 @@ RTS
   MOVE.l comLong_DisplayLine,-(A7)
   MOVEM.w D2-D3/D5,-(A7)
 
-  SUB.w comWord_ColumnsOffset,D2
-  BPL.w JL_0_5808
-    MOVEQ.l #$00,D2
-    BRA.w JL_0_5816
-  JL_0_5808:
-    CMP.w #MAX_Columns,D2
-    BCS.w JL_0_5816
-      MOVE.w #MAX_Columns,D2
-      SUBQ.w #1,D2
-  JL_0_5816:
-
-  MOVE.w D2,comWord_Column
-  MOVE.w D3,comLong_DisplayLine+2
+;  SUB.w comWord_ColumnsOffset,D2
+;  BPL.w JL_0_5808
+;    MOVEQ.l #$00,D2
+;    BRA.w JL_0_5816
+;  JL_0_5808:
+;    CMP.w #MAX_Columns,D2
+;    BCS.w JL_0_5816
+;      MOVE.w #MAX_Columns,D2
+;      SUBQ.w #1,D2
+;  JL_0_5816:
+;
+;  MOVE.w D2,comWord_Column
+;  MOVE.w D3,comLong_DisplayLine+2
 
   JSR update_horizscroller
   !basic
@@ -11832,7 +11864,10 @@ Return
 
 JL_0_5B00:
   JSR alloc_firstsourceline
-JMP clear_sourcewindow
+  !basic
+  Gosub clear_sourcewindow
+  !asm
+RTS
 
 .alloc_firstsourceline:
   JSR alloc_newline
@@ -13333,7 +13368,6 @@ RTS
   JSR JL_0_5B00
 
   JSR update_horizscroller
-  JSR update_modifiermark
   !basic
   Gosub update_vertscroller
   ;gosub draw_statusarea
@@ -13798,24 +13832,8 @@ Return
 
 
   ; --- OPEN the WINDOW
-;  Use Screen 0
-;  WindowTags 0,SourceWindowWFlags,"AmiBlitz3",Tags(@@
-;                      #WA_Left       ,sourceWindow\WinLeft,@@
-;                      #WA_Top        ,sourceWindow\WinTop,@@
-;                      #WA_Height     ,sourceWindow\WinHeight,@@
-;                      #WA_Width      ,sourceWindow\WinWidth,@@
-;                      #WA_MinWidth   ,320,@@
-;                      #WA_MaxWidth   ,-1,@@
-;                      #WA_MinHeight  ,120,@@
-;                      #WA_MaxHeight  ,-1,@@
-;                      #WA_IDCMP      ,SourceWindowIDCMPFlags,@@
-;                      #WA_Gadgets    ,*darrowbutton,@@
-;                      #WA_PubScreen  ,*myscreen,@@
-;                      (#WA_Dummy + $60),-1)
-;  sourceWindow\win = Peek.l(Addr Window(0))
-
-  sourceWindow\win = OpenWindowTagList_(0,Tags(@@
-                      #WA_Title      ,"AmiBlitz3",@@
+  Use Screen 0
+  WindowTags 0,SourceWindowWFlags,"AmiBlitz3",Tags(@@
                       #WA_Left       ,sourceWindow\WinLeft,@@
                       #WA_Top        ,sourceWindow\WinTop,@@
                       #WA_Height     ,sourceWindow\WinHeight,@@
@@ -13824,11 +13842,27 @@ Return
                       #WA_MaxWidth   ,-1,@@
                       #WA_MinHeight  ,120,@@
                       #WA_MaxHeight  ,-1,@@
-                      #WA_Flags      ,SourceWindowWFlags,@@
                       #WA_IDCMP      ,SourceWindowIDCMPFlags,@@
                       #WA_Gadgets    ,*darrowbutton,@@
                       #WA_PubScreen  ,*myscreen,@@
-                      (#WA_Dummy + $60),-1  ))
+                      (#WA_Dummy + $60),-1)
+  sourceWindow\win = Peek.l(Addr Window(0))
+
+;  sourceWindow\win = OpenWindowTagList_(0,Tags(@@
+;                      #WA_Title      ,"AmiBlitz3",@@
+;                      #WA_Left       ,sourceWindow\WinLeft,@@
+;                      #WA_Top        ,sourceWindow\WinTop,@@
+;                      #WA_Height     ,sourceWindow\WinHeight,@@
+;                      #WA_Width      ,sourceWindow\WinWidth,@@
+;                      #WA_MinWidth   ,320,@@
+;                      #WA_MaxWidth   ,-1,@@
+;                      #WA_MinHeight  ,120,@@
+;                      #WA_MaxHeight  ,-1,@@
+;                      #WA_Flags      ,SourceWindowWFlags,@@
+;                      #WA_IDCMP      ,SourceWindowIDCMPFlags,@@
+;                      #WA_Gadgets    ,*darrowbutton,@@
+;                      #WA_PubScreen  ,*myscreen,@@
+;                      (#WA_Dummy + $60),-1  ))
 
   If sourceWindow\win = 0
     Goto error_opensourcewindow                   ; bei Fehler ...
@@ -13885,8 +13919,9 @@ Return
   ;  *sourcerp\AreaPtrn = *mask
   ;  *sourcerp\AreaPtSz = 1
   ;EndIf
+
+  Gosub clear_sourcewindow
   !asm
-  JSR clear_sourcewindow
   JSR _redraw
   JSR update_horizscroller
   !basic
@@ -14065,10 +14100,10 @@ Return
 .close_sourcewindow:
   If sourceWindow\win
     Gosub flush_intuimessages
-    CloseWindow_ sourceWindow\win
-    ;CloseWindow 0
+    ;CloseWindow_ sourceWindow\win
+    CloseWindow 0
     sourceWindow\win = 0
-    Poke.l Addr Window(0),0  ; to clear the window structure of BlitzBasic to prevent a crash at exit.
+    ;Poke.l Addr Window(0),0  ; to clear the window structure of BlitzBasic to prevent a crash at exit.
     DisposeObject_ *larrowbutton
     DisposeObject_ *larrowimage
     DisposeObject_ *rarrowbutton
@@ -14174,20 +14209,18 @@ RTS
     Move_ \win\RPort,lx, \BoxTop
     Draw_ \win\RPort,lx, \statusAreaY
   EndIf
+
+  Gosub draw_statusarea
   !asm
-  ;TST.b linenumbers
-  ;BEQ 'no_linenumbers
-  ;  BSR print_linenumber
-  ;'no_linenumbers
+  JSR clear_sourcetextbuffer
+  !basic
+RTS
 
 .clear_sourcetextbuffer:
   ; -- clear current text memoryarea
   MOVEA.l textbufferaddr,A0
-  MOVE.w #MAX_Columns,D0
-  LSR.w #1,D0
-  MOVE.l viewablelines,D1
-  MULS d0,d1
-  SUBQ.w #1,D1
+  MOVE.w #MAX_Columns,D0 : LSR.w #1,D0
+  MOVE.l viewablelines,D1 : MULS d0,d1 : SUBQ.w #1,D1
 
   JL_0_76A6:
     MOVE.w #$2020,(A0)+
@@ -14402,10 +14435,9 @@ Return
   MOVEM.l (A7)+,D0/A0-A1/A3
 RTS
 
-.update_horizscroller:
+ .update_horizscroller:
   JSR update_modifiermark
   !basic
-  ;MOVE d1,d0
   xpot.l = Peek.w(?comWord_Column)
   xact.l = Peek.w(?comWord_ColumnsOffset) + Peek.w(?comWord_Column) + 1
   xvis.w = \visibleColumns / #MAX_Columns
@@ -14598,7 +14630,7 @@ Return
 RTS
 
 
-.PED_events:
+.handlePedEvents:
   CLR.w comWord_KeyBeforeReturn
   exit_eventloop.b = False
 
@@ -14608,37 +14640,15 @@ RTS
     CLR.b doedit2
     JSR update_horizscroller
     !basic
-    Gosub print_actualsourceline
+;    Gosub print_actualsourceline
 
-    exit_event_loop.b = False
-    While NOT exit_event_loop
-      ; Event: sourceWindow
-      If sourceWindow\win <> 0
-        CNIF #slowdown <> 0 : Delay_ 1 : CEND
-        *pedevent.Message = GetMsg_(sourceWindow\win\UserPort)
-        last_event.l = 0
-        If *pedevent <> 0
-          Gosub event_sourcewindow                              ; returns action codes in d6,d7
-          exit_event_loop = True
-        EndIf
-      EndIf
+    ; handle Window events
+    If sourceWindow\win <> 0 Then Gosub eventHandler
 
-      ; Event: all other windows
-      Gosub wizardevents
-
-      ; Event: Arexx
-      no_sourcewindow:
-      CNIF #USE_AREXX = 1
-        If arexx_GetMsg{True}
-          Gosub arexx_event                                     ; should return codes in d6,d7
-          ;Arexx_Result AND Arexx_REsultstring$                 ; TODO: get D6,D/ an place it into exit_loop_class
-          ;MOVE.l d6,d0 : MOVE.l d0,-(a7)      ; save d6
-          ;MOVE.l d7,d0 : MOVE.l d0,-(a7)
-
-          exit_event_loop = True
-        EndIf
-      CEND
-    Wend
+    ; handle Arexx events
+    CNIF #USE_AREXX = 1
+      If arexx_GetMsg{True} Then Gosub arexx_event
+    CEND
 
     ; -- update functioncompletion and close any subwindows on key-press
     If pedconfig\intellisense
@@ -15586,8 +15596,8 @@ RTS
 ;RTS
 
 .handle_event_newsizewindow:
-  log_Print{"NEWSIZEWINDOW : " + Hex$(*intuimessage.IntuiMessage\Qualifier)}
-  If *intuimessage.IntuiMessage\Qualifier <> $FFFFC000   ; update only if mousebutton has been released
+  log_Print{"NEWSIZEWINDOW : " + Hex$(pedMessage\_Qualifier)}
+  If pedMessage\_Qualifier <> $FFFFC000   ; update only if mousebutton has been released
     sourceWindow\WinLeft = sourceWindow\win\LeftEdge
     sourceWindow\WinTop = sourceWindow\win\TopEdge
     sourceWindow\WinWidth = sourceWindow\win\Width
@@ -15604,9 +15614,8 @@ Return
   Gosub calc_SourceWindowDimensions
   !asm
   JSR allocate_textbuffer
-  JSR clear_sourcewindow
   !basic
-  Gosub draw_statusarea
+  Gosub clear_sourcewindow
   !asm
   JSR _redraw
   !basic
@@ -15635,34 +15644,37 @@ RTS
   MOVEM.l (a7)+,a0-a6/d0-d7
 RTS
 
-.wizardevents:
-  ;-- eventhandling For all windows except Sourcewindow
-  ev.l = Event
-  While ev
-    ;If ev<>#IDCMP_INTUITICKS AND ev<>#IDCMP_MOUSEMOVE
-    ;  log_Print{"new wizard eventmessage: " + Hex$(ev) + ", " + Hex$(EventQualifier) + ", " + Hex$(EventCode)}
+.eventHandler:
+  pedEventClass.l = PED_GetMessage{True}
+
+;  While pedEventClass <> 0
+
+    ;If pedMessage\_Class<>#IDCMP_INTUITICKS AND pedMessage\_Class<>#IDCMP_MOUSEMOVE
+    ;  log_Print{"eventmessage: " + Hex$(pedMessage\_Class) + ", " + Hex$(pedMessage\_Qualifier) + ", " + Hex$(pedMessage\_Code)}
+    ;  log_Print{"window: " + Str$(pedMessage\_Window) + "  MouseX:"  + Str$(pedMessage\_MouseX)}
     ;End If
 
     ; bubble onlinehelp for most windows
     If pedconfig\onlinehelp <> 0
-      If (ev<>#IDCMP_INTUITICKS) AND (ev<>#IDCMP_ACTIVEWINDOW) AND (ev<>#IDCMP_GADGETHELP)  AND (ev<>#IDCMP_CHANGEWINDOW)
+      If (pedMessage\_Class<>#IDCMP_INTUITICKS) AND (pedMessage\_Class<>#IDCMP_ACTIVEWINDOW) AND (pedMessage\_Class<>#IDCMP_GADGETHELP)  AND (pedMessage\_Class<>#IDCMP_CHANGEWINDOW)
         WZ_HideHelp{}
       EndIf
-      If ev = #IDCMP_GADGETHELP Then WZ_ShowHelp{}
+      If pedMessage\_Class = #IDCMP_GADGETHELP Then WZ_ShowHelp{}
     EndIf
 
-    If ev = #IDCMP_MENUPICK
-      addr_menuitem.l = ItemAddress_(Peek.l(?addr_menustrip),EventCode)
+
+    If pedMessage\_Class = #IDCMP_MENUPICK
+      addr_menuitem.l = ItemAddress_(Peek.l(?addr_menustrip),pedMessage\_Code)
       If addr_menuitem    ; added to protect agains MENUNULL  tomsmart1
         _menuitem.l = Peek.l(addr_menuitem+$22)
         Gosub event_menu
       EndIf
     Else
-      Use Window EventWindow
-      Select EventWindow
-        ;Case 0                              : Gosub event_sourcewindow_bas
+      Use Window pedMessage\_Window
+      Select pedMessage\_Window
+        Case 0                              : Gosub event_sourcewindow
         Case WZID("WIN_SEARCH")             : Gosub event_find
-        Case WZID("WIN_CONTEXTHELP")        : If ev = #IDCMP_CLOSEWINDOW Then Gosub close_bubblehelp
+        Case WZID("WIN_CONTEXTHELP")        : If pedMessage\_Class = #IDCMP_CLOSEWINDOW Then Gosub close_bubblehelp
         Case WZID("WIN_NEWTYPE")            : Gosub event_newtype
         Case WZID("WIN_INSTRUCTIONBROWSER") : Gosub event_instructionbrowser
         Case WZID("WIN_LIBRARYBROWSER")     : Gosub event_librarybrowser
@@ -15670,30 +15682,13 @@ RTS
         Case WZID("WIN_POPUP")              : Gosub event_popup
         Case WZID("WIN_HELPDIAG")           : Gosub event_diag
         Case WZID("WIN_SHORTCUTS")          : Gosub event_shortcuts
-
-        Default ; eventhandling for source window, not working at the moment
-          ;log_Print{"new event for sourcewin: " + Str$(EventWindow)+" / " + Hex$(EventQualifier)}
-          If EventQualifier = $ffff8040
-            Select EventCode
-              Case 83 : savewinpref{0} : JSR write_newprefs
-              Case 84 : savewinpref{1} : JSR write_newprefs
-              Case 85 : savewinpref{2} : JSR write_newprefs
-            End Select
-          End If
-
-          Select EventCode
-            Case 83 : winconfig.b = 0 : Gosub load_windowlayouts : Gosub do_windowlayout
-            Case 84 : winconfig = 1   : Gosub load_windowlayouts : Gosub do_windowlayout
-            Case 85 : winconfig = 2   : Gosub load_windowlayouts : Gosub do_windowlayout
-            Case 86 : AutoLayout{&wtemp,0} : Gosub do_windowlayout
-            Case 87 : AutoLayout{&wtemp,1} : Gosub do_windowlayout
-           ;Case 88 : AutoLayout{&wtemp,2} : Gosub do_windowlayout
-            Default
-          End Select
+      Default
+        error{"received message from unknown window"}
       End Select
     EndIf
-    ev = Event
-  Wend
+
+;    pedEventClass = PED_GetMessage{True}
+;  Wend
 
   If Peek.b(?comByte_RunningFlag) <> 0
     PED_ShowMessage{!TRANS{"!!!PROGRAM IS RUNNING: ONLY SAVE/NAVIGATION/HELP WILL WORK..."}}
@@ -15732,24 +15727,22 @@ Return
 
 
 .event_sourcewindow:
-  ;MOVEA.l D0,A1                 ; D0: IntuiMessage, D1: intuimessage-code
   exit_loop_class.b = 0
   exit_loop_code.l = 0
   last_vankey.b = 0
   last_rawkey.l = 0
   last_mqualifier.w = 0
   last_menuentry.l = 0
-  *intuimessage.IntuiMessage = *pedevent
-  last_event = *intuimessage\Class
+  last_event.l = pedMessage\_Class
 
-  ;If *intuimessage\Class<>$400000
-  ;  log_Print{"source window event: " +Hex$(*intuimessage\Class) + ", " + Hex$(*intuimessage\Qualifier)+ ", " + Hex$(*intuimessage\Code)}
+  ;If pedMessage\_Class<>$400000
+  ;  log_Print{"source window event: " +Hex$(pedMessage\_Class) + ", " + Hex$(pedMessage\_Qualifier)+ ", " + Hex$(pedMessage\_Code)}
   ;EndIf
-  If (*intuimessage\Class <> #IDCMP_INTUITICKS) AND (*intuimessage\Class <> #IDCMP_ACTIVEWINDOW) AND (*intuimessage\Class <> #IDCMP_GADGETHELP) AND (*intuimessage\Class <> #IDCMP_CHANGEWINDOW)
-    WZ_HideHelp{}
-  EndIf
+  ;If (pedMessage\_Class <> #IDCMP_INTUITICKS) AND (pedMessage\_Class <> #IDCMP_ACTIVEWINDOW) AND (pedMessage\_Class <> #IDCMP_GADGETHELP) AND (pedMessage\_Class <> #IDCMP_CHANGEWINDOW)
+  ;  WZ_HideHelp{}
+  ;EndIf
 
-  Select *intuimessage\Class
+  Select pedMessage\_Class
   Case #IDCMP_INTUITICKS
     Gosub handle_event_intuiticks
                                                                                                                                                                                                                                                         
@@ -15771,83 +15764,86 @@ Return
     Gosub cursor_off_bas
 
   Case #IDCMP_GADGETDOWN
-    *gadget.Gadget = *intuimessage\IAddress
+    *gadget.Gadget = pedMessage\_IAddress
     exit_gadgetloop.b = False
-    log_Print{"GADGETDOWN"}
-    ;log_Print{"GadgetID " + Str$(*gadget\GadgetID) + ", Type " + Hex$(*gadget\GadgetType) + ", Activation " + Hex$(*gadget\Activation)}
+    log_Print{"GADGETDOWN " + Hex$(pedMessage\_Class)}
+    log_Print{"GadgetID " + Str$(*gadget\GadgetID) + ", Type " + Hex$(*gadget\GadgetType) + ", Activation " + Hex$(*gadget\Activation)}
     ;log_Print{"byte type " + Str$(*gadget\GadgetType AND $00FF)}
 
     Select *gadget\GadgetID
-      Case #GID_UARROW: last_vankey = $1C : Gosub handle_event_vanillakey
-      Case #GID_DARROW: last_vankey = $1D : Gosub handle_event_vanillakey
-      Case #GID_RARROW: last_vankey = $1E : Gosub handle_event_vanillakey
-      Case #GID_LARROW: last_vankey = $1F : Gosub handle_event_vanillakey
+    Case #GID_UARROW: last_vankey = $1C : Gosub handle_event_vanillakey
+    Case #GID_DARROW: last_vankey = $1D : Gosub handle_event_vanillakey
+    Case #GID_RARROW: last_vankey = $1E : Gosub handle_event_vanillakey
+    Case #GID_LARROW: last_vankey = $1F : Gosub handle_event_vanillakey
+    Case #GID_XPROP
+      DEFTYPE.l pos_hprop
+      FlushEvents
+      Repeat
+        If pedMessage\_Class <> 0
+          If pedMessage\_Class <> #IDCMP_GADGETUP
+            GetAttr_ #PGA_Top,*horizprop, &pos_hprop
+            GetD0 pos_hprop : MOVE.l d0,-(a7)
+            !asm
+            MOVE.l (a7)+,D1
+            JSR moveCursorToX
+            !basic
+            Gosub cursor_on_bas
+            Gosub update_statusarea
+          Else
+            *g.Gadget = pedMessage\_IAddress
+            ;If pedMessage\_Class = #IDCMP_GADGETUP AND pedMessage\_Code <> 0 OR pedMessage\_Window<>0
+            If *g\GadgetID = #GID_XPROP  Then exit_gadgetloop = True
+          EndIf
+        EndIf
+        PED_GetMessage{False}
+      Until exit_gadgetloop = True
+      Gosub cursor_on_bas
 
-      Case #GID_XPROP     ; horizontal
-        DEFTYPE.l pos_hprop
+    Case #GID_YPROP
+      If Peek.l(?comLong_DisplayLineOffset) < Peek.l(?comLong_TotalLines)
+        Poke.l ?comWord_LinePosStartX, Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine)
+
+        FlushEvents
         Repeat
-          If *intuimessage
-            If *intuimessage\Class <> #IDCMP_GADGETUP
-              GetAttr_ #PGA_Top,*horizprop, &pos_hprop
-              ;log_Print{"xprop: " + Str$(pos_hprop)}
-              GetD0 pos_hprop : MOVE.l d0,-(a7)
-              !asm
-              MOVE.l (a7)+,D1
-              JSR moveCursorToX
-              !basic
-              Gosub update_statusarea
-              ReplyMsg_ *intuimessage
+          If pedMessage\_Class <> 0
+            If pedMessage\_Class <> #IDCMP_GADGETUP
+              GetAttr_ #PGA_Top,*vertiprop,&slider_top.l
+              totallines.l = Peek.l(?comLong_TotalLines)
+              If totallines >= #max_slider_res
+                !mul48f{slider_top,totallines,#max_slider_res,realline.l}
+              Else
+                realline = slider_top
+              EndIf
+              realline + Peek.l(?comLong_DisplayLine)
+
+              If Peek.l(?comWord_LinePosStartX) <> realline
+                Poke.l ?comWord_LinePosStartX, realline
+                !asm
+                MOVE.l comWord_LinePosStartX,D0
+                MOVEA.l comPtr_CurrentSourceLine,A4
+                JSR gotoline
+                !basic
+                Gosub cursor_on_bas
+                Gosub update_statusarea
+              EndIf
+              ;If pedMessage\_Class = #IDCMP_RAWKEY Then exit_gadgetloop = True
+              ;If pedMessage\_Class = #IDCMP_MOUSEBUTTONS Then exit_gadgetloop = True
             Else
+              ;cannot check For GadgetID because of tools like FreeWheel
+              ;*g.Gadget = pedMessage\_IAddress
+              ;If *g\GadgetID = #GID_XPROP  Then exit_gadgetloop = True
               exit_gadgetloop = True
             EndIf
+            log_Print{Hex$(pedMessage\_Class) + " " + Hexw$(pedMessage\_Code) + " " + Str$(pedMessage\_Window)}
           EndIf
-          *intuimessage.IntuiMessage = GetMsg_(sourceWindow\win\UserPort)
-        Until exit_gadgetloop
-        If *intuimessage
-          ReplyMsg_ *intuimessage : *intuimessage = 0
-        EndIf
-
-      Case #GID_YPROP     ; vertical
-        If Peek.l(?comLong_DisplayLineOffset)<Peek.l(?comLong_TotalLines)
-          Poke.l ?comWord_LinePosStartX, Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine)
-          Gosub switch_cursordisplay
-          Repeat
-            If *intuimessage
-              If *intuimessage\Class <> #IDCMP_GADGETUP
-                GetAttr_ #PGA_Top    ,*vertiprop,&slider_top.l
-                totallines.l = Peek.l(?comLong_TotalLines)
-                If totallines >= #max_slider_res
-                  !mul48f{slider_top,totallines,#max_slider_res,realline.l}
-                Else
-                  realline = slider_top
-                End If
-                realline + Peek.l(?comLong_DisplayLine)
-
-                If Peek.l(?comWord_LinePosStartX) <> realline
-                  Poke.l ?comWord_LinePosStartX, realline
-                  !asm
-                  MOVE.l comWord_LinePosStartX,D0
-                  MOVEA.l comPtr_CurrentSourceLine,A4
-                  JSR gotoline
-                  !basic
-                  Gosub update_statusarea
-                EndIf
-                ReplyMsg_ *intuimessage
-              Else
-                exit_gadgetloop = True
-              EndIf
-            EndIf
-            *intuimessage.IntuiMessage = GetMsg_(sourceWindow\win\UserPort)
-          Until exit_gadgetloop
-          If *intuimessage
-            ReplyMsg_ *intuimessage : *intuimessage = 0
-          EndIf
-          Gosub switch_cursordisplay
-        EndIf
+          PED_GetMessage{False}
+        Until exit_gadgetloop = True
+        Gosub cursor_on_bas
+      EndIf
     End Select
 
   Case #IDCMP_GADGETUP
-    ;*gadget.Gadget = *intuimessage\IAddress
+    *gadget.Gadget = pedMessage\_IAddress
     ;log_Print{"GADGETUP"}
     ;log_Print{"GadgetID " + Str$(*gadget\GadgetID) + ", Type " + Hex$(*gadget\GadgetType) + ", Activation " + Hex$(*gadget\Activation)}
     ;log_Print{"byte type " + Str$(*gadget\GadgetType AND $00FF)}
@@ -15888,10 +15884,6 @@ Return
     Gosub handle_event_mousemove
 
   End Select
-
-  If *intuimessage
-    ReplyMsg_ *intuimessage : *intuimessage = 0
-  EndIf
 Return
 
 .handle_event_intuiticks:
@@ -15906,21 +15898,21 @@ Return
   EndIf
 
   ; ---------------------------------
-  If pedconfig\onlinehelp_extended AND *intuimessage<>0
+  If pedconfig\onlinehelp_extended AND pedMessage<>0
     ; -- wait for at least 1 second before displaying the bubble
     help_ticks.b + 1 : If help_ticks < 10 Goto skip_this
 
     ; -- check sourcearea
     USEPATH sourceWindow
-    If *intuimessage\MouseX - \win\BorderLeft<0 Then Goto skip_this
-    If *intuimessage\MouseY - \win\BorderTop <0 Then Goto skip_this
-    If *intuimessage\MouseY - \win\BorderTop - \statusAreaY > 0 Then Goto skip_this
-    If *intuimessage\MouseX - \win\BorderRight - \win\Width > 0 Then Goto skip_this
-    If (*intuimessage\MouseX = ocmousex.w) AND (*intuimessage\MouseY = ocmousey.w) Then Goto skip_this
+    If pedMessage\_MouseX - \win\BorderLeft<0 Then Goto skip_this
+    If pedMessage\_MouseY - \win\BorderTop <0 Then Goto skip_this
+    If pedMessage\_MouseY - \win\BorderTop - \statusAreaY > 0 Then Goto skip_this
+    If pedMessage\_MouseX - \win\BorderRight - \win\Width > 0 Then Goto skip_this
+    If (pedMessage\_MouseX = ocmousex.w) AND (pedMessage\_MouseY = ocmousey.w) Then Goto skip_this
 
     ; -- check mouseposition in source area
-    textX.w = (*intuimessage\MouseX - \win\BorderLeft - \BoxLeft) / \font\tf_XSize + Peek.w(?comWord_ColumnsOffset) + 1
-    textY.w = (*intuimessage\MouseY - \win\BorderTop - \BoxTop) / \font\tf_YSize + Peek.l(?comLong_DisplayLineOffset) + 1
+    textX.w = (pedMessage\_MouseX - \win\BorderLeft - \BoxLeft) / \font\tf_XSize + Peek.w(?comWord_ColumnsOffset) + 1
+    textY.w = (pedMessage\_MouseY - \win\BorderTop - \BoxTop) / \font\tf_YSize + Peek.l(?comLong_DisplayLineOffset) + 1
 
     If textX = otextX.w AND textY = otextY.w Then Goto skip_this
     otextX = textX : otextY = textY
@@ -15974,7 +15966,7 @@ Return
             WZ_HideHelp{}
           EndIf
           help_ticks = 0
-          ocmousex.w = *intuimessage\MouseX : ocmousey.w = *intuimessage\MouseY
+          ocmousex.w = pedMessage\_MouseX : ocmousey.w = pedMessage\_MouseY
         EndIf
       EndIf
     EndIf
@@ -15983,9 +15975,9 @@ Return
 Return
 
 .handle_event_menupick:
-  If *intuimessage\Code <> -1
+  If pedMessage\_Code <> -1
     JSR set_tedlibbase_bas                     ;why?
-    _menuNumber.w = *intuimessage\Code
+    _menuNumber.w = pedMessage\_Code
     _ItemAddress.l = ItemAddress_(Peek.l(?addr_menustrip),_menuNumber AND #MaxWord)
     _menuitem.l = Peek.l(_ItemAddress + $22)             ; Userdata of GadTools, longword right after MenuItem-struct
     exit_loop_class.b = -2
@@ -16004,7 +15996,7 @@ Return
 ;                     Dc.b $FE,$00                  ; SHORTCUT               ; -2
 ;                     Dc.b $FD,$01                  ; L-MOUSEBUTTON          ; -3
 ;                     Dc.b $FB,$01                  ; AJL_0_7FCC             ; -4
-  Select *intuimessage\Code
+  Select pedMessage\_Code
   Case #SELECTUP
     If was_selectdown_before.b = True
       log_Print{"Mouse-Event SELECTUP",#log_debug}
@@ -16018,9 +16010,9 @@ Return
     log_Print{"Mouse-Event SELECTDOWN",#log_debug}
     exit_loop_class = -3
     ; left mb not pressed anymore, check doubleclick
-    isDoubleClick.b = DoubleClick_(SSeconds.l,SMicros.l,*intuimessage\Seconds,*intuimessage\Micros)
-    SSeconds = *intuimessage\Seconds
-    SMicros = *intuimessage\Micros
+    isDoubleClick.b = DoubleClick_(SSeconds.l,SMicros.l,pedMessage\_Seconds,pedMessage\_Micros)
+    SSeconds = pedMessage\_Seconds
+    SMicros = pedMessage\_Micros
     If isDoubleClick
       *textline.l = TEDGetCurrentLine{} + 9
       *detokened.l = TEDDetoke{*textline}
@@ -16031,23 +16023,17 @@ Return
         If StrLeft(search_label$,1)="." Then search_label$ = StrRight(search_label$,-1)
         Use Window WZID("WIN_LABELS")
         WZPrint "STRING_LABEL",search_label$
-        ;MOVE.w #$FFFF,comWord_LabelListChanged
-        ;MOVE.w comWord_LabelListChanged,D0
-        ;BEQ.w JL_0_CFA
         !asm
         JSR update_labelstuff
         !basic
-        ;JL_0_CFA:
-
       EndIf
     Else
-      Gosub event_leftmousebutton
       exit_eventloop = True
     EndIf
 
   Case #MIDDLEDOWN
     log_Print{"Mouse-Event MIDDLEDOWN",#log_debug}
-    If NOT (*intuimessage\Qualifier AND (#IEQUALIFIER_LALT | #IEQUALIFIER_RALT))
+    If NOT (pedMessage\_Qualifier AND (#IEQUALIFIER_LALT | #IEQUALIFIER_RALT))
       !asm
       JSR jump_historyup
       !basic
@@ -16056,10 +16042,10 @@ Return
 Return
 
 .handle_event_rawkey:
-  mqualifier.w = *intuimessage\Qualifier
-  mcode.w = *intuimessage\Code
+  mqualifier.w = pedMessage\_Qualifier
+  mcode.w = pedMessage\_Code
   log_Print{"========= rawkey    code: "+ Hexw$(mcode) + " / quali: "+ Hex$(mqualifier)}
-  last_rawkey = *intuimessage\Code       ; rename it to avoid clashes with vanillakey tomsmart1
+  last_rawkey = pedMessage\_Code       ; rename it to avoid clashes with vanillakey tomsmart1
   last_vankey = 0
   Poke.w ?comWord_QualifierStore, mqualifier
 
@@ -16087,9 +16073,9 @@ Return
 Return
 
 .handle_event_vanillakey:
-  If last_vankey = 0 Then last_vankey = *intuimessage\Code
+  If last_vankey = 0 Then last_vankey = pedMessage\_Code
   last_rawkey = 0
-  mqualifier.w  = *intuimessage\Qualifier AND (NOT #IEQUALIFIER_RELATIVEMOUSE)
+  mqualifier.w  = pedMessage\_Qualifier AND (NOT #IEQUALIFIER_RELATIVEMOUSE)
   last_mqualifier.w = mqualifier
   Poke.w ?comWord_QualifierStore, mqualifier
   log_Print{"event vanillakey: " + Hexw$(last_vankey) + " qualifier: " + Hexw$(mqualifier)}
@@ -16507,17 +16493,17 @@ Return
     JSR menu_helpblitzlibs
 
   Case #VANILLAKEY_F4               ; check for "F4"
-    winconfig = 0
+    ped\lastLayout = 0
     Gosub load_windowlayouts
     Gosub do_windowlayout
 
   Case #VANILLAKEY_F5               ; check for "F5"
-    winconfig  = 1
+    ped\lastLayout  = 1
     Gosub load_windowlayouts
     Gosub do_windowlayout
 
   Case #VANILLAKEY_F6               ; check for "F6"
-    winconfig  = 2
+    ped\lastLayout  = 2
     Gosub load_windowlayouts
     Gosub do_windowlayout
 
@@ -16806,11 +16792,11 @@ Return
 
 ;OS4 MouseWheel events handling  tomsmart1
 .handle_event_extendedmouse:
-  mcode.w = *intuimessage\Code & $FFFF
+  mcode.w = pedMessage\_Code & $FFFF
 
   If (mcode = #IMSGCODE_INTUIWHEELDATA)
     log_Print{"extended mouse: wheelevent"}
-    *wd.IntuiWheelData  = *intuimessage\IAddress
+    *wd.IntuiWheelData  = pedMessage\_IAddress
     ; vertical move
     If *wd\WheelY > 0
       OS4WheelStep.l = (*wd\WheelY)                        ; get the stepdelta
@@ -19130,7 +19116,7 @@ Return
 
 event_librarybrowser:
   ; check for events occured with the functiontable
-  wev.l = WZ_CheckTableEvent{ev}
+  wev.l = WZ_CheckTableEvent{pedMessage\_Class}
   Select wev
 
     Case #WZTABLEEVENT_CELLSELECTED
@@ -19149,14 +19135,14 @@ event_librarybrowser:
       EndIf
   End Select
 
-  Select ev
+  Select pedMessage\_Class
     Case #IDCMP_CLOSEWINDOW:
       Gosub close_librarybrowser
 
     Case #IDCMP_VANILLAKEY:
       ;error{"VAN: " + Hexw$(EventCode)}
-      If EventCode = #VANILLAKEY_ESC Then Gosub close_librarybrowser
-      If EventCode = #VANILLAKEY_TAB Then Gosub activatesourcewindow
+      If pedMessage\_Code = #VANILLAKEY_ESC Then Gosub close_librarybrowser
+      If pedMessage\_Code = #VANILLAKEY_TAB Then Gosub activatesourcewindow
 
     Case #IDCMP_IDCMPUPDATE
       Select WZGadName
@@ -19305,7 +19291,7 @@ RTS
 
 .event_instructionbrowser:
   ; check for events occured with the instructiontable
-  wev.l = WZ_CheckTableEvent{ev}
+  wev.l = WZ_CheckTableEvent{pedMessage\_Class}
   Select wev
 
     Case #WZTABLEEVENT_CELLSELECTED
@@ -19336,7 +19322,7 @@ RTS
 
   End Select
 
-  Select ev
+  Select pedMessage\_Class
 
     Case #IDCMP_INTUITICKS
       Gosub update_instructiontable
@@ -19510,7 +19496,7 @@ Return
 
 .event_popup:
   popexit.l = False                                              ; added to set the init value that fix the bug that after select a item with a doubleclick the next popup win are autoclosed  tomsmart1
-  Select ev
+  Select pedMessage\_Class
 
     Case #IDCMP_IDCMPUPDATE
       If Left$(WZGadName,9) = "POPUPMENU"
@@ -19691,8 +19677,8 @@ Return
 
 
 .event_shortcuts:
-  wev.l = WZ_CheckTableEvent{ev}
-  Select ev
+  wev.l = WZ_CheckTableEvent{pedMessage\_Class}
+  Select pedMessage\_Class
     Case #IDCMP_VANILLAKEY:
       If EventCode = #VANILLAKEY_ESC Then Gosub close_shortcuts
       If EventCode = #VANILLAKEY_TAB Then Gosub activatesourcewindow
@@ -19774,7 +19760,7 @@ Return
 
 
 
-.open_calculator
+.open_calculator:
   calc_expression.s = ""
   !ComData_GetL{comPtr_CalculatorExpressionString,D0} : CalculatorExpressionStringPointer.l = PutD0
   Poke.s CalculatorExpressionStringPointer,calc_expression
@@ -19905,7 +19891,7 @@ Return
 
 
 .event_newtype:
-  tev.l = WZ_CheckTableEvent{ev}
+  tev.l = WZ_CheckTableEvent{pedMessage\_Class}
   If tev = #WZTABLEEVENT_DOUBLECLICK
     Select ped\newtype_mode
 
@@ -19983,7 +19969,7 @@ Return
 
   EndIf
 
-  Select ev
+  Select pedMessage\_Class
 
     Case #IDCMP_INTUITICKS
       Select ped\newtype_mode
@@ -20022,8 +20008,8 @@ Return
       Gosub close_newtype
 
     Case #IDCMP_VANILLAKEY:
-      If EventCode = #VANILLAKEY_ESC Then Gosub close_newtype
-      If EventCode = #VANILLAKEY_TAB Then Gosub activatesourcewindow
+      If pedMessage\_Code = #VANILLAKEY_ESC Then Gosub close_newtype
+      If pedMessage\_Code = #VANILLAKEY_TAB Then Gosub activatesourcewindow
 
 
     Case #IDCMP_IDCMPUPDATE
@@ -20406,7 +20392,7 @@ Return
 
 
 .event_diag:
-  Select ev
+  Select pedMessage\_Class
     Case #IDCMP_IDCMPUPDATE
       Select LCase$(WZGadName)
 
@@ -20463,7 +20449,7 @@ Return
       Gosub diag_close
 
     Case #IDCMP_VANILLAKEY
-      If EventCode = #VANILLAKEY_ESC Then Gosub diag_close
+      If pedMessage\_Code = #VANILLAKEY_ESC Then Gosub diag_close
 
   End Select
 
@@ -20482,7 +20468,7 @@ Return
 
 .load_windowlayouts:
   USEPATH wtemp
-  CopyMem_ &wpref(winconfig),&wtemp,SizeOf .winprefs
+  CopyMem_ &wpref(ped\lastLayout),&wtemp,SizeOf .winprefs
 
   If (\lbrowser_w<=0) OR (\lbrowser_h<=0)
     \lbrowser_x = -2
@@ -20590,7 +20576,6 @@ Return
   Else
     Gosub activatesourcewindow
   EndIf
-  ev = 0
 Return
 
 
@@ -20609,7 +20594,7 @@ Return
 
 
 .event_label:
-  Select ev
+  Select pedMessage\_Class
     Case #IDCMP_INTUITICKS
       ;all activities of the window like mouse move
 
@@ -21150,11 +21135,11 @@ Return
 
 
 .check_mouse_in_statusarea:
-  If *intuimessage\Code = #SELECTDOWN
+  If pedMessage\_Code = #SELECTDOWN
     *loadedfiles.l = Peek(?loadedfilesbase)
     If *loadedfiles
-      mx.w = *intuimessage\MouseX - \win\BorderLeft
-      my.w = *intuimessage\MouseY - \win\BorderTop
+      mx.w = pedMessage\_MouseX - \win\BorderLeft
+      my.w = pedMessage\_MouseY - \win\BorderTop
       xsa.l = \font\tf_XSize / 2
       xpos_start.w = #filenamepos * \font\tf_XSize - xsa
       xpos_end.w = 0
@@ -21170,10 +21155,10 @@ Return
         ; check, if mouse clicked in filename-tab
         If (mx > xpos_start) AND (mx < xpos_end) AND (my > ypos_start) AND (my < ypos_end)
           log_Print{"mouse clicked at: " +Str$(Peek$(*sourcefile+222))}
-          ;log_Print{Hex$(*intuimessage\Qualifier)}
+          ;log_Print{Hex$(pedMessage\_Qualifier)}
           If *actualfile = *sourcefile
             log_Print{"tab is actual file"}
-            If *intuimessage\Qualifier AND (#IEQUALIFIER_CONTROL|#IEQUALIFIER_LALT|#IEQUALIFIER_RALT)
+            If pedMessage\_Qualifier AND (#IEQUALIFIER_CONTROL|#IEQUALIFIER_LALT|#IEQUALIFIER_RALT)
               log_Print{"control or alt pressed with mouse"}
               If Peek.l(?comStr_Modified) = $4D4F4449
                 !asm
@@ -21183,7 +21168,7 @@ Return
                 Delay_ 2
               EndIf
               JSR set_tedlibbase_bas
-              If *intuimessage\Qualifier AND #IEQUALIFIER_CONTROL
+              If pedMessage\_Qualifier AND #IEQUALIFIER_CONTROL
                 log_Print{"control: create exe"}
                 Gosub cursor_off_bas
                 !asm
@@ -21193,7 +21178,7 @@ Return
                 MOVEM.l    (A7)+,D2-D7/A1-A6
                 !basic
               EndIf
-              If *intuimessage\Qualifier AND (#IEQUALIFIER_LALT|#IEQUALIFIER_RALT)
+              If pedMessage\_Qualifier AND (#IEQUALIFIER_LALT|#IEQUALIFIER_RALT)
                 log_Print{"alt: compile & run"}
                 Gosub cursor_off_bas
                 !asm
@@ -21574,14 +21559,14 @@ RTS
     Poke$ ?str_searchstring   ,find_find$
     Poke$ ?str_replacestring  ,find_replace$
 
-    Select ev
+    Select pedMessage\_Class
       Case #IDCMP_CLOSEWINDOW
         CloseWZWinWithMenu{"WIN_SEARCH"}
         Gosub activatesourcewindow
         FlushEvents
 
       Case #IDCMP_VANILLAKEY
-        Select EventCode
+        Select pedMessage\_Code
 
 ;          Case #VANILLAKEY_RETURN                    ; deactivated, search only via shortcut "N"
 ;            !asm
