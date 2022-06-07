@@ -1,0 +1,435 @@
+;*************************************
+;*                                   *
+;*      SERIAL PORT LIBRARY          *
+;*                                   *
+;*************************************
+
+; $VER: SERIAL Version 2.0 By King Fuzzy
+
+;   Bug Fixes
+;
+; ReadSerial returns  Word fixes bug when chr$(255) is recived
+;
+
+;   Upgrades
+;
+; WriteSerialString    Flags added for DoIO and True String
+;                      True String isn't Null terminated
+;
+; ReadSerial           Flags added for 'wait for char'
+;
+;
+;
+;    Additions
+;
+; ReadSerialMem
+; WriteSerialMem
+;
+
+!libheader {#seriallib,0,0,finit,0}
+
+
+!afunction{#long}
+!args {#string,#long,#long,#word}
+!libs
+!subs {_openserial,0,0}
+!name {"OpenSerial","device$,unit#,baud,io_serflags"}
+
+!astatement
+!args {#word,#word}
+!libs
+!subs {_writebyte,0,0}
+!name {"WriteSerial","unit#,byte"}
+
+!astatement
+!args {#word,#long}
+!libs
+!subs {_writestring2,0,0}
+!args {#word,#string,#word}
+!libs
+!subs {_writestring3,0,0}
+!name {"WriteSerialString","unit#,string[,Flags 1=DoIO 2=TrueString] "}
+
+!afunction{#word}
+!args {#word}
+!libs
+!subs {_readobyte,0,0}
+!args {#word,#word}
+!libs
+!subs {_readbyte,0,0}
+!name {"ReadSerial","(unit#[,flags 1=wait on])  returns -1 if nothing waiting"}
+
+!afunction {#string}
+!args {#word}
+!libs
+!subs {_readstring,0,0}
+!name {"ReadSerialString","(unit#)  returns null if nothing waiting"}
+
+!astatement
+!args {#word}
+!libs
+!subs {_closeserial,0,0}
+!name {"CloseSerial","unit#"}
+
+!astatement
+!args {#word,#long}
+!libs
+!subs {_serialbuffer,0,0}
+!name {"SetSerialBuffer","unit#,bufferlength"}
+
+!astatement
+!args {#word,#byte,#byte,#byte}
+!libs
+!subs {_seriallens,0,0}
+!name {"SetSerialLens","unit#,readlen,writelen,stopbits"}
+
+!astatement
+!args {#word}
+!libs
+!subs {_serialsetparams,0,0}
+!name {"SetSeriaParams","unit#"}
+
+!afunction {#long}
+!args {#word}
+!libs {#utillib,#la0}
+!subs {_checkevent,0,0}
+!name {"SerialEvent","(unit#)"}
+
+!astatement
+!args {#word,#long,#long}
+!libs
+!subs {_readmem,0,0}
+!name {"ReadSerialMem","unit#,Address,Length"}
+
+!astatement
+!args {#word,#long,#long}
+!libs
+!subs {_writemem,0,0}
+!name {"WriteSerialMem","unit#,Address,Length"}
+
+
+
+
+;!afunction {#long}
+;!args {#word,#string,#string,#long}
+;!libs
+;!subs {_xprsend,0,0}
+;!name {"XPRSend","unit#,protocol$,file$,?callback"}
+;
+;!afunction {#long}
+;!args {#word,#string,#string,#long}
+;!libs
+;!subs {_xprreceive,0,0}
+;!name {"XPRReceive","unit#,protocol$,file$,?callback"}
+;
+
+
+finit:!nullsub {_closeallio,0,0}
+
+!libfin
+
+Macro s
+ {SizeOf.serialio\`1}(a2)
+End Macro
+
+NEWTYPE .serialio
+  request.l          ;points to IOExt
+  port.b[34]
+  msg.b[20]
+  device.l:unit      ;IOExt
+  command.w
+  flags.b:error
+  actual.l           ;IOStdExt
+  slen.l
+  sdata.l
+  soffset.l
+  ctlchar.l
+  rbuflen.l
+  extflags.l
+  baud.l
+  brktime.l
+  tarray.b[8]
+  readlen.b:writelen:stopbits
+  serflags.b
+  status.w
+End NEWTYPE
+
+._checkevent:
+  MOVE.l a6,-(a7):MOVE.l 4,a6:MOVE.l (a0),d7
+  ASL #7,d0:LEA allio(pc),a2:ADD d0,a2:MOVEQ#0,d0
+  MOVE.b !s{port+15+128},d1:BTST d1,d7:BEQ t0:MOVEQ#1,d0:t0
+  MOVE.b !s{port+15},d1:BTST d1,d7:BEQ t1:MOVEQ#2,d0:t1
+  MOVE.l (a7)+,a6:RTS
+
+._openserial:   ;d0=name d1=unit d2=baud d3=flag ;d0=unit d1=baud d2=flag
+  MOVE.l a6,-(a7):MOVE.l 4,a6
+  MOVEM.l d0-d3,name:ASL #8,d1:LEA allio(pc),a2:ADD d1,a2
+
+  ;setup read port and open device
+
+  MOVE.l a2,a3:LEA38(a3),a1:MOVE.la1,(a3)+:MOVE.b#4,8(a3)
+  LEA 20(a3),a1:MOVE.l a1,28(a3):ADDQ#4,a1:MOVE.la1,20(a3)
+  MOVE.l a3,48(a3):MOVE.b#5,42(a3)
+  SUB.l a1,a1:JSR _FindTask(a6):MOVE.l d0,16(a3)
+  MOVEQ#-1,d0:JSR _AllocSignal(a6):MOVE.b d0,15(a3):BMI fail
+  MOVE #SizeOf.serialio-38,56(a2):MOVE.b flag+3,!s{serflags}
+  MOVE.l unit(pc),d0:MOVEQ #0,d1
+  MOVE.l (a2),a1:MOVE.l name(pc),a0:JSR _OpenDevice(a6)
+  TST.l d0:BNE fail2
+  MOVE.l baud,!s{baud}:MOVE.b flag+3,!s{serflags}
+  MOVE#11,!s{command}:MOVE.l(a2),a1:JSR _DoIO(a6)
+
+  ;copy read iostdreq stuff and init write port
+
+  LEA 128(a2),a3:MOVEQ#31,d0:copy:MOVE.l (a2)+,(a3)+:DBRA d0,copy
+  MOVE.l a2,a3:LEA38(a3),a1:MOVE.la1,(a3)+:MOVE.b#4,8(a3)
+  LEA 20(a3),a1:MOVE.l a1,28(a3):ADDQ#4,a1:MOVE.la1,20(a3)
+  MOVE.l a3,48(a3):MOVE.b#5,42(a3)
+  MOVEQ#-1,d0:JSR _AllocSignal(a6):MOVE.b d0,15(a3):BMI fail1
+  MOVE.l (a7)+,a6:LEA -128(a2),a2:MOVE.la2,d0:RTS
+
+  fail1:LEA -128(a2),a2
+  fail2:MOVEQ#0,d0:MOVE.b 19(a2),d0:JSR _FreeSignal(a6)
+  fail:CLR.l(a2):MOVEQ#0,d0:MOVE.l (a7)+,a6:RTS
+
+name:Dc.l 0
+unit:Dc.l 0
+baud:Dc.l 0
+flag:Dc.l 0
+
+._closeserial
+  MOVE.l a6,-(a7):MOVE.l 4,a6
+  ASL #7,d0:LEA allio(pc),a2:ADD d0,a2
+  TST.l (a2):BEQ noclose
+  MOVE.l (a2),a1:JSR _AbortIO(a6)
+  MOVE.l (a2),a1:JSR _CloseDevice(a6)
+  MOVEQ#0,d0:MOVE.b 19(a2),d0:JSR _FreeSignal(a6):CLR.l(a2)
+  LEA 128(a2),a2:TST.l (a2):BEQ noclose
+  MOVEQ#0,d0:MOVE.b 19(a2),d0:JSR _FreeSignal(a6):CLR.l(a2)
+  noclose:MOVE.l (a7)+,a6:RTS
+
+._closeallio
+  MOVE.l a6,-(a7):MOVE.l 4,a6:LEA allio(pc),a2:MOVE #7,d7
+  doclose:TST.l (a2):BEQ skip
+  MOVE.l (a2),a1:JSR _AbortIO(a6)
+  MOVE.l (a2),a1:JSR _WaitIO(a6)
+  MOVE.l (a2),a1:JSR _CloseDevice(a6)
+  MOVEQ#0,d0:MOVE.b 19(a2),d0:JSR _FreeSignal(a6):CLR.l(a2)
+  skip:LEA 128(a2),a2:TST.l (a2):BEQ nxclose
+  MOVEQ#0,d0:MOVE.b 19(a2),d0:JSR _FreeSignal(a6):CLR.l(a2)
+  nxclose:LEA 128(a2),a2:DBRA d7,doclose
+  MOVE.l (a7)+,a6:RTS
+
+._writebyte:
+  MOVE.l a6,-(a7):MOVE.l 4,a6
+  LEA allio(pc),a2:ASL#8,d0:ADD#128,d0:ADD d0,a2
+  TST.l (a2):BEQ noser
+  LEA wb1(pc),a0:MOVE.b d1,(a0)
+  MOVE #3,!s{command}:MOVE.l#1,!s{slen}:MOVE.l a0,!s{sdata}
+  MOVE.l (a2),a1:JSR _DoIO(a6)
+  MOVE.l (a7)+,a6:RTS
+  wb1:Dc.l 0
+
+._writestring2:
+  MOVEQ.l #0,d2
+._writestring3:
+  MOVE.l a6,-(a7):MOVE.l 4,a6:MOVE.l -(a2),d3
+  LEA allio(pc),a2:ASL#8,d0:ADD #128,d0:ADD d0,a2
+  TST.l (a2):BEQ noser
+  LEA wb1(pc),a0:MOVE #3,!s{command}:MOVE.l#-1,!s{slen}
+
+BTST #1,d2:BEQ nstr:MOVE.l d3,!s{slen}  ;trueString
+nstr:
+
+  MOVE.l d1,!s{sdata}:MOVE.l (a2),a1
+
+BTST #1,d2:BEQ sio:JSR _DoIO(a6):MOVE.l (a7)+,a6:RTS  ;DoIO
+sio:
+
+  JSR _SendIO(a6)
+  MOVE.l (a7)+,a6:RTS
+
+._writemem:
+  MOVE.l a6,-(a7):MOVE.l 4,a6
+  LEA allio(pc),a2:ASL#8,d0:ADD #128,d0:ADD d0,a2
+  TST.l (a2):BEQ noser
+  MOVE #3,!s{command}
+  MOVE.l d2,!s{slen}
+  MOVE.l d1,!s{sdata}:MOVE.l (a2),a1
+  JSR _DoIO(a6):MOVE.l (a7)+,a6:RTS
+
+._readmem:
+  MOVE.l a6,-(a7):MOVE.l 4,a6
+  LEA allio(pc),a2:ASL#8,d0:ADD #128,d0:ADD d0,a2
+  TST.l (a2):BEQ noser
+  MOVE #2,!s{command}
+  MOVE.l d2,!s{slen}
+  MOVE.l d1,!s{sdata}:MOVE.l (a2),a1
+  JSR _DoIO(a6):MOVE.l (a7)+,a6:RTS
+._readobyte:
+  MOVEQ.l #0,d1
+._readbyte:
+  MOVE.l a6,-(a7):MOVE.l 4,a6
+  LEA allio(pc),a2:ASL#8,d0:ADD d0,a2:TST.l (a2):BEQ noser
+  BTST #1,d1:BNE ral
+  MOVE #9,!s{command}:MOVE.l (a2),a1:JSR _DoIO(a6)
+  TST.l !s{actual}:BLE nobytes
+ral:
+  LEA rb1(pc),a3
+  MOVE#2,!s{command}:MOVE.l#1,!s{slen}:MOVE.l a3,!s{sdata}
+  MOVE.l (a2),a1:JSR _DoIO(a6):MOVEQ#0,d0:MOVE.b (a3),d0
+  MOVE.l (a7)+,a6:RTS
+  nobytes:MOVEQ#-1,d0:MOVE.l (a7)+,a6:RTS
+  rb1:Dc.l 0
+
+._readstring:
+  MOVE.l a6,-(a7):MOVE.l 4,a6
+  LEA allio(pc),a2:ASL#8,d0:ADD d0,a2:TST.l (a2):BEQ noser
+  MOVE #9,!s{command}:MOVE.l (a2),a1:JSR _DoIO(a6)
+  MOVE.l !s{actual},d2:BLE nobytes2
+  MOVE#2,!s{command}:MOVE.ld2,!s{slen}:MOVE.l a3,!s{sdata}
+  MOVE.l (a2),a1:JSR _DoIO(a6):MOVE.l d2,d0:ADD.l d0,a3
+  MOVE.l (a7)+,a6:RTS
+  nobytes2:MOVEQ#0,d0:MOVE.l (a7)+,a6:RTS
+
+._serialbuffer:
+  MOVE.l a6,-(a7):MOVE.l 4,a6
+  ASL #7,d0:LEA allio(pc),a2:ADD d0,a2:TST.l(a2):BEQ noser
+  MOVE.l d1,!s{rbuflen}
+  MOVE.l(a2),a1:MOVE#11,!s{command}:JSR _DoIO(a6)
+  MOVE.l(a7)+,a6:RTS
+
+._seriallens:
+  MOVE.l a6,-(a7):MOVE.l 4,a6
+  ASL #7,d0:LEA allio(pc),a2:ADD d0,a2:TST.l(a2):BEQ noser
+  MOVE.b d1,!s{readlen}:MOVE.b d2,!s{writelen}:MOVE.b d3,!s{stopbits}
+  MOVE.l(a2),a1:MOVE#11,!s{command}:JSR _DoIO(a6)
+  MOVE.l(a7)+,a6:RTS
+
+._serialsetparams:
+  MOVE.l a6,-(a7):MOVE.l 4,a6
+  ASL #7,d0:LEA allio(pc),a2:ADD d0,a2:TST.l(a2):BEQ noser
+  MOVE.l(a2),a1:MOVE#11,!s{command}:JSR _DoIO(a6)
+  MOVE.l(a7)+,a6:RTS
+
+noser:MOVE.l #error,d0:TRAP #0
+error:Dc.b "Serial Device Not Open",0
+      Dc.l 0
+
+allio:Dcb.b 2048,0  ;8*256
+
+;------------------------------------------------------------------
+;
+;NEWTYPE .XPR_IO
+;  *xpr_filename.b
+;  *xpr_fopen.l:*xpr_fclose.l:*xpr_fread.l:*xpr_fwrite.l
+;  *xpr_sread.l:*xpr_swrite.l:*xpr_sflush.l:*xpr_update.l
+;  *xpr_chkabort.l:*xpr_chkmisc.l:*xpr_gets.l:*xpr_setserial.l
+;  *xpr_ffirst.l:*xpr_fnext.l:*xpr_finfo.l:*xpr_fseek.l
+;  xpr_extension.l  ;Number of extensions
+;  *xpr_data.l      ;Initialized by Setup
+;  *xpr_options.l:*xpr_unlink.l:*xpr_squery.l:*xpr_getptr.l
+;End NEWTYPE
+;
+;#XPR_EXTENSION=4
+;#XPRS_FAILURE=$00000000
+;#XPRS_SUCCESS=$00000001
+;#XPRS_NORECREQ=$00000002
+;#XPRS_NOSNDREQ=$00000004
+;#XPRS_HOSTMON=$00000008
+;#XPRS_USERMON=$00000010
+;#XPRS_HOSTNOWAIT=$00000020
+;
+;NEWTYPE .XPR_UPDATE
+;  *xpru_protocol.b:*xpru_filename.b:xpru_filesize.l
+;  *xpru_msg.b:*xpru_errormsg.b
+;  xpru_blocks.l:xpru_blocksize.l:xpru_bytes.l:xpru_errors.l
+;  xpru_timeouts.l:xpru_packettype.l:xpru_packetdelay.l:xpru_chardelay.l
+;  *xpru_blockcheck.b:*xpru_expecttime.b:*xpru_elapsedtime.b
+;  xpru_datarate.l:xpru_reserved[5].l
+;End NEWTYPE
+;
+;#XPRU_PROTOCOL=$00000001
+;#XPRU_FILENAME=$00000002
+;#XPRU_FILESIZE=$00000004
+;#XPRU_MSG=$00000008
+;#XPRU_ERRORMSG=$00000010
+;#XPRU_BLOCKS=$00000020
+;#XPRU_BLOCKSIZE=$00000040
+;#XPRU_BYTES=$00000080
+;#XPRU_ERRORS=$00000100
+;#XPRU_TIMEOUTS=$00000200
+;#XPRU_PACKETTYPE=$00000400
+;#XPRU_PACKETDELAY=$00000800
+;#XPRU_CHARDELAY=$00001000
+;#XPRU_BLOCKCHECK=$00002000
+;#XPRU_EXPECTTIME=$00004000
+;#XPRU_ELAPSEDTIME=$00008000
+;#XPRU_DATARATE=$00010000
+;
+;NEWTYPE .xpr_option
+;  *xpro_description.b ;description of the option
+;  xpro_type.l         ;type of option
+;  *xpro_value.b       ;pointer to a buffer with the current value
+;  xpro_length.l       ;buffer size
+;End NEWTYPE
+;
+;#XPRO_BOOLEAN=1  ;/* xpro_value is "yes", "no", "on" or "off"   */
+;#XPRO_LONG=2     ;/* xpro_value is string representing a number */
+;#XPRO_STRING=3   ;/* xpro_value is a string                     */
+;#XPRO_HEADER=4   ;/* xpro_value is ignored                      */
+;#XPRO_COMMAND=5  ;/* xpro_value is ignored                      */
+;#XPRO_COMMPAR=6  ;/* xpro_value contains command parameters     */
+;
+;#_Cleanup=-30     ;(io)(A0)
+;#_Setup=-36       ;(io)(A0)
+;#_Send=-42        ;(io)(A0)
+;#_Receive=-48     ;(io)(A0)
+;#_HostMon=-54     ;(io,serbuff,actual,maxsize)(A0,A1,D0,D1)
+;#_UserMon=-60     ;(io,serbuff,actual,maxsize)(A0,A1,D0,D1)
+;
+;;-------------------------------------------------------------------
+;
+;!afunction {#long}
+;!args {#word,#string,#string,#long}
+;!libs
+;!subs {_xprsend,0,0}
+;!name {"XPRSend","unit#,protocol$,file$,?callback"}
+;
+;
+;_xprsend
+;  LEA allio(pc),a2:ASL#8,d0:ADD d0,a2:TST.l (a2):BEQ xprfail
+;  MOVE.l (a2),xprserio:MOVE.l d1,a0:LEA xprname(pc),a1
+;  MOVE.l -(a2),d7:BEQ xprfail:MOVEM.l d2-d3,filename
+;  getname:MOVE.b (a0)+,(a1)+:DBRA d7,getname:CLR.b (a1)
+;
+;  MOVE.l 4,a6:LEA xprname(pc),d0:
+;
+;
+;serio:Dc.l 0
+;filename:Dc.l 0
+;cbupdate:Dc.l 0
+;xprname:Ds.b 64
+;xprbase:Dc.l 0
+;
+;_xprsend
+;
+;DEFTYPE .XPR_IO f
+;
+;;f\xpr_fopen=?myopen,?myopen,?myopen,?myopen,?myopen,?myopen,?myopen,?myopen,?myopen,?myopen,?myopen
+;
+;NPrint ?????(f)
+;
+;MouseWait
+;End
+;
+;a$="ram:test"+Chr$(0):f\xpr_filename=&a$
+;
+;NPrint ?????(f)
+;
+;NPrint "SHIT"
+;
+;MouseWait
+;
+;End
+;;
