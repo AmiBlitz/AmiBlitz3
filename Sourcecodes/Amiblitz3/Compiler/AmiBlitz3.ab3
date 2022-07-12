@@ -13,8 +13,8 @@
 ; StringBuffer    = 20000
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
-; Version         = 3.9.4
-; NumberOfBuilds  = 368
+; Version         = 3.9.5
+; NumberOfBuilds  = 378
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 10761
+; CursorLine      = 30014
 ; CursorColumn    = 1
-; LabelSearch     = "libpointer"
+; LabelSearch     = "save_err"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -50,6 +50,7 @@
 ; Max BitMap      = 10
 ; Max Screen      = 5
 ; Max IntuiFont   = 5
+; Max Window      = 25
 ; Max IconInfo    = 1
 ; Max MUIObject   = 50
 ; Max AsyncReq    = 4
@@ -73,7 +74,6 @@
 ; Max Chunky      = 20
 ; Max Stencil     = 5
 ; Max XBSound     = 10
-; Max Window      = 25
 ; /XTRA
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
@@ -199,16 +199,12 @@ XINCLUDE "/Shared/common.ab3"
 XINCLUDE "/Shared/preprocessor.include.ab3"
 XINCLUDE "/Shared/ted.include.ab3"
 
-XINCLUDE "translation.include.ab3"
-XINCLUDE "CLIModeSupport.ab3"
 XINCLUDE "dos.include.ab3"
+XINCLUDE "file.include.ab3"
 XINCLUDE "asl.include.ab3"
-If dos_FromCLI{}
-  CLIMode.l = True
-  error_SetFlags{#error_stdout}
-End If
 
 XINCLUDE "PE/logging.include.ab3"
+
 
 .TOOLTYPES
 ; --
@@ -260,6 +256,17 @@ If dynassign <> ""
   dos_CreateDir{config\path_residents}
   dos_CreateDir{config\path_system}
 EndIf
+
+
+XINCLUDE "translation.include.ab3"
+XINCLUDE "CLIModeSupport.ab3"
+If dos_FromCLI{}
+  CLIMode.l = True
+  error_SetFlags{#error_stdout}
+End If
+
+
+
 
 ; -- check, if there is an alternative PED-executable set via Tooltype
 config\pedfile = dos_GetToolString{"EDITOR",dos_AddPart{config\path_system,"PED"}}
@@ -1509,7 +1516,6 @@ dloaderr:              JSR handle_compileerror
 
 
 .menu_loaddebugmodule:
-
 ;  MOVEA.l comdata,A3
 ;  MOVEA.l $18(A3),A3                                       ; asl filerequest
 ;!ComData_GetL{comFunc_ASLFileRequest,A3}
@@ -1519,9 +1525,10 @@ dloaderr:              JSR handle_compileerror
 ;  JSR (A3)                                                  ;open ped filerequest, returns filename in D0
 ;  BEQ.w nodload
   !basic
+  !ComData_GetL{comPtr_pedScreen,D0} : *pedScreen.Screen = PutRegD0
   aslfr_SetRequesterTitle{2,"Debug module to load:","Load","Cancel"}
   aslfr_SetPath {2,Peek.s(?str_blitz3assign),Peek.s(?str_temp_debugmodulename),""}
-  If NOT aslfr_Request{2,False,True,False}
+  If NOT aslfr_Request{2,False,True,False,*pedScreen}
     Pop If
     !asm
     RTS
@@ -1529,7 +1536,7 @@ dloaderr:              JSR handle_compileerror
   GetRegD0 aslfr_GetNextFile{}
   !asm
 
-loaddmod
+;loaddmod
   ;d0=name of module to load!
   ;
   MOVE.l D0,ptr_temp_debugmodule
@@ -1634,9 +1641,11 @@ ptr_newexefilename:    Dc.l 0                                                   
   ;LEA exefilename,A1
   ;JSR (A3)                                                 ;open ped filerequest
   ;BEQ.w cancel_createexe    ; was 'err
+
+  !ComData_GetL{comPtr_pedScreen,D0} : *pedScreen.Screen = PutRegD0
   aslfr_SetRequesterTitle{2,"Name of Executable to Create:","Create","Cancel"}
   aslfr_SetPath {2,Peek.s(?exepath),Peek.s(?exefile),""}
-  If NOT aslfr_Request{2,False,True,False}
+  If NOT aslfr_Request{2,False,True,False,*pedScreen}
     Pop If
     !asm
     RTS
@@ -6427,9 +6436,10 @@ RTS
 
  'skip    ; was 'create_residentfile                                     ;.skip orgk source
   !basic
+  !ComData_GetL{comPtr_pedScreen,D0} : *pedScreen.Screen = PutRegD0
   aslfr_SetRequesterTitle{2,"Name of Resident File to Create","Create","Cancel"}
   aslfr_SetPath {2,config\path_residents,".res","#?.res"}
-  If NOT aslfr_Request{2,False,True,False}
+  If NOT aslfr_Request{2,False,True,False,*pedScreen}
     Pop If
     !asm
     RTS
@@ -10854,7 +10864,7 @@ End Function
       UnLock_ tmp_lock
     EndIf
   Wend
-  Poke.l tmp_userlibspointer.l,0    ; setting pointer to next lib to 0
+  If tmp_userlibspointer.l <> 0 Then Poke.l tmp_userlibspointer,0    ; setting pointer to next lib to 0
 
   If fid<>-1
     file_Close{fid}      ; close temp_mapping file opened above
@@ -12560,6 +12570,7 @@ ezerr:   Ds.w 1                                            ;for simple errors
       LEA errorlimit_text,a0
   'lesserror
     ADDQ.l #1,errorcounter
+
     JSR errorstringparse
 
     CMP.l #"NORE",reqmode                                    ;for used functions
@@ -29978,17 +29989,14 @@ Even
   MOVE.l a0,d0
   !basic
   PutReg d0,*olderror.l
-  error$ = !TRANS{Peek.s(*olderror)}                                     ; added translation here to prevent a translation of possible programcode if it done in PED  tomsmart1
-  error_type$ = error$    ; needed for stdout_error
+  error_type.s = !TRANS{Peek.s(*olderror)}
+  error_code.s = Str$(Peek.l(?compileErrorCode))
 
   If Peek.l(?compileErrorCode) = 1
     errtok.s = "$" + Peek.s(?tokerrnum)
     errlibnum.w = Vallong(errtok) LSR 7
-    error$ + " (Libnum " + Str$(errlibnum) + ")"
+    error_libnum.s = Str$(errlibnum)
   EndIf
-
-  error$ + "\\n\\n"
-  error$ + !TRANS{"Possible wrong Code begins here:"} + "\\n" ; added translation here to prevent a translation of possible programcode if it done in PED  tomsmart1 ; added newlines to reduce the wide of the requester  tomsmart1
 
   If Peek.l (?beforeparameterfetch)
     MaxLen detokenline.s = #MAX_Columns + 1        ; was 65536  changed it to the max size of a sourceline  tomsmart1
@@ -29997,14 +30005,11 @@ Even
     written.l = preproc_DetokenizeLine{*tn,Peek.l (?beforeparameterfetch),&detokenline}
     If written > 0 Then Poke.b &detokenline + written,0
     If written > 40 Then Poke.s &detokenline + 36, "..."   ; added to limit the width of the error requester  tomsmart1
-    sourceLineText.s = Peek.s(&detokenline) + "\\n"
+    error_source.s = Peek.s(&detokenline) + "\\n"
   Else
-    sourceLineText = "NULL"
+    error_source = "NULL"
   End If
-  error_source$ = sourceLineText  ; needed for stdout_error
-  error$ + sourceLineText
 
-  GetReg D0,&error$
   !asm
   MOVE.l d0,a0
 RTS
@@ -30030,7 +30035,7 @@ RTS
   ADDQ #1,a0
   MOVE.l a0,d0
   PutReg d0,i2.l
-  If Peek.w (?ininclude)>0
+  If Peek.w (?ininclude) > 0
     Poke.s (?includetemp2),incdim(Peek.w(?ininclude)-1)
     errorline.l = Peek.l(?includeline);-1
     Poke.l ?compilelinecounter,Peek.l(?includeline) - 1
@@ -30049,7 +30054,7 @@ RTS
   End If
 
   NPrint "\\1b[1m",!TRANS{"Compiler Error"}," #",Peek.l(?errorcounter)," <",errorfile,"@",errorline,">\\1b[0m "
-  NPrint "  ",error_type$,"\\n  ",error_source$
+  NPrint "  ",error_type.s,"\\n  ",error_source.s
 ;    NPrint peek.s(i2)
 ;  NPrint Peek.l(?globallinecount)," ",!TRANS{"line(s) compiled."}
 ;  NPrint Hex$(Peek.w(?globalvarpointer))+" global var base"
@@ -30060,35 +30065,43 @@ RTS
 
 .save_errorfile
   MOVE.l a0,-(a7)
-  MOVE.l a0,d0
-  MOVE.l a5,a0                                             ;macro title
+  MOVE.l a0,d0                                             ;error string
+  MOVE.l a5,a0                                             ;current sourceline
   !basic
-  PutReg d0,i
-  MOVEQ #20,d0
+  PutReg d0,ptr_errorstring.l
 
+  MOVEQ #20,d0
  'l2
     MOVE.b -(a0),d1
     BEQ 'l1
-    CMP.b #":",d1
-    BEQ 'l1
-    SUBQ.l #1,d0
-    BNE 'l2
-
+      CMP.b #":",d1
+      BEQ 'l1
+        SUBQ.l #1,d0
+  BNE 'l2
  'l1
   ADDQ #1,a0
+
   MOVE.l a0,d0
-  PutReg d0,i2.l
+  PutReg d0,ptr_sourceextract.l
+
+
   fid.l = file_Open{dos_AddPart{config\path_system,"ab_compileerror.txt"},#file_forcewrite}
   If fid <> -1
-    If Peek.w (?ininclude)>0
-      Poke$(?includetemp2),incdim(Peek.w(?ininclude)-1)
-    Else
-      Poke$(?includetemp2),""
-    End If
-    a$ = Peek$(?includetemp2)
-    x$ = Replace$(Peek$(i),"\\0a","\n")
+  log_Print{error_code}
+  log_Print{error_type}
+  log_Print{error_libnum}
+  log_Print{error_source}
+
+    x$ = Replace$(Peek$(ptr_errorstring),"\\0a","\n")
     file_WriteLine{fid,x$}
     file_WriteLine{fid,Str$(Peek.l(?compilelinecounter) + 1)}
+
+    If Peek.w (?ininclude) > 0
+      Poke$ ?includetemp2,incdim(Peek.w(?ininclude)-1)
+    Else
+      Poke$ ?includetemp2,""
+    End If
+    a$ = Peek$(?includetemp2)
     If a$
       file_WriteLine{fid,a$}
       file_WriteLine{fid,Str$(Peek.l(?includeline)-1)}
@@ -30096,10 +30109,12 @@ RTS
     Else
       file_WriteLine{fid,"none"}
     End If
-    file_WriteLine{fid,Peek$(i2)}
+
+    file_WriteLine{fid,Peek$(ptr_sourceextract)}
     file_WriteLine{fid,Str$(Peek.l(?globallinecount))+" line(s) compiled"}
     file_WriteLine{fid,Hex$(Peek.w(?globalvarpointer))+" global var base"}
     file_Close{fid}
+error{"written"}
   End If
   !asm
   MOVE.l (a7)+,a0
