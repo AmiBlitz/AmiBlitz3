@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.5
-; NumberOfBuilds  = 2057
+; NumberOfBuilds  = 2065
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 14233
-; CursorColumn    = 1
-; LabelSearch     = "print_entered_char"
+; CursorLine      = 2154
+; CursorColumn    = 64
+; LabelSearch     = "cursor_off"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -7030,6 +7030,7 @@ BRA.w JL_0_2C2E
   MOVE.l (A7)+,D1
   CMP.l comLong_DisplayLineOffset,D1
   BEQ.w JL_0_2CCC
+
     JSR _redraw
   JL_0_2CCC:
 
@@ -8690,7 +8691,7 @@ RTS
   oldBlockDims\xMax = Peek.w(?comWord_BlockEndX)
   oldBlockDims\yMax = Peek.l(?comLong_BlockEndY)
 
-  Gosub cursor_off
+  Gosub cursor_off_bas
 
   Poke.w ?comWord_LinePosStartX, mousePos\textX + Peek.w(?comWord_ColumnsOffset)
   If mousePos\textY + Peek.l(?comLong_DisplayLineOffset) < Peek.l(?comLong_TotalLines)
@@ -11663,30 +11664,29 @@ RTS
    'nr
       CMP.l #";@@1",9(a2)
       BNE 'l1
-      MOVE.l #1,foldnum
-      BRA 'do
+        MOVE.l #1,foldnum
+        BRA 'do
      'l1
       CMP.l #";@@0",9(a2)
       BNE 'l2
       MOVE.l #0,foldnum
      'l2
-      MOVE.l comLong_DisplayLine,d0
-      CMP.l store_comLong_DisplayLine,d0
-      BNE 'l3b
-      ;MOVE.l a2,comPtr_CurrentSourceLine
-     'l3b
+;      MOVE.l comLong_DisplayLine,d0
+;      CMP.l store_comLong_DisplayLine,d0
+;      BNE 'l3b
+;      ;MOVE.l a2,comPtr_CurrentSourceLine
+;     'l3b
       TST.l foldnum
       BEQ 'do
-      MOVE.l (a2),d0
-      BEQ JL_0_5902
-      MOVE.l d0,a2
+        MOVE.l (a2),d0
+        BEQ JL_0_5902
+          MOVE.l d0,a2
     BRA 'nr
    'do
     CEND
 
     MOVE.l (A2),-(A7)
     JSR print_sourceline
-    JSR update_modifiermark
     MOVE.l (A7)+,D0
 
     BEQ.w JL_0_5902           ; no next line left
@@ -11694,14 +11694,16 @@ RTS
       JSR increase_DisplayLine
   DBF D7,JL_0_58E8
   JL_0_5902:
-
   MOVE.l #0,ClearEndOfLine
+
+  JSR update_modifiermark
+
 
   ; -- better refresh: clear bottom
   !basic
-  ;log_Print{"redraw: clear rest of window"}
+  log_Print{"redraw: clear rest of window at displayline: " + Str$(Peek.l(?comLong_DisplayLine)+1)}
   USEPATH sourceWindow
-  If Peek.l(?comLong_DisplayLine)+1 <= Peek.l(?viewablelines)-1
+  If Peek.l(?comLong_DisplayLine) < Peek.l(?viewablelines)
     SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
     rectx.w = \BoxLeft
     recty.w = \BoxTop + (Peek.l(?comLong_DisplayLine)+1) * \font\tf_YSize
@@ -11709,6 +11711,9 @@ RTS
     recth.w = \statusAreaY
     If (rectw => rectx) AND (recth => recty)
       RectFill_ \win\RPort, rectx, recty, rectw, recth
+      If pedconfig\linenumbers
+        RectFill_ \win\RPort, 0, recty, rectx-3,recth
+      EndIf
     Else
       log_Print{"illegal area for clear bottom:",#log_error}
       log_Print{"displayline: " + Str$(Peek.l(?comLong_DisplayLine)+1) + "   viewablelines: " + Str$(Peek.l(?viewablelines)-1)}
@@ -12253,8 +12258,11 @@ RTS
 Return
 
 .print_sourceline:                     ; a2: pointer to sourceline
+JMP print_sourceline_old
+
+  MOVE.l A2,D0
   !basic
-  PutReg A2, *sourceline.sourceLine
+  PutReg D0, *sourceline.sourceLine
 
   If pedconfig\linenumbers Then Gosub print_linenumber
 
@@ -12264,23 +12272,11 @@ Return
     RTS
   EndIf
 
-  If *sourceline\strLength = 0
-    Pop If
-    !asm
-    RTS
-  EndIf
-
   If Peek.b(*sourceline + 9) <> 0   ; first character of text
-    ;log_Print{"print_sourceline " + Str$(*sourceline\strLength)}
-    ;*detokened.l = TEDDetoke{*sourceline + 9}
-    ;strline$ = Left$(Peek$(*detokened),32);Peek.w(?comWord_BlockEndX))
-    ;log_Print{">>>" + strline$}
-
     Poke.w ?comWord_ColumnsOffsetTmp,Peek.w(?comWord_ColumnsOffset)
-    GetD0 *sourceline + 9
-    MOVE.l d0,-(a7)
+    GetReg D0,*sourceline + 9
     !asm
-    MOVE.l (a7)+,A0
+    MOVE.l D0,A0
     MOVEQ.l #0,D0
     MOVE.l comLong_DisplayLine,d1
     JSR print_complete_line         ; d0:x, d1:y, a0: text
@@ -12293,8 +12289,14 @@ Return
     yMin = \BoxTop + Peek.l(?comLong_DisplayLine) * \font\tf_YSize
     xMax = \BoxWidth
     yMax = yMin + \font\tf_YSize - 1
-    RectFill_ \win\RPort, xMin, yMin, xMax, yMax
-    Move_ \win\RPort, 0, Peek.l(?comLong_DisplayLine) * \font\tf_YSize + \font\tf_YSize
+    If (xMax => xMin) AND (yMax => yMin)
+      RectFill_ \win\RPort, xMin, yMin, xMax, yMax
+    Else
+      log_Print{"illegal area for JL_0_5E72!",#log_error}
+      log_Print{Str$(xMin) + ", " + Str$(xMax)}
+      log_Print{Str$(yMin) + ", " + Str$(yMax)}
+    EndIf
+    Move_ \win\RPort, 0, Peek.l(?comLong_DisplayLine) * \font\tf_YSize + \font\tf_YSize ; move cursor to next line
 
     Poke.l Peek.l(?textbufferPrint),0
   EndIf                                                                                                                                                                                                                                                ;
@@ -12302,6 +12304,54 @@ Return
 
   ; copy line to textbuffer
   tmpColumn.w = Peek.w(?comWord_Column)                           ; save Columnpos as it is changed for process_highlighting
+
+  !asm
+  MOVE.w comWord_Column,-(A7)
+  MOVEA.l textbufferaddr,A3 : ADDA.w comWord_TextBufferOffset,A3
+  MOVEA.l textbufferPrint,A2
+  MOVEQ.l #$00,D3
+  MOVEQ.l #$00,D2
+  MOVE.b (A2)+,D0
+  BEQ.w JL_0_5EA0a
+    CMP.b comByte_LabelIdentifier,D0
+    BNE.w JL_0_5E9Aa
+      JSR JL_0_5EE0
+      JL_0_5E92a:
+        ADDQ.w #1,D2
+        MOVE.b (A2)+,D0                  ;copy to viewbuffer
+        BEQ.w JL_0_5EA0a
+          JL_0_5E9Aa:
+          JSR JL_0_5EE0
+      BRA.b JL_0_5E92a
+  JL_0_5EA0a:
+
+  BSR process_highlighting
+
+  ;-- Handle blockmark
+  CMPI.l #$ffffFFFF,comLong_BlockEndY
+  BEQ.w JL_0_5ED8a
+    MOVE.l comLong_DisplayLineOffset,D0 : ADD.l comLong_DisplayLine,D0
+    CMP.l comLong_BlockStartY,D0
+    BCS.w JL_0_5ED8a
+      CMP.l comLong_BlockEndY,D0
+      BHI.w JL_0_5ED8a
+        JL_0_5EC4a:
+          CMP.w visiblecolumns,D3
+          BCC.w JL_0_5ED8a
+            MOVEQ.l #$20,D0
+            MOVE.w D3,comWord_Column
+            ADDQ.w #1,D3
+        BRA.b JL_0_5EC4a
+  JL_0_5ED8a:
+
+  MOVE.w (A7)+,comWord_Column
+RTS
+
+
+
+
+
+
 
   char.b = Peek.b(Peek.l(?textbufferPrint))
   If char <> 0
@@ -12359,110 +12409,108 @@ Return
 
 
 
-;.print_sourceline_old:
-;  MOVE.l A2,-(a7)
-;  !basic
-;  If pedconfig\linenumbers Then Gosub print_linenumber
-;  !asm
-;  MOVE.l (a7)+,A2
-;
-;
-;  CMPA.l #$0,A2
-;  BNE.w JL_0_5E32
-;    RTS
-;  JL_0_5E32:
-;
-;  LEA $9(A2),A2
-;  MOVEA.l textbufferaddr,A3 : ADDA.w comWord_TextBufferOffset,A3
-;  TST.b (A2)
-;  BEQ.w JL_0_5E72                      ; print textline
+.print_sourceline_old:
+  MOVE.l A2,-(a7)
+  !basic
+  If pedconfig\linenumbers Then Gosub print_linenumber
+  !asm
+  MOVE.l (a7)+,A2
+
+
+  CMPA.l #$0,A2
+  BNE.w JL_0_5E32
+    RTS
+  JL_0_5E32:
+
+  LEA $9(A2),A2
+  TST.b (A2)
+  BEQ.w JL_0_5E72                      ; print textline
 ;    MOVEM.l D1/A0-A3/A6,-(A7)
-;    MOVEA.l A2,A0
-;
-;    MOVEQ.l #$00,D0
-;    MOVEQ.l #$00,D1 : MOVE.l comLong_DisplayLine,D1
-;
-;    MOVE.w comWord_ColumnsOffset,comWord_ColumnsOffsetTmp
-;    ;MOVE.l textbufferPrint,templine
-;    JSR print_complete_line            ; inputs: d0:x, d1:y, a0: text
-;    ;CLR.l templine
+    MOVEA.l A2,A0
+
+    MOVEQ.l #$00,D0
+    MOVEQ.l #$00,D1 : MOVE.l comLong_DisplayLine,D1
+
+    MOVE.w comWord_ColumnsOffset,comWord_ColumnsOffsetTmp
+    JSR print_complete_line            ; inputs: d0:x, d1:y, a0: text
 ;    MOVEM.l (A7)+,D1/A0-A3/A6
-;    MOVEA.l textbufferPrint,A2
-;    BRA.w JL_0_5E78
-;  JL_0_5E72:                           ; draw an empty line
-;    !basic
-;    USEPATH sourceWindow
-;    SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
-;    xMin.w = \BoxLeft
-;    yMin = \BoxTop + Peek.l(?comLong_DisplayLine) * \font\tf_YSize
-;    xMax = \BoxWidth
-;    yMax = yMin + \font\tf_YSize - 1
-;    If (xMax => xMin) AND (yMax => yMin)
-;      RectFill_ \win\RPort, xMin, yMin, xMax, yMax
-;    Else
-;      log_Print{"illegal area for JL_0_5E72!",#log_error}
-;      log_Print{Str$(xMin) + ", " + Str$(xMax)}
-;      log_Print{Str$(yMin) + ", " + Str$(yMax)}
-;    EndIf
-;
-;    Move_ \win\RPort, 0, Peek.l(?comLong_DisplayLine) * \font\tf_YSize + \font\tf_YSize ; move cursor to next line
-;    !asm
-;    MOVEA.l textbufferPrint,A2
-;    CLR.l (A2)
-;  JL_0_5E78:
-;
-;  MOVE.w comWord_Column,-(A7)
-;
-;  MOVEQ.l #$00,D3
-;  MOVEQ.l #$00,D2
-;  MOVE.b (A2)+,D0
-;  BEQ.w JL_0_5EA0
-;    CMP.b comByte_LabelIdentifier,D0
-;    BNE.w JL_0_5E9A
-;      JSR JL_0_5EE0
-;      JL_0_5E92:
-;        ADDQ.w #1,D2
-;        MOVE.b (A2)+,D0                  ;copy to viewbuffer
-;        BEQ.w JL_0_5EA0
-;          JL_0_5E9A:
-;          JSR JL_0_5EE0
-;      BRA.b JL_0_5E92
-;  JL_0_5EA0:
-;
-;  BSR process_highlighting
-;
-  ; -- handle blockmark
-;  CMPI.l #$ffffFFFF,comLong_BlockEndY
-;  BEQ.w JL_0_5ED8
-;    MOVE.l comLong_DisplayLineOffset,D0 : ADD.l comLong_DisplayLine,D0
-;    CMP.l comLong_BlockStartY,D0
-;    BCS.w JL_0_5ED8
-;      CMP.l comLong_BlockEndY,D0
-;      BHI.w JL_0_5ED8
-;        JL_0_5EC4:
-;          CMP.w visiblecolumns,D3
-;          BCC.w JL_0_5ED8
-;            MOVEQ.l #$20,D0
-;            MOVE.w D3,comWord_Column
-;            ADDQ.w #1,D3
-;        BRA.b JL_0_5EC4
-;  JL_0_5ED8:
-;
-;  MOVE.w (A7)+,comWord_Column
-;RTS
-;
-;
-;JL_0_5EE0:
-;  MOVE.b D0,$0(A3,D2.W)
-;  JL_0_5EE4:
-;  CMP.w comWord_ColumnsOffset,D2
-;  BCS.w JL_0_5EFC
-;    CMP.w visiblecolumns,D3
-;    BCC.w JL_0_5EFC
-;      MOVE.w D3,comWord_Column
-;      ADDQ.w #1,D3
-;  JL_0_5EFC:
-;RTS
+    MOVEA.l textbufferPrint,A2
+    BRA.w JL_0_5E78
+  JL_0_5E72:                           ; draw an empty line
+    !basic
+    USEPATH sourceWindow
+    SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+    xMin.w = \BoxLeft
+    yMin = \BoxTop + Peek.l(?comLong_DisplayLine) * \font\tf_YSize
+    xMax = \BoxWidth
+    yMax = yMin + \font\tf_YSize - 1
+    If (xMax => xMin) AND (yMax => yMin)
+      RectFill_ \win\RPort, xMin, yMin, xMax, yMax
+    Else
+      log_Print{"illegal area for JL_0_5E72!",#log_error}
+      log_Print{Str$(xMin) + ", " + Str$(xMax)}
+      log_Print{Str$(yMin) + ", " + Str$(yMax)}
+    EndIf
+
+    Move_ \win\RPort, 0, Peek.l(?comLong_DisplayLine) * \font\tf_YSize + \font\tf_YSize ; move cursor to next line
+    !asm
+    MOVEA.l textbufferPrint,A2
+    CLR.l (A2)
+  JL_0_5E78:
+
+  MOVE.w comWord_Column,-(A7)
+
+  MOVEA.l textbufferaddr,A3 : ADDA.w comWord_TextBufferOffset,A3
+  MOVEQ.l #$00,D3
+  MOVEQ.l #$00,D2
+  MOVE.b (A2)+,D0
+  BEQ.w JL_0_5EA0
+    CMP.b comByte_LabelIdentifier,D0
+    BNE.w JL_0_5E9A
+      JSR JL_0_5EE0
+      JL_0_5E92:
+        ADDQ.w #1,D2
+        MOVE.b (A2)+,D0                  ;copy to viewbuffer
+        BEQ.w JL_0_5EA0
+          JL_0_5E9A:
+          JSR JL_0_5EE0
+      BRA.b JL_0_5E92
+  JL_0_5EA0:
+
+  BSR process_highlighting
+
+  ;-- Handle blockmark
+  CMPI.l #$ffffFFFF,comLong_BlockEndY
+  BEQ.w JL_0_5ED8
+    MOVE.l comLong_DisplayLineOffset,D0 : ADD.l comLong_DisplayLine,D0
+    CMP.l comLong_BlockStartY,D0
+    BCS.w JL_0_5ED8
+      CMP.l comLong_BlockEndY,D0
+      BHI.w JL_0_5ED8
+        JL_0_5EC4:
+          CMP.w visiblecolumns,D3
+          BCC.w JL_0_5ED8
+            MOVEQ.l #$20,D0
+            MOVE.w D3,comWord_Column
+            ADDQ.w #1,D3
+        BRA.b JL_0_5EC4
+  JL_0_5ED8:
+
+  MOVE.w (A7)+,comWord_Column
+RTS
+
+
+JL_0_5EE0:
+  MOVE.b D0,$0(A3,D2.W)
+  JL_0_5EE4:
+  CMP.w comWord_ColumnsOffset,D2
+  BCS.w JL_0_5EFC
+    CMP.w visiblecolumns,D3
+    BCC.w JL_0_5EFC
+      MOVE.w D3,comWord_Column
+      ADDQ.w #1,D3
+  JL_0_5EFC:
+RTS
 
 ;JL_0_5EFE:
 ;  TST.w comWord_DoTokenize
@@ -14371,13 +14419,13 @@ Return
   If sourceWindow\cursorState = True Then Gosub cursor_onoff_force
 Return
 
-.cursor_on:
-  !regs2stack
-  !basic
-  If sourceWindow\cursorState = False Then Gosub cursor_onoff_force
-  !asm
-  !stack2regs
-RTS
+;.cursor_on:
+;  !regs2stack
+;  !basic
+;  If sourceWindow\cursorState = False Then Gosub cursor_onoff_force
+;  !asm
+;  !stack2regs
+;RTS
 
 .cursor_off:
   !regs2stack
@@ -15369,7 +15417,7 @@ Return
 
 
 .deletekey:
-  log_Print{"deletekey"}
+  log_Print{"deletekey, mode= " + Str$(sourceWindow\deleteMode)}
   Poke.b ?doedit2,2
   Poke.w ?comWord_KeyBeforeReturn,last_vankey
 
@@ -16633,7 +16681,7 @@ Return
 
 .do_VANILLAKEY_BACKSPACE
   log_Print{"BACKSPACE"}
-  If Peek.w(?comWord_Column)>0 OR Peek.w(?comWord_ColumnsOffset)>0
+  If Peek.w(?comWord_Column) > 0 OR Peek.w(?comWord_ColumnsOffset) > 0
     !asm
     JSR moveCursorLeft
     !basic
@@ -16643,12 +16691,12 @@ Return
     Gosub deletekey
     delete_mode = 0
   Else
-      ;log_Print{"join lines ?"}
       If Peek.l(?comLong_BlockEndY) <> $ffffFFFF
         Gosub deletekey
       Else
         actualLine.l = Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine)
         If actualLine > 0
+          log_Print{"join lines!"}
           !asm
           MOVE.l comPtr_CurrentSourceLine,A4
           JSR storeline
@@ -18622,6 +18670,7 @@ RTS
     JSR gotoline
     !basic
     Gosub update_vertscroller
+    Gosub cursor_on_bas
     !asm
  'ret:
 RTS
