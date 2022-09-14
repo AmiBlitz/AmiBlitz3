@@ -31,3 +31,6 @@ https://www.amiblitz.de                         | various documentation about Am
 https://www.amiforce.de                         | additional information and fora
 
 
+## Known Problems
+Under OS 3.2  workbench does not react anymore after exiting, due to a bug with removing an assign.
+That problem has been solved with OS 3.2.1.
