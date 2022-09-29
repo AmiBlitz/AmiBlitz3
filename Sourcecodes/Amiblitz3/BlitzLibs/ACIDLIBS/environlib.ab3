@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 8
+; NumberOfBuilds  = 21
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 129
-; CursorColumn    = 3
-; LabelSearch     = ""
+; CursorLine      = 241
+; CursorColumn    = 1
+; LabelSearch     = "copy"
 ; LabelRemark     = 25
 ; LabelAll        = 20
 ; LabelPosition   = 0
@@ -41,16 +41,16 @@
 ; -------------------------------------------------------
 ; Max File        = 5
 ; Max GadgetList  = 5
-; Max Screen      = 5
 ; Max Shape       = 100
-; Max Window      = 5
 ; Max Bank        = 5
-; Max IntuiFont   = 5
 ; Max MenuList    = 5
 ; Max BlitzFont   = 4
 ; Max GTList      = 5
 ; Max Palette     = 4
 ; Max BitMap      = 10
+; Max Screen      = 5
+; Max IntuiFont   = 5
+; Max Window      = 5
 ; Max IconInfo    = 1
 ; Max MUIObject   = 50
 ; Max AsyncReq    = 4
@@ -83,25 +83,26 @@
 ;Aug28th
 ; fixed WBDepth cos getscreen data was only fetching 84 bytes
 ; add 060 /FPU values
-!libheader{#environlib,init,0,0,0}
+
+!libheader{#environlib,init,0,finit,0}
 
 !afunction{3}
 !args
 !libs
 !subs{dowbwidth,0,0}
-!name{"WBWidth",""}
+!name{"WBWidth","returns the width of the WB-screen"}
 
 !afunction{3}
 !args
 !libs
 !subs{dowbhite,0,0}
-!name{"WBHeight",""}
+!name{"WBHeight","returns the height of the WB-screen"}
 
 !afunction{2}
 !args
 !libs
 !subs{dowbdepth,0,0}
-!name{"WBDepth",""}
+!name{"WBDepth","returns the colour-depth of the WB-screen"}
 
 !afunction{2}
 !args
@@ -118,14 +119,14 @@
 !afunction{3}
 !args
 !libs
-!subs{docr_vbr,0,0}
-!name{"cr_vbr",""}
+!subs{do_checkvbr,0,0}
+!name{"VBRcheck","checks if the vector base register (VBR) has been moved to fastram (returns the current vbr address)"}
 
 !afunction{2}
 !args
 !libs
 !subs{doexecversion,0,0}
-!name{"ExecVersion",""}
+!name{"ExecVersion","returns the version of exec.library"}
 
 !afunction{2}
 !args
@@ -139,8 +140,20 @@
 !subs{doprocessorfpu,0,0}
 !name{"ProcessorFPU","0=none, 1=68881, 2=68882, 3=68040, 4=68060"}
 
-init:!nullsub{codeinit,0,0,#intuitionlib,#la6}
+!afunction{3}
+!args
+!libs
+!subs{do_movevbr,0,0}
+!name{"VBRmove","moves the vector base register (VBR) to fastram, if not already done"}
 
+!afunction{2}
+!args
+!libs
+!subs{do_clearvbr,0,0}
+!name{"VBRclear","moves the VBR back to address 0"}
+
+init: !nullsub{codeinit,0,0,#intuitionlib,#la6}
+finit:!nullsub{codefinit,0,0}
 !libfin
 
 ;********************* CODE BELOW ************************
@@ -211,15 +224,23 @@ execver_ :Dc 0
                                                                                                                                                                                                                                                         
 
   ;-- check vbr
-  MOVEQ #0,d2
-  CMP #2,d1 : BCS 'skip
-    MOVE.l 4,a6
-    JSR -150(a6)                                      ; _Superstate
-    Dc $4e7a,$2801
-    JSR -156(a6)                                      ; _Userstate
- 'skip:
-  MOVE.l d2,vbr_
+  JSR do_checkvbr
 RTS
+
+.codefinit:
+RTS
+
+
+.getvbr:
+  MOVE.l a5,a0
+  Dc $4e7a,$2801  ;movec vbr,d7
+RTE
+
+.setvbr:
+  MOVE.l a5,a0
+  Dc $4e7b,$7801 ;movec d7,vbr
+RTE
+
 
 .dowbwidth
   MOVE.l wbwidth_(pc),d0
@@ -249,9 +270,65 @@ RTS
   MOVE fpu_(pc),d0
 RTS
 
-.docr_vbr
-  MOVE.l vbr_,d0
+.do_checkvbr:
+  MOVEQ #0,d0
+  MOVE.w cpu_(pc),d1
+  CMP #1,d1 : BCS 'skipcheck                          ; check at least 68010
+    MOVEQ #0,d7
+    MOVEA.l 4,A6
+    JSR -150(A6)      ;_LVOSuperState
+    Dc $4E7A,$7801    ;movec vbr,D7
+    JSR -156(A6)      ;_LVOUserState
+    MOVE.l d7,vbr_
+    MOVE.l d7,d0
+ 'skipcheck:
 RTS
+
+.do_movevbr:
+  MOVE.w cpu_(pc),d1
+  CMP #1,d1 : BCS 'skipmove
+    MOVE.l vbr_(pc),d0
+    TST.l d0
+    BNE.s 'skipmove
+      MOVE.l 4,A6
+      MOVE.l #$400,d5
+      MOVE.l d5,d0
+      MOVEQ  #0,d1      ; system will use fastmem by default if available
+      JSR -198(a6)      ; AllocMem_
+      MOVE.l d0,d7
+      BEQ.s 'skipmove
+        SUB.l a0,a0     ; source: 0
+        MOVE.l d0,a1    ; dest: allocated memory
+        MOVE.l d5,d0    ; memsize
+        JSR -624(A6)    ;_LVOCopyMem (A0:source, A1:dest, D0:size)
+        JSR -150(A6)    ;_LVOSuperState
+        Dc $4E7B,$7801  ;movec d7,vbr
+        JSR -156(A6)    ;_LVOUserState
+        MOVE.l d7,vbr_
+        MOVE.l d7,d0
+   'skipmove
+RTS
+
+.do_clearvbr:
+  MOVE.w cpu_(pc),d1
+  CMP #1,d1 : BCS 'notmoved
+    MOVE.l vbr_(pc),d7
+    TST.l d7
+    BEQ.s 'notmoved
+      MOVEA.l 4,A6
+      MOVEQ #0,d7
+      JSR -150(A6)      ;_LVOSuperState
+      Dc $4E7B,$7801    ;movec d7,vbr
+      JSR -156(A6)      ;_LVOUserState
+      MOVE.l vbr_(pc),A1
+      MOVE.l #$400,d0
+      JSR -210(a6)      ;freemem(block, bytesize)
+      MOVE.l #0,vbr_
+      MOVEQ #1,d0
+ 'notmoved
+  MOVEQ #0,d0
+RTS
+
 
 .doexecversion
   MOVE execver_(pc),d0
