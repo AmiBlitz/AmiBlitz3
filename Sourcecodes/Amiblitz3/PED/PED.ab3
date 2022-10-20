@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.6
-; NumberOfBuilds  = 2090
+; NumberOfBuilds  = 2190
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 9086
-; CursorColumn    = 36
-; LabelSearch     = ""
+; CursorLine      = 8680
+; CursorColumn    = 3
+; LabelSearch     = "do_paste_bas"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -261,6 +261,33 @@ Macro mul48f
 End Macro
 
 
+NEWTYPE.readcache
+  *fib.FileInfoBlock
+
+  filehandle.l
+  filelen.l
+
+  bufferptr.l       ; pointer to memarea allocated for cache
+  bufferoffset.l    ; current read byte in buffer
+
+  cacheptr.l
+  cachelen.l
+  offset.l
+  currentbyte.b
+
+  readlen.l
+  chunklen.l
+  blocklen.l
+
+  *cH.clipboardHandle
+  cb_linecount.l
+  cb_eol.b
+
+  mode.b           ; PasteMode: File or Clipboard
+End NEWTYPE
+DEFTYPE.readcache readcache
+
+
 
 NEWTYPE.pedconfig
   no_welcome.b
@@ -296,6 +323,7 @@ NEWTYPE.pedconfig
   blinkrate.b
   italic_remarks.b
   bold_tokens.b
+  tab_size.w
 
   autolayout.b
   al_leftspace.w
@@ -392,8 +420,13 @@ NEWTYPE.ped
   defaultScreenTitle.s
 
   errorCode.w
+
+  mempool.l
+  LabelIdentifier.b
+  LabelListChanged.w
 End NEWTYPE
 DEFTYPE.ped ped
+ped\LabelIdentifier = Peek.b(?comByte_LabelIdentifier)
 ped\check_existsfile = False
 ped\extention_info = ".info"
 ped\extention_xtra = ".xtra"
@@ -767,6 +800,24 @@ Macro isLetter
  'JL_0_60E8`@:
 End Macro
 
+Function.l PED_AllocMem{memsize.l}
+SHARED ped
+  memptr.l = AllocPooled_(ped\mempool, memsize + 4)
+  If memptr <> 0
+    Poke.l memptr, memsize + 4
+    Function Return memptr + 4
+  Else
+    Function Return False
+  EndIf
+End Function
+
+Statement PED_FreeMem{memptr.l}
+SHARED ped
+;  log_Print{"loesche zeile: " + Peek.s(memptr+9)}
+;  log_Print{"speicher: " + Str$(Peek.l(memptr-4))}
+  FreePooled_ ped\mempool,memptr-4,Peek.l(memptr-4)
+End Statement
+
 Macro newalloc                 ; d0: memSize
   ADDQ.l #4,d0
   MOVE.l _execbase,a6
@@ -794,7 +845,244 @@ End Macro
 ; FUNCTIONDEFINITIONS
 ; ------------------------------------------------------
 .FUNCTIONS
-Function TEDGetConstantValue{ptr_constantbase.l,cname$}
+Function.b PED_CheckLabelRelevance{testString.s}
+SHARED ped
+  tmppos.w = 1
+  While Mid$(testString,tmppos,1) = " "
+    tmppos + 1
+  Wend
+  Repeat
+    tmpchar.b = Asc(Mid$(testString,tmppos,1))
+    If tmpchar = ped\LabelIdentifier Then Function Return True
+    If tmpchar = 59 Then Function Return True    ; ";"
+    If tmpchar = $80
+      If Asc(Mid$(testString,tmppos+1,1))= $2d OR Asc(Mid$(testString,tmppos+1,1)) = $ae ; Token "Stop" or Token "TRAP"
+        Function Return True
+      EndIf
+    EndIf
+    tmppos + 1
+  Until tmpchar <= 0
+  Function Return False
+End Function
+
+Function.b PED_ReadFileCache{}
+SHARED ped,readcache, *PreProcessor.preprocessor
+
+  log_Print{"read file to cache ..."}
+  If ped\sourceFileHandle  = 0
+    error{"No file handle set!!"}
+    Function Return False
+  EndIf
+
+  readcache\mode = $00
+
+  readcache\filehandle = ped\sourceFileHandle                 ; file
+  readcache\blocklen   = $2000                                 ; length
+  readcache\bufferoffset = 0
+
+  If readcache\readlen <= 0                   ; no file yet!
+;    log_Print{"no file yet in cache"}
+    ExamineFH_ readcache\filehandle,readcache\fib
+    readcache\filelen = readcache\fib\fib_Size
+
+    If readcache\filelen > readcache\cachelen
+ ;     log_Print{"allocating cachememory..."}
+      If readcache\cacheptr Then FreeVec_ readcache\cacheptr
+      readcache\cacheptr = AllocVec_(readcache\filelen,#MEMF_ANY)
+      readcache\cachelen = readcache\filelen
+    End If
+
+;    log_Print{"Filelen : " + Str$(readcache\filelen)}
+;    log_Print{"Cachelen: " + Str$(readcache\cachelen)}
+;    log_Print{"start reading to ..." + Hex$(readcache\cacheptr) + " from filehandle " + Hex$(readcache\filehandle)}
+    readcache\readlen = Read_ (readcache\filehandle,readcache\cacheptr,readcache\filelen)
+;    log_Print{"Readlen : " + Str$(readcache\readlen) + " from " + Hex$(readcache\filehandle)}
+
+    ;ex.s = LCase$(dos_GetExt{Peek.s(&readcache\fib\fib_FileName)})
+    ;If ex = "ab2" OR ex = "ab3" OR ex = "asc"
+;    If ped\DoTokenize
+;      log_Print{"tokenizing imported text..."}
+      ; process the ascii data in sourcebuff length and write the tokenized source into destbuffer
+      ; the return value is the length of the tokenized text
+      ; sourcebuff and destbuff might be the same pointer
+      ; preproc_Tokenize{*tn.preprocessor,sourcebuff.l,destbuff.l,bytelength.l}
+;      log_Print{Peeks$(readcache\cacheptr,readcache\readlen)}
+;      readcache\readlen = preproc_Tokenize{*PreProcessor,readcache\cacheptr,readcache\cacheptr,readcache\readlen}
+ ;     log_Print{"done "+ Str$(readcache\readlen) + " bytes"}
+;    End If
+    readcache\offset = 0
+  End If
+
+  readcache\chunklen = readcache\blocklen
+  If readcache\chunklen > readcache\readlen-readcache\offset Then readcache\chunklen = readcache\readlen-readcache\offset
+
+;  log_Print{"chunklen: " + Str$(readcache\chunklen)}
+;  log_Print{"cacheptr: " + Str$(readcache\cacheptr)}
+
+  If readcache\chunklen > 0
+    CopyMem_ readcache\cacheptr + readcache\offset,readcache\bufferptr,readcache\chunklen
+    readcache\offset + readcache\chunklen
+    Function Return True
+  Else
+    readcache\chunklen = 0
+    readcache\readlen = 0
+    Function Return False
+  End If
+
+  ;MOVE.l readcache_chunklen,d0
+  ;MOVE.l readcache_chunklen,d6
+  ;MOVEA.l comPtr_DosBuffer,A5
+  ;MOVE.l comPtr_SourceFileHandle,D7
+  ;TST.l D6
+
+End Function
+
+Function.b PED_ReadClipboard{}
+SHARED ped,readcache
+
+  log_Print{"read from clipboard"}
+  readcache\mode = $FF : readcache\cb_eol = False
+  readcache\chunklen = 0
+  readcache\bufferoffset = 0
+  If readcache\cH = Null Then readcache\cH = clipboard_Open{0} : readcache\cb_linecount = 0 ; open clipboard and reset line count
+
+  If readcache\cH
+    clipboard_text.s = ""
+    If clipboard_HasMoreLines{readcache\cH}
+      clipboard_text.s = clipboard_GetNextLine{readcache\cH}
+      ;log_Print{">>" + clipboard_text}
+      quoted.w = False
+      comment.w = False
+      For n.l = 0 To FLen(clipboard_text) - 1
+        cchar.w = Peek.b(&clipboard_text+n) & $FF
+        If cchar = $22 Then quoted = 1-quoted ; detect quotes
+        If quoted=False AND cchar=@";" Then comment = True
+        If cchar = $a0 Then cchar = @" "      ; non-breaking space => standard space
+        If cchar > 127 AND quoted=False AND comment=False Then cchar = @"?"  ; replace non-ASCII characters with ?, if not in string
+        Poke.b &clipboard_text+n,cchar
+      Next
+
+      readcache\chunklen = FLen(clipboard_text) ; put this line to copy buffer
+      If readcache\chunklen > 0 Then CopyMem_ &clipboard_text,readcache\bufferptr,readcache\chunklen
+      readcache\cb_linecount + 1
+
+      ; PED clipboard fix: if we have more than 1 line in clipboard,
+      ; add the 0-Byte To the last line to keep PED from freezing
+      If clipboard_HasMoreLines{readcache\cH} = False AND readcache\cb_linecount > 1
+        readcache\chunklen = FLen(clipboard_text) + 1
+      EndIf
+    Else
+      ;log_Print{"clipboard empty."}
+      clipboard_Free{readcache\cH}
+      readcache\cH = Null
+      readcache\cb_linecount = 0
+      readcache\cb_eol = True
+      readcache\chunklen = 0
+    End If
+  End If
+
+  If readcache\chunklen = 0
+    Function Return False
+  Else
+    Function Return True
+  EndIf
+End Function
+
+Function.b PED_ReadNextByte{}
+SHARED ped,readcache
+
+  morebytes.b = True
+
+  Repeat
+    readcache\chunklen - 1
+
+    If readcache\chunklen >=0
+      readcache\currentbyte = Peek.b(readcache\bufferptr + readcache\bufferoffset)
+      readcache\bufferoffset + 1
+      Function Return True
+    Else
+      If readcache\mode = $00
+        morebytes = PED_ReadFileCache{}
+      Else
+        morebytes = PED_ReadClipboard{}
+      EndIf
+    EndIf
+  Until morebytes = False
+
+  Function Return False
+End Function
+
+Function.s PED_ReadNextLine{}
+SHARED ped,readcache
+
+  readexit.b = False
+  resultString.s = ""
+
+  If readcache\mode AND readcache\cb_eol Then Function Return ""
+
+  If PED_ReadNextByte{}
+    Repeat
+      If readcache\currentbyte = $0A    ; this is the EOL of ClipBoard!
+        Function Return resultString
+      EndIf
+      If readcache\currentbyte = $00 Then Function Return resultString
+      If readcache\currentbyte <> $0D
+        resultString + Chr$(readcache\currentbyte)
+      EndIf
+      ;log_Print{Hexb$(readcache\currentbyte) + " : " + Chr$(readcache\currentbyte)}
+    Until NOT PED_ReadNextByte{} OR (readexit = True)
+  EndIf
+  ;log_Print{"ReadNextLine: [" + resultString + "]"}
+  Function Return resultString
+
+End Function
+
+Function.l PED_CreateNewSourceLine{newline.s}
+SHARED ped
+
+  _strLen.w = FLen(newline) + 1
+  If _strLen = 1 Then newline = Chr$(0)
+
+  lineaddr.l = PED_AllocMem{_strLen + 9}
+
+  Poke.l lineaddr,0          ;clear pointer to prevline
+  Poke.l lineaddr+4,0        ;clear pointer to nextline
+  Poke.b lineaddr+8,_strLen  ;store length of string
+
+                             ;copy string to new sourceline
+  For i.w = 0 To _strLen - 1
+    Poke.b lineaddr + 9 + i,Peek.b(&newline + i)
+    If Asc(Mid$(newline,i+1,1)) = ped\LabelIdentifier Then ped\LabelListChanged = True
+  Next i
+  Poke.b lineaddr + 9 + _strLen,0
+
+  Function Return lineaddr
+
+End Function
+
+Function PED_InsertSourceLine{*newLine.sourceLine,tmptsl.l,tmplsl.l, tmpcsl.l}
+
+  Poke.l tmptsl, Peek.l(tmptsl) + 1
+
+  *currentLine.sourceLine = Peek.l(tmpcsl)
+  *nextLine.sourceLine = *currentLine\nextLine
+  If *nextLine
+    *newLine\nextLine = *nextLine
+    *nextLine\previousLine = *newLine
+  Else
+    Poke.l tmplsl, *newLine
+  EndIf
+
+  *newLine\previousLine = *currentLine
+  *currentLine\nextLine = *newLine
+  Poke.l tmpcsl,*newLine
+
+  Function Return True
+
+End Function
+
+
+Function PED_GetConstantValue{ptr_constantbase.l,cname$}
   *cb.l = ptr_constantbase
   If *cb
     cfound.b = False
@@ -1193,7 +1481,7 @@ End Function
 Statement PED_PrintTextStandard{tx.w, ty.w, *textaddr.l}
 SHARED pedconfig,sourceWindow,AB3Pen()
 
-  log_Print{"print_standard_text"}
+  ;log_Print{"print_standard_text"}
 
   ; copy the current Line To a tempBuffer
   For i.w = 0 To Len(Peek$(*textaddr))
@@ -1206,8 +1494,8 @@ SHARED pedconfig,sourceWindow,AB3Pen()
   tlength.w = Len(tmpString$)
   If tlength > sourceWindow\visibleColumns Then tlength = sourceWindow\visibleColumns
 
-  tposy.w = tx * sourceWindow\font\tf_YSize + sourceWindow\font\tf_Baseline + sourceWindow\BoxTop
-  tposx.w = ty * sourceWindow\font\tf_XSize + sourceWindow\BoxLeft
+  tposy.w = ty * sourceWindow\font\tf_YSize + sourceWindow\font\tf_Baseline + sourceWindow\BoxTop
+  tposx.w = tx * sourceWindow\font\tf_XSize + sourceWindow\BoxLeft
 
   Move_ sourceWindow\win\RPort, tposx, tposy
   SetAPen_ sourceWindow\win\RPort,AB3Pen(#AB3_cother)
@@ -1650,7 +1938,6 @@ Function.b cutLine{*sl.sourceLine,tempfsl.l}                              ; remo
       Poke tempfsl, *nextLine
     EndIf
     If *nextLine <> 0 Then *nextLine\previousLine = *prevLine
-
 
     Function Return True
 End Function
@@ -2350,10 +2637,19 @@ End Statement
 
 
 Statement PED_CloseFile{fh.l}
-  SHARED ped
-  If fh<>0
+  SHARED ped,readcache
+  If fh <> 0
     log_Print{"closing file handle: " + Hex$(fh)}
     Close_ fh : ped\sourceFileHandle = 0
+    If readcache\cacheptr
+      FreeVec_ readcache\cacheptr
+      readcache\cacheptr = Null
+      readcache\cachelen = 0
+      readcache\readlen = 0
+      readcache\chunklen = 0
+      readcache\filelen = 0
+      ;ClearType readcache
+    EndIf
   Else
     log_Print{"file already closed at " + Hex$(fh)}
   EndIf
@@ -2370,17 +2666,21 @@ SHARED ped, pedconfig
   ; -- check extension
   fext.s = LCase$(dos_GetExt{ofname})
   log_Print{"checking file extention of file: " + ofname + " [" + fext + "]"}
-  If fext = "bb2" OR fext = "ab2" OR fext = "ab3" OR fext = "bb"
-    log_Print{"activating tokenization"}
-    ped\DoTokenize = $FFFF
-    ped\flag_tokenization = $FFFF
-  EndIf
-
-  If fext = "txt" OR fext = "guide"
-    log_Print{"deactivating tokenization"}
-    ped\DoTokenize = False
-    ped\flag_tokenization = False
-    If fext = "guide" Then ped\amigaguide = True
+  log_Print{"smart tok: " +Str$(pedconfig\smart_tokenization)}
+  log_Print{"do tok: " + Str$(ped\DoTokenize)}
+  If pedconfig\smart_tokenization <> 0
+    If fext = "bb2" OR fext = "ab2" OR fext = "ab3" OR fext = "bb"
+      log_Print{"activating tokenization"}
+      ped\DoTokenize = $FFFF
+      ped\flag_tokenization = $FFFF
+    Else
+      If fext = "txt" OR fext = "guide"
+        log_Print{"deactivating tokenization"}
+        ped\DoTokenize = False
+        ped\flag_tokenization = False
+        If fext = "guide" Then ped\amigaguide = True
+      EndIf
+    EndIf
   EndIf
 
   If fext = "asm"
@@ -2391,16 +2691,17 @@ SHARED ped, pedconfig
 
   fh.l = Open_(&ofname, accessmode)
   If fh
-    log_Print{"file opened successfully, handle: " + Hex$(fh)}
+;    log_Print{"file opened successfully, handle: " + Hex$(fh)}
     Function Return fh
   Else
-    log_Print{"could not open file <" + ofname + ">"}
+    fileerror.l = IoErr_
+    log_Print{"could not open file <" + ofname + "> for reason: " + Str$(fileerror)}
     log_Print{"menuload: " + Str$(menuload)}
 
     If menuload = False
-      error{"Couldn't open file!"}
+      error{"Couldn't open file, DOS-Error: " + Str$(fileerror)}
     Else
-      error{"Couldn't open file!"}
+      error{"Couldn't open file, DOS-Error: " + Str$(fileerror)}
     EndIf
   EndIf
 
@@ -2663,9 +2964,9 @@ If ende Then Goto abnormal_exit
     no_scrollrate = True
   EndIf
 
+  pedconfig\tab_size = Peek.w (?tab_size)
   pedconfig\blinkrate = dos_GetToolValue{"cursorblinkrate",5}
   Poke.l ?wheelstep, dos_GetToolValue{"MOUSEWHEELSTEP",6}     ; added to make Mousewheelsteprate changeable  tomsmart1
-
 
   ; --- ASL-Requestersettings ------------------------------
   pedconfig\asl_x = dos_GetToolValue{"ASLREQ_X" ,20}
@@ -2861,7 +3162,6 @@ TokenHashMapFile.s         = dos_AddPart{pedconfig\systemDir,"TokenList.hashmap"
 *PreProcessor.preprocessor = preproc_Create{}
 Poke.l ?comPtr_PreProcessor,*PreProcessor
 preproc_LoadTokens{*PreProcessor,TokenHashMapFile}
-*rc_fib.FileInfoBlock = AllocDosObject_ (#DOS_FIB,0)
 
 !log_AvailMem{"after preparing preprocessor/tokenizer"}
 
@@ -2959,12 +3259,13 @@ begin1:
   MOVE.b #1,$20(a0)
 
   !basic
-  Poke.l ?comPtr_MemPool, CreatePool_(#MEMF_CLEAR,40000,40000)
-  If Peek.l(?comPtr_MemPool) = 0
+  ped\mempool = CreatePool_(#MEMF_CLEAR,40000,40000)
+  If ped\mempool = 0
     log_Print{"Could not allocate enough memory. PED closes down now.",#log_error}
     Pop If
     Goto exit_PED_nomem
   EndIf
+  Poke.l ?comPtr_MemPool,ped\mempool
 
   If ted_OpenLib{0}
     TEDSetJumpTable  {?COMDATABASE}
@@ -2994,6 +3295,14 @@ begin1:
   !newalloc
   MOVE.l D0,comPtr_DosBuffer
   BEQ.w exit_PED_closelibraries
+
+  MOVE.l d0,-(a7)
+  !basic
+  readcache\bufferptr = Peek.l(?comPtr_DosBuffer)
+  readcache\fib = AllocDosObject_ (#DOS_FIB,0)
+  *rc_fib.FileInfoBlock = readcache\fib
+  !asm
+  MOVE.l (a7)+,d0
 
   MOVEA.l D0,A0
   LEA $2000(A0),A0
@@ -3096,7 +3405,7 @@ begin1:
 .AUTOLOAD_SOURCE
   If ped\currentFile <> ""
     Gosub cursor_off_bas
-    loadsourcefilename$ = ped\sourceFileComplete
+    loadsourcefilename.s = ped\sourceFileComplete
     Gosub load_source
     Gosub cursor_onoff_force
   Else
@@ -3154,18 +3463,19 @@ exit_PED_closeall:
   exit_PED_nodoslib:
   log_Print{"freeing memory..."}
   preproc_Free{*PreProcessor} : *PreProcessor = Null
-  If *rc_fib Then FreeDosObject_ #DOS_FIB,*rc_fib  : *rc_fib = Null
-  rc_cacheptr.l = Peek.l(?readcache_cacheptr)
-  If rc_cacheptr
-    FreeVec_ rc_cacheptr
-    Poke.l ?readcache_cacheptr,Null
-    Poke.l ?readcache_cachelen,0
-    Poke.l ?readcache_readlen ,0
+
+  If readcache\fib Then FreeDosObject_ #DOS_FIB,readcache\fib  : readcache\fib = Null
+
+  If readcache\cacheptr
+    FreeVec_ readcache\cacheptr
+    readcache\cacheptr = Null
+;    readcache\cachelen = 0
+    readcache\readlen = 0
   End If
 
   exit_PED_nomem:
   log_Print{"deleting mempool..."}
-  DeletePool_ Peek.l(?comPtr_MemPool)
+  DeletePool_ ped\mempool
 
   !asm
   !exitasm             ; exitasm jumps into basic mode
@@ -3278,7 +3588,7 @@ End
   ;      MOVEM.l (A7)+,D0-D3/A0-A2
   ;    exit_updateblock:
 
-      JSR JL_0_55AA  ; insert new parsed line into source
+      JSR insertNewLineTokString1  ; insert new parsed line into source
   ;
       MOVE.w comWord_DoTokenize,D0
       BEQ.w JL_0_CC6
@@ -3515,7 +3825,7 @@ Return
    WZPrint "SET_SCROLLRATE"   , pedconfig\scroll_rate
 ; EndIf
 
- WZPrint "SET_TAB_SIZE"       , Peek.w(?tab_size)
+ WZPrint "SET_TAB_SIZE"       , pedconfig\tab_size
  WZPrint "SET_CURSORBLINKRATE", pedconfig\blinkrate
  If OSVersion = #AmigaOS4                           ; check if OS4
    WZDisable "SET_MOUSEWHEELSTEP"                   ; yes disable it becau we use the System value
@@ -4034,7 +4344,10 @@ Return
    pedconfig\scroll_rate =        WZInput("SET_SCROLLRATE")
    pedconfig\cursorStyle =        WZInput("SET_CURSORSTYLE")
    If pedconfig\scroll_rate = 0 Then no_scrollrate = True Else vvblank_SetFreq{pedconfig\scroll_rate}
-   Poke.w ?tab_size      ,        WZInput("SET_TAB_SIZE")
+
+   pedconfig\tab_size =  WZInput("SET_TAB_SIZE")
+   Poke.w ?tab_size, pedconfig\tab_size
+
    pedconfig\blinkrate =          WZInput("SET_CURSORBLINKRATE")
    Poke.l ?wheelstep     ,        WZInput("SET_MOUSEWHEELSTEP")     ; added to make Mousewheelsteprate changeable, no special OS4 handling nessacary because the System settings are used by any event  tomsmart1
    pedconfig\autolayout=         -WZInput("SET_AUTOLAYOUT")
@@ -4484,10 +4797,12 @@ RTS
   log_Print{"open xtrafile: " + ped\sourceFileComplete + ped\extention_xtra}
   *xtra_fh.l = Open_(ped\sourceFileComplete + ped\extention_xtra,accessmode)
   MOVE.l d0,d7
- !asm
+  !asm
 RTS
 
 .menu_load:
+  log_Print{"menu Load called."}
+
   If Peek.w(?comWord_SourceChanged)
     dummy.l = ask{!TRANS{"You have unsaved changes!"},!TRANS{"Continue|Cancel"},!TRANS{"Load File"}}
     If dummy = 0
@@ -4504,8 +4819,8 @@ RTS
   EndIf
 
   If aslfr_Request {1,False,False,False,-1,False}
-    loadsourcefilename$ = aslfr_GetNextFile{}
-    If loadsourcefilename$ <> ""
+    loadsourcefilename.s = aslfr_GetNextFile{}
+    If loadsourcefilename.s <> ""
       Gosub load_source
     EndIf
   EndIf
@@ -4526,17 +4841,17 @@ Return
   Gosub set_pointer_busy_bas
   LockAllOpenWZWin{}
 
-  If loadsourcefilename$ <> ""
-    log_Print{"getting extension for ["+loadsourcefilename$ + "]"}
-    ex.s = dos_GetExt{loadsourcefilename$}
-    log_Print{"loading source <" + loadsourcefilename$ + ">, <" + ex + ">"}
+  If loadsourcefilename.s <> ""
+    log_Print{"getting extension for ["+loadsourcefilename.s + "]"}
+    ex.s = dos_GetExt{loadsourcefilename.s}
+    log_Print{"loading source <" + loadsourcefilename.s + ">, <" + ex + ">"}
   Else
     ex.s = "???"
   End If
 
   If ex.s = "ab3" OR ex.s = "ab2" OR ex.s = "bb2" OR ex.s = "bak"
     ; call sourceload routine from compiler
-    GetD0 &loadsourcefilename$
+    GetD0 &loadsourcefilename.s
     !asm
     MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
     !ComData_JSR{comFunc_LoadSource}
@@ -4582,8 +4897,8 @@ Return
   JSR update_scroller
   JSR update_labelstuff
   JSR _redraw
-  !basic
 
+  !basic
   UnlockAllOpenWZWin{ }
   Gosub set_pointer_normal_bas
   Poke.b ?convert, 0
@@ -4592,28 +4907,26 @@ Return
 .other_loading_routine:
   log_Print{"other loading routine called..."}
 
-  ped\sourceFileHandle = PED_OpenFile{loadsourcefilename$,#HUNK_RELOC_16__MODE_OLDFILE,True}
+  ped\sourceFileHandle = PED_OpenFile{loadsourcefilename.s,#HUNK_RELOC_16__MODE_OLDFILE,True}
+  ped\sourceFileComplete = loadsourcefilename
+
+  log_Print{"... file " + loadsourcefilename + " opened with handle " + Hex$(ped\sourceFileHandle)}
+
   Poke.w ?comWord_DoTokenize, ped\DoTokenize
   Poke.w ?flag_tokenization, ped\flag_tokenization
   Poke.b ?convert, ped\convert
 
   log_Print{"loading file to cache"}
-
-  !asm
-  JSR source_read_from_file_cached
-  BNE.w JL_0_F50
-    !basic
+  If NOT PED_ReadFileCache{}
+    log_Print{"could not read file...",#log_error}
     PED_CloseFile{ped\sourceFileHandle}
-    !asm
-    ;JSR close_sourcefile
-  JL_0_F50:
-
-  MOVEM.l D0-D7/A0-A5,-(A7)
-  !basic
-  NameFromFH_ ped\sourceFileHandle,&ped\sourceFileComplete,$FE
-  If Peek.b(?convert) = 1
-    ped\sourceFileComplete = UnLeft$(ped\sourceFileComplete,4) + ".bb2"
+    Pop If : Return
   EndIf
+
+  If Peek.b(?convert) = 1
+    ped\sourceFileComplete = UnLeft$(ped\sourceFileComplete,4) + ".ab3"
+  EndIf
+
   ped\currentDir = dos_PathPart{ped\sourceFileComplete}
   ped\currentFile = dos_FilePart{ped\sourceFileComplete}
   Poke.s ?comStr_SourceName,dos_FilePart{ped\sourceFileComplete}
@@ -4623,36 +4936,37 @@ Return
   Gosub set_pointer_busy_bas
   Gosub reset_Blockflag
   !asm
-  MOVEM.l (A7)+,D0-D7/A0-A5
-
   JSR clear_actualsource
-
-  MOVE.l #$0001,comLong_TotalLines
-  MOVE.l comPtr_Temp_TokenString2,tempstore
-  JSR JL_0_4F5A                                               ; read first line
-  JSR newSourcelineFromTempString                             ; allocmemory and do a new sourceline node
-  MOVE.l A0,comPtr_FirstSourceLine
-  MOVE.l A0,comPtr_CurrentSourceLine
-  CLR.l $4(A0)
-  MOVE.l A0,comPtr_LastSourceLine
-
-  JL_0_FB4:                                                   ; read other lines
-    MOVEA.l A0,A4
-    MOVE.l comPtr_Temp_TokenString2,tempstore
-    JSR JL_0_4F5A
-    BMI.w JL_0_FD6
-      JSR newSourcelineFromTempString
-      MOVE.l A0,comPtr_LastSourceLine
-      MOVE.l A0,(A4)
-      ADDQ.l #1,comLong_TotalLines
-      MOVE.l A4,$4(A0)
-  BRA.b JL_0_FB4
-  JL_0_FD6:
-  ;JSR JL_0_4E4A
   !basic
+
+  Poke.l ?comLong_TotalLines, 1
+
+  tmpLine.s = PED_ReadNextLine{}
+  log_Print{">>" + tmpLine + ", bytes: " + Str$(FLen(tmpLine))}
+  *newLine.sourceLine = PED_CreateNewSourceLine{tmpLine}
+  Poke.l ?comPtr_FirstSourceLine, *newLine
+  Poke.l ?comPtr_CurrentSourceLine, *newLine
+  Poke.l ?comPtr_LastSourceLine, *newLine
+
+  Repeat
+    *currLine.sourceLine = *newLine
+    tmpLine = PED_ReadNextLine{}
+    tmpLen.w = FLen(tmpLine)
+    log_Print{Str$(tmpLen) + " >>" + tmpLine}
+
+    If tmpLen > 0
+      *newLine = PED_CreateNewSourceLine{tmpLine}
+      Poke.l ?comPtr_LastSourceLine, *newLine
+      *currLine\nextLine = *newLine
+      *newLine\previousLine = *currLine
+      Poke.l ?comLong_TotalLines, Peek.l(?comLong_TotalLines) + 1
+    EndIf
+  Until tmpLen = 0
+
+  ;MOVE.l comPtr_Temp_TokenString2,tempstore
+  ;JSR readNextLine                                               ; read first line
+
   PED_CloseFile{ped\sourceFileHandle}
-  !asm
-  ;JSR close_sourcefile
 
   CLR.w comWord_SourceChanged
   CLR.w comWord_TextBufferOffset
@@ -4661,76 +4975,77 @@ Return
   CLR.l comLong_DisplayLineOffset
   CLR.l comLong_DisplayLine
 
-  ;--
-  ;-- read optional xtrafile
-  ;--
-  MOVE.l comFunc_ReadXtraFile,D0
-  BEQ.w skip_loadingxtrafile
-
-  MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2 ; read xtra
-  JSR open_xtrafile                      ; returns D7: filehandle
-  BEQ.w skip_loadingxtrafile
-
-  MOVE.l comFunc_ReadXtraFile,D0
-  MOVEA.l D0,A5
-  JSR (A5)
-
-  !basic
-  log_Print{"loading done."}
-  Read_ *xtra_fh, ?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin ; xtrabuf,36
-
-;  stackSize.l = Peek.l(?comLong_StackSizeStore)
-;  If stackSize<4096 Then stackSize=4096
-;  Poke.l ?stacksize,stackSize
-
-  ; -- get the data for creating executables
-  exefilename$ = ""
-  exepathname$ = ""
-  tempexename$ = SPACE$(96)
-
-  Seek_ *xtra_fh,$256,#OFFSET_BEGINNING
-  Read_ *xtra_fh,&tempexename$,96
-  i = 1
-  Repeat
-    char$ = Mid$(tempexename$,i,1)
-    If Asc(char$)<>0 Then exepathname$ + char$
-    i + 1
-  Until (i = FLen(tempexename$)) OR (Asc(char$) = 0)
-
-  tempexename$ = SPACE$(96)
-  Seek_ *xtra_fh,$316,#OFFSET_BEGINNING
-  Read_ *xtra_fh,&tempexename$,96
-  i = 1
-  Repeat
-    char$ = Mid$(tempexename$,i,1)
-    If Asc(char$)<>0 Then exefilename$ + char$
-    i + 1
-  Until (i = FLen(tempexename$)) OR (Asc(char$) = 0)
-;  exepathname$ = dos_Trim{exepathname$}
-;  exefilename$ = dos_Trim{exefilename$}
-;  !cout{exepathname$+"/"+exefilename$} ;$ , dos_GetFileSize2{exepathname$+"/"+exefilename$}}
-
-
-  ; -- restore windows
-  Gosub RestoreLabelAndNewtypeWin
-  project_changelog$ = ""
-  Gosub update_versiongadgets
-
-  Close_ *xtra_fh
-  !asm
-  !regs2stack
-  !ComData_SetB{comByte_FuncOptimize,#1}                   ; added for compatiblity because it is not stored in the xtra file  tomsmart1
-  !ComData_SetW{comWord_CreateDebugFile,#0}                ; to match the old default settings  tomsmart1
-  !stack2regs
-
-  ; update Sourcewindow
-  MOVE.l comLong_CursorPosStore,d0
-  MOVEA.l comPtr_CurrentSourceLine,A4
-  JSR gotoline
-  JSR delete_tempprefs
-  JSR save_tempprefs
-  skip_loadingxtrafile:
-  !basic
+;  ;--
+;  ;-- read optional xtrafile
+;  ;--
+;  MOVE.l comFunc_ReadXtraFile,D0
+;  BEQ.w skip_loadingxtrafile
+;
+;  MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2 ; read xtra
+;  JSR open_xtrafile                      ; returns D7: filehandle
+;  BEQ.w skip_loadingxtrafile
+;
+;  MOVE.l comFunc_ReadXtraFile,D0
+;  MOVEA.l D0,A5
+;  JSR (A5)
+;
+;  !basic
+;  log_Print{"opening xtrafile  done."}
+;  Read_ *xtra_fh, ?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin ; xtrabuf,36
+;
+;;  stackSize.l = Peek.l(?comLong_StackSizeStore)
+;;  If stackSize<4096 Then stackSize=4096
+;;  Poke.l ?stacksize,stackSize
+;
+;  ; -- get the data for creating executables
+;  exefilename$ = ""
+;  exepathname$ = ""
+;  tempexename$ = SPACE$(96)
+;
+;  Seek_ *xtra_fh,$256,#OFFSET_BEGINNING
+;  Read_ *xtra_fh,&tempexename$,96
+;  i = 1
+;  Repeat
+;    char$ = Mid$(tempexename$,i,1)
+;    If Asc(char$)<>0 Then exepathname$ + char$
+;    i + 1
+;  Until (i = FLen(tempexename$)) OR (Asc(char$) = 0)
+;
+;  tempexename$ = SPACE$(96)
+;  Seek_ *xtra_fh,$316,#OFFSET_BEGINNING
+;  Read_ *xtra_fh,&tempexename$,96
+;  i = 1
+;  Repeat
+;    char$ = Mid$(tempexename$,i,1)
+;    If Asc(char$)<>0 Then exefilename$ + char$
+;    i + 1
+;  Until (i = FLen(tempexename$)) OR (Asc(char$) = 0)
+;;  exepathname$ = dos_Trim{exepathname$}
+;;  exefilename$ = dos_Trim{exefilename$}
+;;  !cout{exepathname$+"/"+exefilename$} ;$ , dos_GetFileSize2{exepathname$+"/"+exefilename$}}
+;
+;
+;  ; -- restore windows
+;  Gosub RestoreLabelAndNewtypeWin
+;  project_changelog$ = ""
+;  Gosub update_versiongadgets
+;
+;  Close_ *xtra_fh
+;  !asm
+;  !regs2stack
+;  !ComData_SetB{comByte_FuncOptimize,#1}                   ; added for compatiblity because it is not stored in the xtra file  tomsmart1
+;  !ComData_SetW{comWord_CreateDebugFile,#0}                ; to match the old default settings  tomsmart1
+;  !stack2regs
+;
+;  ; update Sourcewindow
+;  MOVE.l comLong_CursorPosStore,d0
+;  MOVEA.l comPtr_CurrentSourceLine,A4
+;  JSR gotoline
+;  JSR delete_tempprefs
+;  JSR save_tempprefs
+;
+;  skip_loadingxtrafile:
+;  !basic
 Return
 
 
@@ -4801,6 +5116,13 @@ Return
 
   ; -- update Debuggermenustate
   Gosub update_debuggertoggle
+
+  ; -- update modified flags
+  CLR.w comWord_SourceModifiedFlag
+  CLR.w comWord_KeyBeforeReturn
+  CLR.w comWord_SourceChanged
+  JSR update_modifiermark
+
 Return
 
 
@@ -4887,6 +5209,7 @@ Return
 
   ped\amiblitzmode = 0
   ex.s = dos_GetExt{ped\sourceFileComplete}
+  If LCase$(ex) = "bb2" Then ped\amiblitzmode = 1
   If LCase$(ex) = "ab2" Then ped\amiblitzmode = 2
   If LCase$(ex) = "ab3" Then ped\amiblitzmode = 3
 
@@ -4900,7 +5223,7 @@ Return
 
   If ped\check_existsfile
     log_Print{"check if file <" + ped\sourceFileComplete + "> already exists, requester if so  ..."}
-    *flock.l = Lock_(ped\sourceFileComplete,#ACCESS_READ)
+    *flock.l = Lock_(ped\sourceFileComplete,#ACCESS_WRITE)
     If *flock <> 0
       If ask{!TRANS{"File already exists!"},!TRANS{"Overwrite|Cancel"},!TRANS{"Save File As..."}}
         log_Print{"overwrite is ok"}
@@ -4910,6 +5233,8 @@ Return
         Pop If : Pop If
         Return
       EndIf
+    Else
+      ; file does not exist, that is ok!
     EndIf
   EndIf
 
@@ -4926,43 +5251,20 @@ Return
   LockAllOpenWZWin{}
   Gosub set_pointer_busy_bas
 
+  log_Print{"writing mode: " + Str$(ped\amiblitzmode)}
   Select ped\amiblitzmode
-  Case 1 : Gosub save_source_as_ab2
+  Case 1 : Gosub save_source_as_tokenized
+           ;!asm
+           ;write_xtrafile
+           ;!basic
+  Case 2 : Gosub save_source_as_text
   Case 3 : Gosub save_source_as_ab3
-  Default
-    ;!asm
-    ;MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
-    ;MOVE.b #1,menuload
-    ;JSR open_file                   ; returns comPtr_SourceFileHandle
-    ;!basic
-    ped\sourceFileHandle = PED_OpenFile{ped\sourceFileComplete,#HUNK_RELOC_8__MODE_NEWFILE,True}
-    Poke.w ?comWord_DoTokenize, ped\DoTokenize
-    Poke.w ?flag_tokenization, ped\flag_tokenization
-    Poke.b ?convert, ped\convert
-
-    If Peek.w(?AL_0_B7E0) <> 0
-      ; write tokenized source to file
-      Gosub write_tokenized_source_cached
-    Else
-      ; write nontokenized source to file
-      Gosub write_tokenized_source
-    EndIf
+  Default: Gosub save_source_as_text
   End Select
+
+  If pedconfig\remember_saved Then Gosub update_rememberlist
+
   Poke.w ?comWord_SourceChanged,0
-
-  If ped\amiblitzmode <> 3
-    log_Print{"writing_xtrafile for " + ped\currentFile}
-    !asm
-    JSR write_xtrafile
-    !basic
-  EndIf
-
-  If pedconfig\remember_saved
-    ;!asm
-    ;JSR AJL_0_B990
-    ;!basic
-    Gosub update_rememberlist
-  EndIf
 
   UnlockAllOpenWZWin{}
   Gosub set_pointer_normal_bas
@@ -5017,11 +5319,11 @@ Return
 ;  !basic
 ;  If Peek.w(?AL_0_B7E0) <> 0
 ;    ; write tokenized source to file
-;    Gosub write_tokenized_source_cached
+;    Gosub save_source_as_tokenized_cached
 ;    Close_ *fh
 ;  Else
 ;    ; write nontokenized source to file
-;    Gosub write_tokenized_source
+;    Gosub save_source_as_tokenized
 ;    Close_ *fh
 ;  EndIf
 ;  Poke.w ?comWord_SourceChanged,0
@@ -5036,19 +5338,18 @@ Return
   !asm
   MOVE.l (a7)+,D0
   !ComData_JSR{comFunc_SaveSource}
+
   !basic
   Gosub analyze_loadedsource
   !asm
-  CLR.w comWord_SourceModifiedFlag
-  CLR.w comWord_KeyBeforeReturn
-  CLR.w comWord_SourceChanged
-  JSR update_modifiermark
+
   !basic
 Return
 
-.save_source_as_ab2:
-  log_Print{"write ab2: opening file"}
+.save_source_as_text:
+  log_Print{"write as text: opening file"}
   Gosub set_pointer_busy_bas
+
   *write_fh.l = Open_(ped\sourceFileComplete, #HUNK_RELOC_8__MODE_NEWFILE)
   If *write_fh = 0
     UnlockAllOpenWZWin{}
@@ -5060,7 +5361,7 @@ Return
       *tempLine.sourceLine = Peek.l(?comPtr_FirstSourceLine)
 
       If Peek.w(?comWord_DoTokenize) <> 0
-        log_Print{"write ab2: writing detokenized file"}
+        log_Print{"write as text: writing detokenized file"}
 
         ;-- detokenize and write to file
         numlines.l = Peek.l(?comLong_TotalLines)
@@ -5093,7 +5394,7 @@ Return
         End If
       Else
         ;-- directly write to file
-        log_Print{"write ab2: writing text line-by-line to file"}
+        log_Print{"write as text: writing text line-by-line to file"}
         Repeat
           baseptr.l = *tempLine + 9
           linelength.l = Peek.b(baseptr + 8) - 1
@@ -5103,70 +5404,81 @@ Return
         Until *tempLine = 0
       EndIf
     EndIf
-    log_Print{"write ab2: closing file"}
+    log_Print{"write as text: closing file"}
     Close_ *write_fh : *write_fh = 0
   EndIf
 Return
 
+.save_source_as_tokenized:
+  log_Print{"write as tokenized: opening file"}
+  Gosub set_pointer_busy_bas
 
-
-
-.write_tokenized_source:
-  *tempLine.sourceLine = Peek.l(?comPtr_FirstSourceLine)
-  Repeat
-    baseptr.l = *tempLine + 9
-    linelength.l = Peek.b(baseptr + 8)
-
-    If Peek.w(?comWord_DoTokenize) = 0
-      linelength - 1
-      strLine$ = Peeks$(baseptr,linelength) + Chr$(10)
-    Else
-      strLine$ = Peeks$(baseptr,linelength)
-    EndIf
-    Write_ *fh.l, &strLine$, Len(strLine$)
-    *tempLine = *tempLine\nextLine
-  Until *tempLine = 0
-  Close_ *fh
-Return
-
-
-.write_tokenized_source_cached:              ; d5: totallines; a2: ptr first sourceline
-  ; count memsize of sourcetext
-  numlines.l = Peek.l(?comLong_TotalLines)
-  log_Print{"writing lines: " + Str$(numlines)}
-  *tempLine.sourceLine = Peek.l(?comPtr_FirstSourceLine)
-  totalLength.l = 0
-  For n.l = 0 To numlines - 1
-    baseptr.l = *tempLine + 9
-    sptr.l = baseptr
-    While Peek.b(sptr) : sptr + 1 : Wend
-    totalLength + sptr - baseptr + 1
-    *tempLine = *tempLine\nextLine
-  Next
-  ; alloc memory
-  tmp.l      = AllocVec_(totalLength,#MEMF_CLEAR)
-  ; copy source to buffer
-  If tmp
-    node.l     = Peek.l(?comPtr_FirstSourceLine)
-    dptr.l     = tmp
-    For n.l=0 To numlines-1
-      baseptr.l = node+$9 ;Peek.l (node+$9)
-      sptr.l    = baseptr
-      Repeat
-        char.b = Peek.b(sptr)
-        Poke.b dptr,char : sptr +1 : dptr+1
-      Until char=0
-      node = Peek.l(node)
-    Next
-    Write_ *fh, tmp, totalLength
-    ;plainLength.l = preproc_DetokenizeFP{*PreProcessor, tmp, totalLength, *fhandle}
-    FreeVec_ tmp
-    Close_ *fh
+  *write_fh.l = Open_(ped\sourceFileComplete, #HUNK_RELOC_8__MODE_NEWFILE)
+  If *write_fh = 0
+    UnlockAllOpenWZWin{}
+    Gosub set_pointer_normal_bas
+    WZ_HideMessage{}
+    error{!TRANS{Peek$(?comStr_ErrorWriteFile)}}
   Else
-    log_Print{"could not allocate enough memory for blockwrite, writing line by line...",#log_warning}
-    Goto write_tokenized_source
-  End If
+    *tempLine.sourceLine = Peek.l(?comPtr_FirstSourceLine)
+    Repeat
+      baseptr.l = *tempLine + 9
+      linelength.l = *tempLine\strLength
+
+      If Peek.w(?comWord_DoTokenize) = 0
+        strLine$ = Peeks$(baseptr,linelength) + Chr$(10)
+      Else
+        strLine$ = Peeks$(baseptr,linelength)
+      EndIf
+      ;log_Print{Str$(linelength) + " >> " + strLine$}
+      Write_ *write_fh, &strLine$, FLen(strLine$)
+      *tempLine = *tempLine\nextLine
+    Until *tempLine = 0
+    log_Print{"write as tokenized: closing file"}
+    Close_ *write_fh
+  EndIf
 Return
+
+
+;.save_source_as_tokenized_cached:              ; d5: totallines; a2: ptr first sourceline
+;  ; count memsize of sourcetext
+;  numlines.l = Peek.l(?comLong_TotalLines)
+;  log_Print{"writing lines: " + Str$(numlines)}
+;  *tempLine.sourceLine = Peek.l(?comPtr_FirstSourceLine)
+;  totalLength.l = 0
+;  For n.l = 0 To numlines - 1
+;    baseptr.l = *tempLine + 9
+;    sptr.l = baseptr
+;    While Peek.b(sptr) : sptr + 1 : Wend
+;    totalLength + sptr - baseptr + 1
+;    *tempLine = *tempLine\nextLine
+;  Next
+;
+;  ; alloc memory
+;  tmp.l = AllocVec_(totalLength,#MEMF_CLEAR)
+;
+;  ; copy source to buffer
+;  If tmp
+;    node.l     = Peek.l(?comPtr_FirstSourceLine)
+;    dptr.l     = tmp
+;    For n.l=0 To numlines-1
+;      baseptr.l = node+$9 ;Peek.l (node+$9)
+;      sptr.l    = baseptr
+;      Repeat
+;        char.b = Peek.b(sptr)
+;        Poke.b dptr,char : sptr + 1 : dptr + 1
+;      Until char = 0
+;      node = Peek.l(node)
+;    Next
+;    Write_ ped\sourceFileHandle, tmp, totalLength
+;    ;plainLength.l = preproc_DetokenizeFP{*PreProcessor, tmp, totalLength, *fhandle}
+;    FreeVec_ tmp
+;    Close_ ped\sourceFileHandle
+;  Else
+;    log_Print{"could not allocate enough memory for blockwrite, writing line by line...",#log_warning}
+;    Goto save_source_as_tokenized
+;  End If
+;Return
 ;  MOVEQ.l #$00,D0
 ;  MOVEQ.l #$00,D1
 ;  MOVE.l D5,D4                        ; totallines of source
@@ -5226,19 +5538,19 @@ Return
 ;  MOVE.l (A7)+,D0
 ;RTS
 ;
-.close_and_write_xtrafile:
-  TST.l D0
-  BNE.w JL_0_1380
-    JL_0_1378:
-    LEA comStr_ErrorWriteFile,A0
-    JSR show_errorrequester
-  JL_0_1380:
-
-;  JSR JL_0_4E4A
-  !basic
-  PED_CloseFile{ped\sourceFileHandle}
-  !asm
-  ;JSR close_sourcefile
+;.close_and_write_xtrafile:
+;  TST.l D0
+;  BNE.w JL_0_1380
+;    JL_0_1378:
+;    LEA comStr_ErrorWriteFile,A0
+;    JSR show_errorrequester
+;  JL_0_1380:
+;
+;;  JSR JL_0_4E4A
+;  !basic
+;  PED_CloseFile{ped\sourceFileHandle}
+;  !asm
+;  ;JSR close_sourcefile
 
 .write_xtrafile:
   MOVE.l comFunc_WriteXtraFile,D0
@@ -5267,9 +5579,6 @@ Return
   If pedconfig\use_source_icon Then Gosub write_infofile
   Gosub analyze_loadedsource
   !asm
-  CLR.w comWord_SourceModifiedFlag
-  CLR.w comWord_KeyBeforeReturn
-  CLR.w comWord_SourceChanged
   JSR update_modifiermark
   !basic
   UnlockAllOpenWZWin{}
@@ -5506,7 +5815,7 @@ RTS
   JL_0_1820:
   MOVEA.l comPtr_Temp_TokenString2,A2
   JSR parse_line
-  JSR JL_0_55AA
+  JSR insertNewLineTokString1
   MOVE.w (A7)+,D5
   JSR JL_0_15C6
   BPL.b JL_0_17Dca
@@ -5697,7 +6006,7 @@ Return
     JL_0_2220:
 
     MOVE.l A4,comPtr_CurrentSourceLine
-    JSR JL_0_55A2
+    JSR tokenizeAndInsertNewLine
     MOVEA.l (A4),A4
     ADDQ.l #1,D6
   CMP.l comLong_BlockEndY,D6
@@ -5762,7 +6071,7 @@ Return
 
  JL_0_229C:
   MOVE.l A4,comPtr_CurrentSourceLine
-  JSR JL_0_55A2
+  JSR tokenizeAndInsertNewLine
   MOVEA.l (A4),A4
   ADDQ.l #1,D6
   CMP.l comLong_BlockEndY,D6
@@ -5815,7 +6124,7 @@ Return
     JL_0_230A:
 
     MOVE.l A4,comPtr_CurrentSourceLine
-    JSR JL_0_55A2
+    JSR tokenizeAndInsertNewLine
     MOVEA.l (A4),A4
     ADDQ.l #1,D6
   CMP.l comLong_BlockEndY,D6
@@ -5875,7 +6184,7 @@ Return
     JL_0_2386:
 
     MOVE.l A4,comPtr_CurrentSourceLine
-    JSR JL_0_55A2
+    JSR tokenizeAndInsertNewLine
     MOVEA.l (A4),A4
     ADDQ.l #1,D6
   CMP.l comLong_BlockEndY,D6
@@ -6511,7 +6820,7 @@ Return
 
   SUBQ.l #1,comLong_TotalLines                  ; reduce TotalLines
   MOVE.l $4(A4),D6                              ; pointer to currentLine.prevLine to D6
-  JSR StoreCurrentSourceLine                    ; store current source line
+  JSR StoreAndDeleteCurrentSourceLine                    ; store current source line
 
   MOVEA.l D7,A1                                 ; Pointer to currentLine.nextline To A1
   MOVE.l D6,$4(A1)                              ; pointer to currentLine.prevLine to nextLine.prevLine
@@ -6537,7 +6846,7 @@ JL_0_2776:
   MOVE.l $4(A4),D6                              ; pointer to currentLine.prevLine to D6
   BEQ.w JL_0_27C2                               ; if not available jump down
     SUBQ.l #1,comLong_TotalLines
-    JSR StoreCurrentSourceLine
+    JSR StoreAndDeleteCurrentSourceLine
     MOVEA.l D6,A0
     MOVE.l A0,comPtr_CurrentSourceLine
     MOVE.l A0,comPtr_LastSourceLine
@@ -6557,7 +6866,7 @@ JL_0_2776:
     Return
   JL_0_27C2:
 ;TRAP #5
-    JSR StoreCurrentSourceLine                   ; store currentLine
+    JSR StoreAndDeleteCurrentSourceLine                   ; store currentLine
     JSR JL_0_5B00
     !basic
 Return
@@ -6668,7 +6977,7 @@ Return
 
   MOVEA.l comPtr_Temp_TokenString2,A2
   JSR parse_line
-  JSR JL_0_55AA
+  JSR insertNewLineTokString1
 
   MOVEA.l (A4),A1                         ; remove deleted line from linked list
   MOVE.l (A1),D0
@@ -6801,7 +7110,7 @@ BRA.b JL_0_29DA
 
  JL_0_29E8:
   JSR parse_line
-  JSR JL_0_55AA
+  JSR insertNewLineTokString1
   MOVEA.l comPtr_Temp_TokenString2,A2
   JSR parse_line
   MOVE.l D5,D0
@@ -7413,23 +7722,14 @@ JL_0_2Dca8:
   JSR update_scroller
   !basic
   Gosub analyze_loadedsource
+  log_Print{"redraw of sourcewindow"}
+  Gosub draw_statusarea
   !asm
-  ;TST.b refreshonstore
-  ;BNE 'l2
-  ;  TST.b AL_0_4734
-  ;  BNE.w JL_0_2E0E
-      !basic
-      log_Print{"redraw of sourcewindow"}
-      Gosub draw_statusarea
-      !asm
-      JSR _redraw
-; 'l2
+  JSR _redraw
   !basic
   Gosub set_CurrentDir
   !asm
-  ;JL_0_2E0E:
   MOVEA.l comPtr_CurrentSourceLine,A4
-  CLR.w comWord_SourceModifiedFlag
 RTS
 
 
@@ -7445,7 +7745,7 @@ RTS
     !asm
     JSR menu_opennew
     !basic
-    loadsourcefilename$ = templatefilename$
+    loadsourcefilename.s = templatefilename$
     Gosub load_source
   Else
     templatefilename$ = !TRANS{"unknown"}
@@ -7532,7 +7832,9 @@ JL_0_2E70:
     TST.w loadAsNew
     BNE 'no
       !regs2stack
-      JSR menu_load
+      !basic
+      Gosub menu_load
+      !asm
       JSR StoreXtraData
       !basic
       Gosub update_vertscroller
@@ -7883,7 +8185,10 @@ Return
   !asm
   MOVE.l A4,-(A7)
   MOVE.w #$FFFF,comWord_PasteMode
-  JSR do_paste
+  !basic
+  Gosub do_paste_bas
+  !asm
+  ;JSR do_paste
   MOVE.w #$0000,comWord_PasteMode
   MOVEA.l (A7)+,A4
   !basic
@@ -8020,7 +8325,7 @@ RTS
   JL_0_3510:
     MOVEA.l A5,A4
     MOVE.l A4,comPtr_CurrentSourceLine
-    JSR JL_0_55A2                                  ; parse the newline in TokenString2 and allocate memory for it
+    JSR tokenizeAndInsertNewLine                                  ; parse the newline in TokenString2 and allocate memory for it
   JL_0_351C:
 
   !basic
@@ -8313,7 +8618,9 @@ Return
 ;  JL_0_3732:
 ;RTS
 
-.menu_includeblock:
+.menu_includeblock2:
+log_Print{"includeblock2"}
+
   Poke.w ?comWord__AL_0_8AD8,0
   includeblockfile$ = PED_RequestFile{"","",Peek.s(?comStr_ASLLoadBlock),"(#?.info)"}
   If includeblockfile$ <> ""
@@ -8322,13 +8629,19 @@ Return
     !basic
   EndIf
 Return
-;  LEA comStr_ASLLoadBlock,A2
-;  JSR do_aslfilerequest
-;  TST.l D0
-;  BNE.b do_paste
-;    RTS
 
+.menu_includeblock:
+  log_Print{"includeblock"}
 
+  Poke.w ?comWord__AL_0_8AD8,0
+  includeblockfile$ = PED_RequestFile{"","",Peek.s(?comStr_ASLLoadBlock),"(#?.info)"}
+  If includeblockfile$ <> ""
+    Gosub do_paste_bas
+;    !asm
+;    BSR do_paste
+;    !basic
+  EndIf
+Return
 
 
 .JMP_closefile:
@@ -8339,6 +8652,144 @@ RTS
 ;JMP JL_0_4E4A
 ;JMP close_sourcefile
 
+
+.do_paste_bas:
+  log_Print{"pastemode " + Hexw$(Peek.w(?comWord_PasteMode))}
+
+  If Peek.w(?comWord_PasteMode)
+    ; clipboard mode
+    If NOT PED_ReadClipboard{} Then Return
+  Else
+    ; includeblock mode
+    ped\sourceFileHandle = PED_OpenFile{includeblockfile$,#HUNK_RELOC_16__MODE_OLDFILE,False}
+    Poke.w ?comWord_DoTokenize, ped\DoTokenize
+    Poke.w ?flag_tokenization, ped\flag_tokenization
+    Poke.b ?convert, ped\convert
+    If NOT PED_ReadFileCache{}
+      PED_CloseFile{ped\sourceFileHandle}
+      Return
+    EndIf
+  EndIf
+
+  Poke.w ?comWord_LabelListChanged,0
+  Poke.w ?comWord_SourceChanged,0
+
+  lineaddr.l = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
+  currentColumn.w = Peek.w(?comWord_Column) + Peek.w(?comWord_ColumnsOffset)
+
+  ; get first part of current line
+  pasteString.s = ""
+  For p.w = 0 To currentColumn - 1
+    currentbyte.b = Peek.b(lineaddr + p)
+    If currentbyte = $22 Then Poke.b ?instring, NOT Peek.b(?instring)
+    If NOT Peek.b(?instring) Then currentbyte = currentbyte BitClr 7
+    pasteString + Chr$(currentbyte)
+  Next p
+  ; get rest of current line
+  restString.s = ""
+  For p.w = currentColumn To #MAX_Columns-1
+    currentbyte.b = Peek.b(lineaddr + p)
+    restString + Chr$(currentbyte)
+  Next p
+  For p = 0 To currentColumn - 1
+    restString + " "
+  Next p
+
+  ; get first line and join it with currentline
+  pasteString = pasteString + PED_ReadNextLine{}
+ 
+  ; check labelidentifier, update labellist ?
+  If PED_CheckLabelRelevance{pasteString} Then Poke.w ?comWord_LabelListChanged, $FFFF
+
+  ; replace line with current one
+  ; add the rest to an new line
+  GetReg D0,&pasteString : MOVE.l D0,-(a7)
+  !asm
+  MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
+  MOVEA.l comPtr_CurrentSourceLine,A4
+  JSR parse_line
+  MOVE.l d5,-(a7)                     ; returns length of string in D5
+  !basic
+  MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
+  pasteString = Peeks$(Peek.l(?comPtr_Temp_TokenString1),tmpd0)
+
+  *newLine.sourceLine = PED_CreateNewSourceLine{pasteString}
+  *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
+  *previousLine.sourceLine = *currentLine\previousLine
+
+    Poke.l ?comPtr_CurrentSourceLine, *newLine
+  If cutLine{*currentLine,?comPtr_FirstSourceLine}
+    appendLine{*previousLine,*newLine,?comPtr_FirstSourceLine}
+    PED_FreeMem{*currentLine}
+  Else
+    error{"Could not replace the current source line"}
+    Return
+  EndIf
+
+  ; import all further lines
+  Repeat
+    pasteString = ""
+
+    tmpLine = PED_ReadNextLine{}
+    tmpLen = FLen(tmpLine)
+    If tmpLen > 0
+      If Peek.w(?VerticalPasteMode)
+        If currentColumn > #MAX_Columns-10 Then currentColumn = #MAX_Columns-10
+        pasteString = SPACE$(currentColumn)
+      EndIf
+      pasteString = pasteString + tmpLine
+
+      GetReg D0,&pasteString : MOVE.l D0,-(a7)
+      !asm
+      MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
+      MOVEA.l comPtr_CurrentSourceLine,A4
+      JSR parse_line
+      MOVE.l d5,-(a7)                     ; returns length of string in D5
+      !basic
+      MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
+      pasteString = Peeks$(Peek.l(?comPtr_Temp_TokenString1),tmpd0)
+      *newLine = PED_CreateNewSourceLine{pasteString}
+      PED_InsertSourceLine{*newLine,?comLong_TotalLines,?comPtr_LastSourceLine,?comPtr_CurrentSourceLine}
+    EndIf
+  Until tmpLen = 0
+
+  ; add an empty line
+  *newLine = PED_CreateNewSourceLine{""}
+  PED_InsertSourceLine{*newLine,?comLong_TotalLines,?comPtr_LastSourceLine,?comPtr_CurrentSourceLine}
+
+  ; add the rest to an new line
+  GetReg D0,&restString : MOVE.l D0,-(a7)
+  !asm
+  MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
+  MOVEA.l comPtr_CurrentSourceLine,A4
+  JSR parse_line
+  MOVE.l d5,-(a7)                     ; returns length of string in D5
+  !basic
+  MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
+  pasteString = Peeks$(Peek.l(?comPtr_Temp_TokenString1),tmpd0)
+
+  *newLine = PED_CreateNewSourceLine{pasteString}
+  *currentLine = Peek.l(?comPtr_CurrentSourceLine)
+  *previousLine.sourceLine = *currentLine\previousLine
+  If cutLine{*currentLine,?comPtr_FirstSourceLine}
+    appendLine{*previousLine,*newLine,?comPtr_FirstSourceLine}
+    PED_FreeMem{*currentLine}
+    Poke.l ?comPtr_CurrentSourceLine, *newLine
+  Else
+    error{"Could not replace the current source line"}
+    Return
+  EndIf
+
+  If Peek.w(?comWord_PasteMode) = 0 Then PED_CloseFile{ped\sourceFileHandle}
+  Poke.b ?instring,0
+
+  Gosub update_currsourceline_bas
+  Gosub update_statusarea
+  Gosub reset_Blockflag
+  !asm
+  JSR _redraw
+  !basic
+Return
 
 .do_paste:
   MOVEA.l comPtr_CurrentSourceLine,A4
@@ -8351,7 +8802,6 @@ RTS
     Poke.w ?comWord_DoTokenize, ped\DoTokenize
     Poke.w ?flag_tokenization, ped\flag_tokenization
     Poke.b ?convert, ped\convert
-
     ;MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
     ;JSR open_file           ; only needed when pastemode = $0
     !asm
@@ -8372,7 +8822,9 @@ RTS
   MOVE.w #$FFFF,comWord_SourceChanged
   MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
   MOVEA.l A2,A0 : ADDA.w #MAX_Columns,A0 : MOVE.l A0,comWord_LinePosStartX
+
   MOVE.w comWord_ColumnsOffset,D1 : ADD.w comWord_Column,D1
+
   MOVEA.l comPtr_Temp_TokenString1,A3
   MOVEQ.l #$00,D4
   CLR.b instring
@@ -8381,7 +8833,7 @@ RTS
     CMP.w D1,D4
     BCC.w JL_0_37A2
       MOVE.b (A2)+,D0
-      CMP.b #$22,d0
+      CMP.b #$22,d0                      ; "
       BNE 'l1
         NOT.b instring
      'l1
@@ -8395,12 +8847,13 @@ RTS
   JL_0_37A2:
 
   MOVE.l A2,-(A7)
-  MOVE.l comPtr_Temp_TokenString2,tempstore
-  JSR JL_0_4F5A
+
+  MOVE.l comPtr_Temp_TokenString2,tempstore        ; get first line to paste
+  JSR readNextLine
   BEQ.w JL_0_37DE
 
-  JSR JL_0_4E36
-  JSR JL_0_5596
+  JSR copy_TokenString2_to_A3                      ; copy TokenString2 to TokenString1
+  JSR JL_0_5596  ;insertSourceLine    TokenString2 - TokenString1
   ;CLR.b skipit
 
   JL_0_37B4:
@@ -8443,58 +8896,76 @@ RTS
  'nc
   MOVE.l a0,tempstore
 
-  JSR JL_0_4F5A
+  JSR readNextLine
   TST.w d0
   BMI.w JL_0_37CA
-    JSR newSourcelineFromTempString
-    JSR JL_0_4E08
-    BRA.b JL_0_37B4
+    JSR newSourcelineFromTempString              ; returns lineaddress in A0
+    JSR insertSourceLine                         ; input A0: address of new line
+    BRA.b JL_0_37B4                              ; copy loop for all loaded lines
   JL_0_37CA:
 
-  JSR alloc_newline
+  JSR alloc_newline                              ; returns lineadress in A0    insert an empty line
   BEQ.w memAlert_CloseSource
-
-  JSR JL_0_4E08
+  JSR insertSourceLine
   MOVEA.l comPtr_Temp_TokenString1,A3
   BRA.w JL_0_37F6
 
-  JL_0_37DE:
-  JSR JL_0_4E36
+  JL_0_37DE:                                          ; no data to insert !
+  JSR copy_TokenString2_to_A3
   BRA.w JL_0_37F6
 
-  JL_0_37E6:
-  JSR newSourcelineFromTempString
-  JSR JL_0_4E08
-  MOVEA.l comPtr_Temp_TokenString1,A3
-  JSR JL_0_4E36
+  ;JL_0_37E6:
+  ;JSR newSourcelineFromTempString
+  ;JSR insertSourceLine
+  ;MOVEA.l comPtr_Temp_TokenString1,A3
+  ;JSR copy_TokenString2_to_A3
 
   JL_0_37F6:
-  ;JSR JL_0_4E4A
   !basic
   PED_CloseFile{ped\sourceFileHandle}
   !asm
-  ;JSR close_sourcefile
+
   MOVEA.l (A7)+,A2
   CLR.b instring
 
-  JL_0_37FC:
+  JL_0_37FC:                                          ; copy rest of currentline to buffer, buffer holds the last imported line
     CMPA.l comWord_LinePosStartX,A2
     BCC.w JL_0_3816
       CMPA.l comPtr_Temp_TokenString2,A3
       BCC.w JL_0_3816
         MOVE.b (A2)+,D0
-        ;MOVE.b #44,d0
-          ;BCLR #$7,D0                    ;morechar ?????????
    'l2
     MOVE.b D0,(A3)+
   BRA.b JL_0_37FC
 
   JL_0_3816:
+  !regs2stack
+  !basic
+  log_Print{"tokenstring1: [" + Peek.s(Peek.l(?comPtr_Temp_TokenString1)) + "]"}
+  !log_HexDump{Peek.l(?comPtr_Temp_TokenString1),64}
+
+  log_Print{"tokenstring2: [" + Peek.s(Peek.l(?comPtr_Temp_TokenString2)) + "]"}
+  !log_HexDump{Peek.l(?comPtr_Temp_TokenString2),64}
+  !asm
+  !stack2regs
   MOVEA.l comPtr_Temp_TokenString1,A2
   JSR parse_line
-  JSR JL_0_55AA
+  !regs2stack
+  !basic
+  PutReg d5,tmpd5.l
+  log_Print{"d5 = " + Str$(tmpd5)}
+  log_Print{"tokenstring1: [" + Peek.s(Peek.l(?comPtr_Temp_TokenString1)) + "]"}
+  !log_HexDump{Peek.l(?comPtr_Temp_TokenString1),64}
+                                                                                                                                                                                                                                                        
+  !asm
+  !stack2regs
+  JSR insertNewLineTokString1            ; d5: length
   JSR update_currsourceline
   !basic
+  log_Print{"currentline:"}
+  *fLine.sourceLine = Peek.l(?comPtr_FirstSourceLine)
+  !log_HexDump{*fLine,255}
+
   Gosub reset_Blockflag
   !asm
   JSR _redraw
@@ -8644,7 +9115,7 @@ JL_0_399A:
  BRA.b JL_0_399A
 
 JL_0_39A8:
-   JSR JL_0_55A2
+   JSR tokenizeAndInsertNewLine
   MOVE.w comWord_ColumnsOffset,D0
   ADD.w comWord_Column,D0
   MOVE.l comLong_DisplayLineOffset,D7
@@ -9438,16 +9909,17 @@ RTS
 
   MOVEA.l A2,A1
   SUBQ.w #1,D1
-  BPL.w JUMP_JL_0_5F62
+  BPL.w JUMP_tokenizeA1
 RTS
 
-JUMP_JL_0_5F62:
-JMP JL_0_5F62
+JUMP_tokenizeA1:
+JMP tokenizeA1
 
 
 TokenizeSource:
   MOVE.w comWord_DoTokenize,D0
-   BNE.w JUMP_setpointer_to_normal
+  BNE.w JUMP_setpointer_to_normal
+
   NOT.w comWord_DoTokenize
   MOVEA.l comPtr_FirstSourceLine,A4
   MOVE.l comLong_TotalLines,-(A7)
@@ -9457,11 +9929,11 @@ TokenizeSource:
     MOVE.b $8(A4),D1
     SUBQ.w #1,D1
     BMI.w JL_0_4530
-    LEA $9(A4),A2
-    MOVEA.l comPtr_Temp_TokenString1,A1
-    JSR JL_0_5F62
-    MOVE.l A4,comPtr_CurrentSourceLine
-    JSR JL_0_55AA
+      LEA $9(A4),A2
+      MOVEA.l comPtr_Temp_TokenString1,A1
+      JSR tokenizeA1
+      MOVE.l A4,comPtr_CurrentSourceLine
+      JSR insertNewLineTokString1
 
  JL_0_4530:
     MOVEA.l (A4),A4
@@ -9489,7 +9961,7 @@ DetokenizeSource:
     ADDQ.w #1,A1
     MOVE.l A1,D5
     MOVE.l A4,comPtr_CurrentSourceLine
-    JSR JL_0_55AA
+    JSR insertNewLineTokString1
     MOVEA.l (A4),A4
     SUBQ.w #1,(A7)
   BNE.b JL_0_4554
@@ -9939,6 +10411,7 @@ RTS
   Gosub open_sourcefonts
 
   ; -- check/set tokenisation mode
+  ped\DoTokenize = $ffff
   MOVE.w flag_tokenization,comWord_DoTokenize
   TST.w comWord_DoTokenize
   BEQ.w JL_0_4A76
@@ -10064,7 +10537,7 @@ Return
 ;  MOVEQ.l #-$01,D0
 ;RTS
 ;
-JL_0_4E08:
+.insertSourceLine:
   ADDQ.l #1,comLong_TotalLines
   MOVE.l (A4),D0
   BEQ.w JL_0_4E20
@@ -10083,7 +10556,7 @@ JL_0_4E08:
   MOVE.l A4,comPtr_CurrentSourceLine
 RTS
 
-JL_0_4E36:
+.copy_TokenString2_to_A3:
   MOVEA.l comPtr_Temp_TokenString2,A0
   JL_0_4E3A:
     MOVE.b (A0)+,(A3)+
@@ -10286,6 +10759,12 @@ Return
 ;  !stack2regs
 ;RTS
 
+; MOVE.l readcache_chunklen,d0
+;  MOVE.l readcache_chunklen,d6
+;  MOVEA.l comPtr_DosBuffer,A5
+
+
+
 .readbyte:
     SUBQ.w #1,D6
     BMI.w JL_0_4EA2
@@ -10375,10 +10854,12 @@ clipboard_copybuffer: Dc.l 0
 ;RTS
 
 
+
+
 .source_read_from_file_cached:
   !regs2stack
   !basic
-  log_Print{"read file..."}
+  log_Print{"read file ..."}
   rc_fp.l         = ped\sourceFileHandle                 ; file
   rc_destptr.l    = Peek.l(?comPtr_DosBuffer)             ; membuffer
   rc_blocklen.l   = $2000                                 ; length
@@ -10391,21 +10872,26 @@ clipboard_copybuffer: Dc.l 0
     log_Print{"no file yet in cache"}
     ExamineFH_ rc_fp,*rc_fib
     rc_filelen.l = *rc_fib\fib_Size
-    log_Print{"Filelen : " + Str$(rc_filelen)}
-    log_Print{"Cachelen: " + Str$(rc_cachelen)}
+;    log_Print{"Filelen : " + Str$(rc_filelen)}
+;    log_Print{"Cachelen: " + Str$(rc_cachelen)}
     If rc_filelen > rc_cachelen
-      log_Print{"allocating cachememory..."}
+;      log_Print{"allocating cachememory..."}
       If rc_cacheptr Then FreeVec_ rc_cacheptr
       rc_cacheptr = AllocVec_(rc_filelen,#MEMF_ANY)
       rc_cachelen = rc_filelen
     End If
-    log_Print{"start reading to ..." + Hex$(rc_cacheptr) + " from filehandle " + Hex$(rc_fp)}
+;    log_Print{"start reading to ..." + Hex$(rc_cacheptr) + " from filehandle " + Hex$(rc_fp)}
     rc_readlen.l = Read_ (rc_fp,rc_cacheptr,rc_filelen)
-    log_Print{"loaded to cache: " + Str$(rc_readlen) + " from " + Hex$(rc_fp)}
+;    log_Print{"loaded to cache: " + Str$(rc_readlen) + " from " + Hex$(rc_fp)}
 
     ex.s = LCase$(dos_GetExt{Peek.s(&*rc_fib\fib_FileName)})
     If ex = "ab2" OR ex = "ab3" OR ex = "asc"
-      log_Print{"tokenizing..."}
+      log_Print{"tokenizing imported text..."}
+      ; process the ascii data in sourcebuff length and write the tokenized source into destbuffer
+      ; the return value is the length of the tokenized text
+      ; sourcebuff and destbuff might be the same pointer
+      ; preproc_Tokenize{*tn.preprocessor,sourcebuff.l,destbuff.l,bytelength.l}
+
       rc_readlen = preproc_Tokenize{*PreProcessor,rc_cacheptr,rc_cacheptr,rc_readlen}
       log_Print{"done."}
     End If
@@ -10422,6 +10908,7 @@ clipboard_copybuffer: Dc.l 0
     rc_readlen = 0
   End If
 
+ 
   Poke.l ?readcache_chunklen ,rc_chunklen
   Poke.l ?readcache_readlen  ,rc_readlen
   Poke.l ?readcache_offset   ,rc_offset
@@ -10430,14 +10917,16 @@ clipboard_copybuffer: Dc.l 0
   ;error{"Readfile cached! length="+Str$(rc_rlength)}
   !asm
   !stack2regs
+  ;MOVE.l comPtr_SourceFileHandle,D7
   MOVE.l readcache_chunklen,d0
   MOVE.l readcache_chunklen,d6
   MOVEA.l comPtr_DosBuffer,A5
-  ;MOVE.l comPtr_SourceFileHandle,D7
+
   TST.l D6
 RTS
 
-Even
+
+
 readcache_filelen:    Dc.l 0
 readcache_offset:     Dc.l 0
 readcache_blocklen:   Dc.l 0
@@ -10445,6 +10934,10 @@ readcache_readlen:    Dc.l 0
 readcache_cacheptr:   Dc.l 0
 readcache_cachelen:   Dc.l 0
 readcache_chunklen:   Dc.l 0
+
+
+
+
 
 .newSourcelineFromTempString:
   MOVE.l D5,D0                            ; strlen form D5 to D0
@@ -10475,26 +10968,29 @@ readcache_chunklen:   Dc.l 0
   ;MOVE.w #$FFFF,comWord_LabelListChanged
 RTS
 
-JL_0_4F5A:
-  JSR readbyte
+
+.readNextLine:
+  JSR readbyte                       ; loads next character and returns -1 if no further data available
   BMI.w JL_0_500C                    ;move a line
 
   MOVEA.l tempstore,A0
-  MOVEQ.l #$00,D4
+  MOVEQ.l #$00,D4                   ; ascii flag ?
 
   JL_0_4F68:
   TST.b D0
   BPL.w JL_0_4F82
     MOVE.b D0,(A0)+
+
     MOVE.l A0,-(A7)
     JSR readbyte
     MOVEA.l (A7)+,A0
-    BMI.w JL_0_4FD2
+
+    BMI.w JL_0_4FD2                 ; no further data available
     MOVE.b D0,(A0)+
     BRA.w JL_0_4FB6
   JL_0_4F82:
 
-  CMP.b #$A,D0
+  CMP.b #$A,D0                      ; EOL found
   BNE.w JL_0_4F8E                   ;end line clipboard
 
   TST.b (a5)
@@ -10532,45 +11028,44 @@ JL_0_4F5A:
   MOVE.b D0,(A0)+
   BEQ.w JL_0_5002
 
-  CMP.b #$9,D0
+  CMP.b #$9,D0                          ; Tab
   BNE.w JL_0_4FB6
+    SUBQ.w #1,A0
+    MOVE.l A0,D0
+    SUB.l comPtr_Temp_TokenString2,D0
 
-  SUBQ.w #1,A0
-  MOVE.l A0,D0
-  SUB.l comPtr_Temp_TokenString2,D0
-
-  JL_0_4FA4:
-  MOVE.b #$20,(A0)+
-  ADDQ.w #1,D0
-  MOVE.l D0,D1
-  DIVU tab_size,D1
-  SWAP D1
-  TST.w D1
-   BNE.b JL_0_4FA4
-
+    JL_0_4FA4:
+      MOVE.b #$20,(A0)+
+      ADDQ.w #1,D0
+      MOVE.l D0,D1
+      DIVU tab_size,D1
+      SWAP D1
+      TST.w D1
+    BNE.b JL_0_4FA4
   JL_0_4FB6:
+
   ADDQ #3,a0
   CMPA.l comPtr_Temp_TokenString3,A0
-   BCS.w JL_0_4FC8
-  MOVEA.l comPtr_Temp_TokenString3,A0
-  ;SUBQ.w #3,A0
-  BRA.w JL_0_4FD2
+  BCS.w JL_0_4FC8
+    MOVEA.l comPtr_Temp_TokenString3,A0
+    ;SUBQ.w #3,A0
+    BRA.w JL_0_4FD2
 
-  JL_0_4EA2b
-  MOVE.l A0,-(a7)
-  JSR JL_0_4EA2
-  MOVE.l (A7)+,a0
-  BRA load
-
+    JL_0_4EA2b
+    MOVE.l A0,-(a7)
+    JSR JL_0_4EA2
+    MOVE.l (A7)+,a0
+    BRA load
   JL_0_4FC8:
-  SUBQ #3,a0
-  SUBQ.w #1,D6
-  BMI.w JL_0_4EA2b
-  MOVE.b (A5)+,D0
-  CMP.w d0,d0
-   ;jsr readbyte
-load
+    SUBQ #3,a0
+    SUBQ.w #1,D6
+    BMI.w JL_0_4EA2b
+    MOVE.b (A5)+,D0
+    CMP.w d0,d0
+    ;jsr readbyte
+  load
   BPL.b JL_0_4F68
+
   JL_0_4FD2:
   CLR.b (A0)+
   SUBA.l comPtr_Temp_TokenString2,A0
@@ -10610,22 +11105,24 @@ RTS
   MOVEA.l comPtr_Temp_TokenString2,A1
   CLR.b instring
   LEA tempbuf,a2
+
   TST.b convert
   BEQ 'l2b  ;'l1
 
-  ;BRA 'l2b                         ; convert is done with preproc
-  ;CMP.w #122,d1
-  ;BLE 'noclip
-  ;MOVE.w #122,d1
-  ;MOVE.w d1,d5
- 'noclip
-  CMP.b #".",(a1)
-  BNE 'l1
-    MOVE.w #"'l",(a2)+
-    ADDQ.w #1,d5                       ;add 1 additional char
-    ADDQ.l #1,a1
-    BRA 'ln1
- 'l1
+    ;BRA 'l2b                         ; convert is done with preproc
+    ;CMP.w #122,d1
+    ;BLE 'noclip
+    ;MOVE.w #122,d1
+    ;MOVE.w d1,d5
+    ;'noclip
+    CMP.b #".",(a1)
+    BNE 'l1
+      MOVE.w #"'l",(a2)+
+      ADDQ.w #1,d5                       ;add 1 additional char
+      ADDQ.l #1,a1
+      BRA 'ln1
+   'l1
+
   TST.b convert
   BNE 'l1a
    'l1b
@@ -10635,6 +11132,7 @@ RTS
     DBF d1,'l1b
     BRA 'exit
  'l1a
+
   CMP.w #"\@",(a1)
   BNE 'ln1
     MOVE.w #"'l",(a2)+
@@ -10653,9 +11151,10 @@ RTS
     MOVE.l #"l`@ ",(a2)+
     ADDQ.w #4,d5
  'ln1
+
   CMP.b #";",(a1)   ;-1
   BEQ 'l2c
-    CMP.b #$22,(a1)     ;-1
+    CMP.b #$22,(a1)     ;-1       ;"
     BNE 'l2b
       TST.b instring
       BEQ 'l2c
@@ -10664,157 +11163,160 @@ RTS
  'l2c
   MOVE.b #1,instring
  'l2b
+
   MOVE.b (a1)+,d0
   BEQ 'exit
 
   TST.b instring                     ;do only if no string
   BNE 'l5
-  TST.b convert
-  BEQ 'l5
-  ;BRA 'l5
-  CMP.b #".",d0
-  BNE 'l2
-  CMP.b #",",-2(a1)
-  BEQ 'l500
-    CMP.b #" ",-2(a1)
-    BNE 'l2
- 'l500
-  ADDQ.w #1,d5
-  MOVE.b #"'",(a2)+
-  MOVEQ #"l",d0
- 'l2
-  CMP.b #"_",-2(a1)
-  BEQ 'l4
-   ;TST.b instring
-   ;BNE 'l5
-  CMP.l #"grap",-1(a1) : BEQ 'l3
-  CMP.l #"dosb",-1(a1) : BEQ 'l3
-  CMP.l #"intu",-1(a1) : BEQ 'l3
-  CMP.l #"Allo",-1(a1) : BEQ 'l3
-  CMP.l #"Free",-1(a1) : BEQ 'l3
-  CMP.l #"Wait",-1(a1) : BEQ 'l3
-  CMP.l #"\",d0
-  BNE 'p1
-    MOVE.b #"`",d0
- 'p1
-  CMP.l #"end",-1(a1)
-  BEQ 'l4a                           ;endm
-    CMP.l #"END",-1(a1)
-    BNE 'l4
- 'l4a
-  CMP.b #"m",3(a1)
-  BEQ 'l44a
-    CMP.b #"M",3(a1)
-    BNE 'l4
-'l44a
-  CMP.b #" ",4(a1)
-  BEQ 'l444a
-    CMP.b #";",4(a1)
-    BEQ  'l444a
-      TST.b 4(a1)
-      BNE 'l4
- 'l444a
-  MOVE.l #"end ",(a2)+
-  MOVE.l #"macr",(a2)+
-  MOVE.b #"o",d0
-  ADD.w #9,d5
-  ADDQ.l #4,a1
- 'l4
-  CMP.l #" mac",-1(a1)
-               ;BRA 'l4c              ;macro
-  BEQ 'l4b
+    TST.b convert
+    BEQ 'l5
+      ;BRA 'l5
+      CMP.b #".",d0
+      BNE 'l2
+       CMP.b #",",-2(a1)
+        BEQ 'l500
+          CMP.b #" ",-2(a1)
+          BNE 'l2
+       'l500
+        ADDQ.w #1,d5
+        MOVE.b #"'",(a2)+
+        MOVEQ #"l",d0
+     'l2
+      CMP.b #"_",-2(a1)
+      BEQ 'l4
+      ;TST.b instring
+      ;BNE 'l5
+      CMP.l #"grap",-1(a1) : BEQ 'l3
+      CMP.l #"dosb",-1(a1) : BEQ 'l3
+      CMP.l #"intu",-1(a1) : BEQ 'l3
+      CMP.l #"Allo",-1(a1) : BEQ 'l3
+      CMP.l #"Free",-1(a1) : BEQ 'l3
+      CMP.l #"Wait",-1(a1) : BEQ 'l3
+      CMP.l #"\",d0
+      BNE 'p1
+        MOVE.b #"`",d0
+     'p1
+      CMP.l #"end",-1(a1)
+      BEQ 'l4a                           ;endm
+        CMP.l #"END",-1(a1)
+        BNE 'l4
+     'l4a
+      CMP.b #"m",3(a1)
+      BEQ 'l44a
+        CMP.b #"M",3(a1)
+        BNE 'l4
+     'l44a
+      CMP.b #" ",4(a1)
+      BEQ 'l444a
+        CMP.b #";",4(a1)
+        BEQ  'l444a
+          TST.b 4(a1)
+          BNE 'l4
+     'l444a
+      MOVE.l #"end ",(a2)+
+      MOVE.l #"macr",(a2)+
+      MOVE.b #"o",d0
+      ADD.w #9,d5
+      ADDQ.l #4,a1
+    'l4
+      CMP.l #" mac",-1(a1)
+                  ;BRA 'l4c              ;macro
+      BEQ 'l4b
 
-  CMP.l #" MAC",-1(a1)
-  BNE 'l4c
- 'l4b
-  CMP.w #"ro",3(a1)
-  BEQ 'l44b
+      CMP.l #" MAC",-1(a1)
+      BNE 'l4c
+    'l4b
+      CMP.w #"ro",3(a1)
+      BEQ 'l44b
 
-  CMP.w #"RO",3(a1)
-  BNE 'l4c
+      CMP.w #"RO",3(a1)
+      BNE 'l4c
 
- 'l44b
-  CMP.b #" ",5(a1)
-  BEQ 'l444b
-  CMP.b #";",5(a1)
-  BEQ  'l444b
-  TST.b 5(a1)
-  BNE 'l4c
+    'l44b
+      CMP.b #" ",5(a1)
+      BEQ 'l444b
+      CMP.b #";",5(a1)
+      BEQ  'l444b
+      TST.b 5(a1)
+      BNE 'l4c
 
- 'l444b
-     ADDQ.l #5,a1
-     ADDQ.w #2,d5
-     MOVE.b #" ",(a2)+
-     MOVE.l #"macr",(a2)+
-     MOVE.w #"o ",(a2)+
-     SUBQ.w #5,d1
-     MOVE.l a1,-(a7)
-     MOVEA.l comPtr_Temp_TokenString2,A1
+    'l444b
+        ADDQ.l #5,a1
+        ADDQ.w #2,d5
+        MOVE.b #" ",(a2)+
+        MOVE.l #"macr",(a2)+
+        MOVE.w #"o ",(a2)+
+        SUBQ.w #5,d1
+        MOVE.l a1,-(a7)
+        MOVEA.l comPtr_Temp_TokenString2,A1
 
- 'n3b
-    MOVE.b (a1)+,d0
-    BEQ 'n2b
+    'n3b
+        MOVE.b (a1)+,d0
+        BEQ 'n2b
 
-    CMP.b #" ",d0
-    BEQ 'n2b
+        CMP.b #" ",d0
+        BEQ 'n2b
 
-    CMP.b #":",d0
-    BEQ 'n2b
+        CMP.b #":",d0
+        BEQ 'n2b
 
+        MOVE.b d0,(a2)+
+        ADDQ.w #1,d5
+      BRA 'n3b
+    'n2b
+
+      MOVEQ #0,d0
+      MOVE.l (a7)+,a1
+    'l4c
+      CMP.l #"ovem",(a1)
+      BEQ 'mm
+       CMP.l #"OVEM",(a1)
+        BNE 'mm6
+     'mm
+      CMP.b #"m",-1(a1)
+      BEQ 'mm2
+        CMP.b #"M",-1(a1)
+        BNE 'mm6
+     'mm2
+      MOVE.l a1,a0
+      MOVEQ #0,d2
+
+     'mm3
+        MOVE.b (a0)+,d3
+        BEQ 'mm6
+
+        CMP.b #"(",d3
+        BEQ 'mm6
+
+        CMP.b #"-",d3
+        BNE 'mm4
+          MOVEQ #1,d2
+       'mm4
+        CMP.b #"/",d3
+        BNE 'mm5
+          MOVEQ #1,d2
+       'mm5
+      CMP.b #",",d3
+      BNE 'mm3
+
+      TST.l d2
+      BNE 'mm6
+        MOVE.b #$20,3(a1)
+        SUBQ.l #1,a1
+        MOVE.l (a1)+,(a2)+
+        MOVE.w (a1)+,(a2)+
+        SUBQ #6,d1
+        BRA 'b1
+     'mm6
+        ;CMP.w #".W",-1(a1)
+        ;BNE 'l5
+        ;TST.b 1(a1)
+        ;BNE 'l5
+        ;MOVEQ #0,d0
+        ;SUBQ.l #2,d1
+   'l5
     MOVE.b d0,(a2)+
-    ADDQ.w #1,d5
-  BRA 'n3b
- 'n2b
-
-  MOVEQ #0,d0
-  MOVE.l (a7)+,a1
-'l4c
-  CMP.l #"ovem",(a1)
-  BEQ 'mm
-  CMP.l #"OVEM",(a1)
-  BNE 'mm6
-'mm
-  CMP.b #"m",-1(a1)
-  BEQ 'mm2
-  CMP.b #"M",-1(a1)
-  BNE 'mm6
-'mm2
-  MOVE.l a1,a0
-  MOVEQ #0,d2
-'mm3
-  MOVE.b (a0)+,d3
-  BEQ 'mm6
-
-  CMP.b #"(",d3
-  BEQ 'mm6
-
-  CMP.b #"-",d3
-  BNE 'mm4
-    MOVEQ #1,d2
- 'mm4
-  CMP.b #"/",d3
-  BNE 'mm5
-    MOVEQ #1,d2
- 'mm5
-  CMP.b #",",d3
-  BNE 'mm3
-  TST.l d2
-  BNE 'mm6
-  MOVE.b #$20,3(a1)
-  SUBQ.l #1,a1
-  MOVE.l (a1)+,(a2)+
-  MOVE.w (a1)+,(a2)+
-  SUBQ #6,d1
-  BRA 'b1
- 'mm6
-;CMP.w #".W",-1(a1)
-;BNE 'l5
-;TST.b 1(a1)
-;BNE 'l5
-;MOVEQ #0,d0
-;SUBQ.l #2,d1
- 'l5
-  MOVE.b d0,(a2)+
  'b1
   DBF d1,'l1
 
@@ -10828,26 +11330,27 @@ RTS
   MOVE.w d5,d1
   MOVEA.l comPtr_Temp_TokenString2,A1
   LEA tempbuf,a2
-  ;MOVEA.l A1,A2
- 'l10:
-  JSR JL_0_5F62
+                                                       ;MOVEA.l A1,A2
+                                               'l10:   ; maybe obsolete ?
+  JSR tokenizeA1
+
   MOVEA.l comPtr_Temp_TokenString2,A2
   TST.b convert
   BEQ 'l21
-  MOVEQ #0,d0
-  MOVE.b (a2)+,d0
-  CMP.b #" ",d0
-  BNE 'l21
- 'l20
-  MOVE.b (a2)+,d0
-  BEQ 'l21
-  CMP.b #" ",d0
-  BEQ 'l20
-  CMP.b #";",d0
-  BEQ 'l21
-  CMP.w #$80,d0
-  BGE 'l21
-  MOVE.b #"!",-2(a2)
+    MOVEQ #0,d0
+    MOVE.b (a2)+,d0
+    CMP.b #" ",d0
+    BNE 'l21
+   'l20
+    MOVE.b (a2)+,d0
+    BEQ 'l21
+    CMP.b #" ",d0
+    BEQ 'l20
+    CMP.b #";",d0
+    BEQ 'l21
+    CMP.w #$80,d0
+    BGE 'l21
+    MOVE.b #"!",-2(a2)
  'l21
   MOVEM.l (A7)+,D1-D4/D6-D7/A0-A6
   RTS
@@ -11355,6 +11858,21 @@ JL_0_5556:
   JL_0_5574:
 RTS
 
+.update_currsourceline_bas:
+  *firstSourceLine.sourceLine = Peek.l(?comPtr_FirstSourceLine)
+
+  *currentSourceLine.sourceLine = *firstSourceLine
+  currentLine.l = Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine)
+  If currentLine > 0
+    Repeat
+      *currentSourceLine = *currentSourceLine\nextLine
+      currentLine - 1
+    Until currentLine = 0
+  EndIf
+
+  Poke.l ?comPtr_CurrentSourceLine, *currentSourceLine
+Return
+
 .update_currsourceline:
   MOVEA.l comPtr_FirstSourceLine,A4
   MOVE.l comLong_DisplayLineOffset,D0 : ADD.l comLong_DisplayLine,D0
@@ -11373,15 +11891,15 @@ RTS
 JL_0_5596:
   MOVE.l A3,D5
   SUB.l comPtr_Temp_TokenString1,D5
-  ADDQ.l #1,D5
-BRA.w JL_0_55AA
+  ADDQ.l #1,D5                                      ; get length of TokenString1
+BRA.w insertNewLineTokString1
 
-JL_0_55A2:
+tokenizeAndInsertNewLine:
   MOVEA.l comPtr_Temp_TokenString2,A2
   JSR parse_line
 
 
-  JL_0_55AA:                                        ; d5 = length of parsed string? ; a4 = current sourceline
+  insertNewLineTokString1:                                        ; d5 = length of parsed string? ; a4 = current sourceline
   MOVE.l D5,D0
   ADDI.w #$9,D0
   JSR AllocPoolMem
@@ -11398,7 +11916,6 @@ JL_0_55A2:
   BEQ.b JL_0_55C6
 
   CMP.b -(A1),D0
-  ;BNE.w JL_0_55D8                                  ; if first character is the labelidentifier, set labelchanged flag
   BEQ 'l10
  'l20
     MOVE.b (a1),d0                     ;pre clicksort
@@ -11415,7 +11932,6 @@ JL_0_55A2:
           ADDQ.l #1,a1
   BRA 'l20
  'l10
-  ;JSR JL_0_46CC
   MOVE.w #$FFFF,comWord_LabelListChanged
   JL_0_55D8:
 
@@ -11453,7 +11969,7 @@ JL_0_55A2:
   JL_0_5620:
     MOVE.b (A1)+,(A0)+
   BNE.b JL_0_5620
-  JSR JL_0_6C04
+  JSR deleteCurrentSourceLine
   MOVE.l A4,comPtr_CurrentSourceLine
 RTS
 
@@ -12753,7 +13269,7 @@ Return
 
 
 
-.parse_line:                         ; input A2: textstring, results in comPtr_Temp_TokenString1
+.parse_line:                         ; input A2: textstring, results: comPtr_Temp_TokenString1 = parsed string, D5: length of string
   MOVEA.l comPtr_Temp_TokenString1,A1
   MOVE.l A1,-(A7)
   MOVE.w #MAX_Columns,D1 : SUBQ.w #1,D1
@@ -12770,29 +13286,28 @@ Return
       JL_0_5F56:
     DBF D1,JL_0_5F48
 
-    JL_0_5F5A:                         ; tokenise line
+    JL_0_5F5A:                         ; return the copied string
       CLR.b (A1)+
       MOVE.l A1,D5
       SUB.l (A7)+,D5
       RTS
 
-      JL_0_5F62:
-      MOVE.l A1,-(A7)
-      BRA.w JL_0_5F72
+  tokenizeA1:                         ;A1 string to parse
+    MOVE.l A1,-(A7)
+  BRA.w JL_0_5F72
+  
   JL_0_5F68:
-
-  CMPI.b #$20,$0(A2,D1.W)
+  CMPI.b #$20,$0(A2,D1.W)              ; -------  check spaces from right to left
   BNE.w JL_0_5F7E
-
-  JL_0_5F72:
-  SUBQ.w #1,D1
-  BPL.b JL_0_5F68
-  ADDQ.w #4,A7
-  CLR.b (A1)
-  MOVEQ.l #$01,D5
-  RTS
-
+    JL_0_5F72:
+    SUBQ.w #1,D1
+    BPL.b JL_0_5F68
+      ADDQ.w #4,A7
+      CLR.b (A1)
+      MOVEQ.l #$01,D5                  ; only spaces in string, so return length 1 as we dont store only 1 space
+      RTS
   JL_0_5F7E:
+
   MOVE.l A4,-(A7)
   MOVEQ.l #$00,D0
   MOVE.w D0,comWord__AL_0_86B8
@@ -12800,7 +13315,7 @@ Return
 
   JL_0_5F88:
     MOVE.b (A2)+,D2
-    CMP.b #$22,d2
+    CMP.b #$22,d2                      ; check for string "
     BNE 'l10
       NOT.b instring2
    'l10
@@ -13526,9 +14041,6 @@ RTS
 
 .alloc_newline:
   MOVEQ.l #$0A,D0
-  ;MOVEQ.l #$01,D1               ; not needed with AllocPooled
-  ;MOVEA.l _execbase,A6          ; execbase is set in macro
-  ;MOVE.w #$FFFF,comWord__AL_0_86C0
   !newalloc                      ; d0= AllocPooled(A0:poolHeader,D0:memSize)
   TST.l D0
   BEQ.w JL_0_6B7A
@@ -13564,7 +14076,7 @@ RTS
   MOVEQ.l #-$01,D0
 RTS
 
-.StoreCurrentSourceLine:
+.StoreAndDeleteCurrentSourceLine:
   MOVEA.l comPtr_CurrentSourceLine,A1
   MOVE.b comByte_LabelIdentifier,D0
   MOVEM.l D0/A0-A2,-(A7)
@@ -13583,7 +14095,7 @@ RTS
   MOVEM.l (A7)+,D0/A0-A2
   BRA.b JL_0_6C0C
 
-  JL_0_6C04:
+  deleteCurrentSourceLine:
   MOVEA.l comPtr_CurrentSourceLine,A1
   MOVE.b comByte_LabelIdentifier,D0
 
@@ -14195,6 +14707,8 @@ RTS
   Gosub print_availmem
   Gosub print_actualsourceline
   Gosub print_actualsourcecolumn
+  If ped\DoTokenize Then info$ = "Tokenize: On" Else info$="Tokenize: Off"
+  PED_PrintStatus{info$,43,2}
 Return
 
 .draw_statusarea:
@@ -16129,7 +16643,7 @@ Return
           ;-- check for a constant
           If Left$(helptext$,1) = "#"
             helptext$ = UnRight$(helptext$,1)
-            helpvalue = TEDGetConstantValue{Peek.l(?constantbase),helptext$}
+            helpvalue = PED_GetConstantValue{Peek.l(?constantbase),helptext$}
           Else
             ;-- check for a newtype
           EndIf
@@ -16317,15 +16831,15 @@ Return
     log_Print{"TAB   " + Hexw$(last_vankey)}
     Poke.w ?comWord_KeyBeforeReturn, last_vankey
 
-    If Peek.w(?tab_size) = 0 Then Poke.w ?tab_size,1
+    If pedconfig\tab_size = 0 Then pedconfig\tab_size = 1
     currentColumn.w = Peek.w(?comWord_Column) + Peek.w(?comWord_ColumnsOffset)
 
     log_Print{Hex$(mqualifier)}
     If (mqualifier AND #IEQUALIFIER_RSHIFT) OR (mqualifier AND #IEQUALIFIER_LSHIFT)
       ;log_Print{"shift"}
-      newColumn.w = currentColumn - Peek.w(?tab_size)
+      newColumn.w = currentColumn - pedconfig\tab_size
     Else
-      newColumn.w = currentColumn + Peek.w(?tab_size)
+      newColumn.w = currentColumn + pedconfig\tab_size
     EndIf
     moveCount.b = newColumn - currentColumn
 
@@ -17112,7 +17626,7 @@ Even                   ; make sure to have enough space reserved
                         Dc.w 1              ; DUMMY
  ;auto_indent:           Dc.b $FF,$FF        ; TOOLTYPE
  ;use_filepattern:       Dc.b $FF,$FF        ; TOOLTYPE
- AL_0_B7E0:             Dc.b $FF,$FF        ; Save xtra-File ???
+ ;AL_0_B7E0:             Dc.b $FF,$FF        ; Save xtra-File ???
  tab_size:              Dc.b $00,$02        ; TOOLTYPE
  ;use_pubscreen:        Dc.b $FF,$FF        ; TOOLTYPE
  ;remember_saved:       Dc.b $FF,$FF        ; TOOLTYPE
@@ -17222,17 +17736,16 @@ Return
   log_Print{"selected lastsource: " + rememberfiles$(_rememberitem)}
 
   If rememberfiles$(_rememberitem) = "<unnamed>"
-     !asm
-     JSR menu_load
-     TST.l D0
-     BEQ.w JL_0_BD5A
-       !basic
-       Gosub analyze_loadedsource
-       Gosub set_remembered_filename
-       Gosub draw_statusarea
-       Gosub write_pedrememberfiles
-       !asm
-     JL_0_BD5A:
+     Gosub menu_load
+     ;TST.l D0
+     ;BEQ.w JL_0_BD5A
+     ;  !basic
+     ;  Gosub analyze_loadedsource
+     ;  Gosub set_remembered_filename
+     ;  Gosub draw_statusarea
+     ;  Gosub write_pedrememberfiles
+     ;  !asm
+     ;JL_0_BD5A:
      Return
   Else
     log_Print{"check if file alread opened."}
@@ -17275,7 +17788,7 @@ Return
     If dummy = 0 Then Return
   EndIf
 
-  loadsourcefilename$ = rememberfiles$(_rememberitem)
+  loadsourcefilename.s = rememberfiles$(_rememberitem)
   Gosub load_source
   Gosub analyze_loadedsource
   Gosub draw_statusarea
@@ -17349,10 +17862,10 @@ Return
    GTMenuItem  0,0,1, 1,!TRANS{"Open"                        },"O"         ,0,#MENU_OPEN
    GTMenuItem  0,0,1, 2,!TRANS{"Open New"                    },""          ,0,#MENU_OPENNEW
    GTMenuItem  0,0,1, 3,!TRANS{"Include File"                },"I"         ,0,#MENU_INCLUDEFILE
-   GTMenuItem  0,0,1, 4
+  #MENU_INCLUDEFILE2 = $1004
+   GTMenuItem  0,0,1, 4,!TRANS{"Include File2"               },""          ,0,#MENU_INCLUDEFILE2
    GTMenuItem  0,0,1, 5,!TRANS{"Save"                        },"S"         ,0,#MENU_SAVE
    GTMenuItem  0,0,1, 6,!TRANS{"Save As..."                  },"A"         ,0,#MENU_SAVEAS
-;  GTMenuItem  0,0,1, 7,!TRANS{"Export ASCII As..."          },""          ,0,#MENU_EXPORTASCII
    GTMenuItem  0,0,1, 7
    GTMenuItem  0,0,1, 8,!TRANS{"Print..."                    },""          ,0,#MENU_PRINT
    GTMenuItem  0,0,1, 9
@@ -17520,6 +18033,11 @@ Even
   Dc.l #MENU_INCLUDEFILE
   Dc.l 1
   Dc.l menu_includeblock              ;include block
+
+  Dc.l #MENU_INCLUDEFILE2
+  Dc.l 1
+  Dc.l menu_includeblock2              ;include block
+
 
   Dc.l #MENU_SAVE
   Dc.l 0
@@ -19434,10 +19952,11 @@ Return
   For i = 0 To (#Max_BlitzLibs-1)
     If Instr(lib_mapping$(i,0),"unused") = 0
       If sortorder = 0
-        WZListAdd libslist.List,lib_mapping$(i,0),-1,i
+        listvalue.s = lib_mapping$(i,0)
       Else
-        WZListAdd libslist.List,Str$(i)+ " | "+ lib_mapping$(i,0),-1,i
+        listvalue.s = Str$(i)+ " | " + lib_mapping$(i,0)
       EndIf
+      WZListAdd libslist.List,listvalue,-1,i
     EndIf
   Next i
   Format ""
@@ -21148,7 +21667,7 @@ RTS
   MOVEM.l (A7)+,D0-D3/A0-A2
   exit_updateblocka:
 
-  JSR JL_0_55AA
+  JSR insertNewLineTokString1
   MOVE.w comWord_DoTokenize,D0
   BEQ.w JL_0_CC6b
     MOVEA.l comPtr_CurrentSourceLine,A2
@@ -21468,8 +21987,8 @@ Return
   JSR menu_opennew
   !basic
 
-  log_Print{"new tab opened, noew loading [" + fileToLoad + "]"}
-  loadsourcefilename$ = fileToLoad
+  log_Print{"new tab opened, now loading [" + fileToLoad + "]"}
+  loadsourcefilename.s = fileToLoad
   Gosub load_source
   !asm
 RTS
