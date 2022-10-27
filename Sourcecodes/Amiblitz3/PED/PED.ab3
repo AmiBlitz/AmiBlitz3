@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.7
-; NumberOfBuilds  = 2242
+; NumberOfBuilds  = 2297
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 956
-; CursorColumn    = 3
-; LabelSearch     = "morebytes"
+; CursorLine      = 8418
+; CursorColumn    = 6
+; LabelSearch     = "ped_tok"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -397,10 +397,12 @@ NEWTYPE.ped
 
   sourceFileHandle.l
   convert.b
-  flag_tokenization.w
+;  flag_tokenization.w
   DoTokenize.w
   amigaguide.b
   debugmode.b
+
+  caseSensitive.b
 
   lastAutoLayout.b
   lastLayout.b
@@ -472,8 +474,12 @@ NEWTYPE.sourceWindow
   ColumnsOffsetStore.w
   Column.w
   DisplayLine.l
+  *FirstSourceLine.sourceLine
+  *CurrentSourceLine.sourceLine
+  TotalLines.l
 
   clearEndOfLine.b
+
   lastEditedLine.l
   bookmarkLine1.l
   bookmarkLine2.l
@@ -710,13 +716,10 @@ browse_macros.l           = Off
 browse_instructions.l     = On
 browse_includes.l         = Off
 
+; for listtype window
 Dim pos2(15),pos$(15),postype$(15)
-;MaxLen tmp$               = 512
 
 MaxLen sourcename$        = 96
-MaxLen exepathname$       = 96
-MaxLen exefilename$       = 96
-
 MaxLen a$                 = 300      ;need for read .xtra
 MaxLen aslpath$           = 250
 MaxLen aslfile$           = 250
@@ -734,10 +737,6 @@ WZListAdd lst.List         ," "
 WZListAdd lst2.List        ," "
 WZListAdd list_labels.List ," "
 
-oldfindstr$                = ""
-oldreplacestr$             = ""
-
-;Dim autodoc_nodes$(256)                            ; was 255 because we use 0 to 255 make 256 entrys Array dimension was to small  tomsmart1
 #Max_BlitzLibs             = 256                   ; added and set to 256 to replace wrong 255 hardcoded Array dimension because we use entry 0 to 255 and this are 256 entrys  tomsmart1
 Dim lib_mapping$(#Max_BlitzLibs,1)                 ; replaced the wrong 255 with the #Max_Blitzlibs Constant  tomsmart1
 Dim lib_check.b(#Max_BlitzLibs)                    ; replaced the wrong 255 with the #Max_Blitzlibs Constant  tomsmart1
@@ -766,6 +765,7 @@ NEWTYPE.pedMessage
 End NEWTYPE
 
 DEFTYPE.pedMessage pedMessage
+DEFTYPE.preprocessor *PreProcessor
 
 ; ------------------------------------------------------
 ; MACRODEFINITIONS
@@ -946,7 +946,7 @@ End Function
 Function.b PED_ReadClipboard{}
 SHARED ped,readcache
 
-  log_Print{"read from clipboard"}
+  ;log_Print{"read from clipboard"}
   readcache\mode = $FF : readcache\cb_eol = False
   readcache\chunklen = -1
   readcache\bufferoffset = 0
@@ -967,6 +967,7 @@ SHARED ped,readcache
         Poke.b &clipboard_text+n,cchar
       Next
       ;log_Print{"cbline: " + clipboard_text}
+      ;log_Print{"first char: " + Str$(Peek.b(&clipboard_text))}
       ;log_Print{"cblen: " + Str$(FLen(clipboard_text))}
 
       readcache\chunklen = FLen(clipboard_text) ; put this line to copy buffer
@@ -1020,11 +1021,12 @@ End Function
 Function.s PED_ReadNextLine{}
 SHARED ped,readcache
 
-  resultString.s = ""
+  resultString.s = "NoCOntenTwasDelivered"
 
   If readcache\mode AND readcache\cb_eol Then Function Return resultString
 
   If PED_ReadNextByte{}
+    resultString = ""
     Repeat
       ; this is the EOL of ClipBoard!
       If readcache\currentbyte = $0A Then Function Return resultString
@@ -1035,7 +1037,7 @@ SHARED ped,readcache
       ; do to import_start
     Until NOT PED_ReadNextByte{}
   EndIf
-  log_Print{"ReadNextLine: [" + resultString + "]"}
+  ;log_Print{"ReadNextLine: [" + resultString + "]"}
   Function Return resultString
 End Function
 
@@ -1923,6 +1925,8 @@ Function.w getLineLength{lineaddr.l}
 End Function
 
 Function.b cutLine{*sl.sourceLine,tempfsl.l}                              ; remove the current line out of linked list
+SHARED sourceWindow
+
     *prevLine.sourceLine = *sl\previousLine
     *nextLine.sourceLine = *sl\nextLine
     If (*prevLine = 0) AND (*nextLine = 0)
@@ -1971,6 +1975,74 @@ Statement appendLine{*afterLine.sourceLine, *appendLine.sourceLine, tempfsl.l}
     *afterLine\nextLine = *appendLine
   EndIf
 End Statement
+
+Function.w PED_SearchString{searchStr.s, casesensitive.b, startpos.w, *currentLine.sourceLine}
+SHARED ped,*PreProcessor
+
+  strline$ = Peek.s(*currentLine+9)
+  If FLen(strline$) = 0 Then Function Return 0
+
+  If ped\DoTokenize
+    MaxLen linebuff$ = 256
+    preproc_Detokenize{*PreProcessor,&strline$,&linebuff$,FLen(strline$)}
+    strline$ = Peek.s(&linebuff$)
+  EndIf
+
+  ;log_Print{"detokenized: " + strline$}
+  ;log_Print{"length: " + Str$(FLen(strline$))}
+  ;log_Print{"search for [" + searchStr + "] in line [" + strline$ + "]"}
+  If casesensitive Then CaseSense True Else CaseSense False
+
+  Function Return Instr(strline$, searchStr, startpos)
+End Function
+
+Function.b PED_ReplaceString{search.s, replacement.s, *currentLine.sourceLine,tempfsl.l,tempcsl.l}
+SHARED ped,*PreProcessor,sourceWindow
+
+  success.b = False
+
+  tmpX.w = PED_SearchString{search, 0, 1, *currentLine}
+  log_Print{"search for line complete."}
+  If tmpX > 0
+    strline.s = Peek.s(*currentLine+9)
+
+    If ped\DoTokenize
+      MaxLen linebuff$ = 256
+      preproc_Detokenize{*PreProcessor,&strline.s,&linebuff$,FLen(strline)}
+      strline.s = StripTrail$(Peek.s(&linebuff$),$20)
+    EndIf
+
+    replacedline.s = Replace$(strline,search,replacement)
+    ;log_Print{"length after replace: " + Str$(FLen(replacedline))}
+    If ped\DoTokenize
+      MaxLen linebuff$ = 256
+      ; process the ascii data in sourcebuff length and write the tokenized source into destbuffer
+      ; the return value is the length of the tokenized text
+      ; sourcebuff and destbuff might be the same pointer
+      ; preproc_Tokenize{*tn.preprocessor,sourcebuff.l,destbuff.l,bytelength.l}
+      preproc_Tokenize{*PreProcessor,&replacedline.s,&linebuff$,FLen(replacedline)}
+      replacedline.s = Peek.s(&linebuff$)
+    EndIf
+
+    If FLen(replacedline) < #MAX_Columns Then replacedline + SPACE$(#MAX_Columns - FLen(replacedline))
+    If FLen(replacedline) > #MAX_Columns Then replacedline = Left$(replacedline,#MAX_Columns)
+
+    *previousLine.sourceLine = *currentLine\previousLine
+    If cutLine{*currentLine,tempfsl}
+      *newLine.sourceLine = PED_CreateNewSourceLine{replacedline}
+      appendLine{*previousLine,*newLine,tempfsl}
+      PED_FreeMem{*currentLine}
+      Poke.l tempcsl, *newLine
+      success = True
+    Else
+      error{"Could not replace the current source line"}
+    EndIf
+  EndIf
+  Function Return success
+End Function
+
+
+
 
 Function.s check_constructs{*currentline.l}    ; fixed this function  tomsmart1
 
@@ -2674,12 +2746,12 @@ SHARED ped, pedconfig
     If fext = "bb2" OR fext = "ab2" OR fext = "ab3" OR fext = "bb"
       log_Print{"activating tokenization"}
       ped\DoTokenize = $FFFF
-      ped\flag_tokenization = $FFFF
+;      ped\flag_tokenization = $FFFF
     Else
       If fext = "txt" OR fext = "guide"
         log_Print{"deactivating tokenization"}
         ped\DoTokenize = False
-        ped\flag_tokenization = False
+;        ped\flag_tokenization = False
         If fext = "guide" Then ped\amigaguide = True
       EndIf
     EndIf
@@ -3001,8 +3073,8 @@ If ende Then Goto abnormal_exit
   cstr2$         = ""
   str2b$         = ""
   project_changelog$ = ""
-  oldfindstr$    = ""
-  oldreplacestr$ = ""
+  find_strold.s    = ""                                                                                                                                                                                                                                  
+  find_replaceStrOld.s = ""                                                                                                                                                                                                                              
 
   ; --- FONTS ----------------------------------------------
   If pedconfig\use_wbfont = False
@@ -3147,7 +3219,7 @@ WZ_ShowMessage{!TRANS{"Preparing preprocessor/tokenizer ..."}}
 pedconfig\HelpIndexFile          = dos_AddPart{pedconfig\systemDir,"HelpIndex.txt"}
 pedconfig\HelpIndexCacheFile        = dos_AddPart{pedconfig\systemDir,"HelpIndexCache.bin"}
 TokenHashMapFile.s         = dos_AddPart{pedconfig\systemDir,"TokenList.hashmap"}
-*PreProcessor.preprocessor = preproc_Create{}
+*PreProcessor = preproc_Create{}
 Poke.l ?comPtr_PreProcessor,*PreProcessor
 preproc_LoadTokens{*PreProcessor,TokenHashMapFile}
 
@@ -3272,26 +3344,16 @@ begin1:
     !log_AvailMem{"before init arexx-port..."}
     Gosub arexx_init
   CEND
-  !asm
 
-  MOVEA.w #$2000,A0
-  ADDA.w #MAX_Columns,A0
-  ADDA.w #MAX_Columns,A0
-  ADDA.w #MAX_Columns,A0
-  ADDQ.w #6,A0
-  MOVE.l A0,D0
-  !newalloc
-  MOVE.l D0,comPtr_DosBuffer
-  BEQ.w exit_PED_closelibraries
-
-  MOVE.l d0,-(a7)
-  !basic
-  readcache\bufferptr = Peek.l(?comPtr_DosBuffer)
+  requestmemsize.l = $2000
+  requestmemsize   + #MAX_Columns * 3
+  requestmemsize   + 6
+  readcache\bufferptr = PED_AllocMem{requestmemsize}
+  If readcache\bufferptr = 0 Then Goto exit_PED_closelibraries
   readcache\fib = AllocDosObject_ (#DOS_FIB,0)
   *rc_fib.FileInfoBlock = readcache\fib
-  !asm
-  MOVE.l (a7)+,d0
 
+  GetReg d0,readcache\bufferptr
   MOVEA.l D0,A0
   LEA $2000(A0),A0
   MOVE.l A0,comPtr_Temp_TokenString1 : ADDA.w #MAX_Columns,A0 : ADDQ.w #2,A0
@@ -3299,11 +3361,11 @@ begin1:
   MOVE.l A0,comPtr_Temp_TokenString3 : ADDA.w #MAX_Columns,A0 : ADDQ.w #2,A0
   MOVE.l A0,comPtr_Temp_TokenStringObsolete
 
-  MOVE.l #$2F60 + 1000,D0   ;12128 bytes
-  !newalloc
-  TST.l D0;,AL_0_5B9A
-  BEQ.w exit_PED_closelibraries
+  requestmemsize = $2F60 + 1000   ;12128 bytes
+  textbuffers.l = PED_AllocMem{requestmemsize}
+  If textbuffers = 0 Then Goto exit_PED_closelibraries
 
+  GetReg d0,textbuffers
   MOVEA.l D0,A0 : MOVE.l A0,AL_0_5B9E
   ;ADD.l #MAX_Columns+4,a0 : MOVE.l A0,AL_0_5BA2
   ADD.l #MAX_Columns+4,a0 : MOVE.l A0,AL_0_5BA6
@@ -3312,11 +3374,10 @@ begin1:
   ADD.l #MAX_Columns+4,a0 : MOVE.l A0,lineundeletestore
   ;ADD.l #MAX_Columns+4,a0
 
-  !basic
   Gosub set_oldpreferences
   !log_AvailMem{"after reserve of buffers for source code, giving control back to compiler..."}
-  !asm
 
+  !asm
   ; --
   ; -- return to compiler after initiation
   MOVE.l comLong_AB3IsAvailable,D0
@@ -3329,9 +3390,8 @@ begin1:
   LEA str_tempfilename,A0
 
   compiler_jumps_here:               ; compiler offers str_tempfilename in A0 here
-  ;MOVE.l A0,-(A7)
   !basic
-  ;MOVE.l (a7)+,d0
+
   PutReg A0,tmpA0.l
   If tmpA0
     compiler_source$ = Peek$(tmpA0)
@@ -3429,13 +3489,11 @@ exit_PED_closeall:
 
   log_Print{"closing fonts..."}
   Gosub close_sourcefonts
-  !asm
 
-  exit_PED_closelibraries:
-  !basic
+exit_PED_closelibraries:
   CNIF #USE_AREXX = 1
-  log_Print{"closing arexxport.."}
-  Gosub arexx_free
+    log_Print{"closing arexxport.."}
+    Gosub arexx_free
   CEND
 
   log_Print{"closing catalog an libs..."}
@@ -3457,7 +3515,6 @@ exit_PED_closeall:
   If readcache\cacheptr
     FreeVec_ readcache\cacheptr
     readcache\cacheptr = Null
-;    readcache\cachelen = 0
     readcache\readlen = 0
   End If
 
@@ -3576,7 +3633,7 @@ End
   ;      MOVEM.l (A7)+,D0-D3/A0-A2
   ;    exit_updateblock:
 
-      JSR insertNewLineTokString1  ; insert new parsed line into source
+      JSR replaceCurrentLine  ; insert new parsed line into source
   ;
       MOVE.w comWord_DoTokenize,D0
       BEQ.w JL_0_CC6
@@ -4896,7 +4953,7 @@ Return
   log_Print{"... file " + loadsourcefilename + " opened with handle " + Hex$(ped\sourceFileHandle)}
 
   Poke.w ?comWord_DoTokenize, ped\DoTokenize
-  Poke.w ?flag_tokenization, ped\flag_tokenization
+;  Poke.w ?flag_tokenization, ped\flag_tokenization
   Poke.b ?convert, ped\convert
 
   log_Print{"loading file to cache"}
@@ -5073,12 +5130,12 @@ Return
     If fext$ = "bb2" OR fext$ = "ab2" OR fext$ = "ab3" OR fext$ = "bb"
       log_Print{"activating tokenization"}
       Poke.w ?comWord_DoTokenize, $FFFF
-      Poke.w ?flag_tokenization, $FFFF
+;      Poke.w ?flag_tokenization, $FFFF
     EndIf
     If fext$ = "txt" OR fext$ = "guide"
       log_Print{"deactivating tokenization"}
       Poke.w ?comWord_DoTokenize, 0
-      Poke.w ?flag_tokenization, 0
+;      Poke.w ?flag_tokenization, 0
       If fext$ = "guide" Then ped\amigaguide = True
     EndIf
   EndIf
@@ -5632,138 +5689,23 @@ Return
 
 str_searchstring:   Ds.b #MAX_STRINGSIZE
 str_replacestring:  Ds.b #MAX_STRINGSIZE
-case_sensitive:     Dc.b $00,$00
 Even
-
-.search_string:
-  MOVEQ.l #$00,D5
-
-  JL_0_15C6:
-  LEA $9(A4),A5
-
-  MOVE.w flag_tokenization,D0
-  BEQ.w JL_0_15E0
-    MOVEA.l A5,A0
-    MOVEA.l comPtr_Temp_TokenString1,A1
-    MOVEA.l A1,A5
-    JSR detokenize_line                ;detokenize_line
-  JL_0_15E0:
-
-  MOVEA.l A5,A1                      ;compare routine
-  ADDA.w D5,A5
-
-  JL_0_15E4:
-  MOVEA.l A5,A3
-  LEA str_oldsearchgadget,A2
-
-  JL_0_15EA:
-    MOVE.b (A2)+,D0
-    BEQ.w JL_0_162E
-
-    MOVE.b (A3)+,D2
-    BEQ.w exit_search_string
-
-    BTST #$7,case_sensitive
-    BNE.w JL_0_1626
-      !isLetter
-      BNE.w JL_0_1626
-      ANDI.w #$DF,D2
-    JL_0_1626:
-
-    CMP.b D0,D2
-    BEQ.b JL_0_15EA
-    ADDQ.w #1,A5
-  BRA.b JL_0_15E4
-  JL_0_162E:
-
-  SUBA.l A1,A5
-  MOVE.w A5,D0
-  RTS
-
-  exit_search_string:
-  MOVEQ.l #-$01,D0
-RTS
-
-.replace_string:
-  JSR search_string
-  BMI.w exit_replace_string
-
-  MOVE.w #$FFFF,comWord_SourceChanged
-
-  JL_0_17Dca:
-  MOVEA.l comPtr_Temp_TokenString2,A0
-  MOVEQ.l #$00,D1
-
-  JL_0_17E2:
-    CMP.w D0,D1
-    BCC.w JL_0_17EE
-    MOVE.b (A1)+,(A0)+
-    ADDQ.w #1,D1
-  BRA.b JL_0_17E2
-
-  JL_0_17EE:
-  LEA str_searchstring,A2
-
-  JL_0_17F2:
-  TST.b (A2)+
-  BEQ.w JL_0_17FC
-  ADDQ.w #1,A1
-  BRA.b JL_0_17F2
-
-  JL_0_17FC:
-  LEA str_replacestring,A2
-
-  JL_0_1800:
-    ADDQ.w #1,D1
-    MOVE.b (A2)+,(A0)+
-  BNE.b JL_0_1800
-
-  SUBQ.w #1,A0
-  SUBQ.w #1,D1
-  MOVE.w D1,-(A7)
-
-  JL_0_180C:
-    MOVE.b (A1)+,(A0)+
-  BNE.b JL_0_180C
-
-  SUBQ.w #1,A0
-
-  JL_0_1812:
-    CMPA.l comPtr_Temp_TokenString3,A0
-    BCC.w JL_0_1820
-    MOVE.b #$20,(A0)+
-  BRA.b JL_0_1812
-
-  JL_0_1820:
-  MOVEA.l comPtr_Temp_TokenString2,A2
-  JSR parse_line
-  JSR insertNewLineTokString1
-  MOVE.w (A7)+,D5
-  JSR JL_0_15C6
-  BPL.b JL_0_17Dca
-  MOVEQ.l #$00,D0
-  RTS
-
-  exit_replace_string:
-  MOVEQ.l #-$01,D0
-RTS
-
-
 
 .menu_find:                          ;find
   *textline.l = TEDGetCurrentLine{} + 9
   *detokened.l = TEDDetoke{*textline}
   actualword$ = PED_GetWordAtPos{Peek$(*detokened), Peek.w(?comWord_Column),False}
   If actualword$ <> ""
-    oldfindstr$ = actualword$
+    find_findStrOld.s = actualword$                                                                                                                                                                                                                      
   EndIf
 
   If WZ_CheckOpen{"WIN_SEARCH"} = False
     WZWindow WZID("WIN_SEARCH"),?wzgui,128,-2,-2,-2,-2,WZID("WIN_SEARCH")
     AddedMenu2WZWin{"WIN_SEARCH"}
     Delay_ 2
-    WZPrint "FIND_FINDSTRING"   ,&oldfindstr$
-    WZPrint "FIND_REPLACESTRING",&oldreplacestr$
+    WZPrint "FIND_FINDSTRING"   ,&find_findStrOld
+    WZPrint "FIND_REPLACESTRING",&find_replaceStrOld
+    WZPrint "FIND_FINDMODE",-1
     ActivateWZGadget{"FIND_FINDSTRING"}      ; replaced to use the statement  tomsmart1 2012 03 09
   Else
     Use Window WZID("WIN_SEARCH")
@@ -5772,65 +5714,98 @@ RTS
   EndIf
 Return
 
+
 .menu_findnext:
-  MOVEA.l comPtr_CurrentSourceLine,A4
-  MOVE.l (A4),D0                     ;start code
-  BEQ.w setpointer_to_normal
+  *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
+  *currentLine = *currentLine\nextLine
+  direction.b = 1
 
-  MOVEA.l D0,A4
-  MOVEQ.l #$01,D6
+nextOccurence:
+  If *currentLine <> 0
+    search.s = Peek.s(?str_searchstring)
 
-  JL_0_1754:
-  MOVE.b str_searchstring,D0         ;find
-  BEQ.w setpointer_to_normal
+    If direction = 1
+      log_Print{"find next for [" + search + "]"}
+    Else
+      log_Print{"find previous for [" + search + "]"}
+    EndIf
 
-  JSR set_pointer_busy
-  MOVE.l comLong_DisplayLineOffset,D7
-  ADD.l comLong_DisplayLine,D7
-  ADD.l D6,D7
+    Gosub set_pointer_busy_bas
 
-  JL_0_176A:
-    JSR search_string
-    BPL.w JL_0_1790
-      ADD.l D6,D7
-      BMI.w setpointer_to_normal
-        CMP.l comLong_TotalLines,D7
-        BCC.w setpointer_to_normal
-          TST.l D6
-          BPL.w JL_0_178C
-            MOVEA.l $4(A4),A4
-            BRA.b JL_0_176A
-          JL_0_178C:
-          MOVEA.l (A4),A4
-  BRA.b JL_0_176A
-  JL_0_1790:
+    curLine.l = Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset) + direction
+    Repeat
+      tmpX.w = PED_SearchString{search,ped\caseSensitive,1,*currentLine}
+      If tmpX = 0
+        If direction = 1
+          *currentLine = *currentLine\nextLine
+        Else
+          *currentLine = *currentLine\previousLine
+       EndIf
+        curLine + direction
+      EndIf
+    Until (tmpX > 0) OR (curLine > Peek.l(?comLong_TotalLines)) OR (curLine < 0)
 
-  JSR set_pointer_normal
-  MOVE.l D0,-(A7)
-  MOVE.l D7,D0
-  MOVEA.l comPtr_CurrentSourceLine,A4
-  JSR sub_gotoline
-  MOVE.l (A7)+,D1
-  JSR moveCursorToX
-JMP update_horizscroller
+    If tmpX > 0
+      log_Print{"found [" + search + "] in Line " + Str$(curLine) + ", Column " + Str$(tmpX)}
+      GetReg D0,curLine
+      !asm
+      JSR sub_gotoline
+      !basic
+      GetReg D0,tmpX - 1
+      !asm
+      MOVE.w D0,D1
+      JSR moveCursorToX
+      JSR update_horizscroller
+      !basic
+    EndIf
+
+    Gosub set_pointer_normal_bas
+  EndIf
+Return
 
 
-.menu_previous:
-  MOVE.l $4(A4),D0
-  BEQ.w setpointer_to_normal
-  MOVEA.l D0,A4
-  MOVEQ.l #-$01,D6
-BRA.b JL_0_1754
-
+.menu_findprevious:
+  *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
+  *currentLine = *currentLine\previousLine
+  direction.b = -1
+Goto nextOccurence
 
 .menu_replace:
-  MOVE.b str_searchstring,D0
-  BEQ.w setpointer_to_normal
-  JSR replace_string
-  BNE.w setpointer_to_normal
-  JSR menu_findnext
-JMP _redraw
+  If Peek.s(?str_searchstring)<>""
+    log_Print{"menu replace called: " + Peek.s(?str_searchstring) + " >> " + Peek.s(?str_replacestring)}
+    *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
+    If PED_ReplaceString{Peek.s(?str_searchstring),Peek.s(?str_replacestring),*currentLine,?comPtr_FirstSourceLine,?comPtr_CurrentSourceLine}
+      log_Print{"replace done."}
+      Gosub menu_findnext
+      !asm
+      JSR _redraw
+      !basic
+    EndIf
+  Else
+    log_Print{"no searchstring set."}
+  EndIf
+Return
 
+.menu_replaceall:
+  If Peek.s(?str_searchstring)<>""
+    log_Print{"menu replaceall called: " + Peek.s(?str_searchstring) + " >> " + Peek.s(?str_replacestring)}
+    findmode.b = WZInput("FIND_FINDMODE")
+    If findmode
+      *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
+    Else
+      *currentLine.sourceLine = Peek.l(?comPtr_FirstSourceLine)
+    EndIf
+
+    Repeat
+      If PED_ReplaceString{Peek.s(?str_searchstring),Peek.s(?str_replacestring),*currentLine,?comPtr_FirstSourceLine,?comPtr_CurrentSourceLine}
+        *currentLine = Peek.l(?comPtr_CurrentSourceLine)
+      EndIf
+      *currentLine = *currentLine\nextLine
+    Until *currentLine = 0
+  Else
+    log_Print{"no searchstring set."}
+  EndIf
+Return
 
 
 .menu_quitall:
@@ -5854,7 +5829,6 @@ Return
 
 
 .menu_quit:
-
   If pedMessage\_Code = 1
     log_Print{"new Iconify message was send by intuition"}
     Gosub menu_iconify
@@ -6899,7 +6873,7 @@ Return
 
   MOVEA.l comPtr_Temp_TokenString2,A2
   JSR parse_line
-  JSR insertNewLineTokString1
+  JSR replaceCurrentLine
 
   MOVEA.l (A4),A1                         ; remove deleted line from linked list
   MOVE.l (A1),D0
@@ -7031,7 +7005,7 @@ JL_0_2906:
   JL_0_29E8:
 
   JSR parse_line
-  JSR insertNewLineTokString1
+  JSR replaceCurrentLine
   MOVEA.l comPtr_Temp_TokenString2,A2
   JSR parse_line
   MOVE.l D5,D0
@@ -8068,27 +8042,18 @@ Return
 
 
 .menu_paste:
-  !asm
-  MOVE.l A4,-(A7)
-  !basic
   ped\pasteMode = $FFFF
   Gosub do_paste
   ped\pasteMode = $0000
-  !asm
-  MOVEA.l (A7)+,A4
-  !basic
 Return
 
 
 .menu_kill_bas:
-  !basic
   log_Print{"menu Kill called."}
 
   If Peek.l(?comLong_BlockEndY) = $FFFFffff
     log_Print{"no block selected."}
-    Pop If
-    !asm
-    RTS
+    Return
   EndIf
 
 
@@ -8099,19 +8064,16 @@ Return
   *previousLine.sourceLine = *tempLine\previousLine
 
   For si.w = 1 To getCountOfMarkedLines
-
     detokened.l = TEDDetoke{*tempLine + 9}
     log_Print{Str$(si) + " deleting " + Peeks$(detokened,20)}
 
     ptr_line.l = *tempLine
     *tempLine = *tempLine\nextLine
-    GetD0 ptr_line
-    !asm
-    MOVE.l d0,A1
-    !newfree
-    !basic
+    PED_FreeMem{ptr_line}
+
     Poke.l ?comLong_TotalLines, Peek.l(?comLong_TotalLines)-1
   Next si
+
   If *tempLine
     *previousLine\nextLine = *tempLine          ; set templine as next line of line before block
     *tempLine\previousLine = *previousLine      ; set line after block as nextline of line before block
@@ -8128,18 +8090,19 @@ Return
     Poke.l ?comLong_DisplayLineOffset, Peek.l(?comLong_TotalLines)
     Poke.l ?comLong_DisplayLine, 0
     Pop If
+    Gosub update_currsourceline
     !asm
-    JSR update_currsourceline
     JSR _redraw
     MOVE.l comLong_DisplayLineOffset,D0
     BSR gotoline
-    RTS
+    !basic
+  Else
+    Gosub update_currsourceline_bas
+    !asm
+    JSR _redraw
+    !basic
   EndIf
-  !asm
-  JSR update_currsourceline
-  JSR _redraw
-RTS
-
+Return
 
 .menu_kill:
   log_Print{"menu kill called."}
@@ -8395,6 +8358,31 @@ Return
   EndIf
 Return
 
+Function.s PED_DetokenizeText{strLine.s}
+SHARED ped,*PreProcessor
+
+  If ped\DoTokenize
+    MaxLen linebuff$ = 256
+    preproc_Detokenize{*PreProcessor,&strline$,&linebuff$,FLen(strline$)}
+    strLine = Peek.s(&linebuff$)
+  EndIf
+
+  Function Return strLine
+
+End Function
+
+Function.s PED_TokenizeText{strLine.s}
+SHARED ped,*PreProcessor
+
+  If ped\DoTokenize
+    MaxLen linebuff$ = 256
+    preproc_Tokenize{*PreProcessor,&replacedline.s,&linebuff$,FLen(replacedline)}
+    strLine.s = Peek.s(&linebuff$)
+  EndIf
+
+  Function Return strLine
+End Function
+
 
 .do_paste:
   log_Print{"pastemode " + Hexw$(ped\pasteMode)}
@@ -8406,7 +8394,7 @@ Return
     ; includeblock mode
     ped\sourceFileHandle = PED_OpenFile{includeblockfile$,#HUNK_RELOC_16__MODE_OLDFILE,False}
     Poke.w ?comWord_DoTokenize, ped\DoTokenize
-    Poke.w ?flag_tokenization, ped\flag_tokenization
+;    Poke.w ?flag_tokenization, ped\flag_tokenization
     Poke.b ?convert, ped\convert
     If NOT PED_ReadFileCache{}
       PED_CloseFile{ped\sourceFileHandle}
@@ -8453,8 +8441,9 @@ Return
   MOVE.l d5,-(a7)                     ; returns length of string in D5
   !basic
   MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
-
   *newLine.sourceLine = PED_CreateNewSourceLine{ Peeks$(Peek.l(?comPtr_Temp_TokenString1),tmpd0) }
+  ;*newLine.sourceLine = PED_CreateNewSourceLine{PED_TokenizeText{pasteString}}
+
   *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
   *previousLine.sourceLine = *currentLine\previousLine
   If cutLine{*currentLine,?comPtr_FirstSourceLine}
@@ -8469,7 +8458,7 @@ Return
   Repeat
     tmpLine = PED_ReadNextLine{}
     tmpLen = FLen(tmpLine)
-    If tmpLen > 0
+    If tmpLine <> "NoCOntenTwasDelivered"
       If ped\verticalCopyMode
         If currentColumn > #MAX_Columns-10 Then currentColumn = #MAX_Columns-10
         pasteString = SPACE$(currentColumn)
@@ -8477,7 +8466,7 @@ Return
       Else
         pasteString = tmpLine
       EndIf
-      log_Print{"got line: " + pasteString}
+      ;log_Print{"got line: " + pasteString}
       GetReg D0,&pasteString : MOVE.l D0,-(a7)
       !asm
       MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
@@ -8488,18 +8477,20 @@ Return
       MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
       *newLine = PED_CreateNewSourceLine{ Peeks$(Peek.l(?comPtr_Temp_TokenString1),tmpd0)}
       PED_InsertSourceLine{*newLine,?comLong_TotalLines,?comPtr_LastSourceLine,?comPtr_CurrentSourceLine}
+    Else
+      tmpLen = 0
     EndIf
   Until tmpLen = 0 AND (readcache\moreBytes = False)
 
 
   ; add the rest to an new line
-  ;log_Print{"last insert: " + Peeks$(*newLine+9,*newLine\strLength)}
   If Len(Trim$(restString)) > 0
-    log_Print{"restString: " + restString}
-    log_Print{"lastpaste: " + pasteString}
+    ;log_Print{"restString: " + restString}
+    ;log_Print{"lastpaste: " + pasteString}
+    ;*currentLine = Peek.l(?comPtr_CurrentSourceLine)
+    ;log_Print{"last insert: " + Peek.s(*currentLine+9)}
     restString = pasteString + restString
-    ;*newLine = PED_CreateNewSourceLine{""}
-    ;PED_InsertSourceLine{*newLine,?comLong_TotalLines,?comPtr_LastSourceLine,?comPtr_CurrentSourceLine}
+
     GetReg D0,&restString : MOVE.l D0,-(a7)
     !asm
     MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
@@ -9507,7 +9498,7 @@ TokenizeSource:
       MOVEA.l comPtr_Temp_TokenString1,A1
       JSR tokenizeA1
       MOVE.l A4,comPtr_CurrentSourceLine
-      JSR insertNewLineTokString1
+      JSR replaceCurrentLine
 
  JL_0_4530:
     MOVEA.l (A4),A4
@@ -9535,7 +9526,7 @@ DetokenizeSource:
     ADDQ.w #1,A1
     MOVE.l A1,D5
     MOVE.l A4,comPtr_CurrentSourceLine
-    JSR insertNewLineTokString1
+    JSR replaceCurrentLine
     MOVEA.l (A4),A4
     SUBQ.w #1,(A7)
   BNE.b JL_0_4554
@@ -9862,46 +9853,46 @@ JL_0_46CC:
   MOVE.w #$FFFF,comWord_LabelListChanged
 RTS
 
-.oldlistadd:
-  MOVEM.l D0-D1/A1-A2,-(A7)
-  MOVEQ.l #$08,D0
-  MOVE.l #$10000,D1
-  MOVEA.l _execbase,A6
-  MOVE.l A0,-(A7)
-  !newalloc
-  TST.l D0
-  BEQ.w memAlert_CloseSource
-
-  MOVEA.l (A7)+,A0
-  MOVEA.l D0,A2
-  MOVE.w comWord_LabelCounter,D1
-  BEQ.w JL_0_4714
-
-  MOVEA.l comPtr_LabelList,A1
-  SUBQ.w #2,D1
-  BMI.w JL_0_470E
-
-  JL_0_4708:
-    MOVEA.l (A1),A1
-  DBF D1,JL_0_4708
-
-  JL_0_470E:
-  MOVE.l A2,(A1)
-  BRA.w JL_0_471A
-
-  JL_0_4714:
-  MOVE.l A2,comPtr_LabelList
-
-  JL_0_471A:
-  MOVE.l A0,$4(A2)
-  ADDQ.w #1,comWord_LabelCounter
-
-  MOVEM.l (A7)+,D0-D1/A1-A2
-RTS
-
-JL_0_472A:
-  MOVE.w #$FFFF,comWord_LabelListChanged
-RTS
+;.oldlistadd:
+;  MOVEM.l D0-D1/A1-A2,-(A7)
+;  MOVEQ.l #$08,D0
+;  MOVE.l #$10000,D1
+;  MOVEA.l _execbase,A6
+;  MOVE.l A0,-(A7)
+;  !newalloc
+;  TST.l D0
+;  BEQ.w memAlert_CloseSource
+;
+;  MOVEA.l (A7)+,A0
+;  MOVEA.l D0,A2
+;  MOVE.w comWord_LabelCounter,D1
+;  BEQ.w JL_0_4714
+;
+;  MOVEA.l comPtr_LabelList,A1
+;  SUBQ.w #2,D1
+;  BMI.w JL_0_470E
+;
+;  JL_0_4708:
+;    MOVEA.l (A1),A1
+;  DBF D1,JL_0_4708
+;
+;  JL_0_470E:
+;  MOVE.l A2,(A1)
+;  BRA.w JL_0_471A
+;
+;  JL_0_4714:
+;  MOVE.l A2,comPtr_LabelList
+;
+;  JL_0_471A:
+;  MOVE.l A0,$4(A2)
+;  ADDQ.w #1,comWord_LabelCounter
+;
+;  MOVEM.l (A7)+,D0-D1/A1-A2
+;RTS
+;
+;JL_0_472A:
+;  MOVE.w #$FFFF,comWord_LabelListChanged
+;RTS
 
 
 .update_labelstuff:
@@ -9973,7 +9964,7 @@ RTS
 
   ; -- check/set tokenisation mode
   ped\DoTokenize = $ffff
-  MOVE.w flag_tokenization,comWord_DoTokenize
+  Poke.w ?comWord_DoTokenize,ped\DoTokenize
   TST.w comWord_DoTokenize
   BEQ.w JL_0_4A76
     TST.l comPtr_TokenBase
@@ -10674,7 +10665,8 @@ JL_0_5474:
   CMP.b -(A0),D0
   MOVEA.l (A7)+,A0                         ;
   BNE.w JL_0_54Dca
-    JSR JL_0_472A                          ; set labellistchange to true
+    MOVE.w #$FFFF,comWord_LabelListChanged
+    ;JSR JL_0_472A                          ; set labellistchange to true
   JL_0_54Dca:
 
   !newfree                            ; A1: memory , -(a1) is size
@@ -10799,14 +10791,14 @@ JL_0_5596:
   MOVE.l A3,D5
   SUB.l comPtr_Temp_TokenString1,D5
   ADDQ.l #1,D5                                      ; get length of TokenString1
-BRA.w insertNewLineTokString1
+BRA.w replaceCurrentLine
 
 tokenizeAndInsertNewLine:
   MOVEA.l comPtr_Temp_TokenString2,A2
   JSR parse_line
 
 
-  insertNewLineTokString1:                                        ; d5 = length of parsed string? ; a4 = current sourceline
+  replaceCurrentLine:                                        ; d5 = length of parsed string? ; a4 = current sourceline
   MOVE.l D5,D0
   ADDI.w #$9,D0
   JSR AllocPoolMem
@@ -10876,6 +10868,7 @@ tokenizeAndInsertNewLine:
   JL_0_5620:
     MOVE.b (A1)+,(A0)+
   BNE.b JL_0_5620
+
   JSR deleteCurrentSourceLine
   MOVE.l A4,comPtr_CurrentSourceLine
 RTS
@@ -10904,21 +10897,21 @@ JL_0_5650:
       TST.w D0
         RTS
   JL_0_5670:
-  CMP.b $8(A5),D5
-  BCC.w JL_0_5680
+    CMP.b $8(A5),D5
+    BCC.w JL_0_5680
+      MOVEQ.l #$00,D0
+      MOVE.b $8(A5,D5.W),D0
+      RTS
+    JL_0_5680:
+    MOVE.w comWord__AL_0_8AD8,D0
+    BNE.w JL_0_568C
+      MOVEQ.l #$20,D0
+      RTS
+    JL_0_568C:
+    MOVEA.l (A5),A5
+    ADDQ.l #1,D6
+    MOVEQ.l #$00,D5
     MOVEQ.l #$00,D0
-    MOVE.b $8(A5,D5.W),D0
-    RTS
-  JL_0_5680:
-  MOVE.w comWord__AL_0_8AD8,D0
-  BNE.w JL_0_568C
-    MOVEQ.l #$20,D0
-    RTS
-  JL_0_568C:
-  MOVEA.l (A5),A5
-  ADDQ.l #1,D6
-  MOVEQ.l #$00,D5
-  MOVEQ.l #$00,D0
 RTS
 
 .reset_Blockflag:
@@ -12938,7 +12931,8 @@ RTS
       ADDQ.l #1,a1
       BRA 'l20
  'l10
-  JSR JL_0_472A                        ; set LabelListchanged-Flag
+  ;JSR JL_0_472A                        ; set LabelListchanged-Flag
+  MOVE.w #$FFFF,comWord_LabelListChanged
 
   JL_0_6C24:
   MOVEA.l (A7)+,A1
@@ -16371,7 +16365,7 @@ Even                   ; make sure to have enough space reserved
  ;aslreq_y:              Dc.l $18
  ;aslreq_width:          Dc.l $17C
  ;aslreq_height:         Dc.l $17C
- flag_tokenization:     Dc.w $FF,$FF
+ ;flag_tokenization:     Dc.w $FF,$FF
  ;prefs_source_icon:     Ds.w 3
  ;ownscreen_modeid:      Dc.l 0              ; TOOLTYPE
  ;myscreen_Width:
@@ -16986,7 +16980,7 @@ Even
 
   Dc.l #MENU_PREVIOUS
   Dc.l 1
-  Dc.l menu_previous
+  Dc.l menu_findprevious
 
   Dc.l #MENU_REPLACE
   Dc.l 1
@@ -20140,36 +20134,33 @@ Return
 
         Case "library_list"
           cmd_node.l = WZGetNode(lib_list.List)
-          cmd$ = WZListString(cmd_node,0)
-          klammer.b = Instr(cmd$,"(")
+          searchcmd.s = WZListString(cmd_node,0)
+          klammer.b = Instr(searchcmd,"(")
           If klammer
             used_win.l = Used Window
-            searchcmd$ = StrChg(Left$(cmd$,klammer-1)," ","")
-            ; !cout{"*"+searchcmd$+"*"}
-            casesens_backup.w = Peek.w(?case_sensitive)
-            BSET #7,case_sensitive
-            Poke$ ?str_searchstring   ,searchcmd$;,60
-            Poke$ ?str_oldsearchgadget,searchcmd$;,60
 
-            If oldsearchcmd$ <> searchcmd$
-              oldsearchcmd$ = searchcmd$
+            casesens_backup.w = ped\caseSensitive       ; store searchmode
+
+            searchcmd.s = StrChg(Left$(searchcmd,klammer-1)," ","")
+            ped\caseSensitive = True
+            Poke.s ?str_searchstring   ,searchcmd
+            If searchcmdStore.s <> searchcmd
+              searchcmdStore.s = searchcmd
               !asm
-              MOVEQ #0,d0
-              JSR jumpline
+              MOVEQ #0,d0 : JSR jumpline
               !basic
             EndIf
-
             !asm
             JSR storeline
-            JSR cursor_off
-            MOVE.l comPtr_CurrentSourceLine,a4
-            JSR menu_findnext
             !basic
+            Gosub cursor_off_bas
+            Gosub menu_findnext
             Gosub update_vertscroller
             Gosub cursor_on_bas
+
+            ped\caseSensitive = casesens_backup          ; restore searchmode
+
             If (used_win >< -1) Then Use Window used_win
-            ; gewaehlte Suchmethode wieder einschalten
-            Poke.w ?case_sensitive,casesens_backup
             Gosub activatesourcewindow
           EndIf
 
@@ -20349,7 +20340,7 @@ RTS
   MOVEM.l (A7)+,D0-D3/A0-A2
   exit_updateblocka:
 
-  JSR insertNewLineTokString1
+  JSR replaceCurrentLine
   MOVE.w comWord_DoTokenize,D0
   BEQ.w JL_0_CC6b
     MOVEA.l comPtr_CurrentSourceLine,A2
@@ -20968,20 +20959,20 @@ End Statement
   CaseSense Off
 RTS
 
-.event_find
+.event_find:
+    ped\caseSensitive = True
+    find_findStr.s = WZGetString("FIND_FINDSTRING")
+    find_replaceStr.s = WZGetString("FIND_REPLACESTRING")
+    find_findStrOld.s    = find_findStr
+    find_replaceStrOld.s = find_replaceStr
 
-    BSET #7,case_sensitive
-    find_prev$ = find_find$
-    find_find$ = WZGetString("FIND_FINDSTRING")
-    find_replace$ = WZGetString("FIND_REPLACESTRING")
-    ; moved to make a active sourcewin possible after gadget hit remove the double access of the gadgets tomsmart1
-    oldfindstr$    = find_find$
-    oldreplacestr$ = find_replace$
+    If WZInput("FIND_SENSITIVE") = 0
+      find_findStr.s = StrUpper(find_findStr)
+      ped\caseSensitive = False
+    EndIf
 
-    If WZInput("FIND_SENSITIVE")= 0 Then find_find$ = StrUpper(find_find$) : BCLR #7,case_sensitive
-    Poke$ ?str_oldsearchgadget,find_find$
-    Poke$ ?str_searchstring   ,find_find$
-    Poke$ ?str_replacestring  ,find_replace$
+    Poke.s ?str_searchstring   ,find_findStr
+    Poke.s ?str_replacestring  ,find_replaceStr
 
     Select pedMessage\_Class
       Case #IDCMP_CLOSEWINDOW
@@ -21015,14 +21006,13 @@ RTS
         Select WZGadName
 
           Case "FIND_FINDSTRING"
-            If StrUpper(oldsearch$) <> StrUpper(find_find$)
-              oldsearch$ = find_find$
+            If StrUpper(findStrStore.s) <> StrUpper(find_findStr)
+              findStrStore = find_findStr
               !asm
               JSR storeline
-              JSR cursor_off
-              MOVE.l comPtr_CurrentSourceLine,a4
-              JSR menu_findnext
               !basic
+              Gosub cursor_off_bas
+              Gosub menu_findnext
               Gosub update_vertscroller
               Gosub cursor_on_bas
               FlushEvents : Delay_ 1
@@ -21031,9 +21021,9 @@ RTS
           Case "FIND_NEXT"
             !asm
             JSR storeline
-            JSR cursor_off
-            MOVE.l comPtr_CurrentSourceLine,a4
-            JSR menu_findnext
+            !basic
+            Gosub cursor_off_bas
+            Gosub menu_findnext
             !basic
             Gosub update_vertscroller
             Gosub cursor_on_bas
@@ -21042,10 +21032,9 @@ RTS
           Case "FIND_PREVIOUS"
             !asm
             JSR storeline
-            JSR cursor_off
-            MOVE.l comPtr_CurrentSourceLine,a4
-            JSR menu_previous
             !basic
+            Gosub cursor_off_bas
+            Gosub menu_findprevious
             Gosub update_vertscroller
             Gosub cursor_on_bas
             Gosub activatesourcewindow
@@ -21053,33 +21042,22 @@ RTS
           Case "FIND_REPLACE"
             !asm
             JSR storeline
-            JSR cursor_off
-            MOVE.l comPtr_CurrentSourceLine,a4
-            JSR menu_replace
             !basic
+            Gosub cursor_off_bas
+            Gosub menu_replace
             Gosub cursor_on_bas
             Gosub activatesourcewindow                ; added to make source win active that edit is possible  tomsmart1
 
           Case "FIND_REPLACE_ALL"
-            Poke.w ?findmode, Abs(WZInput("FIND_FINDMODE"))
-            If find_find$ <> "" AND find_replace$ <> ""
+            If find_findStr <> "" AND find_replaceStr <> ""
               !asm
               JSR storeline
-              JSR cursor_off
-              JSR set_pointer_busy
-
-              MOVE.l A4,D0
-              TST.b findmode
-              BNE.b replace_loop
-                MOVE.l comPtr_FirstSourceLine,D0
-              replace_loop:
-                MOVEA.l D0,A4
-                MOVE.l A4,comPtr_CurrentSourceLine
-                JSR replace_string
-                MOVE.l (A4),D0
-              BNE.b replace_loop
-
-              JSR update_currsourceline
+              !basic
+              Gosub cursor_off
+              Gosub set_pointer_busy_bas
+              Gosub menu_replaceall
+              Gosub update_currsourceline_bas
+              !asm
               JSR _redraw
               !basic
               Gosub cursor_on_bas
@@ -21095,7 +21073,6 @@ RTS
 
     End Select
 Return
-findmode: Dc.w 0
 
 
 .coutclose:
@@ -21635,7 +21612,6 @@ numcount              Dc.l 0
 constantbase          Dc.l 0
 newtypebase           Dc.l 0
 newsyntax             Dc.l 0
-str_oldsearchgadget   Ds.b 260
 instrtab              Ds.l 32769
 newted                Dc.l 0
 history               Ds.l 10
