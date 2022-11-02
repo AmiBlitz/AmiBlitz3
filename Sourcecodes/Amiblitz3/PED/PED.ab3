@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.7
-; NumberOfBuilds  = 2297
+; NumberOfBuilds  = 2320
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 8418
-; CursorColumn    = 6
-; LabelSearch     = "ped_tok"
+; CursorLine      = 14514
+; CursorColumn    = 45
+; LabelSearch     = "use_commandsintellisens"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -2958,7 +2958,7 @@ If ende Then Goto abnormal_exit
     If dos_GetToolState{"DISABLE_LOCALIZATION"}  = -1 Then pedconfig\localization = False : Else pedconfig\localization = True
     If dos_GetToolState{"HELPFORPRIVATFUNCTIONS"}  = -1 Then pedconfig\HelpForPrivateFunctions = True : Else pedconfig\HelpForPrivateFunctions = 0
     If dos_GetToolState{"USE_INTELLISENSE"}        = -1 Then pedconfig\intellisense = True  : Else pedconfig\intellisense = 0
-    If dos_GetToolState{"USE_COMMANDSINTELLISENSE"}= -1 Then pedconfig\use_commandsintellisens = True  :Else pedconfig\use_commandsintellisens = False
+    If dos_GetToolState{"USE_INTELLISENSE_COMMANDS"}= -1 Then pedconfig\use_commandsintellisens = True  :Else pedconfig\use_commandsintellisens = False
     If dos_GetToolState{"onlinehelp"}          = -1 Then pedconfig\onlinehelp      = True  : Else pedconfig\onlinehelp = 0
     If dos_GetToolState{"onlinehelp_extended"} = -1 Then pedconfig\onlinehelp_extended = True : Else pedconfig\onlinehelp_extended = 0
     If dos_GetToolState{"DISABLE_INCLUDEHELP"} = -1 Then pedconfig\onlinehelp_includes   = False  : Else pedconfig\onlinehelp_includes = True
@@ -3428,7 +3428,7 @@ begin1:
   !asm
   JSR menu_opennew
   !basic
-  Gosub cursor_on_bas
+  Gosub update_debuggertoggle
 
   Gosub set_CurrentDir
   *flock_defaultDir.l = *flock_currentDir.l
@@ -3468,6 +3468,7 @@ begin1:
 
   ; ----------------------------------------------------------------------------
   ; -- jump to main loop
+  Gosub cursor_on_bas
   Gosub main_loop
   ; --
   ; ----------------------------------------------------------------------------
@@ -3627,7 +3628,7 @@ End
   ;        JL_0_C50:
   ;        SUB.l comLong_DisplayLineOffset,D3
   ;        SUB.l comLong_DisplayLineOffset,D1
-  ;        JSR JL_0_59BC
+  ;        JSR _redrawBlock
   ;        ST comByte_StateBlockMark
   ;      JL_0_C66:
   ;      MOVEM.l (A7)+,D0-D3/A0-A2
@@ -3655,7 +3656,7 @@ End
   ;        JL_0_CB2:
   ;        SUB.l comLong_DisplayLineOffset,D3
   ;        SUB.l comLong_DisplayLineOffset,D1
-  ;        JSR JL_0_59BC
+  ;        JSR _redrawBlock
   ;        MOVEM.l (A7)+,D0-D3/D7/A0-A2
       JL_0_CC6:
       !basic
@@ -4866,11 +4867,17 @@ Return
 
 
 .set_CurrentDir:
-  If ped\currentDir = "" Then GetCurrentDirName_ ped\currentDir,$40
-
   If *flock_currentDir Then UnLock_ *flock_currentDir
+
+  If ped\currentDir = "" Then ped\currentDir = dos_GetCurrentDir{}
+  log_Print{"setting current dir [" + ped\currentDir + "]"}
   *flock_currentDir.l = Lock_(ped\currentDir,#ACCESS_READ)
-  If *flock_currentDir Then CurrentDir_ *flock_currentDir
+  If *flock_currentDir
+    CurrentDir_ *flock_currentDir
+  Else
+    log_Print{"could not lock the given dir, error #" + Str$(IoErr_),#log_warning}
+  EndIf
+
 Return
 
 
@@ -5153,15 +5160,14 @@ Return
     EndIf
   EndIf
 
-  ; -- update Debuggermenustate
-  Gosub update_debuggertoggle
-
   ; -- update modified flags
+  !asm
   CLR.w comWord_SourceModifiedFlag
   CLR.w comWord_KeyBeforeReturn
   CLR.w comWord_SourceChanged
   JSR update_modifiermark
-
+  !basic
+  Gosub update_debuggertoggle
 Return
 
 
@@ -7197,12 +7203,11 @@ BRA.w JL_0_2C2E
  'l10
 
 
-;  !regs2stack
-;  MOVE.l d0,-(a7)
-;  MOVE.l a4,-(a7)
-;  !basic
-;  MOVE.l (a7)+,D0 : addrA4.l = PutD0
-;  MOVE.l (a7)+,D0 : tempD0.l = PutD0
+  ;!regs2stack
+  ;MOVE.l d0,-(a7)
+  ;!basic
+  ;MOVE.l (a7)+,D0 : tmpD0.l = PutD0
+  ;log_Print{"gotoline [" + Str$(tmpD0) +"]"}
 ;
 ;  log_Print{"addra4: "  + Str$(addrA4)}
 ;  addrA4 = Peek.l(addrA4)
@@ -7216,8 +7221,8 @@ BRA.w JL_0_2C2E
 ;  *detokened.l = TEDDetoke{addrA4 + 9}
 ;  strline$ = Peek$(*detokened)
 ;  log_Print{"goal line>>" + strline$}
-;  !asm
-;  !stack2regs
+  ;!asm
+  ;!stack2regs
 
   MOVEA.l comPtr_CurrentSourceLine,A4
   MOVE.l comLong_DisplayLineOffset,D1
@@ -7396,8 +7401,10 @@ JMP update_horizscroller
     Gosub call_compiler
   End Select
 
+  ;
   log_Print{"doing stuff after compiler as finished."}
   Gosub update_title_sourcewindow
+  Gosub update_statusarea
   log_Print{"checking compiler return state " + Str$(compile_state) }
 
   ; handle compile error??
@@ -7426,30 +7433,35 @@ Return
     Return
   EndIf
 
-  CompileMenuCallID.l = _menuitem - #MENU_COMPILERUN
-  log_Print{"calling compiler with function id [" + Hex$(CompileMenuCallID) + "]"}
-
-  LockAllOpenWZWin{}
-  Gosub Open_CompileStatus_Window                         ; open Compile status window if we need it
   Gosub set_CurrentDir
 
+  LockAllOpenWZWin{}
+
+  CompileMenuCallID.l = _menuitem - #MENU_COMPILERUN
+  log_Print{"*** calling compiler with function id [" + Hex$(CompileMenuCallID) + "]"}
+  Gosub Open_CompileStatus_Window                         ; open Compile status window if we need it
   GetD0 CompileMenuCallID : MOVE.l D0,-(a7)
   !asm
   MOVE.l (a7)+,D6
   MOVEA.l comPtr_FirstSourceLine,A5
   MOVE.l comLong_TotalLines,D7
   MOVE.l comFunc_CallMenuEntry,a0 : JSR (A0)               ; call compilerfunction for the menuentry
+  MOVE.l D0,-(a7)
   !basic
+  MOVE.l (a7)+,D0
   compile_state.l = PutD0                                  ; get the return code of compiler
 
   Delay_ 10                                                ; without wating we get s serious crash, dont know why!!
 
   Gosub update_debuggertoggle                              ; set the state to the commenu "Create Debug Code"
+
   previoussearch_instruction$ = "|"
+
   Gosub update_versiongadgets
+
   Gosub Close_CompileStatus_Window                         ; close compile status window if it is open
   UnlockAllOpenWZWin{}
-  log_Print{"compiler finished with return code [" + Hex$(compile_state) + "]"}
+  log_Print{"*** compiler finished with return code [" + Hex$(compile_state) + "]"}
 Return
 
 .syntax_setcursor                                          ; show errormessage and jump to the sourceline after compiling
@@ -7663,10 +7675,12 @@ BRA open_source
 
   !regs2stack
   !basic
-  log_Print{Hex$(Peek.l(?AL_0_84B2))}
+  log_Print{"menu opennew: value of AL_0_84BE: " + Hex$(Peek.l(?AL_0_84B2))}
   !asm
   !stack2regs
+
   JSR storeline
+
   ;MOVE.l comFunc_ReadXtraFile,d0   not required as d0 is always zero
   ;BEQ 'l10
   ;  MOVE.l d0,a0
@@ -8217,12 +8231,7 @@ Return
     UnlockAllOpenWZWin{}
     Gosub set_pointer_normal_bas
     WZ_HideMessage{}
-    error{"opening file for writing_ab2"}
-    Pop If
-    !asm
-    MOVEA.l (A7)+,A2
-    LEA comStr_ErrorWriteFile,A0
-    JMP show_errorrequester
+    dummy.l = ask{!TRANS{Peek.s(?comStr_ErrorWriteFile)},!TRANS{"OK"},"Error!"}
   Else
     If Peek.l(?comLong_TotalLines) > 0
       *tempLine.sourceLine = Peek.l(?comPtr_FirstSourceLine)
@@ -9481,69 +9490,68 @@ JUMP_tokenizeA1:
 JMP tokenizeA1
 
 
-TokenizeSource:
-  MOVE.w comWord_DoTokenize,D0
-  BNE.w JUMP_setpointer_to_normal
-
-  NOT.w comWord_DoTokenize
-  MOVEA.l comPtr_FirstSourceLine,A4
-  MOVE.l comLong_TotalLines,-(A7)
-
- JL_0_450E:
-    MOVEQ.l #$00,D1
-    MOVE.b $8(A4),D1
-    SUBQ.w #1,D1
-    BMI.w JL_0_4530
-      LEA $9(A4),A2
-      MOVEA.l comPtr_Temp_TokenString1,A1
-      JSR tokenizeA1
-      MOVE.l A4,comPtr_CurrentSourceLine
-      JSR replaceCurrentLine
-
- JL_0_4530:
-    MOVEA.l (A4),A4
-    SUBQ.w #1,(A7)
-  BNE.b JL_0_450E
-
-  ADDQ.w #2,A7
-BRA.w JL_0_458E
-
-
-DetokenizeSource:
-  MOVE.w comWord_DoTokenize,D0
-   BEQ.w JUMP_setpointer_to_normal
-  CLR.w comWord_DoTokenize
-
- JL_0_454C:
-  MOVEA.l comPtr_FirstSourceLine,A4
-  MOVE.l comLong_TotalLines,-(A7)
-
- JL_0_4554:
-    LEA $9(A4),A0
-    MOVEA.l comPtr_Temp_TokenString1,A1
-    JSR detokenize_line
-    SUBA.l comPtr_Temp_TokenString1,A1
-    ADDQ.w #1,A1
-    MOVE.l A1,D5
-    MOVE.l A4,comPtr_CurrentSourceLine
-    JSR replaceCurrentLine
-    MOVEA.l (A4),A4
-    SUBQ.w #1,(A7)
-  BNE.b JL_0_4554
-  ADDQ.w #2,A7
-RTS
-
-
-JL_0_457C:
-  MOVE.w comWord_DoTokenize,D0
-   BEQ.w JUMP_setpointer_to_normal
-  CLR.w comWord_DoTokenize
-  BSR.b JL_0_454C
-
- JL_0_458E:
-  JSR update_currsourceline
-JMP _redraw
-
+;TokenizeSource:
+;  MOVE.w comWord_DoTokenize,D0
+;  BNE.w JUMP_setpointer_to_normal
+;
+;  NOT.w comWord_DoTokenize
+;  MOVEA.l comPtr_FirstSourceLine,A4
+;  MOVE.l comLong_TotalLines,-(A7)
+;
+; JL_0_450E:
+;    MOVEQ.l #$00,D1
+;    MOVE.b $8(A4),D1
+;    SUBQ.w #1,D1
+;    BMI.w JL_0_4530
+;      LEA $9(A4),A2
+;      MOVEA.l comPtr_Temp_TokenString1,A1
+;      JSR tokenizeA1
+;      MOVE.l A4,comPtr_CurrentSourceLine
+;      JSR replaceCurrentLine
+;    JL_0_4530:
+;    MOVEA.l (A4),A4
+;    SUBQ.w #1,(A7)
+;  BNE.b JL_0_450E
+;
+;  ADDQ.w #2,A7
+;BRA.w JL_0_458E
+;
+;
+;DetokenizeSource:
+;  MOVE.w comWord_DoTokenize,D0
+;   BEQ.w JUMP_setpointer_to_normal
+;  CLR.w comWord_DoTokenize
+;
+; JL_0_454C:
+;  MOVEA.l comPtr_FirstSourceLine,A4
+;  MOVE.l comLong_TotalLines,-(A7)
+;
+; JL_0_4554:
+;    LEA $9(A4),A0
+;    MOVEA.l comPtr_Temp_TokenString1,A1
+;    JSR detokenize_line
+;    SUBA.l comPtr_Temp_TokenString1,A1
+;    ADDQ.w #1,A1
+;    MOVE.l A1,D5
+;    MOVE.l A4,comPtr_CurrentSourceLine
+;    JSR replaceCurrentLine
+;    MOVEA.l (A4),A4
+;    SUBQ.w #1,(A7)
+;  BNE.b JL_0_4554
+;  ADDQ.w #2,A7
+;RTS
+;
+;
+;JL_0_457C:
+;  MOVE.w comWord_DoTokenize,D0
+;   BEQ.w JUMP_setpointer_to_normal
+;  CLR.w comWord_DoTokenize
+;  BSR.b JL_0_454C
+;
+; JL_0_458E:
+;  JSR update_currsourceline
+;JMP _redraw
+;
 JUMP_setpointer_to_normal:
 JMP setpointer_to_normal
 
@@ -10501,7 +10509,7 @@ RTS
 
 ptr_errortitle:       Dc.l 0;AL_0_D5E8        ; Title
 ptr_errortext:        Ds.l 1                  ; Text
-.show_errorrequester:  ; A0: Errortext, A5: ptr current sourceline
+.show_errorrequester:  ; A0: Errortext, A5: ptr current sourceline 8 A6: "INLN" if in include
   MOVE.l D7,-(A7)
 
   MOVE.l A0,ptr_errortext
@@ -10576,9 +10584,15 @@ ptr_errortext:        Ds.l 1                  ; Text
     If error_incname <> "none"              ; open source file with error
       GetD0 &error_incname
       If Exists (error_incname)
+        log_Print{"Error in include ["+ error_incname + "], opening it and jumping to errorline ["+ error_incline + "]..."}
         GetD0 &error_incname
         !asm
         JSR loadfile
+        !basic
+        GetRegD0 Val(error_incline)-1
+        !asm
+        MOVEA.l comPtr_CurrentSourceLine,A4
+        JSR gotoline
         !basic
         Gosub draw_statusarea
         Gosub update_vertscroller
@@ -11250,10 +11264,9 @@ RTS
 
 
 
-.JL_0_59BC:                           ;redraw blockmark
+._redrawBlock:                           ;redraw blockmark
   JSR AbsDimensions
 
-.draw_blockselection:
   MOVEM.l D0-D3/A0-A1,-(A7)
   !basic
   xMin.w = PutD0
@@ -11505,61 +11518,61 @@ RTS
   EXT.l d0 : DIVU fontWidth,d0                          ; d0: xPos
 
   JL_0_5C9C:
-  MOVE.b (A1)+,D2
-  BEQ.w JL_0_5CAA
-    CMP.b #$22,d2
-    BNE 'l10
-      NOT.b instring2
-   'l10
-    TST.b instring2
-    BNE 'l11
-      TST.b d2
-      BMI.w JL_0_5CAA                     ;morechar
-   'l11
-    MOVE.b D2,(A2)+
-  BRA.b JL_0_5C9C
-  JL_0_5CAA:
+    MOVE.b (A1)+,D2
+    BEQ.w JL_0_5CAA
+      CMP.b #$22,d2                        ; "
+      BNE 'l10
+        NOT.b instring2
+     'l10
+      TST.b instring2
+      BNE 'l11
+        TST.b d2
+        BMI.w JL_0_5CAA                     ;morechar
+     'l11
+      MOVE.b D2,(A2)+
+      BRA.b JL_0_5C9C
+    JL_0_5CAA:
 
-  MOVE.b #$0,(A2)
-  CMPA.l expandstore,A2
-  BEQ.w JL_0_5CE6
-    MOVEM.l a6/d0-d1/a0/a1,-(a7)
-    MOVE.w D0,-(A7)      ; x-position
+    MOVE.b #$0,(A2)
+    CMPA.l expandstore,A2
+    BEQ.w JL_0_5CE6
+      MOVEM.l a6/d0-d1/a0/a1,-(a7)
+      MOVE.w D0,-(A7)      ; x-position
 
-    MOVEA.l A1,A2 : SUBA.l A0,A2
-    MOVE.b D2,D4
-    MOVE.w A2,D2
-    MOVE.w D2,D5
-    SUBQ.w #1,D2
-    MOVEA.l expandstore,A0
+      MOVEA.l A1,A2 : SUBA.l A0,A2
+      MOVE.b D2,D4
+      MOVE.w A2,D2
+      MOVE.w D2,D5
+      SUBQ.w #1,D2
+      MOVEA.l expandstore,A0
 
-    MOVE.l A0,-(a7)   ; string
-    MOVE.l D0,-(a7)   ; x-pos
-    MOVE.l D1,-(a7)   ; y-pos
-    MOVE.l D2,-(a7)   ; textlength
-    !basic
-    MOVE.l (a7)+,d0 : tlength.w = PutD0
-    MOVE.l (a7)+,d0 : tposy.w = (PutD0 AND $FFFF)
-    MOVE.l (a7)+,d0 : tposx.w = PutD0
-    MOVE.l (a7)+,d0 : *textaddr.l = PutD0
-    PED_PrintText{*textaddr,tposx,tposy,tlength,AB3Pen(#AB3_cother)}
-    ;log_Print{Str$(tposy) + " : " + Peeks$(*textaddr,20)}
-    !asm
-    MOVE.w (A7)+,D0
-    MOVEM.l (a7)+,a6/d0-d1/a0/a1
-    MOVE.b D4,D2
-    ADD.w D5,D0
-    SUBQ.w #1,D0
+      MOVE.l A0,-(a7)   ; string
+      MOVE.l D0,-(a7)   ; x-pos
+      MOVE.l D1,-(a7)   ; y-pos
+      MOVE.l D2,-(a7)   ; textlength
+      !basic
+      MOVE.l (a7)+,d0 : tlength.w = PutD0
+      MOVE.l (a7)+,d0 : tposy.w = (PutD0 AND $FFFF)
+      MOVE.l (a7)+,d0 : tposx.w = PutD0
+      MOVE.l (a7)+,d0 : *textaddr.l = PutD0
+      PED_PrintText{*textaddr,tposx,tposy,tlength,AB3Pen(#AB3_cother)}
+      ;log_Print{Str$(tposy) + " : " + Peeks$(*textaddr,20)}
+      !asm
+      MOVE.w (A7)+,D0
+      MOVEM.l (a7)+,a6/d0-d1/a0/a1
+      MOVE.b D4,D2
+      ADD.w D5,D0
+      SUBQ.w #1,D0
+      TST.b D2
+      BEQ.w exit_print_tokenized_text
+    JL_0_5CE6:
     TST.b D2
     BEQ.w exit_print_tokenized_text
-  JL_0_5CE6:
-  TST.b D2
-  BEQ.w exit_print_tokenized_text
 
-  ;find string state
-  SUBQ.w #1,A1
-  MOVEA.l A1,A0
-  MOVEA.l expandstore,A2
+    ;find string state
+    SUBQ.w #1,A1
+    MOVEA.l A1,A0
+    MOVEA.l expandstore,A2
   TST.b D2
   BPL.b JL_0_5C9C
 
@@ -13513,8 +13526,10 @@ RTS
   Gosub print_availmem
   Gosub print_actualsourceline
   Gosub print_actualsourcecolumn
-  If ped\DoTokenize Then info$ = "Tokenize: On" Else info$="Tokenize: Off"
-  PED_PrintStatus{info$,43,2}
+
+  If Peek.b(?comByte_DebugMode) Then info$ = "Debug: On " Else info$ = "Debug: Off"
+  If ped\DoTokenize Then info$ + "  Tokenize: On " Else info$+ "  Tokenize: Off"
+  PED_PrintStatus{info$,54,2}
 Return
 
 .draw_statusarea:
@@ -13545,7 +13560,7 @@ Return
   PED_PrintStatus{"Column:    ", 11}
   Gosub update_statusarea
 
-  Gosub update_debuggertoggle
+  ;Gosub update_debuggertoggle
 Return
 
 .free_textbuffer:
@@ -14524,9 +14539,10 @@ RTS
       ; -- get everything left of cursor until " " or "=" , ":", "(", "{", ",", "+"    ; check expand to allow the following chars  : ( { , +  too tomsmart1
       If lineaddr.l
 
-        strline$ = Peeks$(lineaddr,Peek.w(?comWord_Column))
-        slen.w = FLen(strline$) : sfound.l = False
-        stokname$ = "" : strhelp$ = ""
+        strline$ = Peeks$(lineaddr,Peek.w(?comWord_Column)) : slen.w = FLen(strline$)
+        ;log_Print{"intellisense for [" + strline$ +"]"}
+
+        stokname$ = "" : strhelp$ = "" : sfound.l = False
         While (slen > 0) AND (sfound = False)
           schar$ = Mid$(strline$,slen,1)
           If (schar$ = " ") OR (schar$ = "=") OR (schar$ = ":") OR (schar$ = "(") OR (schar$ = "{") OR (schar$ = ",") OR (schar$ = "+")   ; expand check too allowed this chars : ( { , + too  tomsmart1
@@ -14546,12 +14562,13 @@ RTS
           Gosub close_popupwindow                   ; added to aviod hits  tomsmart1
 
        Default ; all other keys
-         stokname$ + Chr$(_key)                     ; normal added key to the string
+         ;stokname$ + Chr$(_key)                     ; normal added key to the string
       End Select
 
       ; -- search for any text that equals entered text
       If (FLen(stokname$) > 2)
-        poptok$ = LCase$(stokname$) : tokenliste$ = "" : popfound.w = 0
+        log_Print{"searching for [" + stokname$+ "]"}
+        poptok$ = Trim$(LCase$(stokname$)) : tokenliste$ = "" : popfound.w = 0
 
         ; in Helptext for Functionnames
         If (Instr(stokname$,"_") > 0)
@@ -14571,7 +14588,7 @@ RTS
         EndIf
 
         ; in Commands
-        If pedconfig\use_commandsintellisens = 1
+        If pedconfig\use_commandsintellisens
           *tokenpointer.l = *tokenbase
 
           While *tokenpointer
@@ -15113,10 +15130,10 @@ RTS
 
 ;  While pedEventClass <> 0
 
-    If pedMessage\_Class<>#IDCMP_INTUITICKS AND pedMessage\_Class<>#IDCMP_MOUSEMOVE
-      log_Print{"eventmessage: " + Hex$(pedMessage\_Class) + ", " + Hexw$(pedMessage\_Qualifier) + ", " + Hexw$(pedMessage\_Code)}
+    ;If pedMessage\_Class<>#IDCMP_INTUITICKS AND pedMessage\_Class<>#IDCMP_MOUSEMOVE
+      ;log_Print{"eventmessage: " + Hex$(pedMessage\_Class) + ", " + Hexw$(pedMessage\_Qualifier) + ", " + Hexw$(pedMessage\_Code)}
       ;log_Print{"window: " + Str$(pedMessage\_Window) + "  MouseX:"  + Str$(pedMessage\_MouseX)}
-    End If
+    ;End If
     ; context onlinehelp for most windows
     If pedconfig\onlinehelp <> 0
       If (pedMessage\_Class<>#IDCMP_INTUITICKS) AND (pedMessage\_Class<>#IDCMP_ACTIVEWINDOW) AND (pedMessage\_Class<>#IDCMP_GADGETHELP)  AND (pedMessage\_Class<>#IDCMP_CHANGEWINDOW)
@@ -15184,7 +15201,7 @@ CEND
   If Peek.b(?comByte_DebugMode) <> ped\debugmode
     ped\debugmode = Peek.b(?comByte_DebugMode)
   EndIf
-  log_Print{"setting Debugstatus: " + Str$(ped\debugmode)}
+  ;log_Print{"update Debugstatus: " + Str$(ped\debugmode)}
   GTSetMenuChecked 0,4,12,ped\debugmode
 
   ;MOVEM.l (a7)+,d0-d1/a0-a1/a6
@@ -15547,7 +15564,7 @@ Return
   mqualifier.w  = pedMessage\_Qualifier AND (NOT #IEQUALIFIER_RELATIVEMOUSE)
   last_mqualifier.w = mqualifier
   Poke.w ?comWord_QualifierStore, mqualifier
-  log_Print{"event vanillakey: " + Hexw$(last_vankey) + " qualifier: " + Hexw$(mqualifier)}
+  ;log_Print{"event vanillakey: " + Hexw$(last_vankey) + " qualifier: " + Hexw$(mqualifier)}
 
   ; check key first
   Select last_vankey
@@ -20298,15 +20315,69 @@ JL_0_46D6:
 RTS
 
 
-.storeline
+.storeline_bas:
+  log_Print{"storeline"}
+  If Peek.w(?comWord_KeyBeforeReturn) = 0 Then Return
+  Poke.w ?comWord_SourceChanged, Peek.w(?comWord_KeyBeforeReturn)
+
+  Gosub cursor_off_bas
+
+  ; -- draw selecting block if existing
+  SF comByte_StateBlockMark
+  If Peek.l(?comLong_BlockEndY) >= 0
+    log_Print{"storeline, erasing block"}
+    displayline.l = Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
+    If Peek.l(?comLong_BlockStartY) =< displayline
+      If Peek.l(?comLong_BlockEndY) => displayline
+          bmark\xMin = Peek.l(?comWord_BlockStartX)
+          bmark\yMin = Peek.l(?comLong_BlockStartY)
+          bmark\xMax = Peek.l(?comWord_BlockEndX)
+          bmark\yMax = Peek.l(?comLong_BlockEndY)
+          If bmark\yMin = bmark\yMax
+            If bmark\xMin = bmark\xMax
+              bmark\xMax = Peek.w(?visiblecolumns)
+            EndIf
+          EndIf
+          AbsDimensions{bmark}
+          PED_DrawBlock{bmark, Peek.w(?comWord_ColumnsOffset)}
+          ST comByte_StateBlockMark
+      EndIf
+    EndIf
+  EndIf 
+
+  !asm
+  MOVE.l comPtr_CurrentSourceLine,a4
+  MOVEA.l textbufferaddr,A2 :  ADDA.w comWord_TextBufferOffset,A2
+  JSR parse_line
+  JSR replaceCurrentLine
+  MOVE.l a4,comPtr_CurrentSourceLine
+  !basic
+
+  If Peek.l(?comWord_DoTokenize)
+    !asm
+    MOVEA.l comPtr_CurrentSourceLine,A2
+    JSR print_sourceline
+    !basic
+
+    If Peek.b(?comByte_StateBlockMark)
+      log_Print{"storeline: redrawing blockmark"}
+      AbsDimensions{bmark}
+      PED_DrawBlock{bmark, Peek.w(?comWord_ColumnsOffset)}
+    EndIf
+  EndIf
+
+  CLR.w comWord_KeyBeforeReturn
+  MOVE.l comPtr_CurrentSourceLine,a4
+Return
+
+.storeline:
   MOVE.w comWord_KeyBeforeReturn,D0
   BEQ.w exit_storeline
 
   !regs2stack
-  MOVE.l comPtr_CurrentSourceLine,a4
   JSR cursor_off
-  MOVEA.l textbufferaddr,A2
-  ADDA.w comWord_TextBufferOffset,A2
+  MOVE.l comPtr_CurrentSourceLine,a4
+  MOVEA.l textbufferaddr,A2 :  ADDA.w comWord_TextBufferOffset,A2
   MOVE.w D0,comWord_SourceChanged
 
   JSR parse_line
@@ -20314,37 +20385,38 @@ RTS
   ; -- draw selecting block if existing
   SF comByte_StateBlockMark
   TST.l comLong_BlockEndY
-   BMI.w exit_updateblocka
-  MOVEM.l D0-D3/A0-A2,-(A7)
-  MOVE.l comLong_DisplayLine,D1
-  ADD.l comLong_DisplayLineOffset,D1
-  CMP.l comLong_BlockStartY,D1
-   BLT.w JL_0_C66a
-  CMP.l comLong_BlockEndY,D1
-   BGT.w JL_0_C66a
-  MOVE.w comWord_BlockStartX,D0
-  MOVE.l comLong_BlockStartY,D1
-  MOVE.w comWord_BlockEndX,D2
-  MOVE.l comLong_BlockEndY,D3
-  CMP.l D1,D3
-   BNE.w JL_0_C50a
-  CMP.w D0,D2
-   BNE.w JL_0_C50a
-  MOVE.w visiblecolumns,D2
-  JL_0_C50a:
-  SUB.l comLong_DisplayLineOffset,D3
-  SUB.l comLong_DisplayLineOffset,D1
-  JSR JL_0_59BC                               ;redraw blockmark
-  ST comByte_StateBlockMark
-  JL_0_C66a:
-  MOVEM.l (A7)+,D0-D3/A0-A2
+  BMI.w exit_updateblocka
+    MOVEM.l D0-D3/A0-A2,-(A7)
+    MOVE.l comLong_DisplayLine,D1 : ADD.l comLong_DisplayLineOffset,D1
+    CMP.l comLong_BlockStartY,D1
+    BLT.w JL_0_C66a
+      CMP.l comLong_BlockEndY,D1
+      BGT.w JL_0_C66a
+        MOVE.w comWord_BlockStartX,D0
+        MOVE.l comLong_BlockStartY,D1
+        MOVE.w comWord_BlockEndX,D2
+        MOVE.l comLong_BlockEndY,D3
+        CMP.l D1,D3
+        BNE.w JL_0_C50a
+          CMP.w D0,D2
+          BNE.w JL_0_C50a
+            MOVE.w visiblecolumns,D2
+        JL_0_C50a:
+        SUB.l comLong_DisplayLineOffset,D3
+        SUB.l comLong_DisplayLineOffset,D1
+        JSR _redrawBlock                               ;redraw blockmark
+        ST comByte_StateBlockMark
+    JL_0_C66a:
+    MOVEM.l (A7)+,D0-D3/A0-A2
   exit_updateblocka:
 
   JSR replaceCurrentLine
+
   MOVE.w comWord_DoTokenize,D0
   BEQ.w JL_0_CC6b
     MOVEA.l comPtr_CurrentSourceLine,A2
     JSR print_sourceline
+
     TST.b comByte_StateBlockMark
     BEQ.w JL_0_CC6b
       MOVEM.l D0-D3/D7/A0-A2,-(A7)
@@ -20360,9 +20432,10 @@ RTS
       JL_0_CB2a:
       SUB.l comLong_DisplayLineOffset,D3
       SUB.l comLong_DisplayLineOffset,D1
-      JSR JL_0_59BC                            ;redraw blockmark
+      JSR _redrawBlock                            ;redraw blockmark
       MOVEM.l (A7)+,D0-D3/D7/A0-A2
   JL_0_CC6b:
+
   MOVE.l a4,comPtr_CurrentSourceLine
   !stack2regs
 
@@ -21019,9 +21092,10 @@ RTS
             End If
 
           Case "FIND_NEXT"
-            !asm
-            JSR storeline
-            !basic
+            ;!asm
+            ;JSR storeline
+            ;!basic
+            Gosub storeline_bas
             Gosub cursor_off_bas
             Gosub menu_findnext
             !basic
@@ -21050,9 +21124,10 @@ RTS
 
           Case "FIND_REPLACE_ALL"
             If find_findStr <> "" AND find_replaceStr <> ""
-              !asm
-              JSR storeline
-              !basic
+              ;!asm
+              ;JSR storeline
+              ;!basic
+              Gosub storeline_bas
               Gosub cursor_off
               Gosub set_pointer_busy_bas
               Gosub menu_replaceall
