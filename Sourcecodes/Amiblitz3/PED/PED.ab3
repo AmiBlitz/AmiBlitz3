@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.7
-; NumberOfBuilds  = 2320
+; NumberOfBuilds  = 2329
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 14514
-; CursorColumn    = 45
-; LabelSearch     = "use_commandsintellisens"
+; CursorLine      = 20533
+; CursorColumn    = 47
+; LabelSearch     = "loadedfiles"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -1187,11 +1187,11 @@ Statement Show_Helpfile{libname$,node$,helpdir$}
 
   If libname$ <> "" Then commandlineStr + " -l " + dos_FilePart{dos_RemExt{libname$}}
 
-  If ped\defaultPubscreenName <> "" AND (pedconfig\use_wbscreen = 0)
+  If pedconfig\use_pubscreen
     commandlineStr + " -s " + ped\defaultPubscreenName
   Else
     If pedconfig\clone_wbscreen
-      commandlineStr + " -s " + ped\defaultScreenTitle
+      commandlineStr + " -s " + Chr$(34) + ped\defaultScreenTitle + Chr$(34)
     Else
       commandlineStr + " -s Workbench"
     EndIf
@@ -3690,10 +3690,12 @@ End
 
         If exit_loop_class = -2
           ; _menuitem will be set in the first menu event handler
+          Gosub close_popupwindow
           Gosub event_menu
         EndIf
 
         If exit_loop_class = -3 OR exit_loop_class= -4
+          Gosub close_popupwindow
           Gosub event_leftmousebutton
         EndIf
       EndIf
@@ -13345,7 +13347,7 @@ Return
   ; only added OS4 only IDCMP Flags if we are running on OS4  tomsmart1
   SourceWindowIDCMPFlags.l = #IDCMP_INTUITICKS|#IDCMP_CLOSEWINDOW|#IDCMP_VANILLAKEY|#IDCMP_RAWKEY
   SourceWindowIDCMPFlags | #IDCMP_MENUPICK|#IDCMP_GADGETUP|#IDCMP_GADGETDOWN
-  SourceWindowIDCMPFlags | #IDCMP_MOUSEMOVE|#IDCMP_MOUSEBUTTONS|#IDCMP_NEWSIZE|#IDCMP_REFRESHWINDOW
+  SourceWindowIDCMPFlags | #IDCMP_MOUSEMOVE|#IDCMP_MOUSEBUTTONS|#IDCMP_NEWSIZE|#IDCMP_CHANGEWINDOW|#IDCMP_REFRESHWINDOW
   SourceWindowIDCMPFlags | #IDCMP_ACTIVEWINDOW|#IDCMP_INACTIVEWINDOW   ; added to get info if the source win (in)active
   If OSVersion = #AmigaOS4
     SourceWindowIDCMPFlags|#IDCMP_EXTENDEDMOUSE  ;added #IDCMP_EXTENDEDMOUSE for OS4 Mousewheel support
@@ -14169,28 +14171,25 @@ RTS
     CEND
 
     ; -- update functioncompletion and close any subwindows on key-press
-    If pedconfig\intellisense
-      ; -- update intellisense after DELETE_KEY or SPACE_KEY                        ; moved it too remove double switch asm-basic-asm and expand with Space-Key support  tomsmart1
-      If (last_vankey = $08) OR (last_vankey = $20)
-        Gosub intellisense
-      EndIf
-      ; -- CURSOR_KEYs navigation
-      If WZ_CheckOpen{"WIN_POPUP"} AND (last_rawkey.l>(#RAWKEY_UP-1) AND last_rawkey<(#RAWKEY_LEFT+1) )
-        Select last_rawkey                                             ; test only rawkey code for cursor keys  tomsmart1
-          Case #RAWKEY_UP    : WZ_SetPopUpEntry{popupdata\selected_entry - 1}
-          Case #RAWKEY_DOWN  : WZ_SetPopUpEntry{popupdata\selected_entry + 1}
-          Case #RAWKEY_RIGHT : Gosub close_popupwindow
-          Case #RAWKEY_LEFT  : Gosub close_popupwindow
-        End Select
-      EndIf
-    EndIf
+;    If pedconfig\intellisense
+; -- update intellisense after DELETE_KEY OR SPACE_KEY                        ; moved it too remove double switch asm-basic-asm and expand with Space-Key support  tomsmart1
+;      If (last_vankey = $08) OR (last_vankey = $20)
+;        Gosub intellisense
+;      EndIf
+; -- CURSOR_KEYs navigation
+;      If WZ_CheckOpen{"WIN_POPUP"} AND (last_rawkey.l>(#RAWKEY_UP-1) AND last_rawkey<(#RAWKEY_LEFT+1) )
+;        Select last_rawkey                                             ; test only rawkey code for cursor keys  tomsmart1
+;          Case #RAWKEY_UP    : WZ_SetPopUpEntry{popupdata\selected_entry - 1}
+;          Case #RAWKEY_DOWN  : WZ_SetPopUpEntry{popupdata\selected_entry + 1}
+;          Case #RAWKEY_RIGHT : Gosub close_popupwindow
+;          Case #RAWKEY_LEFT  : Gosub close_popupwindow
+;        End Select
+;      EndIf
+;    EndIf
 
     Gosub close_contexthelp
 
-    If last_vankey > 0
-      log_Print{"immediate help ? : last_key " + Hex$(last_vankey)}
-      Gosub immediate_syntaxhelp
-    EndIf
+    If last_vankey > 0 Then Gosub immediate_syntaxhelp
   Wend
 Return
 
@@ -14362,6 +14361,7 @@ RTS
 .immediate_syntaxhelp:
   _key.b = last_vankey
   already_displayed.b = False
+  log_Print{"immediate help ? : last_key " + Hex$(last_vankey)}
   If (_key=@" ") OR (_key = @"(") OR (_key = @"{") ;OR (*PreProcessor\tokenFlags[_key&$FF]&#TOKENF_IS); " " "(" "{"
 
     If Peek.w(?comWord_Column) > 0
@@ -14534,98 +14534,103 @@ RTS
 
 .intellisense:
   ; -- bei delete-key wird ?comWord_Column nicht aktualisiert
+  ;log_Print{"lastvankey " + Hex$(last_vankey)}
   If pedconfig\intellisense
-    If Peek.w(?comWord_Column) > 1
-      ; -- get everything left of cursor until " " or "=" , ":", "(", "{", ",", "+"    ; check expand to allow the following chars  : ( { , +  too tomsmart1
-      If lineaddr.l
+    If last_vankey=#VANILLAKEY_BACKSPACE OR (last_vankey>=$20 AND last_vankey <= $7A)
+      If Peek.w(?comWord_Column) > 1
+        ; -- get everything left of cursor until " " or "=" , ":", "(", "{", ",", "+"    ; check expand to allow the following chars  : ( { , +  too tomsmart1
+        If lineaddr.l
 
-        strline$ = Peeks$(lineaddr,Peek.w(?comWord_Column)) : slen.w = FLen(strline$)
-        ;log_Print{"intellisense for [" + strline$ +"]"}
+          strline$ = Peeks$(lineaddr,Peek.w(?comWord_Column)) : slen.w = FLen(strline$)
+          ;log_Print{"intellisense for [" + strline$ +"]"}
 
-        stokname$ = "" : strhelp$ = "" : sfound.l = False
-        While (slen > 0) AND (sfound = False)
-          schar$ = Mid$(strline$,slen,1)
-          If (schar$ = " ") OR (schar$ = "=") OR (schar$ = ":") OR (schar$ = "(") OR (schar$ = "{") OR (schar$ = ",") OR (schar$ = "+")   ; expand check too allowed this chars : ( { , + too  tomsmart1
-            sfound = True
-          Else
-            stokname$ = schar$ + stokname$
-            slen - 1
-          EndIf
-        Wend
-      End If
-
-      Select last_vankey                            ; check for the last pressed key  tomsmart1
-        Case $00 ; no key  added to support CTRL I update
-          ; nothing to do because stokname = stokname
-        Case $08 ; DEL key
-          stokname$ = UnLeft$(stokname$,1)          ; remove the most right chararter of the string too support the DELETE-KEY  tomsmart1
-          Gosub close_popupwindow                   ; added to aviod hits  tomsmart1
-
-       Default ; all other keys
-         ;stokname$ + Chr$(_key)                     ; normal added key to the string
-      End Select
-
-      ; -- search for any text that equals entered text
-      If (FLen(stokname$) > 2)
-        log_Print{"searching for [" + stokname$+ "]"}
-        poptok$ = Trim$(LCase$(stokname$)) : tokenliste$ = "" : popfound.w = 0
-
-        ; in Helptext for Functionnames
-        If (Instr(stokname$,"_") > 0)
-          ; helptext
-          ResetList HelpIndexCache()
-          While NextItemFast(HelpIndexCache())
-            If Instr(HelpIndexCache()\lname,poptok$) = 1
-              ; %%1 = green, %%2 = rot, %%3= white, %%4= blue  fuer farben
-              pophelp$ = HelpIndexCache()\name + HelpIndexCache()\help
-              If FLen(pophelp$) > 32
-                pophelp$ = Left$(pophelp$,32) + " ... "
-              EndIf
-              tokenliste$ + "%%1" + pophelp$ + Chr$(10)
-              popfound + 1
-            End If
-          Wend
-        EndIf
-
-        ; in Commands
-        If pedconfig\use_commandsintellisens
-          *tokenpointer.l = *tokenbase
-
-          While *tokenpointer
-            temptoken.s  = Peek$(*tokenpointer+6)
-            ltemptoken.s = LCase$(temptoken)
-            If Instr(ltemptoken,poptok$) = 1
-              ; %%1 = green, %%2 = rot, %%3= white, %%4= blue  fuer farben
-              pophelp$ = temptoken
-              If FLen(pophelp$) > 32
-                pophelp$ = Left$(pophelp$,32) + " ... "
-              EndIf
-              tokenliste$ + "%%4" + pophelp$ + Chr$(10)
-              popfound + 1
-            End If
-
-            *tokenpointer = Peek.l(*tokenpointer)  ; nexttoken
+          stokname$ = "" : strhelp$ = "" : sfound.l = False
+          While (slen > 0) AND (sfound = False)
+            schar$ = Mid$(strline$,slen,1)
+            If (schar$ = " ") OR (schar$ = "=") OR (schar$ = ":") OR (schar$ = "(") OR (schar$ = "{") OR (schar$ = ",") OR (schar$ = "+")   ; expand check too allowed this chars : ( { , + too  tomsmart1
+              sfound = True
+            Else
+              stokname$ = schar$ + stokname$
+              slen - 1
+            EndIf
           Wend
         End If
 
-        ; -- open list if something found
-        If popfound > 0
-          WZ_SetPopUpMenu{tokenliste$,1}
-          USEPATH sourceWindow
-          xpos.l = \win\LeftEdge + \win\BorderLeft + \font\tf_XSize * (Peek.w(?comWord_Column)-2)
-          ypos.l = \win\TopEdge +  \win\BorderTop +  \font\tf_YSize * Peek.l(?comLong_DisplayLine) + \font\tf_YSize + 2
-          WZ_PopUp_Nonmodal{xpos,ypos,-1,-1,*myscreen\RastPort}
+        Select last_vankey                            ; check for the last pressed key  tomsmart1
+          Case $00                                    ; no key  added to support CTRL I update
+                                                      ; nothing to do because stokname = stokname
+          Case $08 ; DEL key
+            stokname$ = UnLeft$(stokname$,1)          ; remove the most right chararter of the string too support the DELETE-KEY  tomsmart1
+            Gosub close_popupwindow                   ; added to aviod hits  tomsmart1
+
+         Default                                      ; all other keys
+           ;stokname$ + Chr$(_key)                     ; normal added key to the string
+        End Select
+
+        ; -- search for any text that equals entered text
+        If (FLen(stokname$) > 2)
+          log_Print{"searching for [" + stokname$+ "]"}
+          poptok$ = Trim$(LCase$(stokname$)) : tokenliste$ = "" : popfound.w = 0
+
+          ; in Helptext for Functionnames
+          If (Instr(stokname$,"_") > 0)
+            ; helptext
+            ResetList HelpIndexCache()
+            While NextItemFast(HelpIndexCache())
+              If Instr(HelpIndexCache()\lname,poptok$) = 1
+                ; %%1 = green, %%2 = rot, %%3= white, %%4= blue  fuer farben
+                pophelp$ = HelpIndexCache()\name + HelpIndexCache()\help
+                If FLen(pophelp$) > 32
+                  pophelp$ = Left$(pophelp$,32) + " ... "
+                EndIf
+                tokenliste$ + "%%1" + pophelp$ + Chr$(10)
+                popfound + 1
+              End If
+            Wend
+          EndIf
+
+          ; in Commands
+          If pedconfig\use_commandsintellisens
+            *tokenpointer.l = *tokenbase
+
+            While *tokenpointer
+              temptoken.s  = Peek$(*tokenpointer+6)
+              ltemptoken.s = LCase$(temptoken)
+              If Instr(ltemptoken,poptok$) = 1
+                ; %%1 = green, %%2 = rot, %%3= white, %%4= blue  fuer farben
+                pophelp$ = temptoken
+                If FLen(pophelp$) > 32
+                  pophelp$ = Left$(pophelp$,32) + " ... "
+                EndIf
+                tokenliste$ + "%%4" + pophelp$ + Chr$(10)
+                popfound + 1
+              End If
+
+              *tokenpointer = Peek.l(*tokenpointer)  ; nexttoken
+            Wend
+          End If
+
+          ; -- open list if something found
+          If popfound > 0
+            WZ_SetPopUpMenu{tokenliste$,1}
+            sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
+            USEPATH sourceWindow
+            xpos.w = \WinLeft + \BoxLeft + Peek.w(?comWord_Column) * \font\tf_XSize
+            ypos.w = \WinTop  + \BoxTop  + (\DisplayLine+1) * \font\tf_YSize + \font\tf_Baseline
+            log_Print{"opening popup at " + Str$(xpos) + ", " + Str$(ypos)}
+            WZ_PopUp_Nonmodal{xpos,ypos,-1,-1,*myscreen\RastPort}
+          Else
+            Gosub close_popupwindow
+          EndIf
         Else
-          Gosub close_popupwindow
+          Gosub close_popupwindow             ; added to support DELETE_KEY  tomsmart1
         EndIf
       Else
-        Gosub close_popupwindow             ; added to support DELETE_KEY  tomsmart1
+        Gosub close_popupwindow
       EndIf
-    Else
-      Gosub close_popupwindow
+      Gosub activatesourcewindow              ; if we change popupwin (open, close, change) so we need to activate sourcewin again  tomsmart1
     EndIf
-    Gosub activatesourcewindow              ; if we change popupwin (open, close, change) so we need to activate sourcewin again  tomsmart1
-  End If
+  EndIf
 RTS
 
 .scan_source_for_used_libs:
@@ -15081,10 +15086,10 @@ RTS
 
 
 .handle_event_newsizewindow:
-  log_Print{"NEWSIZEWINDOW : " + Hex$(pedMessage\_Qualifier)}
+  sourceWindow\WinTop = sourceWindow\win\TopEdge
+  sourceWindow\WinLeft = sourceWindow\win\LeftEdge
+
   If pedMessage\_Qualifier <> $FFFFC000   ; update only if mousebutton has been released
-    sourceWindow\WinLeft = sourceWindow\win\LeftEdge
-    sourceWindow\WinTop = sourceWindow\win\TopEdge
     sourceWindow\WinWidth = sourceWindow\win\Width
     sourceWindow\WinHeight = sourceWindow\win\Height
     Gosub resize_sourcewindow
@@ -15230,7 +15235,6 @@ Return
                                                                                                                                                                                                                                                         
   Case #IDCMP_REFRESHWINDOW
     Gosub handle_event_newsizewindow
-    ;log_Print{"event REFRESHWINDOW received."}
 
   Case #IDCMP_NEWSIZE
     Gosub handle_event_newsizewindow
@@ -16018,7 +16022,7 @@ Return
 
 .do_VANILLAKEY_RETURN:
   log_Print{"RETURN"}
-
+  Gosub close_popupwindow
   !asm
   JSR insertreturn
   ;JSR immediate_syntaxhelp
@@ -16089,6 +16093,8 @@ Return
 Return
 
 .do_VANILLAKEY_UP:
+    Gosub close_popupwindow
+
     ; convert right qualifiers to left qualifiers to make selectblock smarter
     If (mqualifier AND #IEQUALIFIER_RSHIFT)
       mqualifier = (mqualifier & (NOT #IEQUALIFIER_RSHIFT)) | #IEQUALIFIER_LSHIFT
@@ -16164,6 +16170,8 @@ Return
 Return
 
 .do_VANILLAKEY_DOWN:
+    Gosub close_popupwindow
+
     ; convert right qualifiers to left qualifiers to make selectblock smarter
     If (mqualifier AND #IEQUALIFIER_RSHIFT)
       mqualifier = (mqualifier & (NOT #IEQUALIFIER_RSHIFT)) | #IEQUALIFIER_LSHIFT
@@ -18914,31 +18922,39 @@ Return
   End If
 Return
 
-
 .event_popup:
-  popexit.l = False                                              ; added to set the init value that fix the bug that after select a item with a doubleclick the next popup win are autoclosed  tomsmart1
+  log_Print{"processing poupevent " + Hex$(pedMessage\_Class)}
+  popexit.l = False
+                                                ; added to set the init value that fix the bug that after select a item with a doubleclick the next popup win are autoclosed  tomsmart1
   Select pedMessage\_Class
-
     Case #IDCMP_IDCMPUPDATE
       If Left$(WZGadName,9) = "POPUPMENU"
         popup_selected = WZInput + 1
         popexit = True
       EndIf
 
+    Case #IDCMP_RAWKEY
+      log_Print{"RAWKEY " + Hex$(pedMessage\_Code)}
     Case #IDCMP_MOUSEBUTTONS
 ;      mb.b = MButtons
 ;      If (mb = 1) OR (mb=2)
 ;         popexit = True
 ;      EndIf
-
   End Select
 
   If popexit = True
     a$ = WZ_GetPopUpEntry{popup_selected}
-    a$ = dos_Trim{Left$(a$,Instr(a$,"{")-1)}
-    PED_ShowMessage{a$ + " " + PED_GetIncludeHelp{a$} }    ; removed a$ test because it is not needed  tomsmart1
-    a$ = UnRight$(a$,Len(poptok$)) + "{"
+    ;log_Print{"selected: " + a$}
+    brackpos.w = Instr(a$,"{")
+    If brackpos > 0
+      a$ = Trim$(Left$(a$,brackpos-1))
+      a$ = UnRight$(a$,Len(poptok$)) + "{"
+    Else
+      a$ = UnRight$(a$,Len(poptok$)) 
+    EndIf
+    ;log_Print{"inserting: " + a$}
     Gosub insertstring
+    PED_ShowMessage{a$ + " " + PED_GetIncludeHelp{a$} }    ; removed a$ test because it is not needed  tomsmart1
     Gosub close_popupwindow
   EndIf
   Gosub activatesourcewindow                                ; always active sourcewin if a popupwin event happend like mouse click or scroll  tomsmart1
@@ -20566,11 +20582,13 @@ Return                                                                        ; 
       Text_ \win\RPort, &sourcename$, textlen    ;A1, A0, D0
 
       If sourcename_len > textlen             ;indicator for more characters
-        WritePixel_ \win\RPort, \win\RPort\cp_x + 1 ,\win\RPort\cp_y - 4 - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2
-        WritePixel_ \win\RPort, \win\RPort\cp_x + 1, \win\RPort\cp_y - 2 - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2
-        WritePixel_ \win\RPort, \win\RPort\cp_x + 1, \win\RPort\cp_y     - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2
-        WritePixel_ \win\RPort, \win\RPort\cp_x + 1, \win\RPort\cp_y + 2 - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2
-        WritePixel_ \win\RPort, \win\RPort\cp_x + 1, \win\RPort\cp_y + 4 - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2
+        wpx.w = \win\RPort\cp_x + 1
+        wpy.w = \win\RPort\cp_y - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2 - 1
+        For wp.b = -4 To 4 Step 2
+          ;WritePixel_ \win\RPort,  wpx , wpy + wp
+          Move_ \win\RPort, wpx, wpy + wp
+          Draw_ \win\RPort, wpx + 2, wpy  + wp
+        Next wp
       EndIf
 
       ;SetDrMd_ \win\RPort, #JAM2
@@ -20589,7 +20607,7 @@ Return
   xsb.l = \font\tf_XSize - xsa
   bx1.l = xpos_text - xsa
   by1.l = ypos_sa +1;+ 3
-  bx2.l = \font\tf_XSize * 10 + \font\tf_XSize-1 + bx1
+  bx2.l = \font\tf_XSize * 10 + \font\tf_XSize + bx1
   by2.l = \font\tf_YSize + 1  + by1
   cp_x.l = \win\RPort\cp_x
   cp_y.l = \win\RPort\cp_y
@@ -20712,9 +20730,9 @@ Return
   If *sourcefile
     log_Print{"searching if already in open files: "}
     Repeat
-      log_Print{"... " + Peek$(*sourcefile+222)}
-
-      If Str$(Peek$(*sourcefile+222)) = fileToLoad
+      lpath.s = Peek.s(*sourcefile + 222 - 192)
+      lfile.s = Peek.s(*sourcefile + 222)
+      If dos_AddPart{lpath,lfile} = fileToLoad
         log_Print{"source already loaded, switching to that tab."}
         Pop If : Pop Repeat : Pop If
         GetD0 *sourcefile : MOVE.l d0,-(a7)
