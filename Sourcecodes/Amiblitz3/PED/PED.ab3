@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.8
-; NumberOfBuilds  = 2360
+; NumberOfBuilds  = 2375
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 11478
-; CursorColumn    = 26
-; LabelSearch     = "print_li"
+; CursorLine      = 8650
+; CursorColumn    = 1
+; LabelSearch     = "parse_line"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -1032,6 +1032,8 @@ SHARED ped,readcache
       ; no further bytes left
       If readcache\currentbyte = $00 Then Function Return resultString
 
+      If readcache\currentbyte = $9  Then readcache\currentbyte = $20 ; replace TAB by space
+
       If readcache\currentbyte <> $0D Then resultString + Chr$(readcache\currentbyte)
       ; do to import_start
     Until NOT PED_ReadNextByte{}
@@ -1041,7 +1043,13 @@ SHARED ped,readcache
 End Function
 
 Function.l PED_CreateNewSourceLine{newline.s}
-SHARED ped
+SHARED ped,*PreProcessor
+
+;  If ped\DoTokenize
+;    MaxLen linebuff$ = 256
+;    preproc_Tokenize{*PreProcessor,&newline,&linebuff$,FLen(newline)}
+;    newline = Peek.s(&linebuff$)
+;  EndIf
 
   _strLen.w = FLen(newline) + 1
   If _strLen = 1 Then newline = Chr$(0)
@@ -1556,28 +1564,30 @@ SHARED pedconfig, sourceWindow, AB3RGB(), AB3Pen()
   mx.w = xPos * sourceWindow\font\tf_XSize + sourceWindow\BoxLeft
   my.w = yPos * sourceWindow\font\tf_YSize + sourceWindow\BoxTop + sourceWindow\font\tf_Baseline
   Move_ sourceWindow\win\RPort ,mx ,my
+
   SetAPen_ sourceWindow\win\RPort, textcolor
   SetBPen_ sourceWindow\win\RPort, AB3Pen(#AB3_cbackground)
+
   If (AB3RGB(#AB3_cremarkforeground) OR AB3RGB(#AB3_cremarkbackground)) AND pedconfig\highlighting
     semi_position.w = 0
     in_string.b = 0
 ;    columnsoff.w = Peek.w(?comWord_ColumnsOffset)
-    mytext$ = Peek.s(*textaddr)
+    printtext.s = Peek.s(*textaddr)
 
     ; -- search for a comment and save the starting position
     search_again2:
-    semi_position = Instr(mytext$,";",semi_position + 1)
+    semi_position = Instr(printtext,";",semi_position + 1)
     If semi_position > 0
        ; -- check if the comment-char +++ ; +++ is in a string
        acount.b = 0
        For i.w = 1 To semi_position
-         If Mid$(mytext$,i,1) = Chr$($22) Then acount + 1
+         If Mid$(printtext,i,1) = Chr$($22) Then acount + 1
        Next i
        If (acount MOD 2) = 1
          ; -- ungerade Anzahl von +++ " +++ impliziert, das +++ ; +++ in einem String steckt...
          semi_position = 0
        Else
-         If Mid$(mytext$,semi_position + 1,2)=":@"
+         If Mid$(printtext,semi_position + 1,2)=":@"
            ; -- nachschauen, ob dahinter ein echter Kommentar kommt
            Goto search_again2
          EndIf
@@ -1588,7 +1598,9 @@ SHARED pedconfig, sourceWindow, AB3RGB(), AB3Pen()
        semi_position - 1 ; highlight +++ ; ++ as well
 
        ; -- print text before +++ ; +++
-       Text_ sourceWindow\win\RPort,mytext$,semi_position
+       If semi_position > 1
+         Text_ sourceWindow\win\RPort,printtext,semi_position
+       EndIf
 
        ; -- print comment
        SetAPen_ sourceWindow\win\RPort, AB3Pen(#AB3_cremarkforeground)
@@ -1599,7 +1611,9 @@ SHARED pedconfig, sourceWindow, AB3RGB(), AB3Pen()
          SetSoftStyle_ sourceWindow\win\RPort, #FSF_ITALIC,#FSF_ITALIC
        EndIf
 
-       Text_ sourceWindow\win\RPort,UnRight$(mytext$,semi_position),textlength-semi_position
+       printtext = UnRight$(printtext,semi_position)
+       Text_ sourceWindow\win\RPort,printtext,FLen(printtext)
+;       log_Print{"[" + printtext + "]  " + Str$(FLen(printtext))}
 
        ; -- restore standard backgroundcolor and font if changed
        SetBPen_ sourceWindow\win\RPort,AB3Pen(#AB3_cbackground)
@@ -1608,11 +1622,9 @@ SHARED pedconfig, sourceWindow, AB3RGB(), AB3Pen()
          SetSoftStyle_ sourceWindow\win\RPort,#FS_NORMAL,#FSF_ITALIC
        EndIf
      Else
-       ;log_Print{"2: " +mytext$+"  " + Str$(textcolor)+ "   " + Str$(mx) + "," + Str$(my)}
-       Text_ sourceWindow\win\RPort,mytext$, textlength
+       Text_ sourceWindow\win\RPort,printtext, textlength
      EndIf
   Else
-    ;log_Print{"3"}
     Text_ sourceWindow\win\RPort,Peek.s(*textaddr), textlength
   EndIf
 
@@ -4934,6 +4946,7 @@ RTS
       Gosub load_source
     EndIf
   EndIf
+  log_Print{"menu load finished."}
 Return
 
 
@@ -5006,17 +5019,20 @@ Return
 
   !asm
   JSR StoreXtraData
+
   !regs2stack
   !basic
   log_Print{"updating sourcewindow..."}
   Gosub draw_statusarea
   !asm
   !stack2regs
+
   JSR update_scroller
   JSR update_labelstuff
   JSR _redraw
 
   !basic
+  log_Print{"unlock wizard windows."}
   UnlockAllOpenWZWin{ }
   Gosub set_pointer_normal_bas
   Poke.b ?convert, 0
@@ -5061,8 +5077,6 @@ Return
 
   tmpLine.s = PED_ReadNextLine{}
 
-  ;log_Print{">>" + tmpLine + ", bytes: " + Str$(FLen(tmpLine))}
-
   *newLine.sourceLine = PED_CreateNewSourceLine{tmpLine}
   Poke.l ?comPtr_FirstSourceLine, *newLine
   Poke.l ?comPtr_CurrentSourceLine, *newLine
@@ -5072,10 +5086,24 @@ Return
     *currLine.sourceLine = *newLine
     tmpLine = PED_ReadNextLine{}
     tmpLen.w = FLen(tmpLine)
-    log_Print{Str$(tmpLen) + " >>" + tmpLine}
+    log_Print{Str$(tmpLen) + " [" + tmpLine + "]"}
 
     If tmpLine <> "NoCOntenTwasDelivered"
+      If ped\DoTokenize
+        MaxLen linebuff$ = 256
+        ; process the ascii data in sourcebuff length and write the tokenized source into destbuffer
+        ; the return value is the length of the tokenized text
+        ; sourcebuff and destbuff might be the same pointer
+        ; preproc_Tokenize{*tn.preprocessor,sourcebuff.l,destbuff.l,bytelength.l}
+        preproc_Tokenize{*PreProcessor,&tmpLine,&linebuff$,FLen(tmpLine)}
+        tmpLine = Peek.s(&linebuff$)
+      Else
+        tmpLine = Replace$(tmpLine,Chr$(9)," ")
+      EndIf
       *newLine = PED_CreateNewSourceLine{tmpLine}
+
+      log_Print{"[" + Str$(*newLine\strLength)+ "] >> " + Peek.s(*newLine+9)}
+
       Poke.l ?comPtr_LastSourceLine, *newLine
       *currLine\nextLine = *newLine
       *newLine\previousLine = *currLine
@@ -5094,77 +5122,81 @@ Return
   CLR.l comLong_DisplayLineOffset
   CLR.l comLong_DisplayLine
 
-;  ;--
-;  ;-- read optional xtrafile
-;  ;--
-;  MOVE.l comFunc_ReadXtraFile,D0
-;  BEQ.w skip_loadingxtrafile
+  ;--
+  ;-- read optional xtrafile
+  ;--
+
+  !asm
+  BRA skip_loadingxtrafile
+
+  MOVE.l comFunc_ReadXtraFile,D0
+  BEQ.w skip_loadingxtrafile
+
+  MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2 ; read xtra
+  JSR open_xtrafile                      ; returns D7: filehandle
+  BEQ.w skip_loadingxtrafile
+
+  MOVE.l comFunc_ReadXtraFile,D0
+  MOVEA.l D0,A5
+  JSR (A5)
+
+  !basic
+  log_Print{"opening xtrafile  done."}
+  Read_ *xtra_fh, ?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin ; xtrabuf,36
+
+;  stackSize.l = Peek.l(?comLong_StackSizeStore)
+;  If stackSize<4096 Then stackSize=4096
+;  Poke.l ?stacksize,stackSize
 ;
-;  MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2 ; read xtra
-;  JSR open_xtrafile                      ; returns D7: filehandle
-;  BEQ.w skip_loadingxtrafile
-;
-;  MOVE.l comFunc_ReadXtraFile,D0
-;  MOVEA.l D0,A5
-;  JSR (A5)
-;
-;  !basic
-;  log_Print{"opening xtrafile  done."}
-;  Read_ *xtra_fh, ?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin ; xtrabuf,36
-;
-;;  stackSize.l = Peek.l(?comLong_StackSizeStore)
-;;  If stackSize<4096 Then stackSize=4096
-;;  Poke.l ?stacksize,stackSize
-;
-;  ; -- get the data for creating executables
-;  exefilename$ = ""
-;  exepathname$ = ""
-;  tempexename$ = SPACE$(96)
-;
-;  Seek_ *xtra_fh,$256,#OFFSET_BEGINNING
-;  Read_ *xtra_fh,&tempexename$,96
-;  i = 1
-;  Repeat
-;    char$ = Mid$(tempexename$,i,1)
-;    If Asc(char$)<>0 Then exepathname$ + char$
-;    i + 1
-;  Until (i = FLen(tempexename$)) OR (Asc(char$) = 0)
-;
-;  tempexename$ = SPACE$(96)
-;  Seek_ *xtra_fh,$316,#OFFSET_BEGINNING
-;  Read_ *xtra_fh,&tempexename$,96
-;  i = 1
-;  Repeat
-;    char$ = Mid$(tempexename$,i,1)
-;    If Asc(char$)<>0 Then exefilename$ + char$
-;    i + 1
-;  Until (i = FLen(tempexename$)) OR (Asc(char$) = 0)
-;;  exepathname$ = dos_Trim{exepathname$}
-;;  exefilename$ = dos_Trim{exefilename$}
-;;  !cout{exepathname$+"/"+exefilename$} ;$ , dos_GetFileSize2{exepathname$+"/"+exefilename$}}
-;
-;
-;  ; -- restore windows
-;  Gosub RestoreLabelAndNewtypeWin
-;  project_changelog$ = ""
-;  Gosub update_versiongadgets
-;
-;  Close_ *xtra_fh
-;  !asm
-;  !regs2stack
-;  !ComData_SetB{comByte_FuncOptimize,#1}                   ; added for compatiblity because it is not stored in the xtra file  tomsmart1
-;  !ComData_SetW{comWord_CreateDebugFile,#0}                ; to match the old default settings  tomsmart1
-;  !stack2regs
-;
-;  ; update Sourcewindow
-;  MOVE.l comLong_CursorPosStore,d0
-;  MOVEA.l comPtr_CurrentSourceLine,A4
-;  JSR gotoline
-;  JSR delete_tempprefs
-;  JSR save_tempprefs
-;
-;  skip_loadingxtrafile:
-;  !basic
+  ; -- get the data for creating executables
+  exefilename$ = ""
+  exepathname$ = ""
+  tempexename$ = SPACE$(96)
+
+  Seek_ *xtra_fh,$256,#OFFSET_BEGINNING
+  Read_ *xtra_fh,&tempexename$,96
+  i = 1
+  Repeat
+    char$ = Mid$(tempexename$,i,1)
+    If Asc(char$)<>0 Then exepathname$ + char$
+    i + 1
+  Until (i = FLen(tempexename$)) OR (Asc(char$) = 0)
+
+  tempexename$ = SPACE$(96)
+  Seek_ *xtra_fh,$316,#OFFSET_BEGINNING
+  Read_ *xtra_fh,&tempexename$,96
+  i = 1
+  Repeat
+    char$ = Mid$(tempexename$,i,1)
+    If Asc(char$)<>0 Then exefilename$ + char$
+    i + 1
+  Until (i = FLen(tempexename$)) OR (Asc(char$) = 0)
+;  exepathname$ = dos_Trim{exepathname$}
+;  exefilename$ = dos_Trim{exefilename$}
+;  !cout{exepathname$+"/"+exefilename$} ;$ , dos_GetFileSize2{exepathname$+"/"+exefilename$}}
+
+
+  ; -- restore windows
+  Gosub RestoreLabelAndNewtypeWin
+  project_changelog$ = ""
+  Gosub update_versiongadgets
+
+  Close_ *xtra_fh
+  !asm
+  !regs2stack
+  !ComData_SetB{comByte_FuncOptimize,#1}                   ; added for compatiblity because it is not stored in the xtra file  tomsmart1
+  !ComData_SetW{comWord_CreateDebugFile,#0}                ; to match the old default settings  tomsmart1
+  !stack2regs
+
+  ; update Sourcewindow
+  MOVE.l comLong_CursorPosStore,d0
+  MOVEA.l comPtr_CurrentSourceLine,A4
+  JSR gotoline
+  JSR delete_tempprefs
+  JSR save_tempprefs
+
+  skip_loadingxtrafile:
+  !basic
 Return
 
 
@@ -8524,7 +8556,7 @@ End Function
   !basic
   MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
   *newLine.sourceLine = PED_CreateNewSourceLine{ Peeks$(Peek.l(?comPtr_Temp_TokenString1),tmpd0) }
-  ;*newLine.sourceLine = PED_CreateNewSourceLine{PED_TokenizeText{pasteString}}
+  ;*newLine.sourceLine = PED_CreateNewSourceLine{pasteString}
 
   *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
   *previousLine.sourceLine = *currentLine\previousLine
@@ -8558,6 +8590,7 @@ End Function
       !basic
       MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
       *newLine = PED_CreateNewSourceLine{ Peeks$(Peek.l(?comPtr_Temp_TokenString1),tmpd0)}
+      ;*newLine = PED_CreateNewSourceLine{pasteString}
       PED_InsertSourceLine{*newLine,?comLong_TotalLines,?comPtr_LastSourceLine,?comPtr_CurrentSourceLine}
     Else
       tmpLen = 0
@@ -8631,8 +8664,7 @@ Return
   CLR.w comWord__AL_0_8AD8
   MOVE.w #$FFFF,comWord_SourceChanged
 
-  MOVE.l comLong_DisplayLineOffset,D7
-  ADD.l comLong_DisplayLine,D7
+  MOVE.l comLong_DisplayLineOffset,D7 : ADD.l comLong_DisplayLine,D7
   CMP.l comLong_BlockStartY,D7
   BCS.w JL_0_387E
     BNE.w JL_0_386A
@@ -9546,17 +9578,22 @@ RTS
 RTS
 
 .log_print: ;A1: pointer to string, D0: optional value
- MOVEM.l a1/d0,-(a7)
+ MOVEM.l a1/d0-d2,-(a7)
  !basic
- MOVEM.l (a7)+,a1/d0 : log_value.l = PutD0
- MOVE.l A1,D0 : ptr_logtext.l = PutD0
+ MOVEM.l (a7)+,a1/d0-d2
+ PutReg D0, log_value0.l
+ PutReg D2, log_value1.l
+ PutReg A1, ptr_logtext.l : strline.s = Peek.s(ptr_logtext)
  Format "####0"
 
- If log_value > 255
-   log_Print{"syslib  : " + Str$(log_value) + ": " + StrLeft(PED_GetLibname{log_value},40) + "  >" + Hex$(ptr_logtext)}
+ If log_value0 > 255
+   logmess.s = "syslib  : "
  Else
-   log_Print{"blitzlib: " + Str$(log_value) + ": " + StrLeft(PED_GetLibname{log_value},40) + "  >" + Hex$(ptr_logtext)}
+   logmess.s = "blitzlib: "
  EndIf
+ MaxLen linebuff$ = 256
+ preproc_Detokenize{*PreProcessor,&strline,&linebuff$,FLen(strline)} : strline.s = StripTrail$(Peek.s(&linebuff$),$20)
+ log_Print{logmess + Str$(log_value0) + ": " + StrLeft(PED_GetLibname{log_value0},20) + "/" + Str$(log_value1)+ ": " + Left$(strline,16)}
  Format ""
  !asm
 RTS
@@ -11354,6 +11391,7 @@ RTS
     EndIf
   EndIf
   Gosub cursor_on_bas
+ ; log_Print{"end"}
   !asm
 RTS
 
@@ -11414,7 +11452,6 @@ RTS
       yMax = yMax + \font\tf_YSize - 1
       Gosub rectfill
   EndIf
-
   !asm
   MOVEM.l (A7)+,D0-D3/A0-A1
 RTS
@@ -11653,7 +11690,7 @@ RTS
       MOVE.l (a7)+,d0 : tposy.w = (PutD0 AND $FFFF)
       MOVE.l (a7)+,d0 : tposx.w = PutD0
       MOVE.l (a7)+,d0 : *textaddr.l = PutD0
-      ;log_Print{"call PrintText: " + Str$(tposx) + ", " + Str$(tposy) + " : [" + Left$(Peek.s(*textaddr),12)+"]"}                   ddddddddddddddddddddddddddddddddddddddddddd
+      ;log_Print{"call PrintText: " + Str$(tlength) + "... " + Str$(tposx) + ", " + Str$(tposy) + " : [" + Peek.s(*textaddr) + "]"}
       PED_PrintText{*textaddr,tposx,tposy,tlength,AB3Pen(#AB3_cother)}
       !asm
       MOVE.w (A7)+,D0
@@ -15348,85 +15385,7 @@ Return
     Gosub cursor_off_bas
 
   Case #IDCMP_GADGETDOWN
-    *gadget.Gadget = pedMessage\_IAddress
-    exit_gadgetloop.b = False
-    ;log_Print{"GADGETDOWN " + Hex$(pedMessage\_Class)}
-    ;log_Print{"GadgetID " + Str$(*gadget\GadgetID) + ", Type " + Hex$(*gadget\GadgetType) + ", Activation " + Hex$(*gadget\Activation)}
-    ;log_Print{"byte type " + Str$(*gadget\GadgetType AND $00FF)}
-
-    Select *gadget\GadgetID
-    Case #GID_UARROW: last_vankey = $1C : Gosub handle_event_vanillakey
-    Case #GID_DARROW: last_vankey = $1D : Gosub handle_event_vanillakey
-    Case #GID_RARROW: last_vankey = $1E : Gosub handle_event_vanillakey
-    Case #GID_LARROW: last_vankey = $1F : Gosub handle_event_vanillakey
-    Case #GID_XPROP
-      DEFTYPE.l pos_hprop
-      FlushEvents
-      Repeat
-        If pedMessage\_Class <> 0
-          If pedMessage\_Class <> #IDCMP_GADGETUP
-            GetAttr_ #PGA_Top,*horizprop, &pos_hprop
-            GetD0 pos_hprop : MOVE.l d0,-(a7)
-            !asm
-            MOVE.l (a7)+,D1
-            JSR moveCursorToX
-            !basic
-            Gosub cursor_on_bas
-            Gosub update_statusarea
-          Else
-            *g.Gadget = pedMessage\_IAddress
-            ;If pedMessage\_Class = #IDCMP_GADGETUP AND pedMessage\_Code <> 0 OR pedMessage\_Window<>0
-            If *g\GadgetID = #GID_XPROP  Then exit_gadgetloop = True
-          EndIf
-        EndIf
-        PED_GetMessage{False}
-      Until exit_gadgetloop = True
-      Gosub cursor_on_bas
-
-    Case #GID_YPROP
-      If Peek.l(?comLong_DisplayLineOffset) < Peek.l(?comLong_TotalLines)
-        Poke.l ?comWord_LinePosStartX, Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine)
-
-        Repeat
-          If pedMessage\_Class <> 0
-            *g.Gadget = pedMessage\_IAddress
-
-            If pedMessage\_Class <> #IDCMP_GADGETUP
-              GetAttr_ #PGA_Top,*vertiprop,&slider_top.l
-              totallines.l = Peek.l(?comLong_TotalLines)
-              If totallines >= #max_slider_res
-                !mul48f{slider_top,totallines,#max_slider_res,realline.l}
-              Else
-                realline = slider_top
-              EndIf
-              realline + Peek.l(?comLong_DisplayLine)
-
-              If Peek.l(?comWord_LinePosStartX) <> realline
-                Poke.l ?comWord_LinePosStartX, realline
-                !asm
-                MOVE.l comWord_LinePosStartX,D0
-                MOVEA.l comPtr_CurrentSourceLine,A4
-                JSR gotoline
-                !basic
-                Gosub cursor_on_bas
-                Gosub update_statusarea
-              EndIf
-
-              ;If pedMessage\_Class = #IDCMP_RAWKEY Then exit_gadgetloop = True
-              If pedMessage\_Class = #IDCMP_MOUSEBUTTONS Then exit_gadgetloop = True
-            Else
-              ; cannot check For GadgetID because of tools like FreeWheel, I do not get the correct GadgetID everytime !?
-              If *g\GadgetID = #GID_YPROP AND pedMessage\_Class = #IDCMP_GADGETUP Then exit_gadgetloop = True
-            EndIf
-            ;log_Print{"YPROP " + Hex$(pedMessage\_Class) + " " + Hexw$(pedMessage\_Code) + " " + Str$(pedMessage\_Window) + "  GadID: " + Str$(*g\GadgetID)}
-            ;log_Print{"IAddress: " +Str$(pedMessage\_IAddress) + "  type: " + Hex$(*g\GadgetType) + " x:" + Str$(*g\LeftEdge) + ", y:" + Str$(*g\TopEdge)}
-          EndIf
-          PED_GetMessage{False}
-        Until exit_gadgetloop = True
-        ;log_Print{"exit proploop"}
-        Gosub cursor_on_bas
-      EndIf
-    End Select
+    Gosub handle_event_gadget
 
   Case #IDCMP_GADGETUP
     *gadget.Gadget = pedMessage\_IAddress
@@ -15569,6 +15528,90 @@ Return
     exit_eventloop.b = True
   EndIf
 Return
+
+.handle_event_gadget:
+   *gadget.Gadget = pedMessage\_IAddress
+
+    exit_gadgetloop.b = False
+    ;log_Print{"GADGETDOWN " + Hex$(pedMessage\_Class)}
+    ;log_Print{"GadgetID " + Str$(*gadget\GadgetID) + ", Type " + Hex$(*gadget\GadgetType) + ", Activation " + Hex$(*gadget\Activation)}
+    ;log_Print{"byte type " + Str$(*gadget\GadgetType AND $00FF)}
+
+    Select *gadget\GadgetID
+    Case #GID_UARROW: last_vankey = $1C : Gosub handle_event_vanillakey
+    Case #GID_DARROW: last_vankey = $1D : Gosub handle_event_vanillakey
+    Case #GID_RARROW: last_vankey = $1E : Gosub handle_event_vanillakey
+    Case #GID_LARROW: last_vankey = $1F : Gosub handle_event_vanillakey
+    Case #GID_XPROP
+      DEFTYPE.l pos_hprop
+      FlushEvents
+      Repeat
+        If pedMessage\_Class <> 0
+          If pedMessage\_Class <> #IDCMP_GADGETUP
+            GetAttr_ #PGA_Top,*horizprop, &pos_hprop
+            GetD0 pos_hprop : MOVE.l d0,-(a7)
+            !asm
+            MOVE.l (a7)+,D1
+            JSR moveCursorToX
+            !basic
+            Gosub cursor_on_bas
+            Gosub update_statusarea
+          Else
+            *g.Gadget = pedMessage\_IAddress
+            ;If pedMessage\_Class = #IDCMP_GADGETUP AND pedMessage\_Code <> 0 OR pedMessage\_Window<>0
+            If *g\GadgetID = #GID_XPROP  Then exit_gadgetloop = True
+          EndIf
+        EndIf
+        PED_GetMessage{False}
+      Until exit_gadgetloop = True
+      Gosub cursor_on_bas
+
+    Case #GID_YPROP
+      If Peek.l(?comLong_DisplayLineOffset) < Peek.l(?comLong_TotalLines)
+        Poke.l ?comWord_LinePosStartX, Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine)
+
+        Repeat
+          If pedMessage\_Class <> 0
+            *g.Gadget = pedMessage\_IAddress
+
+            If pedMessage\_Class <> #IDCMP_GADGETUP
+              GetAttr_ #PGA_Top,*vertiprop,&slider_top.l
+              totallines.l = Peek.l(?comLong_TotalLines)
+              If totallines >= #max_slider_res
+                !mul48f{slider_top,totallines,#max_slider_res,realline.l}
+              Else
+                realline = slider_top
+              EndIf
+              realline + Peek.l(?comLong_DisplayLine)
+
+              If Peek.l(?comWord_LinePosStartX) <> realline
+                Poke.l ?comWord_LinePosStartX, realline
+                !asm
+                MOVE.l comWord_LinePosStartX,D0
+                MOVEA.l comPtr_CurrentSourceLine,A4
+                JSR gotoline
+                !basic
+                Gosub cursor_on_bas
+                Gosub update_statusarea
+              EndIf
+
+              ;If pedMessage\_Class = #IDCMP_RAWKEY Then exit_gadgetloop = True
+              If pedMessage\_Class = #IDCMP_MOUSEBUTTONS Then exit_gadgetloop = True
+            Else
+              ; cannot check For GadgetID because of tools like FreeWheel, I do not get the correct GadgetID everytime !?
+              If *g\GadgetID = #GID_YPROP AND pedMessage\_Class = #IDCMP_GADGETUP Then exit_gadgetloop = True
+            EndIf
+            ;log_Print{"YPROP " + Hex$(pedMessage\_Class) + " " + Hexw$(pedMessage\_Code) + " " + Str$(pedMessage\_Window) + "  GadID: " + Str$(*g\GadgetID)}
+            ;log_Print{"IAddress: " +Str$(pedMessage\_IAddress) + "  type: " + Hex$(*g\GadgetType) + " x:" + Str$(*g\LeftEdge) + ", y:" + Str$(*g\TopEdge)}
+          EndIf
+          PED_GetMessage{False}
+        Until exit_gadgetloop = True
+        ;log_Print{"exit proploop"}
+        Gosub cursor_on_bas
+      EndIf
+    End Select
+Return
+
 
 .handle_event_mousebuttons:
 ;  log_Print{"handle event mousebuttons..."}
@@ -20035,6 +20078,7 @@ Return
 
 .do_windowlayout:
   If \lbrowser_on
+    log_Print{"opening library browser"}
     Gosub open_librarybrowser
   Else
     If WZ_CheckOpen{"WIN_LIBRARYBROWSER"}
@@ -20044,6 +20088,7 @@ Return
   End If
 
   If \ibrowser_on
+    log_Print{"opening instruction browser"}
     Gosub open_instructionbrowser
   Else
     If WZ_CheckOpen{"WIN_INSTRUCTIONBROWSER"}
@@ -20062,6 +20107,7 @@ Return
   End If
 
   If \click_on
+    log_Print{"opening label window"}
     Gosub open_labelwindow
   Else
     If WZ_CheckOpen{"WIN_LABELS"}
@@ -20079,6 +20125,7 @@ Return
   End If
 
   If \type_on
+    log_Print{"opening newtype window"}
     Gosub open_newtype
   Else
     If WZ_CheckOpen{"WIN_NEWTYPE"}
@@ -20087,6 +20134,7 @@ Return
     EndIf
   End If
 
+  log_Print{"opening/updating source window"}
   If sourceWindow\win <> 0
     ChangeWindowBox_ sourceWindow\win,sourceWindow\WinLeft,sourceWindow\WinTop,sourceWindow\WinWidth,sourceWindow\WinHeight
     RefreshWindowFrame_ sourceWindow\win
