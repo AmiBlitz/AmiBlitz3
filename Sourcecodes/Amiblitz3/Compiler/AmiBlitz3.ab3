@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.8
-; NumberOfBuilds  = 446
+; NumberOfBuilds  = 454
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1946
-; CursorColumn    = 8
-; LabelSearch     = "_run"
+; CursorLine      = 5044
+; CursorColumn    = 1
+; LabelSearch     = "trapme"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -304,6 +304,11 @@ Else
   config\localization = True
   !TRANS_INIT{"AmiBlitz3"}     ; init localization via translation.include
 EndIf
+
+If dos_GetToolState{"LOG_USED_BLITZLIBS"} = -1
+  Poke.b ?log_blitzlibs,1
+EndIf
+
 
 ;--- MorphOS Check to use the CacheClearE function because it is faster under MorphOS as CacheClearU
 If ( FindResident_("MorphOS") )
@@ -5097,6 +5102,7 @@ handle_statement:                                          ;a procedure! - eg ga
 BRA.w get1bytemain
 
 
+;trapme: Dc.w $0
 
 .get_tokencode:                   ; blitz instruction found without return value
   ; process a token in d0
@@ -5105,16 +5111,18 @@ BRA.w get1bytemain
   MOVE.l d0,lasttoken
 
   ; preplace some Tokens with other ones
-  ;CMP.w #$409f,d0                ;hack to use GetRegD0 instead of GetD0 of wizardlib
-  ;BNE 'l2
-  ;  MOVE.w #$dd05,d0
- ;'l2
- ; CMP.w #$40a0,d0                ;hack to use PutRegD0 instead of PutD0 of wizardlib
- ; BNE 'l3
- ;   MOVE.w #$dd06,d0
- ;'l3
+  ;CMP.w #$E08C,d0                  ; hack to replace GetD0 ($409f-$8000=$C09F) with GetRegD0 ($5D05-$8000=$DD05)
+  ;BNE 'l2                          ; $608C-$8000  = E08C
+  ;  TRAP #5
+  ;  MOVE.w #$FFFF,trapme
+  ;'l2
+  ; CMP.w #$40a0,d0                 ; hack to replace PutD0 ($40a0-$8000=$C0A0) with GetRegD0
+  ; BNE 'l3                         ; $608d-$8000 = E08D
+  ;   MOVE.w #$dd06,d0
+  ;'l3
 
-  ; < new
+  ; check for inline assembly
+  ;
   CMP.w ##TokenID_ABCD,D0               ; check if token is an asm-token
   BCS.w 'nono
   CMP.w ##TokenID_List,D0               ; we have 76 asm tokens defined
@@ -5126,12 +5134,10 @@ BRA.w get1bytemain
     TST.b debugmode
     BEQ.b 'l10
 
-
     CNIF #debugmacro=0
       TST.w inmacro
       BNE.b 'l10
     CEND
-
 
     MOVE.w d_nomemleft,dontwrite_nomemleft
     MOVE.l d_bigpc,bigpc
@@ -5144,13 +5150,16 @@ BRA.w get1bytemain
    'asmok
     BRA.w assemble_it                         ;assemble the bastard
  'nono
-  ; check if asm type things....
-  ; If so, no Line remembering etc!
+
+  ; handle standard blitzlib token
   BCLR #$F,D0                                 ; found a token of a blitzlib
   MOVE.w D0,D1
   ANDI.w #$7F00,D1
   BNE.w handlelib
   ;
+
+  ; check if asm type things....
+  ; If so, no Line remembering etc!
   CMP.w #$B3,D0                               ; internal Instruction
   BCS.w 'isokat
     SUBI.w #$77,D0     ; was #tnum-fnum,
@@ -5196,13 +5205,13 @@ BRA.w get1bytemain
   MOVEA.l $0(A0,D0.W),A0
   MOVE.l A0,-(A7)
 BRA.w get1bytemain
+ 
 
-
-.handlelib:
+.handlelib:            ; token in D0 
   ; a token from a library!
   ;
-  MOVE.w D0,D1
-  BSR.w searchinstr    ;toke stuff in a3
+  MOVE.w D0,D1      
+  BSR.w searchinstr    ; input: d1=token, return: a2.l=lib, a3.l=sub (code for token)
   ; new >
   TST.b newmode
   BNE compile_term
@@ -5225,36 +5234,35 @@ BRA.w get1bytemain
   MOVE.w a2offset,-(A7)
   MOVE.l A2,-(A7)                                          ;recurs.
   MOVE.w convsize,userp
-  LEA $6(A3),A1
+  LEA $6(A3),A1                                           ; jump to the calling definitions of the token, e.g. one, two or three parameters ("overload")
   ;
-  ;now to find a form with d1 parameters in it.....
+  ;now to find a form with d1 parameters in it..... D1 is the number of used parameters in source
 
  'loop
-   MOVE.w (A1),D2
-   BMI.w 'SERR                                              ;statement syntax error
-  ANDI.w #$FF,D2
-  CMP.w D2,D1
-   BEQ.w 'found
-   BCS.w 'next
-  MOVE.b (A1),D3
-  ANDI.w #$7,D3
-   BEQ.w 'next
-  MOVE.w D2,D4
-  SUB.w D3,D4
-  MOVEQ.l #$00,D5
-  MOVE.w D1,D5
-  SUB.w D4,D5
-  DIVU D3,D5
-  SWAP D5
-  TST.w D5
-   BEQ.w 'found
-
- 'next
-  ADDQ.w #2,A1
-  ADDA.w D2,A1
-   BSR.w aligna1
-   BSR.w skiplibreg
-  LEA $C(A1),A1
+    MOVE.w (A1),D2
+    BMI.w 'SERR                                              ;statement syntax error
+    ANDI.w #$FF,D2
+    CMP.w D2,D1
+    BEQ.w 'found
+      BCS.w 'next
+        MOVE.b (A1),D3
+        ANDI.w #$7,D3
+        BEQ.w 'next
+          MOVE.w D2,D4
+          SUB.w D3,D4
+          MOVEQ.l #$00,D5
+          MOVE.w D1,D5
+          SUB.w D4,D5
+          DIVU D3,D5
+          SWAP D5
+          TST.w D5
+          BEQ.w 'found
+       'next
+        ADDQ.w #2,A1
+        ADDA.w D2,A1
+        BSR.w aligna1
+        BSR.w skiplibreg
+ LEA $C(A1),A1
  BRA.w 'loop
 
  ; new <
@@ -5275,7 +5283,7 @@ BRA.w get1bytemain
   BRA inbrackets_
  ; < new
 
- 'found                 ;Got it!                                 ;Got it!
+ 'found                     ;Got it!                                 ;Got it!
   MOVE.b (A1),D2
   LSL.w #8,D2
   OR.w D2,D1
@@ -5283,7 +5291,7 @@ BRA.w get1bytemain
   CLR.w a2offset
   TST.w D1
    BEQ.w 'nopees
-  LEA $2(A1),A2
+  LEA $2(A1),A2             ; datatype of parameter
   ; new >
   MOVE.l lasttoken,-(a7)
   CLR.l lasttoken
@@ -5301,16 +5309,15 @@ BRA.w get1bytemain
   MOVEA.l (A7)+,A1
   MOVEA.l (A7)+,A2
   MOVE.w a2offset,D1
-   BEQ.w 'skip2
-  MOVE.w D1,preplibst+2
-  MOVE.l preplibst,D1
-   JSR writelong                                           ;write array offset stack correct
-  MOVE.w numreps,movenumrep+2
-   BEQ.w 'skip2
-  MOVE.l movenumrep,D1
-   JSR writelong
-                                                           ;??looks like double label??
- 'l10
+  BEQ.w 'skip2
+    MOVE.w D1,preplibst+2
+    MOVE.l preplibst,D1
+    JSR writelong                                           ;write array offset stack correct
+    MOVE.w numreps,movenumrep+2
+    BEQ.w 'skip2
+      MOVE.l movenumrep,D1
+      JSR writelong;??looks like double label??
+     'l10
  'skip2                ;make the JSR 
   JSR userjsr
 
@@ -5318,26 +5325,24 @@ BRA.w get1bytemain
  'l20
   ; < new
   MOVE.w a2offset,D1
-   BEQ.w 'skip3
-  CMP.w #$8,D1
-   BHI.w 'skip4
-  ANDI.w #$7,D1
-  LSL.w #8,D1
-  LSL.w #1,D1
-  ORI.w #$504F,D1       ;addq #x,a7
-  JSR writeword
- BRA.w 'skip3
-
- 'skip4
-  MOVE.w D1,fixlibst+2
-  MOVE.l fixlibst,D1
-  JSR writelong
-
+  BEQ.w 'skip3
+    CMP.w #$8,D1
+    BHI.w 'skip4
+      ANDI.w #$7,D1
+      LSL.w #8,D1
+      LSL.w #1,D1
+      ORI.w #$504F,D1       ;addq #x,a7
+      JSR writeword
+      BRA.w 'skip3
+   'skip4
+    MOVE.w D1,fixlibst+2
+    MOVE.l fixlibst,D1
+    JSR writelong
  'skip3
   MOVE.w (A7)+,a2offset
   MOVE.w (A7)+,userp
   MOVE.w (A7)+,numreps
-BRA.w reget
+BRA.w reget 
 
 
 sizespec2:
@@ -5954,7 +5959,7 @@ intlineat:  Ds.l 1
   BSR.w addoff
   MOVE.l destpointer,-(A7)
   JSR writelong
-  MOVE.w #$C100,D1
+  MOVE.w #$C100,D1                                      ;intlib: addAnInt
   JSR Atokejsr
   MOVE.w #$4EF9,D1                                        ;jmp
   JSR writeword
@@ -7309,26 +7314,27 @@ dounmove:
 .do_PutReg:
   BSR.w get_reg2
   CMP.w #$2C,D0                                            ;#','
-   BNE.w syntaxerr
-  MOVE.l #$48E7FFFE,D1                                     ;movem to stack
-   BSR.w writelong
+  BNE.w syntaxerr
+
+  MOVE.l #$48E7FFFE,D1                                     ;movem.l d0-a6,-(a7)
+  BSR.w writelong
   MOVE.w D4,D1
   ORI.w #$2F00,D1
-   BSR.w writeword
+  BSR.w writeword
   ;
-   BSR.w get1bytemain
-   JSR getparameter           ; bsr.w
-   BSR.w fetchvars
-   BSR.w calcvar
-   BTST #$E,D2
-   BEQ.w 'notp
+  BSR.w get1bytemain
+  JSR getparameter           ; bsr.w
+  BSR.w fetchvars
+  BSR.w calcvar
+  BTST #$E,D2
+  BEQ.w 'notp
 
  'issa
-   MOVE.b #$3,D2
- BRA.w 'pd
+    MOVE.b #$3,D2
+    BRA.w 'pd
 
  'notp
-  TST.b D2
+    TST.b D2
    BEQ.w 'issa
   CMP.b #$7,D2
    BEQ.w 'issa
@@ -7358,14 +7364,15 @@ dounmove:
 BRA.w writelong
 
 
-.do_setreg:
+.do_GetReg:
   BSR.w get_reg2
-  CMP.w #$2C,D0     ;','
-   BNE.w syntaxerr
-   BSR.w regmovems
+  CMP.w #$2C,D0                  ;','
+  BNE.w syntaxerr
+
+  BSR.w regmovems
   MOVE.w D4,-(A7)
-  MOVEQ.l #$03,D2   ;get a long
-   JSR eval                       ; BSR.w
+  MOVEQ.l #$03,D2                ;get a long
+  JSR eval                       ; BSR.w
   MOVE.w (A7)+,D1
    BEQ.w 'done
   CMP.w #$8,D1
@@ -7387,17 +7394,16 @@ BRA.w writelong
 BRA.w dounmove
 
 
-
 get_reg:                ; was getreg
   BSR.w get1bytemain
 
 get_reg2:
   ORI.w #$20,D0
-  CMP.w #$64,D0       ;'d'
-   BEQ.w getan3
-  CMP.w #$61,D0       ;'a'
-   BNE.w syntaxerr
-   BSR.w getan3
+  CMP.w #$64,D0       ;'d'      Dataregister
+  BEQ.w getan3
+  CMP.w #$61,D0       ;'a'      Addressregister
+  BNE.w syntaxerr
+  BSR.w getan3
   ADDQ.w #8,D4
 RTS
 
@@ -7416,10 +7422,10 @@ getan3:
   ; new >
   !fget                                                    ;bsr.w get1bytemain
   ; < new
-  SUBI.w #$30,D0
-   BMI.w syntaxerr
-  CMP.w #$7,D0
-   BHI.w syntaxerr
+  SUBI.w #$30,D0    ; check if register number is within [0..7]
+  BMI.w syntaxerr
+  CMP.w #$7,D0       
+  BHI.w syntaxerr
   MOVE.w D0,D4
   ; new >
   !fget
@@ -9960,15 +9966,19 @@ uselib3:
         ;< new
 
 
-        TST.l funcscanon
-        BNE.b 'skiplog
-          ;MOVEM.l D0/D1/A0,-(a7)
-          !regs2stack
-          MOVEQ #0,d0 : MOVE.w d1,d0
-          !ComData_JSR{comFunc_LogPrint}
-          ;MOVEM.l (a7)+,D0/D1/A0
-          !stack2regs
-        'skiplog:
+        TST.b log_blitzlibs
+        BEQ.b 'skiplog
+          TST.l funcscanon
+          BNE.b 'skiplog
+            ;MOVEM.l D0/D1/A0,-(a7)
+            !regs2stack
+            MOVEQ #0,d0 : MOVE.w d1,d0
+            MOVEQ #0,d2 : MOVE.l linenumat,D2
+            MOVE.l lastsourcepos,A1
+            !ComData_JSR{comFunc_LogPrint}
+            ;MOVEM.l (a7)+,D0/D1/A0
+            !stack2regs
+          'skiplog:
 
 
         MOVEM.l D1/A0/A2,-(A7)
@@ -10212,7 +10222,7 @@ tokecode:
   ;return d7, address to jsr!
   ;
   MOVE.w D2,-(A7)
-   BSR.w searchinstr
+  BSR.w searchinstr             ;Return: a2.l=lib, a3.l=SUB
   MOVE.w (A7)+,D2
   ;
   BCLR #$7,blitzmode
@@ -10436,7 +10446,7 @@ maketjsr:
   MOVE.l A0,$8(A3)
   ;
   MOVE.w D4,D1
-BRA.w searchinstr       ;use this library - NOW!
+BRA.w searchinstr       ;use this library - NOW!  return: a2.l=lib, a3.l=sub
 
 
 tokeslist: Ds.l 1
@@ -10525,12 +10535,7 @@ findlib:
 RTS
 
 
-searchinstr:        ; was  findtoke org source
-  ;d1=token.
-  ;
-  ;return a2.l=lib, a3.l=sub
-  ;
-  ;
+searchinstr:        ; was  findtoke org source input: d1=token, return: a2.l=lib, a3.l=sub
   ; new >
   MOVEM.l d0-d1/a1,-(a7)
   MOVEQ #0,d0
@@ -14519,10 +14524,10 @@ fdo2:
    BSR.w pokemovem
   MOVE.w #$C900,D1      ; #getffpbase,
    BSR.w Atokejsr
-   BSR.w ritetod0
+   BSR.w PutRegXToD0
   MOVE.l libjsr,D1
    BSR.w writelong
-   BSR.w ritefromd0
+   BSR.w PutD0ToRegX
   MOVE.l D5,D1
 BRA.w pokemovem
 
@@ -14724,11 +14729,11 @@ qtof2:
   MOVE.l D4,D1
    BSR.w pokemovem
   ;
-   BSR.w ritetod0
+   BSR.w PutRegXToD0
   MOVE.w (A7)+,D1
    BSR.w Atokejsr
   ;
-   BSR.w ritefromd0
+   BSR.w PutD0ToRegX
   MOVE.l D5,D1
 BRA.w pokemovem
 
@@ -15944,7 +15949,7 @@ docflib:
    BSR.w pokemovem
   MOVE.w #$C900,D1
    BSR.w Atokejsr
-   BSR.w ritetod0
+   BSR.w PutRegXToD0
   MOVE.l libjsr,D1
    BSR.w writelong
   MOVE.w regnum,cfregat
@@ -15954,7 +15959,7 @@ RTS
 
 docflib2:                                                  
   MOVE.w cfregat,regnum
-   BSR.w ritefromd0
+   BSR.w PutD0ToRegX
   MOVE.l D5,D1
 BRA.w pokemovem
 
@@ -16507,10 +16512,10 @@ BRA.w writelong
    BSR.w pokemovem
   MOVE.w #$C900,D1
    BSR.w Atokejsr
-   BSR.w ritetod0
+   BSR.w PutRegXToD0
   MOVE.l libjsr,D1
    BSR.w writelong
-   BSR.w ritefromd0
+   BSR.w PutD0ToRegX
   MOVE.l D5,D1
 BRA.w pokemovem
 
@@ -16602,7 +16607,7 @@ do_times_long:
   mull
   ;move.l D4,D1
   ;bsr.w pokemovem
-  ;bsr.w ritetod0
+  ;bsr.w PutRegXToD0
   MOVE.l destpointer,a0
   SUB.l imm_addr,a0
   CMP.w #6,a0
@@ -16671,7 +16676,7 @@ do_times_long:
     ADD.l d3,d1
     BSR writelong
  'li3
-  ;bsr.w ritefromd0
+  ;bsr.w PutD0ToRegX
   ;move.l D5,D1
 RTS
 
@@ -16681,12 +16686,12 @@ domylib:
   BSR.w savereg
   MOVE.l D4,D1
   BSR.w pokemovem
-  BSR.w ritetod0
+  BSR.w PutRegXToD0
   MOVEQ #0,d1
   MOVE.w (A7)+,D1
   MOVE.l d1,lastinstruction
   BSR.w Atokejsr
-  BSR.w ritefromd0
+  BSR.w PutD0ToRegX
   MOVE.l D5,D1
 BRA.w pokemovem
 
@@ -16844,7 +16849,7 @@ BRA.w domylib
   BSR.w savereg
   MOVE.l D4,D1
   BSR.w pokemovem
-  BSR.w ritetod0
+  BSR.w PutRegXToD0
 ;   MOVE.l destpointer,a4
 ;   MOVEQ.l #2,d1                                           ;have problem on negative float
 ;   MOVE.l d3,-(a7)                                         ;-18/8 =-3 should be -2
@@ -16864,7 +16869,7 @@ BRA.w domylib
  'weit
   MOVE.w #$4e71,d1
   ;bsr writeword
-  BSR.w ritefromd0
+  BSR.w PutD0ToRegX
   MOVE.l D5,D1
   BRA.w pokemovem
 
@@ -17103,9 +17108,7 @@ dothebit:
 BRA.w writeword        ;btst regat+1,regat
 
 
-ritetod0:
-  ;put regat to d0
-  ;
+PutRegXToD0:               ;put regat to d0
   MOVE.w regnum,D1
   BEQ.w 'skip
     ORI.w #$2000,D1
@@ -17116,9 +17119,7 @@ ritetod0:
 RTS
 
 
-ritefromd0:
-  ;get regat from d0
-  ;
+PutD0ToRegX:                 ;get regat from d0
   MOVE.w regnum,D1
   BEQ.w 'skip
     LSL.w #8,D1
@@ -20968,7 +20969,7 @@ RTS
 
 
 userjsr:
-    ;a2 = lib base
+    ;a2 = lib base of the current command
     ;a1 = start of #parameters
     ;
   MOVE.l libisat,-(A7)                                   ;library write
@@ -21395,7 +21396,7 @@ RTS
   ; < new
 
 makelsub3:
-  BSR.w fetchregs
+  BSR.w fetchregs         ; get register values, f.e. move.l <basicvar>,d0
   ;
   TST.b debugmode
   BEQ.w 'norerr
@@ -21833,11 +21834,10 @@ blitzmode:  Ds.w 1                                       ;+=amiga, -=blitz
 Even
 fetchregs:
   MOVE.w (A2)+,D1
-   BEQ.w 'done
-  MOVE.w (A2)+,D2
-   BSR.w toreg
- BRA.w fetchregs
-
+  BEQ.w 'done
+    MOVE.w (A2)+,D2
+    BSR.w toreg
+    BRA.w fetchregs
  'done
 RTS
 
@@ -21866,22 +21866,21 @@ toreg:
  'yeah
   JSR uselib
   TST.b D2
-   BEQ.w 'norm
+  BEQ.w 'norm
+
   CMP.b #$4,D2
-   BNE.w 'suv
-  MOVE.w #$0004,-(A7)
-  MOVE.l #$FFFFFFFA,-(A7)                                  ;#-6,-(a7) org source
- BRA.w 'sendmd
-
+  BNE.w 'suv
+    MOVE.w #$0004,-(A7)
+    MOVE.l #$FFFFFFFA,-(A7)                                  ;#-6,-(a7) org source
+    BRA.w 'sendmd
  'suv
-  CMP.b #$3,D2
-   BNE.w 'notnmax
-  CLR.w -(A7)
-  MOVE.l #$FFFFFFFC,-(A7)                                  ;#-4,-(a7) org source
-
-    ;
-    ;O.K., we are going to send the current maximum settings.
-    ;
+    CMP.b #$3,D2
+    BNE.w 'notnmax
+      CLR.w -(A7)
+      MOVE.l #$FFFFFFFC,-(A7)                                  ;#-4,-(a7) org source
+      ;
+      ; O.K., we are going to send the current maximum settings.
+      ;
  'sendmd
   LSR.w #8,D2
   MOVE.w #$303C,D1                                         ;move.w #x,dn
@@ -22032,27 +22031,25 @@ BRA.w writeword
  'norm
   LSR.w #8,D2
   CMP.b #$16,D2
-   BNE.w 'nota6
-  MOVE.w $A(A1),D1
-  CMP.w lasta6,D1
-   BEQ.w 'sk
-  MOVE.w D1,lasta6
-
+  BNE.w 'nota6
+    MOVE.w $A(A1),D1
+    CMP.w lasta6,D1
+    BEQ.w 'sk
+      MOVE.w D1,lasta6
  'nota6
-   BSR.w makeregop
+
+  BSR.w makeregop
   TST.w $1A(A1)
-   BPL.w 'long
-  CMP.w stackop(PC),D1
-   BNE.w 'notst
-  SUBQ.w #2,a2offset
-
- 'notst
-   ORI.w #$1000,D1
-
+  BPL.w 'long
+    CMP.w stackop(PC),D1
+    BNE.w 'notst
+      SUBQ.w #2,a2offset
+   'notst
+    ORI.w #$1000,D1
  'long
-   BSR.w writeword
+  BSR.w writeword
   MOVE.w $A(A1),D1
-   BSR.w writeword
+  BSR.w writeword
 
  'sk
 RTS
@@ -31084,7 +31081,7 @@ instructionbase:                                                     ;atokens or
            Dc.l do_ds                                      ;dods
            Dc.l do_even                                    ;doeven
            Dc.l do_dcb                                     ;dodcb
-           Dc.l do_setreg                                  ;dosetreg
+           Dc.l do_GetReg                                  ;dosetreg
            Dc.l do_IncBin                                  ;doincbin
            Dc.l do_free                                    ;dofree
            Dc.l do_use                                     ;douse
@@ -32177,6 +32174,7 @@ typetocast           Ds.l 1
 errorcounter         Ds.l 1
 iserror              Ds.b 1
 MorphOS:             Ds.b 1 ; added to be able to select the cacheclear function 0=AOS, 1=MorphOS  tomsmart1
+log_blitzlibs:       Ds.b 1
 Even
 
 CLIMode:             Dc.l 0
