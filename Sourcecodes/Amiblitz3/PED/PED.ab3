@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.8
-; NumberOfBuilds  = 2462
+; NumberOfBuilds  = 2492
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 6380
+; CursorLine      = 6401
 ; CursorColumn    = 1
-; LabelSearch     = "selectbl"
+; LabelSearch     = "jl_0_2534"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -230,7 +230,7 @@ ColorWheelError.b = False
 
 ; --------------------------------------------------- LOGGING
 .LOGGING
-XINCLUDE "PE/logging.include.ab3"
+XINCLUDE "logging.include.ab3"
 log_SetLevel{#log_nothing}
 log_SetDestination{#log_toconsole,"System/PED.log"}
 log_Print{"===================================================================",#log_debug}
@@ -639,7 +639,6 @@ Dim diag_lab$(15)
 Dim diag_val$(15)
 
 ; --------------------------- Color settings --------------------------
-Dim cmap.rgbval(256)
 #AB3_cfunction         = 1
 #AB3_cmacro            = 2
 #AB3_cstring           = 3
@@ -1442,10 +1441,10 @@ Statement PED_LoadHelpIndexCache{HelpIndexCacheFile$}
         ;file_WriteLine{fidW,HelpIndexCache()\name}
       Else
         error{!TRANS{"Could not build index cache."}}
-        Pop While: Goto exit_while
+        Pop While: Goto exit_while1
       EndIf
     Wend
-    exit_while:
+    exit_while1:
     CloseFile 1
   Else
     error{HelpIndexCacheFile$ + " "+!TRANS{"not found."}}
@@ -1572,6 +1571,8 @@ End Statement
 Statement PED_PrintText{*textaddr.l, xPos.w, yPos.w, textlength.w, textcolor.w}
 SHARED pedconfig, sourceWindow, AB3RGB(), AB3Pen()
 
+  printtext.s = Peek.s(*textaddr)
+
   ; -- clip text to visible columns
   If (textlength > sourceWindow\visibleColumns) Then textlength = sourceWindow\visibleColumns
 
@@ -1586,7 +1587,6 @@ SHARED pedconfig, sourceWindow, AB3RGB(), AB3Pen()
     semi_position.w = 0
     in_string.b = 0
 ;    columnsoff.w = Peek.w(?comWord_ColumnsOffset)
-    printtext.s = Peek.s(*textaddr)
 
     ; -- search for a comment and save the starting position
     search_again2:
@@ -1613,7 +1613,7 @@ SHARED pedconfig, sourceWindow, AB3RGB(), AB3Pen()
 
        ; -- print text before +++ ; +++
        If semi_position > 1
-         Text_ sourceWindow\win\RPort,printtext,semi_position
+         Text_ sourceWindow\win\RPort,&printtext,semi_position
        EndIf
 
        ; -- print comment
@@ -1625,7 +1625,7 @@ SHARED pedconfig, sourceWindow, AB3RGB(), AB3Pen()
        EndIf
 
        printtext = UnRight$(printtext,semi_position)
-       Text_ sourceWindow\win\RPort,printtext,FLen(printtext)
+       Text_ sourceWindow\win\RPort,&printtext,FLen(printtext)
        ;log_Print{"[" + printtext + "]  " + Str$(FLen(printtext))}
 
        ; -- restore standard backgroundcolor and font if changed
@@ -1635,10 +1635,10 @@ SHARED pedconfig, sourceWindow, AB3RGB(), AB3Pen()
          SetSoftStyle_ sourceWindow\win\RPort,#FS_NORMAL,#FSF_ITALIC
        EndIf
      Else
-       Text_ sourceWindow\win\RPort,printtext, textlength
+       Text_ sourceWindow\win\RPort,&printtext, textlength
      EndIf
   Else
-    Text_ sourceWindow\win\RPort,Peek.s(*textaddr), textlength
+    Text_ sourceWindow\win\RPort,&printtext, textlength
   EndIf
 
 End Statement
@@ -3550,7 +3550,7 @@ begin1:
     Gosub cursor_off_bas
     loadsourcefilename.s = ped\sourceFileComplete
     Gosub load_source
-    Gosub cursor_onoff_force
+    Gosub cursor_on_bas
   Else
     Gosub draw_statusarea
     !asm
@@ -3808,8 +3808,9 @@ End
           If a$<>""
             Gosub insertstring
             !asm
-            JSR insertreturn : JSR movecursorlineup
+            JSR insertreturn
             !basic
+            Gosub movecursorlineup_bas
           EndIf
         EndIf
       EndIf
@@ -5280,9 +5281,9 @@ Return
   EndIf
 
   ; -- update modified flags
+  ;CLR.w comWord_SourceChanged
   CLR.w comWord_SourceModifiedFlag
   CLR.w comWord_KeyBeforeReturn
-  CLR.w comWord_SourceChanged
   Gosub update_modifiermark
   Gosub update_debuggertoggle
 Return
@@ -5321,7 +5322,7 @@ RTS
 .save_tempprefs:
   !basic
   If Peek.l(?comFunc_WriteXtraFile) <> 0
-    tmp_string.s = "T:PED_" + Hex$(Peek.l(?actualfile)) + ".xtra"
+     tmp_string.s = "T:PED_" + Hex$(Peek.l(?actualfile)) + ".xtra"
     tpfhandle.l = Open_(&tmp_string, #HUNK_RELOC_8__MODE_NEWFILE)
     If tpfhandle <> 0
       log_Print{"writing xtrafile for " + Peek$(Peek.l(?actualfile)+222) + " <" + tmp_string + ">"}
@@ -6368,70 +6369,99 @@ RTS
   EndIf
 Return
 
-.movecursorlinedown:
-  !basic
+
+.movecursorlinedown_bas:
   Gosub cursor_off_bas
-  Gosub handle_blockmark                                                                                                                                                                                                                                    
-  !asm
+  Gosub handle_blockmark
 
-  MOVE.l comPtr_CurrentSourceLine,A4
+  *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
+  *nextLine.sourceLine = *currentLine\nextLine
 
-  CNIF #hardfold = 1
-    MOVE.l a0,-(a7) 
-    MOVE.l comPtr_CurrentSourceLine,a0
-    CMP.l #";@@1",9(a0)
-    BNE 'n1
-
-   'l2
-    CMP.l #";@@0",9(a0)
-    BNE 'n2
-    MOVE.l 4(a0),a4
-  BRA 'n1
-
-   'n2
-    MOVE.l (a0),d0
-    MOVE.l d0,a0
-    BNE 'l2
-
-   'n1
-    MOVE.l (a7)+,a0
-  CELSE
-    MOVE.l a0,-(a7)
-    MOVE.l comLong_DisplayLineOffset,-(a7)
-    MOVE.l comPtr_CurrentSourceLine,a0
-    CMP.l #";@@1",9(a0)
-    BNE 'l1
-
-   'l2
-      MOVE.l (a0),d0
-      BEQ 'l1
-      MOVE.l d0,a0
+  If Peeks$(*currentLine+9,4)=";@@1"
+    tmpDLO.l = Peek.l(?comLong_DisplayLineOffset)
+    *_next.sourceLine = *nextLine
+    While *_next
       ADDQ.l #1,comLong_DisplayLineOffset
-      CMP.l #";@@1",9(a0)
-      BEQ 'l1
-        CMP.l #";@@0",9(a0)
-        BNE 'l2
-          MOVE.l a0,comPtr_CurrentSourceLine
+      If Peeks$(*_next + 9,4) <> ";@@1"
+        If Peeks$(*_next + 9,4) = ";@@0"
+          Poke.l ?comPtr_CurrentSourceLine,*_next
+          !asm
           JSR _redraw
-          ADDQ.l #4,a7
-          MOVE.l (a7)+,a0
-          RTS
-   'l1
-    MOVE.l (a7)+,comLong_DisplayLineOffset
-    MOVE.l (a7)+,a0
-  CEND
+          !basic
+          Return
+        EndIf
+      EndIf
+      *_next = *_next\nextLine
+    Wend
+    Poke.l ?comLong_DisplayLineOffset,tmpDLO
+  EndIf
 
-  MOVE.l (A4),D0
-  BNE.w JL_0_252E
+  If *nextLine = 0
+    Gosub cursor_on_bas
+    Gosub set_pointer_normal_bas
+  Else
+    Poke.l ?comPtr_CurrentSourceLine,*nextLine
+
+    If Peek.l(?comLong_TotalLines) >= Peek.l(?comLong_DisplayLineOffset) + Peek.l(?viewablelines)
+      If Peek.l(?comLong_DisplayLine) + 1 + Peek.w(?comWord_BoundLinesY) => Peek.l(?viewablelines)
+        ADDQ.l #1,comLong_DisplayLineOffset
+        !asm
+        JSR source_fullscroll_down
+        JSR draw_new_sourceline_bottom
+        !basic
+        Return
+      EndIf
+    EndIf
+    !asm
+    JSR increase_DisplayLine
     !basic
     Gosub cursor_on_bas
-    !asm
-    setpointer_to_normal:
+  EndIf
+
+Return
+
+;.movecursorlinedown:
+;  !basic
+;  Gosub cursor_off_bas
+;  Gosub handle_blockmark
+;  !asm
+;
+;    MOVE.l a0,-(a7)
+;    MOVE.l comLong_DisplayLineOffset,-(a7)
+;    MOVE.l comPtr_CurrentSourceLine,a0
+;    CMP.l #";@@1",9(a0)
+;    BNE 'l1
+;
+;   'l2
+;      MOVE.l (a0),d0
+;      BEQ 'l1
+;      MOVE.l d0,a0
+;      ADDQ.l #1,comLong_DisplayLineOffset
+;      CMP.l #";@@1",9(a0)
+;      BEQ 'l1
+;        CMP.l #";@@0",9(a0)
+;        BNE 'l2
+;          MOVE.l a0,comPtr_CurrentSourceLine
+;          JSR _redraw
+;          ADDQ.l #4,a7
+;          MOVE.l (a7)+,a0
+;          RTS
+;   'l1
+;    MOVE.l (a7)+,comLong_DisplayLineOffset
+;    MOVE.l (a7)+,a0
+;
+;  MOVE.l comPtr_CurrentSourceLine,A4
+;  MOVE.l (A4),D0
+;  BNE.w JL_0_252E
+;    !basic
+;    Gosub cursor_on_bas
+;    !asm
+.setpointer_to_normal:
     JSR set_pointer_normal
     RTS
-  JL_0_252E:
-  MOVE.l D0,comPtr_CurrentSourceLine
-
+;  JL_0_252E:
+;  MOVE.l D0,comPtr_CurrentSourceLine
+;
   JL_0_2534:
   MOVE.l comLong_DisplayLineOffset,D0 : ADD.l viewablelines,D0
   CMP.l comLong_TotalLines,D0
@@ -6453,9 +6483,10 @@ RTS
     MOVE.w comWord_ColumnsOffset,D0 : ADD.w comWord_Column,D0
     JSR set_blockstart
   skip_setstart:
-
-  MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
-  BSR movecursorlinedown
+  !basic
+  Gosub movecursorlinedown_bas
+  !asm
+  ;MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
   MOVE.w comWord_ColumnsOffset,D0 : ADD.w comWord_Column,D0
 JMP set_blockend
 
@@ -6465,9 +6496,11 @@ JMP set_blockend
     MOVE.w comWord_ColumnsOffset,D0 : ADD.w comWord_Column,D0
     JSR set_blockstart
   skip_setstart2:
-
-  MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
-  BSR movecursorlineup
+  !basic
+  Gosub movecursorlineup_bas
+  !asm
+  ;MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
+  ;BSR movecursorlineup
   MOVE.w comWord_ColumnsOffset,D0 : ADD.w comWord_Column,D0
 JMP set_blockend
 
@@ -6551,81 +6584,141 @@ JMP set_blockend
   EndIf
 Return
 
+Function.l PED_CheckFoldingReverse{*tmpLine.sourceLine}
+  foldnumber.l = 0
+  linePtr.l = 0
 
-.movecursorlineup:
-  !basic
+  log_Print{"check line:  [" + Peeks$(*tmpLine + 9,8) + "]"}
+  marker.s = Peeks$(*tmpLine + 11,2)
+  If marker = "@0"
+    foldnumber = 0
+    *tmpPrev.sourceLine = *tmpLine\previousLine
+    While *tmpPrev
+      marker2.s = Peeks$(*tmpPrev + 9,4)
+      If Left$(marker2,2) = ";@"
+        log_Print{" found a marker upwarts: " + marker2}
+        If Right$(marker2,2) = "@1"
+          foldnumber = 1
+          linePtr = *tmpPrev
+          Pop If: Pop If : Pop While
+          Goto exit_while
+        EndIf
+        If Right$(marker2,2) = "@0"
+          Goto exit_while
+        EndIf
+      EndIf
+      *tmpPrev = *tmpPrev\previousLine
+    Wend
+    exit_while:
+  EndIf
+
+  If marker = "@1" Then foldnumber = 0
+
+  Function Return linePtr
+End Function
+
+
+.movecursorlineup_bas:
   Gosub cursor_off_bas
-  Gosub handle_blockmark                                  ; check if marked Block shall be deleted                                                                                                                                                          
-  !asm
+  Gosub handle_blockmark
 
-  MOVE.l comPtr_CurrentSourceLine,A4
+  *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
+  *prevLine.sourceLine = *currentLine\previousLine
 
-CNIF #hardfold = 1
-  MOVE.l a2,-(a7)
-  MOVE.l a4,a2
-  CMP.l #";@@0",9(a2)
-  BNE 'n1
-    BSR doreverse
-    TST.l foldnum
-      BEQ 'n1
- 'w1
-  CMP.l #";@@1",9(a2)
-  BNE 'n2
-    MOVE.l (a2),a4
-    BRA 'n1
- 'n2
- 'n22
-    MOVE.l 4(a2),d0
-    MOVE.l d0,a2
-  BNE 'w1
- 'n1
-    MOVE.l (a7)+,a2
-
-CELSE
-  MOVE.l a2,-(a7)                                ; push A2 to Stack
-  MOVE.l a4,a2                                   ; currentLine to A2
-
-  CMP.l #";@@0",9(a2)
-  BNE 'l1
-   'l2
-    JSR doreverse
-    TST.l foldnum
-    BEQ 'l1
-      MOVE.l 4(a2),d0
-      BEQ 'l1
-        MOVE.l d0,a2
+  If Peeks$(*currentLine + 9,4) = ";@@0"
+    log_Print{"jump marker found, searching corresponding previous marker."}
+    *_prev.sourceLine = *currentLine
+    linePtr.l = PED_CheckFoldingReverse{*_prev}
+    If linePtr <> 0
+      log_Print{"previous marker for [" + Peeks$(*_prev + 9,4) + "] found, jumping to that line."}
+      Repeat
+        *_prev = *_prev\previousLine
         SUBQ.l #1,comLong_DisplayLineOffset
-        CMP.l #";@@1",9(a2)
-        BNE 'l2
-          MOVE.l a2,comPtr_CurrentSourceLine
-          JSR _redraw
-          MOVE.l (a7)+,a2
-          RTS
- 'l1
-  MOVE.l (a7)+,a0                               ; get A2 back from Stack but in A0
- CEND
+      Until *_prev = linePtr
+      Poke.l ?comPtr_CurrentSourceLine,*_prev
+      !asm
+      JSR _redraw
+      !basic
+      Return
+    EndIf
 
-  MOVE.l $4(A4),D0                              ; get currentLine.PrevLine in D0
-  BNE.b mconti                                  ; if null, exit  here
-    JSR cursor_on
-    JSR setpointer_to_normal
-  mconti:
+  EndIf
 
-  MOVE.l D0,comPtr_CurrentSourceLine            ; set prevline as new currentline
-  MOVE.l comLong_DisplayLineOffset,D0           ; if text is not scrolled just decrease displayLine
-  BEQ.w JUMP_decrease_DisplayLine
+  If *prevLine = 0
+    Gosub cursor_on_bas
+    Gosub set_pointer_normal_bas
+  Else
+    Poke.l ?comPtr_CurrentSourceLine,*prevLine
 
-  MOVE.l comLong_DisplayLine,D0                 ; if displayLine>BoundLines just decrease displayLine
-  CMP.w comWord_BoundLinesY,D0
-  BHI.w JUMP_decrease_DisplayLine
-    SUBQ.l #1,comLong_DisplayLineOffset         ; otherwise scroll whole text one line up
-    JSR source_fullscroll_up
-    JMP draw_new_sourceline_top
-
-  JUMP_decrease_DisplayLine:
+    If Peek.l(?comLong_DisplayLineOffset) > 0
+      If Peek.l(?comLong_DisplayLine) <= Peek.w(?comWord_BoundLinesY)
+        SUBQ.l #1,comLong_DisplayLineOffset         ; otherwise scroll whole text one line up
+        !asm
+        JSR source_fullscroll_up
+        JSR draw_new_sourceline_top
+        !basic
+        Return
+      EndIf
+    EndIf
+    !asm
     JSR decrease_DisplayLine
-    JSR cursor_on
-RTS
+    !basic
+    Gosub cursor_on_bas
+  EndIf
+Return
+
+
+;.movecursorlineup:
+;  !basic
+;  Gosub cursor_off_bas
+;  Gosub handle_blockmark                                  ; check if marked Block shall be deleted
+;  !asm
+;
+;  MOVE.l comPtr_CurrentSourceLine,A4
+;
+;  MOVE.l a2,-(a7)                                ; push A2 to Stack
+;  MOVE.l a4,a2                                   ; currentLine to A2
+;
+;  CMP.l #";@@0",9(a2)
+;  BNE 'l1
+;   'l2
+;    JSR doreverse
+;    TST.l foldnum
+;    BEQ 'l1
+;      MOVE.l 4(a2),d0
+;      BEQ 'l1
+;        MOVE.l d0,a2
+;        SUBQ.l #1,comLong_DisplayLineOffset
+;        CMP.l #";@@1",9(a2)
+;        BNE 'l2
+;          MOVE.l a2,comPtr_CurrentSourceLine
+;          JSR _redraw
+;          MOVE.l (a7)+,a2
+;          RTS
+; 'l1
+;  MOVE.l (a7)+,a0                               ; get A2 back from Stack but in A0
+;
+;  MOVE.l $4(A4),D0                              ; get currentLine.PrevLine in D0
+;  BNE.b mconti                                  ; if null, exit  here
+;    JSR cursor_on
+;    JMP setpointer_to_normal
+;  mconti:
+;
+;  MOVE.l D0,comPtr_CurrentSourceLine            ; set prevline as new currentline
+;  MOVE.l comLong_DisplayLineOffset,D0           ; if text is not scrolled just decrease displayLine
+;  BEQ.w JUMP_decrease_DisplayLine
+;
+;  MOVE.l comLong_DisplayLine,D0                 ; if displayLine>BoundLines just decrease displayLine
+;  CMP.w comWord_BoundLinesY,D0
+;  BHI.w JUMP_decrease_DisplayLine
+;    SUBQ.l #1,comLong_DisplayLineOffset         ; otherwise scroll whole text one line up
+;    JSR source_fullscroll_up
+;    JMP draw_new_sourceline_top
+;
+;  JUMP_decrease_DisplayLine:
+;    JSR decrease_DisplayLine
+;    JSR cursor_on
+;RTS
 
 .menu_markindent:
   log_Print{"menu markindent called."}
@@ -7135,7 +7228,11 @@ JL_0_2906:
   MOVE.l A0,(A4)
   ADDQ.l #1,comLong_TotalLines
 ;  CLR.w comWord_Column
-  BSR movecursorlinedown
+  !regs2stack
+  !basic
+  Gosub movecursorlinedown_bas
+  !asm
+  !stack2regs
 JMP _redraw
 
 
@@ -7893,20 +7990,13 @@ RTS
   MOVEA.l comPtr_CurrentSourceLine,A4
 RTS
 
-.selectfile:
+.selectfile:  ; A0: current entry in opened file table
   MOVE.l A0,-(A7)
   BSR.b StoreXtraData
   JSR save_tempprefs
   MOVEA.l (A7)+,A0
 
-  MOVE.l A0,actualfile
-;  !regs2stack
-;  !basic
-;  error{Peek$(Peek.l(?actualfile)+222)}
-;  !asm
-;  !stack2regs
-                                                                                                                                                                                                                                                        
-  BSR.b GetXtraData
+  MOVE.l A0,actualfile : BSR.b GetXtraData
 
   JSR JL_0_2Dca8
 
@@ -8203,15 +8293,18 @@ Return
 
   If Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine) > Peek.l(?comLong_TotalLines)
     Poke.l ?comLong_TotalLines, Peek.l(?comLong_TotalLines) - 1
+
     Poke.l ?comLong_DisplayLineOffset, Peek.l(?comLong_TotalLines)
     Poke.l ?comLong_DisplayLine, 0
 
+    Poke.w ?comWord_Column,Peek.w(?comWord_BlockStartX)
     Gosub update_currsourceline_bas
     !asm
     JSR _redraw
     MOVE.l comLong_DisplayLineOffset,D0 : BSR gotoline
     !basic
   Else
+    Poke.w ?comWord_Column,Peek.w(?comWord_BlockStartX)
     Gosub update_currsourceline_bas
     !asm
     JSR _redraw
@@ -11152,8 +11245,7 @@ RTS
   MOVE.l (a7)+,a1
 RTS
 
-doreverse
-'dorev
+.doreverse:
   CMP.w #"@0",11(a2)                   ;reverse ok !!!
   BNE 'no1
     MOVEM.l d0/a1,-(a7)
@@ -11173,14 +11265,14 @@ doreverse
         BEQ 'lp4
      'lp2
       MOVE.l 4(a1),d0
-    BNE 'lp1
-  'lp4
-   MOVEM.l (a7)+,a1/d0
-  'no1
+     BNE 'lp1
+   'lp4
+    MOVEM.l (a7)+,a1/d0
+ 'no1
   CMP.w #"@1",11(a2)
   BNE 'no2
     MOVE.l #0,foldnum
-'no2
+ 'no2
  'l2
 ;MOVE.l a1,a2
 RTS
@@ -11200,6 +11292,7 @@ RTS
   JL_0_58B6:
 
   MOVE.l comLong_BlockEndY,-(A7)
+
   MOVE.l #$ffffFFFF,comLong_BlockEndY
   JSR save_cursorposition
   JSR clear_sourcetextbuffer
@@ -11287,7 +11380,6 @@ RTS
   JL_0_5902:
 
   !basic
-  Gosub update_modifiermark
 
   ; -- better refresh: clear bottom
   sourceWindow\clearEndOfLine = False
@@ -11319,7 +11411,7 @@ RTS
   JL_0_590C:
   !basic
   If Peek.l(?comLong_BlockEndY) <> $ffffFFFF
-    log_Print{"draw block (after refresh.)"}
+    ;log_Print{"draw block (after refresh.)"}
     bmark\xMin = Peek.w(?comWord_BlockStartX)
     bmark\yMin = Peek.l(?comLong_BlockStartY)
     bmark\xMax = Peek.w(?comWord_BlockEndX)
@@ -11364,8 +11456,9 @@ RTS
       EndIf
     EndIf
   EndIf
+
+  Gosub update_modifiermark
   Gosub cursor_on_bas
- ; log_Print{"end"}
   !asm
 RTS
 
@@ -13633,9 +13726,10 @@ RTS
   Gosub print_actualsourceline
   Gosub print_actualsourcecolumn
 
-  If Peek.b(?comByte_DebugMode) Then info$ = "Debug: On " Else info$ = "Debug: Off"
+  If Peek.b(?comByte_DebugMode) Then info$ = "  Debug: On " Else info$ = "  Debug: Off"
   If ped\DoTokenize Then info$ + "  Tokenize: On " Else info$+ "  Tokenize: Off"
-  PED_PrintStatus{info$,54,2}
+  If Peek.w(?comWord_SourceModifiedFlag) Then info$ = "Modified: True  " + info$ Else info$= "Modified: False" + info$
+  PED_PrintStatus{info$,74,2}
 Return
 
 .draw_statusarea:
@@ -13664,8 +13758,8 @@ Return
 
   PED_PrintStatus{"Line:        ", 24}
   PED_PrintStatus{"Column:    ", 11}
-  Gosub update_statusarea
 
+  Gosub update_statusarea
   ;Gosub update_debuggertoggle
 Return
 
@@ -13919,20 +14013,18 @@ RTS
 RTS
 
 
-;state_of_cursor:  Ds.w 1
-
 .cursor_on_bas:
-  If sourceWindow\cursorState = False Then Gosub cursor_onoff_force
+  If sourceWindow\cursorState = False Then Gosub switch_cursordisplay
 Return
 
 .cursor_off_bas:
-  If sourceWindow\cursorState = True Then Gosub cursor_onoff_force
+  If sourceWindow\cursorState = True Then Gosub switch_cursordisplay
 Return
 
 .cursor_on:
   !regs2stack
   !basic
-  If sourceWindow\cursorState = False Then Gosub cursor_onoff_force
+  If sourceWindow\cursorState = False Then Gosub switch_cursordisplay
   !asm
   !stack2regs
 RTS
@@ -13940,17 +14032,10 @@ RTS
 .cursor_off:
   !regs2stack
   !basic
-  If sourceWindow\cursorState = True Then Gosub cursor_onoff_force
+  If sourceWindow\cursorState = True Then Gosub switch_cursordisplay
   !asm
   !stack2regs
 RTS
-
-
-.cursor_onoff_force                                 ; rename it, was cursor_on_ force tomsmart1
-;  *sourcerp\Mask = 3
-  Gosub switch_cursordisplay
-;  *sourcerp\Mask = 15
-Return
 
 .switch_cursordisplay:
   sourceWindow\cursorState = NOT sourceWindow\cursorState
@@ -14021,18 +14106,14 @@ Return
 Return
 
 .update_modifiermark:
-  If Peek.w(?comWord_KeyBeforeReturn) = 0
-    If Peek.w(?comWord_SourceChanged) = 0
-      If Peek.w(?comWord_SourceModifiedFlag) <> 1
-        Poke.w ?comWord_SourceModifiedFlag, 1
-        Poke.s ?comStr_Modified,"        " + Chr$(0)
-        Gosub draw_statusarea
-      EndIf
+  If Peek.w(?comWord_SourceChanged)
+    If Peek.w(?comWord_SourceModifiedFlag) <> -1
+      Poke.w ?comWord_SourceModifiedFlag, -1
+      Gosub draw_statusarea
     EndIf
   Else
-    If Peek.w(?comWord_SourceModifiedFlag) <> 2
-      Poke.w ?comWord_SourceModifiedFlag, 2
-      Poke.s ?comStr_Modified,"MODIFIED" + Chr$(0)
+    If Peek.w(?comWord_SourceModifiedFlag) <> 0
+      Poke.w ?comWord_SourceModifiedFlag, 0
       Gosub draw_statusarea
     EndIf
   EndIf
@@ -16083,8 +16164,8 @@ Return
           log_Print{"join lines!"}
           !asm
           JSR storeline
-          JSR movecursorlineup
           !basic
+          Gosub movecursorlineup_bas
           ; find last character in previous line
           lineaddr.l = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
           tempOffset.w = #MAX_Columns - 1
@@ -16200,9 +16281,7 @@ Return
     Select mqualifier
     Case 0  ;#IEQUALIFIER_RELATIVEMOUSE   ; $8000 (just the key)
       ped\blockmarkRemovalMode = 1
-      !asm
-      JSR movecursorlineup
-      !basic
+      Gosub movecursorlineup_bas
 
     Case #IEQUALIFIER_LSHIFT   ; $8001
       log_Print{"shift"}
@@ -16253,9 +16332,9 @@ Return
       ;JMP gotoline
     Default
       log_Print{"default"}
-      !asm
-      JSR movecursorlineup
-      !basic
+      ;!asm
+      Gosub movecursorlineup_bas
+      ;!basic
     End Select
 Return
 
@@ -16276,9 +16355,7 @@ Return
     Select mqualifier
     Case 0  ;#IEQUALIFIER_RELATIVEMOUSE                         ; $8000: one line down
       ped\blockmarkRemovalMode = 1
-      !asm
-      JSR movecursorlinedown
-      !basic
+      Gosub movecursorlinedown_bas
 
     Case #IEQUALIFIER_LSHIFT   ; $8001: page down
       log_Print{"shift"}
@@ -16330,9 +16407,7 @@ Return
 
     Default
       log_Print{"default"}
-      !asm
-      JSR movecursorlinedown
-      !basic
+      Gosub movecursorlinedown_bas
     End Select
 Return
 
@@ -16625,11 +16700,11 @@ Return
      ;JL_0_BD5A:
      Return
   Else
-    log_Print{"check if file alread opened."}
+    log_Print{"check if file already opened."}
     *sourcefile.l = Peek.l(?loadedfilesbase)
     If *sourcefile
       Repeat
-        If Str$(Peek$(*sourcefile + $DE)) = dos_FilePart{rememberfiles$(_rememberitem)}
+        If Peek.s(*sourcefile + 8 + $D4) = dos_FilePart{rememberfiles$(_rememberitem)}
           log_Print{"source already loaded, switching to that tab."}
           GetD0 *sourcefile : MOVE.l d0,-(a7)
           !asm
@@ -20656,16 +20731,16 @@ Return                                                                        ; 
 
 
       If *actualfile = *sourcefile
-        If Peek.l(?comStr_Modified) = $4D4F4449 Then modifiedFlag = True
+        modifiedFlag = Peek.w(?comWord_SourceModifiedFlag)
       Else
-        If Peek.l(*sourcefile + $1e6) = $4D4F4449 Then modifiedFlag = True
+        modifiedFlag = Peek.w(*sourcefile + 8 + $143)
       EndIf
       If modifiedFlag
         Text_ \win\RPort,"*", 1
         textlen - 1
       EndIf
 
-      tmp_string = Peek.s(*sourcefile + 222)
+      tmp_string = Peek.s(*sourcefile + 8 + $D4)
       If tmp_string = "" Then tmp_string = "unnamed"
       tmp_string = StrLeft(tmp_string,16)
       Text_ \win\RPort, &tmp_string, textlen
@@ -20725,31 +20800,31 @@ Return
 
 .check_mouse_in_statusarea:
   If pedMessage\_Code = #SELECTDOWN
+
     *loadedfiles.l = Peek(?loadedfilesbase)
+
     If *loadedfiles
       mx.w = pedMessage\_MouseX - \win\BorderLeft
       my.w = pedMessage\_MouseY - \win\BorderTop
+
       xsa.l = \font\tf_XSize / 2
       xpos_start.w = #filenamepos * \font\tf_XSize - xsa
       xpos_end.w = 0
       ypos_start.w = \statusAreaY + 1
       ypos_end.w = ypos_start + 2 + \font\tf_Baseline + \font\tf_YSize
-      ;log_Print{"check filetabs: " +Str$(mx)+ " " + Str$(my)}
-      *actualfile.l = Peek.l(?actualfile)
+
       *sourcefile.l = Peek.l(?loadedfilesbase)
+      *actualfile.l = Peek.l(?actualfile)
       Repeat
-        ;log_Print{"clicked on tab " + Peek$(*sourcefile + 222) + " ?"}
         xpos_end = xpos_start + #filenameoffs * \font\tf_XSize
-        ;log_Print{Str$(xpos_start)+"," + Str$(ypos_start)+" - " + Str$(xpos_end)+","+Str$(ypos_end)}
-        ; check, if mouse clicked in filename-tab
+        ;-- check click position
         If (mx > xpos_start) AND (mx < xpos_end) AND (my > ypos_start) AND (my < ypos_end)
-          log_Print{"mouse clicked at: " +Str$(Peek$(*sourcefile+222))}
-          ;log_Print{Hex$(pedMessage\_Qualifier)}
+          log_Print{"mouse clicked at: " + Peek.s(*sourcefile+8 + $D4)}
           If *actualfile = *sourcefile
             log_Print{"tab is actual file"}
             If pedMessage\_Qualifier AND (#IEQUALIFIER_CONTROL|#IEQUALIFIER_LALT|#IEQUALIFIER_RALT)
               log_Print{"control or alt pressed with mouse"}
-              If Peek.l(?comStr_Modified) = $4D4F4449
+              If Peek.w(?comWord_SourceModifiedFlag) = -1
                 !asm
                 JSR storeline
                 ;jsr saverout
@@ -20819,8 +20894,8 @@ Return
   If *sourcefile
     log_Print{"searching if already in open files: "}
     Repeat
-      lpath.s = Peek.s(*sourcefile + 222 - 192)
-      lfile.s = Peek.s(*sourcefile + 222)
+      lpath.s = Peek.s(*sourcefile + 8 + $14)
+      lfile.s = Peek.s(*sourcefile + 8 + $D4)
       If dos_AddPart{lpath,lfile} = fileToLoad
         log_Print{"source already loaded, switching to that tab."}
         Pop If : Pop Repeat : Pop If
