@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2502
+; NumberOfBuilds  = 2521
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 12025
-; CursorColumn    = 1
-; LabelSearch     = "process_"
+; CursorLine      = 4973
+; CursorColumn    = 13
+; LabelSearch     = "load_source"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -2888,10 +2888,13 @@ End Statement
 
 ; Remove the menu and than close WZ window
 Statement CloseWZWinWithMenu{wzwinname.s}
-  If Peek.l(?addr_menustrip)
-    ClearMenuStrip_ Peek.l(Addr Window(WZID(wzwinname) ) )
+  winid.l = WZID(wzwinname)
+  If Addr Window(winid) <> 0
+    If Peek.l(?addr_menustrip)
+      ClearMenuStrip_ Peek.l(Addr Window(winid))
+    EndIf
+    WZCloseWindow winid
   EndIf
-  WZCloseWindow WZID(wzwinname)
 End Statement
 
 
@@ -2933,12 +2936,12 @@ SHARED ped, pedconfig
       ped\DoTokenize = $FFFF
 ;      ped\flag_tokenization = $FFFF
     Else
-      If fext = "txt" OR fext = "guide"
+;      If fext = "txt" OR fext = "guide"
         log_Print{"deactivating tokenization"}
         ped\DoTokenize = False
 ;        ped\flag_tokenization = False
         If fext = "guide" Then ped\amigaguide = True
-      EndIf
+;      EndIf
     EndIf
   EndIf
 
@@ -5036,13 +5039,15 @@ RTS
     EndIf
   EndIf
 
-  aslfr_SetRequesterTitle {1,!TRANS{"New File"},!TRANS{"Load"},!TRANS{"Cancel"}}
+  aslfr_SetRequesterTitle {1,!TRANS{"Load source file"},!TRANS{"Load"},!TRANS{"Cancel"}}
+  
   If pedconfig\use_filepattern
     aslfr_SetPath  {1,ped\currentDir,ped\currentFile,ped\filePattern,False}
   Else
     aslfr_SetPath  {1,ped\currentDir,ped\currentFile,"",False}
   EndIf
-
+  ASL_x = 14
+  ASL_y = 36
   If aslfr_Request {1,False,False,False,-1,False}
     loadsourcefilename.s = aslfr_GetNextFile{}
     If loadsourcefilename.s <> ""
@@ -5602,11 +5607,12 @@ Return
         ;-- directly write to file
         log_Print{"write as text: writing text line-by-line to file"}
         Repeat
-          baseptr.l = *tempLine + 9
-          linelength.l = Peek.b(baseptr + 8) - 1
-          strLine$ = Peeks$(baseptr,linelength) + Chr$(10)
-          log_Print{"writing [" + Str$(linelength+1)+ "]: " + strLine$}
-          Write_ *write_fh, &strLine$, Len(strLine$)
+          strLine.s = ""
+          strLength.l = *tempLine\strLength - 1
+          If strLength > 0 Then strLine.s = Peeks$(*tempLine + 9, strLength)
+          ;log_Print{"writing [" + Str$(FLen(strLine))+ "]: [" + strLine + "]"}
+          strLine + Chr$(10)
+          Write_ *write_fh, &strLine, FLen(strLine)
           *tempLine = *tempLine\nextLine
         Until *tempLine = 0
       EndIf
@@ -5864,10 +5870,8 @@ nextOccurence:
       !asm
       JSR sub_gotoline
       !basic
-      GetRegD0 tmpX - 1
+      newColumn.w = tmpX - 1 : Gosub moveCursorToX                                                                                                                                                                                                          
       !asm
-      MOVE.w D0,D1
-      JSR moveCursorToX
       JSR update_horizscroller
       !basic
     EndIf
@@ -12112,7 +12116,6 @@ Return
             EndIf
 
             If !PED_CheckUnAllowedChar{checkchr} OR (i = 0)
-            log_Print{Hexb$(checkchr)}
               textlen = runner - i
               sourceWindow\ColumnsOffset = Peek.w(?comWord_ColumnsOffset)
               sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
@@ -14368,7 +14371,7 @@ Return
     Until exit_loop OR (cursorpos < 1)
 
   EndIf
-  GetD0 cursorpos
+  ;GetD0 cursorpos
 RTS
 
 
@@ -14870,7 +14873,7 @@ Return
 Return
 
 .updateSourceLine:        ; CursorXTarget: new Cursorposition
-  log_Print{"update sourceline"}
+  log_Print{"update sourceline and moving cursor to x:" + Str$(CursorXTarget)}
   Gosub cursor_off_bas
 
   lineaddr.l = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
@@ -14886,10 +14889,9 @@ Return
     !basic
   Next cupos
   Poke.w ?comWord_Column, storcol
-  GetD0 CursorXTarget.w : MOVE.w D0,-(a7)
-  !asm
-  MOVE.w (a7)+,D1 : JSR moveCursorToX
-  !basic
+
+  newColumn.w = CursorXTarget : Gosub moveCursorToX
+
   Gosub cursor_on_bas
 Return
 
@@ -14962,48 +14964,39 @@ Return
   delete_mode = 0
 Return
 
-.moveCursorToX:                            ; D1: X-position
-  JSR cursor_off
+.moveCursorToX:     ; newColumn: new X-Position                                                                                                                                                                                                          
+  Gosub cursor_off_bas
+  log_Print{"move cursor to column: "  + Str$(newColumn.w)}
+  oldColumnsOffset.w = Peek.w(?comWord_ColumnsOffset)
 
-  MOVE.w comWord_ColumnsOffset,D4
-  MOVE.w visiblecolumns,D2 : SUB.w comWord_BoundLinesX,D2
-  CMP.w D2,D1
-  BCC.w JL_0_7EFC
-    CLR.w comWord_ColumnsOffset
-    MOVE.w D1,comWord_Column
+  If newColumn <= Peek.w(?visiblecolumns) - Peek.w(?comWord_BoundLinesX)
+    Poke.w ?comWord_ColumnsOffset, 0
+    Poke.w ?comWord_Column,newColumn
+  Else
+    tmpvisColumns.w = Peek.w(?visiblecolumns) - 1
+    newCursorPosX.w = newColumn - tmpvisColumns
+    offColumns.w = #MAX_Columns - Peek.w(?visiblecolumns)
+    If newCursorPosX < offColumns
+      If newCursorPosX BitTst 0
+        newCursorPosX + 1
+        tmpvisColumns - 1
+      EndIf
+      Poke.w ?comWord_ColumnsOffset, newCursorPosX
+      Poke.w ?comWord_Column, tmpvisColumns
+    Else
+      Poke.w ?comWord_ColumnsOffset, offColumns
+      Poke.w ?comWord_Column, newColumn - offColumns
+    EndIf
+  EndIf
 
-    JL_0_7EF0:
-    CMP.w comWord_ColumnsOffset,D4
-    BEQ.w JL_0_7F3E
-      BRA.w JL_0_7962_bas                      ; horiz scroll
-  JL_0_7EFC:
+  If Peek.w(?comWord_ColumnsOffset) <> oldColumnsOffset
+    !asm
+    Gosub JL_0_7962_bas
+    !basic
+  EndIf
 
-  MOVE.w visiblecolumns,D2 : SUB.w #1,D2
-  MOVE.w D1,D0
-  SUB.w D2,D0
-  MOVE.w #MAX_Columns,D3 : SUB.w visiblecolumns,D3
-  CMP.w D3,D0
-  BGT.w JL_0_7F2E
-    BTST #$0,D0
-    BEQ.w JL_0_7F20
-      ADDQ.w #1,D0
-      SUBQ.w #1,D2
-    JL_0_7F20:
-    MOVE.w D0,comWord_ColumnsOffset
-    MOVE.w D2,comWord_Column
-    BRA.b JL_0_7EF0
-  JL_0_7F2E:
-
-  MOVE.w D3,comWord_ColumnsOffset
-  SUB.w D3,D1
-  MOVE.w D1,comWord_Column
-  BRA.b JL_0_7EF0
-
-  JL_0_7F3E:
-  !basic
   Gosub cursor_on_bas
-  !asm
-RTS
+Return
 
 .moveCursorLeft:
   Gosub cursor_off_bas
@@ -15479,12 +15472,13 @@ Return
         If pedMessage\_Class <> 0
           If pedMessage\_Class <> #IDCMP_GADGETUP
             GetAttr_ #PGA_Top,*horizprop, &pos_hprop
-            GetD0 pos_hprop : MOVE.l d0,-(a7)
-            !asm
-            MOVE.l (a7)+,D1
-            JSR moveCursorToX
-            !basic
-            Gosub cursor_on_bas
+            ;GetD0 pos_hprop : MOVE.l d0,-(a7)
+            ;!asm
+            ;MOVE.l (a7)+,D1
+            ;JSR moveCursorToX
+            ;!basic
+            newColumn.w = pos_hprop : Gosub moveCursorToX                                                                                                                                                                                                   
+            ;Gosub cursor_on_bas
             Gosub update_statusarea
           Else
             *g.Gadget = pedMessage\_IAddress
@@ -15713,10 +15707,7 @@ Return
     Case #IEQUALIFIER_LSHIFT          ; move cursor to beginning of line
       ;log_Print{"shift"}
       If Peek.w(?comWord_Column) + Peek.w(?comWord_ColumnsOffset) > 0
-        !asm
-        MOVEQ.l #$00,D1
-        JSR moveCursorToX
-        !basic
+        newColumn.w = 0 : Gosub moveCursorToX                                                                                                                                                                                                               
       Else
         If Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine) > 0
           cL.l = Peek.l(?comPtr_CurrentSourceLine)
@@ -15727,14 +15718,9 @@ Return
           Until (curbyte <> $20) OR (curbyte = 0) OR (runner = #MAX_Columns)
           If (curbyte <> 0) AND (runner > 0)
             runner - 1
-            GetD0 runner
-            !asm
-            MOVE.l d0,d1
-            JSR moveCursorToX
-            !basic
+            newColumn.w = runner : Gosub moveCursorToX                                                                                                                                                                                                      
           EndIf
         EndIf
-
       EndIf
 
     Case #IEQUALIFIER_LALT
@@ -15750,10 +15736,7 @@ Return
         Gosub menu_blockuntab
       Else
         Gosub moveCursorToBeginOfWord
-        !asm
-        MOVE.w D0,D1
-        JSR moveCursorToX
-        !basic
+        newColumn.w = cursorpos : Gosub moveCursorToX
       EndIf
 
     Default
@@ -15784,12 +15767,7 @@ Return
       log_Print{"shift"}
       lineaddr = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
       textlen.w = getLineLength{lineaddr}
-      log_Print{Str$(textlen)}
-      ;If textlen>#MAX_Columns Then textlen = #MAX_Columns
-      GetD0 textlen
-      !asm
-      MOVE.w d0,d1 : JSR moveCursorToX
-      !basic
+      newColumn.w = textlen : Gosub moveCursorToX                                                                                                                                                                                                           
 
     Case #IEQUALIFIER_LALT           ; move in history
       log_Print{"alt"}
@@ -15804,9 +15782,7 @@ Return
         Gosub menu_blocktab
       Else
         Gosub moveCursorToEndOfWord
-        !asm
-        MOVE.w D0,D1 : JSR moveCursorToX
-        !basic
+        newcolumn.w = cursorpos : Gosub moveCursorToX                                                                                                                                                                                                       
       EndIf
 
     Default
@@ -16142,11 +16118,9 @@ Return
         MOVE.w #$20,d0 : JSR print_entered_char   ; print charater in D0
         !basic
       Next cupos
+
       ;-- set new cursor position
-      Poke.w ?comWord_Column, Peek.w(?comWord_Column) + moveCount
-      !asm
-      MOVE.w comWord_Column,D1 : JSR moveCursorToX
-      !basic
+      newColumn.w = Peek.w(?comWord_Column) + moveCount : Gosub moveCursorToX                                                                                                                                                                                 
 
     Else
       ; move characters to left an fill with empty spaces
@@ -18917,7 +18891,7 @@ Return
   CloseWZWinWithMenu{"WIN_INSTRUCTIONBROWSER"}
 Return
 
-.update_instructiontable
+.update_instructiontable:
   search_instruction$ = WZGetString("INSTRUCTION_STRING")
   If (search_instruction$<>previoussearch_instruction$) AND (Len(search_instruction$) > 1)
     previoussearch_instruction$ = search_instruction$
