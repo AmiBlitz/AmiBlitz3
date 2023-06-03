@@ -34,3 +34,7 @@ https://www.amiforce.de                         | additional information and for
 ## Known Problems
 Under OS 3.2, workbench does not react anymore after exiting the IDE, due to a bug with removing an assign.
 That problem has been solved with OS 3.2.1.
+
+
+## Do you want to support me?
+https://bmc.link/honitos
