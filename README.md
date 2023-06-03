@@ -14,7 +14,7 @@ You may copy the OS-libraries in Libs-Drawer to system's "Libs"-drawer before st
 
 ## What this package contains:
 Everything you need as of:
-- Full IDE with all needed OS-libraries
+- full IDE with all needed OS-libraries
 - localization for english, german, french and italian 
 - lots of documentations directly accessable by the IDE (check "Help"-Menu)
 - lots of usefull includes written in AB3 itself (with its own documentation)
