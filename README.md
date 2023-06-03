@@ -37,4 +37,4 @@ That problem has been solved with OS 3.2.1.
 
 
 ## Do you want to support me?
-https://bmc.link/honitos
+Its easy, just buy me a coffee: https://bmc.link/honitos
