@@ -5,7 +5,7 @@ What we have got here is the complete package of AmiBlitz3 - a BASIC-compiler fo
 - 35 MB of harddisc space
 - 8 MB RAM to do little things, _12 MB RAM to do serious development_
 - 68020 processor
-- Workbench 2.1 (V38 or, Workbench 2.04 V37 with locale.library)
+- Workbench 2.1 (V38), or Workbench 2.04 (V37 with locale.library)
 - wizard.library (included)
 
 ## Installation:
