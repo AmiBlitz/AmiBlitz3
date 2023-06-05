@@ -38,4 +38,4 @@ That problem has been solved with OS 3.2.1.
 
 
 ## Do you want to support me?
-Its easy, just buy me a coffee: [<img src="https://github.com/AmiBlitz/AmiBlitz3/assets/36992035/8f0985f2-4fab-47cb-a2f3-778cd51a8ec1" width=150 height=40 style="margin: 5px"/>](https://www.buymeacoffee.com/honitos)
+Its easy, just buy me a coffee: [<img src="../../assets/36992035/8f0985f2-4fab-47cb-a2f3-778cd51a8ec1" width=150 height=40 style="margin: 5px"/>](https://www.buymeacoffee.com/honitos)
