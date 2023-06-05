@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2538
+; NumberOfBuilds  = 2541
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 4999
+; CursorLine      = 15172
 ; CursorColumn    = 1
-; LabelSearch     = "load_source"
+; LabelSearch     = "eventhandler"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -1819,13 +1819,13 @@ Statement move_cursor {a$,lst.l,pos.l}
 End Statement
 
 Statement PED_ScrollSourceLine{dx.w}
-SHARED sourceWindow
+  SHARED sourceWindow
   USEPATH sourceWindow
-  dx = -dx
+  dx.w = -dx
   dy.w = 0
-  xMin.w = \BoxLeft + sourceWindow\Column * \font\tf_XSize
-  yMin.w = \BoxTop + sourceWindow\DisplayLine * \font\tf_YSize
-  xMax.w = \visibleColumns * \font\tf_XSize - 1
+  xMin.w = \BoxLeft + \Column * \font\tf_XSize
+  yMin.w = \BoxTop  + \DisplayLine * \font\tf_YSize
+  xMax.w = \BoxLeft + \visibleColumns * \font\tf_XSize - 1
   yMax.w = yMin + \font\tf_YSize - 1
   ScrollRaster_ \win\RPort,dx,dy,xMin,yMin,xMax,yMax
 End Statement
@@ -13674,26 +13674,32 @@ Return
 Return
 
 .free_textbuffer:
-  !asm
-  TST.l textbufferaddr
-  BEQ.w JL_0_74AE
-    MOVEM.l D0-D1/A0-A1/A6,-(A7)
-    MOVEA.l textbufferaddr,A1
-    !newfree
-    MOVEM.l (A7)+,D0-D1/A0-A1/A6
-    CLR.l textbufferaddr
-  JL_0_74AE:
-  !basic
+  If Peek.l(?textbufferaddr)
+    PED_FreeMem{Peek.l(?textbufferaddr)}
+    Poke.l ?textbufferaddr, 0
+  EndIf
+  ;!asm
+  ;TST.l textbufferaddr
+  ;BEQ.w JL_0_74AE
+  ;  MOVEM.l D0-D1/A0-A1/A6,-(A7)
+  ;  MOVEA.l textbufferaddr,A1
+  ;  !newfree
+  ;  MOVEM.l (A7)+,D0-D1/A0-A1/A6
+  ;  CLR.l textbufferaddr
+  ;JL_0_74AE:
+  ;!basic
 Return
 
 .allocate_textbuffer:
   Gosub free_textbuffer
 
-  !asm
-  MOVE.w #MAX_Columns,D0 : MULU viewablelines+2,D0
-  !newalloc
-  MOVE.l D0,textbufferaddr
-  !basic
+  Poke.l ?textbufferaddr, PED_AllocMem{#MAX_Columns * Peek.l(?viewablelines) + 2}
+  
+  ;!asm
+  ;MOVE.w #MAX_Columns,D0 : MULU viewablelines+2,D0
+  ;!newalloc
+  ;MOVE.l D0,textbufferaddr
+  ;!basic
 
   If Peek.l(?textbufferaddr)=0 Then Goto JL_0_7334 ; quit ped
 Return
@@ -13866,15 +13872,13 @@ RTS
   CEND
 Return
 
-.print_entered_char:      ; D0: char
-  !basic
-  enteredChar.b = PutD0
+.print_entered_char:      ; input: enteredChar
   currentColumn.w = Peek.w(?comWord_Column) + Peek.w(?comWord_ColumnsOffset)
 
   ; write character to textbuffer
   plineaddr.l = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
   plineaddr + currentColumn
-  Poke.b plineaddr,enteredChar
+  Poke.b plineaddr,enteredChar.b
 
   ; check if cursor in block
   If Peek.l(?comLong_BlockEndY) <> $ffffFFFF
@@ -13903,7 +13907,7 @@ Return
     Else
       textaddr.l = &enteredChar
       If Peek.w(?instru)
-        error{"instru handling missing."}
+        log_Print{"instru handling missing.",#log_warning}
         textaddr = textaddr BitClr 7
       Else
 ;        error{"whats up?"}
@@ -13911,9 +13915,8 @@ Return
       PED_PrintText{textaddr,tposx,tposy,1,AB3Pen(#AB3_cclassic)}
     EndIf
   EndIf
-  !asm
   SF comWord_CursorInMarkedBlock
-RTS
+Return
 
 
 
@@ -14236,14 +14239,10 @@ RTS
     !basic
 ;    Gosub print_actualsourceline
 
-    ; handle Window events
+    ;-- handle Window events
     If sourceWindow\win <> 0
       Gosub eventHandler
     EndIf
-    ; handle Arexx events
-    CNIF #USE_AREXX = 1
-      If arexx_GetMsg{True} Then Gosub arexx_event
-    CEND
 
     ; -- update functioncompletion and close any subwindows on key-press
 ;    If pedconfig\intellisense
@@ -14324,9 +14323,7 @@ Return
   EndIf
   ;--
 
-  !asm
-  MOVE.w comWord_KeyBeforeReturn,D0 : JSR print_entered_char   ; print the character
-  !basic
+  enteredChar.b = Peek.w(?comWord_KeyBeforeReturn) : Gosub print_entered_char
   Gosub moveCursorRight
 Return
 
@@ -14860,12 +14857,7 @@ Return
   If NOT (quotation AND 1) Then Poke.b ?instru,1
 
   ; show character that comes visible at the right if line is longer than visiblecolumns
-  tempD0b.b = Peek.b(lineaddr + newcol) : GetD0 tempD0b
-  MOVE.b d0,-(a7)
-  !asm
-  MOVE.b (a7)+,d0
-  JSR print_entered_char
-  !basic
+  enteredChar.b = Peek.b(lineaddr + newcol) : Gosub print_entered_char
   Poke.b ?instru, 0
   Poke.w ?comWord_Column, storcol
 
@@ -14880,13 +14872,8 @@ Return
   storcol.w = Peek.w(?comWord_Column)
   Poke.w ?comWord_Column, 0
   For cupos.w = 0 To \visibleColumns - 1
-    tmpd0.l = Peek.b(lineaddr + Peek.w(?comWord_ColumnsOffset) + cupos)
-;    log_Print{Hex$(lineaddr + Peek.w(?comWord_ColumnsOffset) + cupos) + "   " + Str$(cupos) + "  " + Hex$(tmpd0) + " " + Chr$(tmpd0)}
-    GetD0 tmpd0 : MOVE.w d0,-(a7)
-    !asm
-    MOVE.w (a7)+,d0 : JSR print_entered_char   ; print character in D0
+    enteredChar.b = Peek.b(lineaddr + Peek.w(?comWord_ColumnsOffset) + cupos) : Gosub print_entered_char
     ADDQ.w #1,comWord_Column
-    !basic
   Next cupos
   Poke.w ?comWord_Column, storcol
 
@@ -14907,7 +14894,7 @@ Return
   If sourceWindow\deleteMode = False
     ; -- scroll to left by 1
     Gosub cursor_off_bas
-    Gosub scroll_rest_of_line_left
+    Gosub scroll_rest_of_line_left 
 
     ; -- move textbuffer left by 1 and append a space
     lineaddr.l = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
@@ -14921,7 +14908,7 @@ Return
     ; check for "" in line and prevent parsing of instructions
     storcol.w = Peek.w(?comWord_Column)
     Poke.w ?comWord_Column, \visibleColumns - 1
-    newcol.w = \visibleColumns + Peek.w(?comWord_ColumnsOffset); - 1
+    newcol.w = \visibleColumns - 1 + Peek.w(?comWord_ColumnsOffset)
     quotation.b = 0
     For cupos.w = newcol To 0 Step -1
       If Peek.b(lineaddr + cupos) = $22 Then quotation + 1
@@ -14930,12 +14917,7 @@ Return
     If NOT (quotation AND 1) Then Poke.b ?instru,1
 
     ; show character that comes visible at the right if line is longer than visiblecolumns
-    tempD0b.b = Peek.b(lineaddr + newcol) : GetD0 tempD0b
-    MOVE.b d0,-(a7)
-    !asm
-    MOVE.b (a7)+,d0
-    JSR print_entered_char
-    !basic
+    enteredChar.b = Peek.b(lineaddr + newcol) : Gosub print_entered_char
     Poke.b ?instru, 0
     Poke.w ?comWord_Column, storcol
 
@@ -15238,6 +15220,12 @@ RTS
 
 ;    pedEventClass = PED_GetMessage{True}
 ;  Wend
+
+
+  ;--  handle Arexx events
+  CNIF #USE_AREXX = 1
+    If arexx_GetMsg{True} Then Gosub arexx_event
+  CEND
 
   If Peek.b(?comByte_RunningFlag) <> 0
     PED_ShowMessage{!TRANS{"!!!PROGRAM IS RUNNING: ONLY SAVE/NAVIGATION/HELP WILL WORK..."}}
@@ -16113,10 +16101,8 @@ Return
         Poke.b lineaddr + currentColumn + cupos,$20 ; insert space character
         sourceWindow\Column = Peek.w(?comWord_Column)
         sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
-        PED_ScrollSourceLine{\font\tf_XSize} ;dx.w = -\font\tf_XSize : Gosub source_scroll_line
-        !asm
-        MOVE.w #$20,d0 : JSR print_entered_char   ; print charater in D0
-        !basic
+        PED_ScrollSourceLine{\font\tf_XSize}
+        enteredChar.b = $20 : Gosub print_entered_char
       Next cupos
 
       ;-- set new cursor position
@@ -21449,7 +21435,7 @@ Return
              Else
                Poke.b Ptr_Overflowcheck_Byte,0
              End If
-
+ 
            Case "residents"
 
            Case "stacksize"                                   ; stacksize changed  tomsmart1
@@ -21740,7 +21726,7 @@ Even
 comWord_BoundLinesX:  Dc.w 2
 comWord_BoundLinesY:  Dc.w 2
 comLong_Label1VisableItem: Dc.l 0
-noDetokenizing:       Ds.w 1                                                                                                                                                                                                                             
+noDetokenizing:       Ds.w 1                                                         
 loadAsNew             Ds.w 1
 fontWidth             Ds.w 1
 foldnum               Ds.l 1 
