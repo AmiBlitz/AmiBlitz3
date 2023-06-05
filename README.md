@@ -1,4 +1,4 @@
-[logo](https://github.com/AmiBlitz/AmiBlitz3/assets/36992035/54dd4b8b-207d-4037-9d59-2e9cbac2588c)
+![logo](https://github.com/AmiBlitz/AmiBlitz3/assets/36992035/54dd4b8b-207d-4037-9d59-2e9cbac2588c)
 
 What we have got here is the complete package of AmiBlitz3 - a BASIC-compiler for 68k-amiga.
 
