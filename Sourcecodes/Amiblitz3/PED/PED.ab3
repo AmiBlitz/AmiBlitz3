@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2541
+; NumberOfBuilds  = 2553
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 15172
+; CursorLine      = 1131
 ; CursorColumn    = 1
-; LabelSearch     = "eventhandler"
+; LabelSearch     = "ped_checklabelrelevance"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -542,6 +542,9 @@ NEWTYPE.ped
   verticalPasteMode.b
   pasteMode.b
   blockmarkRemovalMode.b
+
+  undeleteStrLen.w
+
 End NEWTYPE
 DEFTYPE.ped ped
 ped\LabelIdentifier = Peek.b(?comByte_LabelIdentifier)
@@ -948,6 +951,7 @@ End Macro
 .FUNCTIONS
 Function.b PED_CheckLabelRelevance{testString.s}
 SHARED ped
+
   tmppos.w = 1
   While Mid$(testString,tmppos,1) = " "
     tmppos + 1
@@ -1138,6 +1142,38 @@ SHARED ped,readcache
   Function Return resultString
 End Function
 
+Function.b PED_StoreSourceLine{*storeLine.sourceLine}
+SHARED ped
+
+  If *storeLine = 0 Then Function Return False
+
+  If Peek.b(*storeLine + 9) <> 0
+    storeAddr.l = Peek.l(?lineundeletestore)
+    tempLen.b = Peek.b(*storeLine + 8)
+    log_Print{"storing line: " + Peek.s(*storeLine + 9)}
+    ped\undeleteStrLen = tempLen
+    For i.b = 0 To tempLen-1
+      Poke.b storeAddr + i, Peek.b(*storeLine + 9 + i)
+    Next i
+  EndIf
+  Function Return True
+
+End Function
+
+Function.b PED_DeleteSourceLine{*delLine.sourceLine}
+SHARED ped
+
+   If *delLine = 0 Then Function Return False
+
+   tmpStr.s = Peek.s(*delLine + 9)
+   If PED_CheckLabelRelevance{tmpStr} Then ped\LabelListChanged = True
+
+   PED_FreeMem{*delLine}
+
+   Function Return True
+End Function
+
+
 Function.l PED_CreateNewSourceLine{newline.s}
 SHARED ped,*PreProcessor
 
@@ -1168,6 +1204,7 @@ SHARED ped,*PreProcessor
 End Function
 
 Function PED_InsertSourceLine{*newLine.sourceLine,tmptsl.l,tmplsl.l, tmpcsl.l}
+SHARED ped
 
   Poke.l tmptsl, Peek.l(tmptsl) + 1
 
@@ -1183,6 +1220,9 @@ Function PED_InsertSourceLine{*newLine.sourceLine,tmptsl.l,tmplsl.l, tmpcsl.l}
   *newLine\previousLine = *currentLine
   *currentLine\nextLine = *newLine
   Poke.l tmpcsl,*newLine
+
+  tmpStr.s = Peek.s(*newLine + 9)
+  If PED_CheckLabelRelevance{tmpStr} Then ped\LabelListChanged = True
 
   Function Return True
 
@@ -3737,7 +3777,7 @@ End
 .main_loop:
   exit_mainloop.b = False
   While NOT exit_mainloop
-    CLR.w comWord_LabelListChanged
+    ped\LabelListChanged = False
     sourceWindow\redrawFlag = False
 
 ;    log_Print{"handlePedevents"}
@@ -3923,9 +3963,7 @@ End
     EndIf
 
     bottom_of_mainloop:
-    If Peek.w(?comWord_LabelListChanged)<>0
-      Gosub update_labelstuff
-    EndIf
+    If ped\LabelListChanged Then Gosub update_labelstuff
     Gosub update_vertscroller
   Wend
 ;  log_Print{"exiting loop"}
@@ -6721,7 +6759,7 @@ Return
 Return
 
 
-.insertline:
+.insertline:         ;input A0: pointer to new line
   MOVE.w #$FFFF,comWord_SourceChanged
   MOVE.l comPtr_CurrentSourceLine,A4
 
@@ -6760,54 +6798,73 @@ JMP memAlert_CloseSource
 
 .menu_undeleteline:
   log_Print{"menu undeleteline called"}
-  !asm
-  MOVEQ.l #$00,D5 : MOVE.w comWord_UndeleteStoreStrLen,D5
-  MOVEA.l lineundeletestore,A1
-  TST.b (A1)
-  BEQ.w JUMP_JL_0_76E8
-    MOVE.l comPtr_Temp_TokenString2,-(A7)
-    MOVE.l A1,comPtr_Temp_TokenString2
-    JSR newSourcelineFromTempString             ; returns ptr in A0
-    MOVE.l (A7)+,comPtr_Temp_TokenString2
+  undelStr.s = Peek.s(Peek.l(?lineundeletestore))
+  If FLen(undelStr) > 0
+    log_Print{"undeleting line: " + undelStr}
+    *newLine.sourceLine = PED_CreateNewSourceLine{undelStr}
+    If *newLine
+      PED_InsertSourceLine{*newLine,?comLong_TotalLines,?comPtr_LastSourceLine,?comPtr_CurrentSourceLine}
+      !asm
+      MOVEA.l comPtr_CurrentSourceLine,A2
+      JSR print_sourceline
 
-    BSR.b insertline                            ; insert the newline into source
+      MOVEQ.l #$00,D0 : MOVE.l comLong_DisplayLineOffset,D0 : ADD.l comLong_DisplayLine,D0
+      JSR block_updatePosY                               ; increase BlockEndY if inserted into block
+      !basic
+    EndIf
+  Else
+    log_Print{"no data to undelete."}
+  EndIf
 
-    MOVEA.l comPtr_CurrentSourceLine,A2
-    JSR print_sourceline
-
-    MOVEQ.l #$00,D0 : MOVE.l comLong_DisplayLineOffset,D0 : ADD.l comLong_DisplayLine,D0
-    JSR block_updatePosY                               ; increase BlockEndY if inserted into block
-    RTS
-
-  JUMP_JL_0_76E8:
-  ;JMP JL_0_76E8                                 ; nothing as RTS
-  !basic
+;  !asm
+;  MOVEQ.l #$00,D5 : MOVE.w comWord_UndeleteStoreStrLen,D5
+;  MOVEA.l lineundeletestore,A1
+;  TST.b (A1)
+;  BEQ.w JUMP_JL_0_76E8
+;    MOVE.l comPtr_Temp_TokenString2,-(A7)
+;    MOVE.l A1,comPtr_Temp_TokenString2
+;    JSR newSourcelineFromTempString             ; returns ptr in A0
+;    MOVE.l (A7)+,comPtr_Temp_TokenString2
+;
+;    BSR.b insertline                            ; insert the newline into source
+;
+;    MOVEA.l comPtr_CurrentSourceLine,A2
+;    JSR print_sourceline
+;
+;    MOVEQ.l #$00,D0 : MOVE.l comLong_DisplayLineOffset,D0 : ADD.l comLong_DisplayLine,D0
+;    JSR block_updatePosY                               ; increase BlockEndY if inserted into block
+;    RTS
+;
+;  JUMP_JL_0_76E8:
+;  ;JMP JL_0_76E8                                 ; nothing as RTS
+;  !basic
 Return
 
 
 .menu_deleteline:
   log_Print{"menu deleteline called"}
-  !asm
-  MOVE.l comPtr_CurrentSourceLine,A4
-  MOVE.w #$FFFF,comWord_SourceChanged
 
-  CMPI.l #$ffffFFFF,comLong_BlockEndY           ; update Blockmark if available
-  BEQ.w JL_0_2738
-    MOVE.l comLong_DisplayLineOffset,D0
-    ADD.l comLong_DisplayLine,D0
-    CMP.l comLong_BlockStartY,D0
-    BCS.w JL_0_272C
-      CMP.l comLong_BlockEndY,D0
-      BHI.w JL_0_2738
+  Poke.w ?comWord_SourceChanged, $FFFF
+
+  ; update the blockmark if set
+ If Peek.l(?comLong_BlockEndY)<> $ffffFFFF
+    If Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine) > Peek.l(?comLong_BlockStartY)
+      If Peek.l(?comLong_DisplayLineOffset) + Peek.l(?comLong_DisplayLine) < Peek.l(?comLong_BlockEndY)
         SUBQ.l #1,comLong_BlockEndY
-        MOVE.l comLong_BlockEndY,D0
-        CMP.l comLong_BlockStartY,D0
-        BCC.w JL_0_2738
+        If Peek.l(?comLong_BlockEndY) < Peek.l(?comLong_BlockStartY)
           CLR.l comLong_BlockEndY
-    JL_0_272C:
+        EndIf
+      EndIf
+    Else
       SUBQ.l #1,comLong_BlockStartY
       SUBQ.l #1,comLong_BlockEndY
-  JL_0_2738:
+    EndIf
+  EndIf
+
+
+
+  !asm
+  MOVE.l comPtr_CurrentSourceLine,A4
                                                 ; ----- delete current line in A4
   MOVE.l (A4),D7                                ; pointer to currentLine.nextline to D7
   BEQ.w JL_0_2776                               ; if no nextline jump down
@@ -8507,7 +8564,7 @@ End Function
     EndIf
   EndIf
 
-  Poke.w ?comWord_LabelListChanged,$FFFF
+  ped\LabelListChanged = True
   Poke.w ?comWord_SourceChanged,$FFFF
 
   lineaddr.l = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
@@ -8535,7 +8592,7 @@ End Function
   pasteString = pasteString + PED_ReadNextLine{}
  
   ; check labelidentifier, update labellist ?
-  If PED_CheckLabelRelevance{pasteString} Then Poke.w ?comWord_LabelListChanged, $FFFF
+  If PED_CheckLabelRelevance{pasteString} Then ped\LabelListChanged = True
 
   ; replace line with current one
   GetReg D0,&pasteString : MOVE.l D0,-(a7)
@@ -9762,7 +9819,12 @@ JMP setpointer_to_normal
       BNE 'nf
         ADDQ.l #5,a1
    'nf
-    MOVE.w D1,comWord_LabelListChanged
+   !regs2stack
+   !basic
+   ped\LabelListChanged = True
+   !asm
+   !stack2regs
+   ;MOVE.w D1,comWord_LabelListChanged
     JSR JL_0_46D6
 
     JL_0_4696:
@@ -9943,7 +10005,12 @@ RTS
  'addlist
   CMP.l #maxlabels,numcount          ;reduce this for slow computer
   BGE 'out
-  MOVE.w D1,comWord_LabelListChanged
+  !regs2stack
+  !basic
+  ped\LabelListChanged = True
+  !asm
+  !stack2regs
+  ;MOVE.w D1,comWord_LabelListChanged
   JSR JL_0_46D6                      ;remarklistadd
 
  'skip
@@ -10013,9 +10080,8 @@ Return
     Gosub free_labellist
     !asm
     JSR update_labellist
-
-    CLR.w comWord_LabelListChanged
     !basic
+    ped\LabelListChanged = False
   EndIf
 
 .redraw_labellist:
@@ -10209,8 +10275,11 @@ Return
   BEQ.b JL_0_4F4A
   CMP.b -(A1),D0                          ; and check if Label at the beginning?
   MOVEA.l (A7)+,A1
-  ;BRA.w JL_0_46CC                         ; set labelchangedflag an return
-  MOVE.w #$FFFF,comWord_LabelListChanged
+
+  !basic
+  ped\LabelListChanged = True
+  !asm
+  ;MOVE.w #$FFFF,comWord_LabelListChanged
 RTS
 
 
@@ -10782,8 +10851,13 @@ JL_0_5474:
   CMP.b -(A0),D0
   MOVEA.l (A7)+,A0                         ;
   BNE.w JL_0_54Dca
-    MOVE.w #$FFFF,comWord_LabelListChanged
-    ;JSR JL_0_472A                          ; set labellistchange to true
+   !regs2stack
+   !basic
+   ped\LabelListChanged = True
+   !asm
+   !stack2regs
+   ; MOVE.w #$FFFF,comWord_LabelListChanged
+
   JL_0_54Dca:
 
   !newfree                            ; A1: memory , -(a1) is size
@@ -10948,7 +11022,12 @@ tokenizeAndInsertNewLine:
           ADDQ.l #1,a1
   BRA 'l20
  'l10
-  MOVE.w #$FFFF,comWord_LabelListChanged
+  !regs2stack
+  !basic
+  !asm
+  ped\LabelListChanged = True
+  !stack2regs
+  ;MOVE.w #$FFFF,comWord_LabelListChanged
   JL_0_55D8:
 
   ;-- insert the new line into source
@@ -10986,7 +11065,12 @@ tokenizeAndInsertNewLine:
     MOVE.b (A1)+,(A0)+
   BNE.b JL_0_5620
 
-  JSR deleteCurrentSourceLine
+  MOVE.l A4,-(a7)
+  !basic
+  PED_DeleteSourceLine{Peek.l(?comPtr_CurrentSourceLine)}
+  !asm
+  ;JSR deleteCurrentSourceLine
+  MOVE.l (a7)+,A4
   MOVE.l A4,comPtr_CurrentSourceLine
 RTS
 
@@ -13003,59 +13087,68 @@ RTS
 RTS
 
 .StoreAndDeleteCurrentSourceLine:
-  MOVEA.l comPtr_CurrentSourceLine,A1
-  MOVE.b comByte_LabelIdentifier,D0
-  MOVEM.l D0/A0-A2,-(A7)
-  LEA $9(A1),A2                           ; save current source line to undeletestore
-  MOVEA.l lineundeletestore,A0
-  TST.b (A2)
-  BEQ.b JL_0_6BFE
-    MOVEQ.l #$00,D0
-    MOVE.b $8(A1),D0                      ; stringlength of source line
-    MOVE.w D0,comWord_UndeleteStoreStrLen
-    SUBQ.w #1,D0
-    JL_0_6BF8:
-      MOVE.b (A2)+,(A0)+
-    DBF D0,JL_0_6BF8
-  JL_0_6BFE:
-  MOVEM.l (A7)+,D0/A0-A2
-  BRA.b JL_0_6C0C
-
-  deleteCurrentSourceLine:
-  MOVEA.l comPtr_CurrentSourceLine,A1
-  MOVE.b comByte_LabelIdentifier,D0
-
-  JL_0_6C0C:
-  MOVE.l A1,-(A7)                      ; currentsourceline struct
-  LEA $9(A1),A1                        ; begin of string
-  JL_0_6C12:
-    CMPI.b #$20,(A1)+                  ; skip spaces
-  BEQ.b JL_0_6C12
-
-  CMP.b -(A1),D0                       ; first character to d0
-  BEQ 'l10                             ; if not null ...
- 'l20
-    MOVE.b (A1),D0
-    BEQ JL_0_6C24                      ; if "null" free memory and return
-    CMP.b #";",d0                      ; stop if comment found
-
-    BEQ 'l10
-      CMP.b #$80,d0                    ; check for token: $802d
-      BNE 'l15
-        CMP.b #$2d,1(a1)
-        BEQ 'l10
-     'l15
-      ADDQ.l #1,a1
-      BRA 'l20
- 'l10
-  ;JSR JL_0_472A                        ; set LabelListchanged-Flag
-  MOVE.w #$FFFF,comWord_LabelListChanged
-
-  JL_0_6C24:
-  MOVEA.l (A7)+,A1
-  ;ST comWord__AL_0_86C0
-  !newfree
+;  MOVEA.l comPtr_CurrentSourceLine,A1
+;  MOVE.b comByte_LabelIdentifier,D0
+;  MOVEM.l D0/A0-A2,-(A7)
+;  LEA $9(A1),A2                           ; save current source line to undeletestore
+;  MOVEA.l lineundeletestore,A0
+;  TST.b (A2)
+;  BEQ.b JL_0_6BFE
+;    MOVEQ.l #$00,D0
+;    MOVE.b $8(A1),D0                      ; stringlength of source line
+;    MOVE.w D0,comWord_UndeleteStoreStrLen
+;    SUBQ.w #1,D0
+;    JL_0_6BF8:
+;      MOVE.b (A2)+,(A0)+
+;    DBF D0,JL_0_6BF8
+;  JL_0_6BFE:
+;  MOVEM.l (A7)+,D0/A0-A2
+  !regs2stack
+  !basic
+  If PED_StoreSourceLine{Peek.l(?comPtr_CurrentSourceLine)}
+    PED_DeleteSourceLine{Peek.l(?comPtr_CurrentSourceLine)}
+  EndIf
+  !asm
+  !stack2regs
 RTS
+;
+;  BRA.b JL_0_6C0C
+;
+;  deleteCurrentSourceLine:
+;  MOVEA.l comPtr_CurrentSourceLine,A1
+;  MOVE.b comByte_LabelIdentifier,D0
+;
+;  JL_0_6C0C:
+;  MOVE.l A1,-(A7)                      ; currentsourceline struct
+;  LEA $9(A1),A1                        ; begin of string
+;  JL_0_6C12:
+;    CMPI.b #$20,(A1)+                  ; skip spaces
+;  BEQ.b JL_0_6C12
+;
+;  CMP.b -(A1),D0                       ; first character to d0
+;  BEQ 'l10                             ; if not null ...
+; 'l20
+;    MOVE.b (A1),D0
+;    BEQ JL_0_6C24                      ; if "null" free memory and return
+;    CMP.b #";",d0                      ; stop if comment found
+;
+;    BEQ 'l10
+;      CMP.b #$80,d0                    ; check for token: $802d
+;      BNE 'l15
+;        CMP.b #$2d,1(a1)
+;        BEQ 'l10
+;     'l15
+;      ADDQ.l #1,a1
+;      BRA 'l20
+; 'l10
+;  ;JSR JL_0_472A                        ; set LabelListchanged-Flag
+;  MOVE.w #$FFFF,comWord_LabelListChanged
+;
+;  JL_0_6C24:
+;  MOVEA.l (A7)+,A1
+;  ;ST comWord__AL_0_86C0
+;  !newfree
+;RTS
 
 .free_actualsource:
   MOVEA.l comPtr_FirstSourceLine,A2
@@ -13514,7 +13607,7 @@ Return
   *this_process.Process = FindTask_(0)
   Poke.l ?ptr_windowPtrTemp, *this_process\pr_WindowPtr
   *this_process\pr_WindowPtr = sourceWindow\win
-  Poke.w ?comWord_LabelListChanged, $FFFF    ; indicate that label window has to be updated too
+  ped\LabelListChanged = True  ; indicate that label window has to be updated too
 
   win_already_open:
   ; --
