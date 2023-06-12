@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2592
+; NumberOfBuilds  = 2596
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 6524
-; CursorColumn    = 13
-; LabelSearch     = "source_fullscroll_up"
+; CursorLine      = 6432
+; CursorColumn    = 88
+; LabelSearch     = "increase_displayline"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -158,6 +158,9 @@ DEBUG
 #TOKEN_Repeat    = $80BB
 #TOKEN_EndIf     = $80C0
 #TOKEN_Object    = $80D7
+
+#SCROLL_UP       = 1
+#SCROLL_DOWN     = -1
 
 ;Keycodes
 ;Raw
@@ -349,6 +352,7 @@ log_Print{"===================================================================",
 ; --------------------------------------------------- AREXX
 CNIF #USE_AREXX = 1
 XINCLUDE "arexx.include.ab3"
+Dim registeredArexxHosts$(8)
 CEND
 
 
@@ -545,6 +549,7 @@ NEWTYPE.ped
   blockmarkRemovalMode.b
 
   undeleteStrLen.w
+  no_scrollrate.b
 End NEWTYPE
 DEFTYPE.ped ped
 
@@ -1864,7 +1869,7 @@ Statement move_cursor {a$,lst.l,pos.l}
 ;         ;End Select
 End Statement
 
-Statement PED_ScrollSourceLine{dx.w}
+Statement PED_ScrollHorizontal{dx.w}
   SHARED sourceWindow
   USEPATH sourceWindow
   dx.w = -dx
@@ -1875,6 +1880,73 @@ Statement PED_ScrollSourceLine{dx.w}
   yMax.w = yMin + \font\tf_YSize - 1
   ScrollRaster_ \win\RPort,dx,dy,xMin,yMin,xMax,yMax
 End Statement
+
+Statement PED_ScrollDelay{}
+SHARED ped
+  CNIF #slowdown <> 0
+    If ped\no_scrollrate
+      Delay_ 1
+    Else
+      vvblank_Wait{}
+      vvblank_WaitSync{1}
+      vvblank_ResetSync{}
+    EndIf
+  CEND
+End Statement
+
+Statement PED_ScrollVertical{direction.b, @yStart.w}
+SHARED sourceWindow,ped
+USEPATH sourceWindow
+
+  If yStart = -1 Then yStart = 0
+
+  dx.w = 0
+  dy.w = direction * \font\tf_YSize
+  xMin.w = 0
+  yMin.w = \BoxTop + yStart * \font\tf_YSize
+  xMax.w = \BoxLeft + \visibleColumns * \font\tf_XSize - 1
+  yMax.w = \BoxTop + Peek.l(?viewablelines) * \font\tf_YSize - 1
+  ScrollRaster_ \win\RPort,dx,dy,xMin,yMin,xMax,yMax
+  PED_ScrollDelay{}
+
+  ; "scroll" the textbuffer one line
+  If direction = #SCROLL_DOWN
+    temp.l = Peek.l(?viewablelines) - yStart - 1
+    If temp <> 0
+      bytes.l = #MAX_Columns * Peek.l(?viewablelines)
+      textAddr.l = Peek.l(?textbufferaddr) + bytes - 2
+      textAddr2.l = textAddr - #MAX_Columns
+      count.l = temp * #MAX_Columns
+      For i.l = 2 To count Step 2
+        Poke.w textAddr - i, Peek.w(textAddr2 - i)
+      Next i
+    EndIf
+    textAddr.l = Peek.l(?textbufferaddr) + (yStart * #MAX_Columns)
+  Else
+    temp.l = Peek.l(?viewablelines) - yStart - 1
+    If temp <> 0
+      bytes.l = #MAX_Columns * yStart
+      textAddr.l = Peek.l(?textbufferaddr) + bytes
+      textAddr2.l = textAddr + #MAX_Columns
+      count.l = temp * #MAX_Columns
+      For i.l = 0 To count Step 2
+        Poke.w textAddr + i, Peek.w(textAddr2 + i)
+      Next i
+    EndIf
+    textAddr.l = Peek.l(?textbufferaddr) + (Peek.l(?viewablelines)-1)*#MAX_Columns
+  EndIf
+
+  ; fill the last line with spaces
+  For i.l = 0 To #MAX_Columns Step 2
+    Poke.w textAddr + i,$2020
+  Next i
+
+End Statement
+
+
+
+
+
 
 Statement PED_GetMousePos{*mp.mousePos}
   SHARED sourceWindow
@@ -3204,9 +3276,9 @@ If ende Then Goto abnormal_exit
   pedconfig\cursorStyle = cursorStyleGetValue{dos_GetToolString{"cursorstyle","block"}}
   pedconfig\scroll_rate = dos_GetToolValue{"scrollrate",0}
   If pedconfig\scroll_rate <> 0
-    If vvblank_SetFreq{pedconfig\scroll_rate} = False Then no_scrollrate.b = True
+    If vvblank_SetFreq{pedconfig\scroll_rate} = False Then ped\no_scrollrate = True
   Else
-    no_scrollrate = True
+    ped\no_scrollrate = True
   EndIf
 
   pedconfig\tab_size = Peek.w (?tab_size)
@@ -4043,7 +4115,7 @@ Return
  WZPrint "SET_SORTLABELS"     ,pedconfig\sort_labels
  WZPrint "SET_CURSORSTYLE"    ,pedconfig\cursorStyle
 
-; If NOT no_scrollrate
+; If NOT ped\no_scrollrate
 ;   WZDisable "SET_SCROLLRATE"
 ; Else
    WZPrint "SET_SCROLLRATE"   , pedconfig\scroll_rate
@@ -4567,7 +4639,7 @@ Return
    pedconfig\sort_labels =       -WZInput("SET_SORTLABELS")
    pedconfig\scroll_rate =        WZInput("SET_SCROLLRATE")
    pedconfig\cursorStyle =        WZInput("SET_CURSORSTYLE")
-   If pedconfig\scroll_rate = 0 Then no_scrollrate = True Else vvblank_SetFreq{pedconfig\scroll_rate}
+   If pedconfig\scroll_rate = 0 Then ped\no_scrollrate = True Else vvblank_SetFreq{pedconfig\scroll_rate}
 
    pedconfig\tab_size =  WZInput("SET_TAB_SIZE")
    Poke.w ?tab_size, pedconfig\tab_size
@@ -6325,9 +6397,10 @@ RTS
           JSR _redraw
           !basic
         Else
-          !asm
           ADDQ.l #1,comLong_DisplayLineOffset
-          JSR source_fullscroll_down
+          ;JSR source_fullscroll_down
+          PED_ScrollVertical{#SCROLL_UP}
+          !asm
           JSR draw_new_sourceline_bottom
           JSR _redraw
           !basic
@@ -6398,8 +6471,9 @@ Return
   If Peek.l(?comLong_TotalLines) >= Peek.l(?comLong_DisplayLineOffset) + Peek.l(?viewablelines)
     If Peek.l(?comLong_DisplayLine) + 1 + Peek.w(?comWord_BoundLinesY) => Peek.l(?viewablelines)
       ADDQ.l #1,comLong_DisplayLineOffset
+      PED_ScrollVertical{#SCROLL_UP}
       !asm
-      JSR source_fullscroll_down
+      ;JSR source_fullscroll_down
       JSR draw_new_sourceline_bottom
       !basic
       Return
@@ -6423,7 +6497,10 @@ Return
     CMP.l viewablelines,D0
     BCS.w JUMP_increase_DisplayLine
       ADDQ.l #1,comLong_DisplayLineOffset
-      JSR source_fullscroll_down
+      !basic
+      PED_ScrollVertical{#SCROLL_UP}
+      !asm
+      ;JSR source_fullscroll_down
       JMP draw_new_sourceline_bottom
   JUMP_increase_DisplayLine:
     JSR increase_DisplayLine
@@ -6524,9 +6601,10 @@ JMP set_blockend
       Else
         Poke.l ?comLong_DisplayLineOffset, Peek.l(?comLong_DisplayLineOffset)-1
         log_Print{"fullscrollup"}
+        PED_ScrollVertical{#SCROLL_DOWN}
         !asm
         ;!stack2regs
-        JSR source_fullscroll_up
+        ;JSR source_fullscroll_up
         JSR draw_new_sourceline_top
         JSR _redraw
         !basic
@@ -6608,8 +6686,9 @@ End Function
     If Peek.l(?comLong_DisplayLineOffset) > 0
       If Peek.l(?comLong_DisplayLine) <= Peek.w(?comWord_BoundLinesY)
         SUBQ.l #1,comLong_DisplayLineOffset         ; otherwise scroll whole text one line up
+        ;JSR source_fullscroll_up
+        PED_ScrollVertical{#SCROLL_DOWN}
         !asm
-        JSR source_fullscroll_up
         JSR draw_new_sourceline_top
         !basic
         Return
@@ -6715,12 +6794,10 @@ Return
     JSR block_updatePosY                        ; increase blockendY if paste within a block
     !basic
     If PED_InsertSourceLine{*newLine,?comLong_TotalLines, ?comPtr_FirstSourceLine, ?comPtr_CurrentSourceLine}
+      ;MOVE.l comLong_DisplayLine,D7 : JSR source_partscroll_up
+      PED_ScrollVertical{#SCROLL_DOWN, Peek.l(?comLong_DisplayLine)}
       !asm
-      MOVE.l comLong_DisplayLine,D7
-      JSR source_partscroll_up
-
-      MOVE.l comPtr_CurrentSourceLine,A2
-      JSR print_sourceline
+      MOVE.l comPtr_CurrentSourceLine,A2 : JSR print_sourceline
       ;JSR _redraw
       !basic
       Gosub update_linenumbers
@@ -6808,10 +6885,10 @@ Return
       Poke.l ?comPtr_CurrentSourceLine,*nextLine
       PED_StoreSourceLine{*currentLine}
       PED_DeleteSourceLine{*currentLine}
-      !asm
       SUBQ.l #1,comLong_TotalLines
-      MOVE.l comLong_DisplayLine,D7
-      JSR source_partscroll_down
+      PED_ScrollVertical{#SCROLL_UP, Peek.l(?comLong_DisplayLine)}
+      ;MOVE.l comLong_DisplayLine,D7 : JSR source_partscroll_down
+      !asm
       JSR draw_new_sourceline_bottom
       !basic
     EndIf
@@ -6824,17 +6901,19 @@ Return
         PED_DeleteSourceLine{*currentLine}
         SUBQ.l #1,comLong_TotalLines
         If Peek.l(?comLong_DisplayLineOffset)
-          !asm
+          ;!asm
           SUBQ.l #1,comLong_DisplayLineOffset
-          MOVE.l comLong_DisplayLine,d7
-          JSR source_partscroll_down
-          JSR source_fullscroll_up
+          ;MOVE.l comLong_DisplayLine,d7 : JSR source_partscroll_down
+          ;!basic
+          PED_ScrollVertical{#SCROLL_UP,Peek.l(?comLong_DisplayLine)}
+          !asm
+          ;JSR source_fullscroll_up
           JSR draw_new_sourceline_top
           !basic
         Else
+          ;MOVE.l comLong_DisplayLine,d7 : JSR source_partscroll_down
+          PED_ScrollVertical{#SCROLL_UP, Peek.l(?comLong_DisplayLine)}
           !asm
-          MOVE.l comLong_DisplayLine,d7
-          JSR source_partscroll_down
           JSR decrease_DisplayLine
           !basic
         EndIf
@@ -7204,9 +7283,12 @@ RTS
   CMP.l viewablelines,D0
   BCS.w JL_0_2B6C
     ADDQ.l #1,comLong_DisplayLineOffset
+
     MOVE.l viewablelines,-(A7)
     MOVE.l comLong_DisplayLine,D0 : ADDQ.l #1,D0 : MOVE.l D0,viewablelines
-    JSR source_fullscroll_down
+    !basic
+    PED_ScrollVertical{#SCROLL_UP}
+    !asm
     MOVE.l (A7)+,viewablelines
 
     MOVEM.w D0-D1,-(A7)
@@ -7223,11 +7305,9 @@ RTS
   JL_0_2B6C:
 
   ;-- scroll rest of source downwarts
-  MOVE.l comLong_DisplayLine,D7 : ADDQ.w #1,D7
-  JSR source_partscroll_up
   !basic
+  PED_ScrollVertical{#SCROLL_DOWN,Peek.l(?comLong_DisplayLine) + 1}
   Gosub update_sourcewindow_bottom
-
   !asm
 
   MOVEM.w D0-D1,-(A7)
@@ -8901,9 +8981,10 @@ Return
   tmpY.l = Peek.l(?viewablelines) - 1 ;D3
 
   If Peek.l(?comLong_DisplayLineOffset) + Peek.l(?viewablelines) <= Peek.l(?comLong_TotalLines)
-    !asm
-    JSR source_fullscroll_down
-    !basic
+    ;!asm
+    ;JSR source_fullscroll_down
+    ;!basic
+    PED_ScrollVertical{#SCROLL_UP}
 
     *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
     Poke.l ?comPtr_CurrentSourceLine, *currentLine\nextLine
@@ -8942,9 +9023,10 @@ Return
   tmpY.l = 0  ;D3
 
   If Peek.l(?comLong_DisplayLineOffset) > 0
-    !asm
-    JSR source_fullscroll_up
-    !basic
+    ;!asm
+    ;JSR source_fullscroll_up
+    ;!basic
+    PED_ScrollVertical{#SCROLL_DOWN}
 
     *currentLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
     Poke.l ?comPtr_CurrentSourceLine, *currentLine\previousLine
@@ -12401,109 +12483,87 @@ RTS
 
 
 
-.source_fullscroll_down:
-  MOVEQ.l #$00,D7
+;.source_fullscroll_down:
+;  MOVEQ.l #$00,D7
+;
+;;  source_partscroll_down:
+;  !basic
+;  MOVE.w d7,d0 : yDelta.w = PutD0
+;  USEPATH sourceWindow
+;  dx.w = 0
+;  dy.w = \font\tf_YSize
+;  xMin.w = 0
+;  yMin.w = \BoxTop + yDelta * \font\tf_YSize
+;  xMax.w = \BoxLeft + \visibleColumns * \font\tf_XSize - 1
+;  yMax.w = \BoxTop + Peek.l(?viewablelines) * \font\tf_YSize - 1
+;  ScrollRaster_ \win\RPort,dx,dy,xMin,yMin,xMax,yMax
+;  Gosub ScrollDelay
+;
+;  !asm
+;  MOVE.l viewablelines,D6 : SUB.l D7,D6 : SUBQ.l #1,D6
+;  TST.l D6
+;  BEQ.w fill2
+;    MOVE.w #MAX_Columns,D1 : MOVE.l D7,D0 : MULU D1,D0
+;    MOVEA.l textbufferaddr,A0 : ADDA.l D0,A0
+;    MOVE.l A0,A1 : ADDA.w D1,A1
+;    MOVE.l D6,d0 : MULS d1,d0 : ASR.l #1,D0
+;   'loop
+;      MOVE.w (a1)+,(a0)+
+;      SUBQ.l #1,d0
+;    BNE 'loop
+;  fill2:
+;
+;  MOVE.l viewablelines,D0 : SUBQ.l #1,D0 : MULU #MAX_Columns,D0
+;  MOVEA.l textbufferaddr,A0 : ADDA.w D0,A0
+;  MOVE.w #$2020,d1
+;  MOVE.l #MAX_Columns/2,d0
+; 'loop
+;    MOVE.w d1,(a0)+
+;    SUBQ.l #1,d0
+;  BNE 'loop
+;RTS
+;
 
-  source_partscroll_down:
-  !basic
-  MOVE.w d7,d0 : yMin.w = PutD0
-  USEPATH sourceWindow
-  dx.w = 0
-  dy.w = \font\tf_YSize
-  xMin.w = 0
-  yMin.w = \BoxTop + yMin * \font\tf_YSize
-  xMax.w = \BoxLeft + \visibleColumns * \font\tf_XSize - 1
-  yMax.w = \BoxTop + Peek.l(?viewablelines) * \font\tf_YSize - 1
-  ScrollRaster_ \win\RPort,dx,dy,xMin,yMin,xMax,yMax
-  Gosub ScrollDelay
-  !asm
-
-  MOVE.l viewablelines,D6 : SUB.l D7,D6 : SUBQ.l #1,D6
-  TST.l D6
-  BEQ.w fill2
-    MOVE.l D7,D0
-    MOVE.w #MAX_Columns,D1
-    MULU D1,D0
-    MOVEA.l textbufferaddr,A0 : ADDA.l D0,A0
-    MOVE.l A0,a1
-    ADDA.w D1,A1
-    MOVE.l d6,d0
-    MULS d1,d0
-    ASR.l #1,d0
-   'loop
-      MOVE.w (a1)+,(a0)+
-      SUBQ.l #1,d0
-    BNE 'loop
-  fill2:
-
-  MOVE.l viewablelines,D0 : SUBQ.l #1,D0 : MULU #MAX_Columns,D0
-  MOVEA.l textbufferaddr,A0 : ADDA.w D0,A0
-  MOVE.w #$2020,d1
-  MOVE.l #MAX_Columns/2,d0
- 'loop
-    MOVE.w d1,(a0)+
-    SUBQ.l #1,d0
-  BNE 'loop
-RTS
-
-.source_fullscroll_up:
-  MOVEQ.l #$00,D7
-
-  source_partscroll_up:
-  !basic
-  MOVE.w d7,d0 : yDelta.w = PutD0
-  ;log_Print{"scroll up"}
-  USEPATH sourceWindow
-  dx.w = 0
-  dy.w = -\font\tf_YSize
-  xMin.w = 0
-  yMin.w = \BoxTop + yDelta * \font\tf_YSize
-  xMax.w = \BoxLeft + \visibleColumns * \font\tf_XSize - 1
-  yMax.w = \BoxTop + Peek.l(?viewablelines) * \font\tf_YSize - 1
-  ScrollRaster_ \win\RPort,dx,dy,xMin,yMin,xMax,yMax
-  Gosub ScrollDelay
-
-  temp.l = Peek.l(?viewablelines) - yDelta - 1
-  If temp <> 0
-    bytes.l = #MAX_Columns * Peek.l(?viewablelines)
-    textAddr.l = Peek.l(?textbufferaddr) + bytes - 2
-    textAddr2.l = textAddr - #MAX_Columns
-    count.l = (temp * #MAX_Columns) ASR 1
-    For i = 2 To count Step 2
-      Poke.w textAddr2 - i,textAddr - count
-    Next i
-  EndIf
-
-  textAddr.l = Peek.l(?textbufferaddr) + (yDelta * #MAX_Columns)
-  For i.l = 0 To #MAX_Columns Step 2
-    Poke.w textAddr + i,$2020
-  Next i
-  !asm
-RTS
-
-  ; d7: textY
-  !asm
-  MOVE.l viewablelines,D6 : SUB.l D7,D6 : SUBQ.l #1,D6
-  BEQ.w fill
-    MOVE.w #MAX_Columns,D1 : MOVE.w D1,D0 : MULU viewablelines+2,D0
-    MOVEA.l textbufferaddr,A0 : ADDA.l D0,A0 : SUBQ.w #2,A0
-    MOVE.l A0,A1 : SUBA.w D1,A1
-    MOVE.l D6,d0 : MULS D1,D0 : ASR.l #1,D0
-   'loop
-      MOVE.w -(a1),-(a0)
-      SUBQ.l #1,d0
-    BNE 'loop
-  fill:
-
-  MULU #MAX_Columns,D7
-  MOVEA.l textbufferaddr,A0 : ADDA.l D7,A0
-  MOVE.w #$2020,d1
-  MOVE.l #MAX_Columns/2,d0
- 'loop
-    MOVE.w d1,(a0)+
-    SUBQ.l #1,d0
-  BNE 'loop
-RTS
+;.source_fullscroll_up:
+;  MOVEQ.l #$00,D7
+;
+;  source_partscroll_up:
+;  !basic
+;  MOVE.w d7,d0 : yDelta.w = PutD0
+;  ;log_Print{"scroll up"}
+;  USEPATH sourceWindow
+;  dx.w = 0
+;  dy.w = -\font\tf_YSize
+;  xMin.w = 0
+;  yMin.w = \BoxTop + yDelta * \font\tf_YSize
+;  xMax.w = \BoxLeft + \visibleColumns * \font\tf_XSize - 1
+;  yMax.w = \BoxTop + Peek.l(?viewablelines) * \font\tf_YSize - 1
+;  ScrollRaster_ \win\RPort,dx,dy,xMin,yMin,xMax,yMax
+;  Gosub ScrollDelay
+;
+;  ; d7: textY
+;  !asm
+;  MOVE.l viewablelines,D6 : SUB.l D7,D6 : SUBQ.l #1,D6
+;  BEQ.w fill
+;    MOVE.w #MAX_Columns,D1 : MOVE.w D1,D0 : MULU viewablelines+2,D0
+;    MOVEA.l textbufferaddr,A0 : ADDA.l D0,A0 : SUBQ.w #2,A0
+;    MOVE.l A0,A1 : SUBA.w D1,A1
+;    MOVE.l D6,d0 : MULS D1,D0 : ASR.l #1,D0
+;   'loop
+;      MOVE.w -(a1),-(a0)
+;      SUBQ.l #1,d0
+;    BNE 'loop
+;  fill:
+;
+;  MULU #MAX_Columns,D7
+;  MOVEA.l textbufferaddr,A0 : ADDA.l D7,A0
+;  MOVE.w #$2020,d1
+;  MOVE.l #MAX_Columns/2,d0
+; 'loop
+;    MOVE.w d1,(a0)+
+;    SUBQ.l #1,d0
+;  BNE 'loop
+;RTS
 
 
 .increase_DisplayLine:
@@ -12533,12 +12593,12 @@ RTS
             If xPos > Peek.w(?comWord_BlockEndX)
               sourceWindow\Column = Peek.w(?comWord_Column)
               sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
-              PED_ScrollSourceLine{-\font\tf_XSize} ;dx.w = \font\tf_XSize : Gosub source_scroll_line
+              PED_ScrollHorizontal{-\font\tf_XSize} ;dx.w = \font\tf_XSize : Gosub source_scroll_line
             EndIf
           Else
             sourceWindow\Column = Peek.w(?comWord_Column)
             sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
-            PED_ScrollSourceLine{-\font\tf_XSize}   ;dx.w = \font\tf_XSize : Gosub source_scroll_line
+            PED_ScrollHorizontal{-\font\tf_XSize}   ;dx.w = \font\tf_XSize : Gosub source_scroll_line
           EndIf
         EndIf
         USEPATH sourceWindow
@@ -12549,7 +12609,7 @@ RTS
 
   sourceWindow\Column = Peek.w(?comWord_Column)
   sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
-  PED_ScrollSourceLine{-\font\tf_XSize}   ;dx.w = \font\tf_XSize : Gosub source_scroll_line
+  PED_ScrollHorizontal{-\font\tf_XSize}   ;dx.w = \font\tf_XSize : Gosub source_scroll_line
 
 Return
 
@@ -13771,7 +13831,7 @@ RTS
 
 .ScrollDelay:
   CNIF #slowdown <> 0
-    If no_scrollrate
+    If ped\no_scrollrate
       Delay_ 1
     Else
       vvblank_Wait{}
@@ -14180,7 +14240,7 @@ Return
 
   sourceWindow\Column = Peek.w(?comWord_Column)
   sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
-  PED_ScrollSourceLine{\font\tf_XSize} ;dx.w = -\font\tf_XSize : Gosub source_scroll_line
+  PED_ScrollHorizontal{\font\tf_XSize} ;dx.w = -\font\tf_XSize : Gosub source_scroll_line
 
   ;-- update blockmarking
   If Peek.l(?comLong_BlockEndY) <> $ffffFFFF
@@ -15964,7 +16024,7 @@ Return
         Poke.b lineaddr + currentColumn + cupos,$20 ; insert space character
         sourceWindow\Column = Peek.w(?comWord_Column)
         sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
-        PED_ScrollSourceLine{\font\tf_XSize}
+        PED_ScrollHorizontal{\font\tf_XSize}
         enteredChar.b = $20 : Gosub print_entered_char
       Next cupos
 
