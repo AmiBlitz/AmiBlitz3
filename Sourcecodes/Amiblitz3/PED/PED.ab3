@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2609
+; NumberOfBuilds  = 2628
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1160
-; CursorColumn    = 10
-; LabelSearch     = "ped_scrollhorizontal"
+; CursorLine      = 250
+; CursorColumn    = 1
+; LabelSearch     = "ted"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -323,10 +323,9 @@ SYNTAX 6
 #MAX_MENUTEMPLATES = 16    ; max custom menuentries
 
 XINCLUDE "/BlitzLibs/Residents/libnums.ab3"
-XINCLUDE "/Shared/library_offsets.ab3"
+XINCLUDE "/Shared/library_offsets.ab3"      ; only for Macro newalloc
 XINCLUDE "/Shared/common.ab3"
 XINCLUDE "/Shared/preprocessor.include.ab3"
-XINCLUDE "/Shared/ted.include.ab3"
 DEFTYPE.tokendata tokeninfo          ; moved to the Newtype definion  tomsmart1 2012 06 18
 
 XINCLUDE "v43+.definitions.ab3"                       ; for MouseWheel support  tomsmart1
@@ -846,6 +845,7 @@ MaxLen tautodocdir$       = 192
 
 MaxLen tmp_string.s       = 1024     ; used for passing strings to os-functions
 MaxLen pedmessage.s       = 96       ; used for display the text area
+MaxLen tmpDetokeStr.s     = #MAX_Columns
 
 WZListAdd lst.List         ," "
 WZListAdd lst2.List        ," "
@@ -1240,8 +1240,8 @@ End Function
 Function PED_InsertSourceLine{*newLine.sourceLine,tmptsl.l,tmpfsl.l, tmpcsl.l}
 SHARED ped
 
-  *currentLine.sourceLine = Peek.l(tmpcsl)
-  If *currentLine
+   *currentLine.sourceLine = Peek.l(tmpcsl)
+   If *currentLine
     *prevLine.sourceLine = *currentLine\previousLine
     If *prevLine = 0
       ;log_Print{"current line has no previousline, setting newline as new firstline."}
@@ -1452,6 +1452,27 @@ Function.s PED_GetFirstTokenname{libnum.w}
     Function Return lib_mapping$(libnum,1)
   EndIf
 End Function
+
+Function.s PED_Detoke{*sourceLine.sourceLine}
+SHARED tmpDetokeStr.s
+
+  If *sourceLine = 0 Then Function Return ""
+  
+  tmpDetokeStr = String$(Chr$(0),#MAX_Columns) 
+  GetReg A0, *sourceLine + 9
+  GetReg A1, &tmpDetokeStr
+  MOVEM.l A0-a1,-(a7)
+  !asm
+  MOVEM.l (a7)+,A0-a1
+  JSR detokenize_line   ;input A0: tokenized string; returns A1: detokenized string
+  !basic
+  result.s = Peek.s(&tmpDetokeStr)
+  Function Return result
+
+End Function
+
+
+
 
 
 Function.s PED_GetTokenName{*tokeninfo.tokeninfo,tnumber.w}
@@ -3194,10 +3215,10 @@ If dos_CheckLib{"wizard.library",42} = False        ; needed for PED and REDDebu
   ende = True
 EndIf
 
-If dos_CheckLib{"ted.library",1} = False            ; needed for PED and REDDebugger
-  errorout + "Missing 'ted.library':\\nVersion 1 of this library is required by the IDE.\\n\\n"
-  ende = True
-End If
+;If dos_CheckLib{"ted.library",1} = False            ; needed for PED and REDDebugger
+;  errorout + "Missing 'ted.library':\\nVersion 1 of this library is required by the IDE.\\n\\n"
+;  ende = True
+;End If
 If dos_CheckLib{"disassembler.library",40} = False  ; only needed for REDDebugger
   errorout + "Missing 'disassembler.library':\\nVersion 40 of this library is required by REDDebugger.\\nASM debugging won't work.\\n\\n"
 End If
@@ -3629,15 +3650,15 @@ begin1:
   EndIf
   Poke.l ?comPtr_MemPool,ped\mempool
 
-  If ted_OpenLib{0}
-    TEDSetJumpTable  {?COMDATABASE}
-    TEDSetFirstLine  {?comPtr_FirstSourceLine}
-    TEDSetCurrentLine{?comPtr_CurrentSourceLine}
-  Else
-    error {!TRANS{"Unable to open ted.library!"}}
-    Pop If
-    Goto exit_PED_nomem
-  EndIf
+;  If ted_OpenLib{0}
+;    TEDSetJumpTable  {?COMDATABASE}
+;    TEDSetFirstLine  {?comPtr_FirstSourceLine}
+;    TEDSetCurrentLine{?comPtr_CurrentSourceLine}
+;  Else
+;    error {!TRANS{"Unable to open ted.library!"}}
+;    Pop If
+;    Goto exit_PED_nomem
+;  EndIf
 
   ; create a msgport for Iconification
   *WBMsgPort.MsgPort = CreateMsgPort_
@@ -3803,7 +3824,8 @@ exit_PED_closelibraries:
 
   log_Print{"closing catalog an libs..."}
   If *MyCatalog Then CloseCatalog_ *MyCatalog
-  ted_CloseLib{}
+  
+  ;ted_CloseLib{}
 
   If *WBMsgPort Then DeleteMsgPort_ *WBMsgPort
 
@@ -3872,28 +3894,18 @@ End
       ; --- get address of actual source line ---
       sourceWindow\lastEditedLine = Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
 
-      MOVE.w comWord_KeyBeforeReturn,D0 : MOVE.w D0,comWord_SourceChanged
+      Poke.w ?comWord_SourceChanged, $FFFF
 
-      ;MOVEQ #0,D0
-      ;MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
-      ;MOVE.l a2,d0 : lineaddr.l = PutD0
       lineaddr.l = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
-      columnpos.w =  Peek.w(?comWord_Column) + Peek.w(?comWord_ColumnsOffset)
-      ;log_Print{Hex$(lineaddr)+ " column: " + Str$(columnpos)}
-      ;log_Print{"parse: " + Peeks$(lineaddr,34)}; #MAX_Columns)}
 
       ; --- store cursor column position ---
-      ;MOVEQ #0,D0
-      ;MOVE.w comWord_Column,D0 : ADD.w comWord_ColumnsOffset,D0
-      ;columnpos.w = PutD0
+      columnpos.w =  Peek.w(?comWord_Column) + Peek.w(?comWord_ColumnsOffset)
+
 
       ; --- format source line and get new column position ---
       newcolumnpos.w = preparseline{columnpos, lineaddr, pedconfig\auto_format, pedconfig\correct_functions}
-      ;GetD0 newcolumnpos
-      ;SUB.w comWord_ColumnsOffset,D0 : MOVE.w D0,comWord_Column
       Poke.w ?comWord_Column, newcolumnpos - Peek.w(?comWord_ColumnsOffset)
-      ;log_Print{"current Column: " + Str$(Peek.w(?comWord_Column))}
-      old_search_label$ = "|"
+      ;old_search_label$ = "|"  ;              WHY ?
       Gosub cursor_off
       !asm
 
@@ -3901,42 +3913,34 @@ End
       MOVEA.l comPtr_CurrentSourceLine,A4
       MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
       JSR parse_line
-      ;!regs2stack
-      ;!basic
-      ;log_Print{"tokenbase: " + Hex$(Peek.l(?comPtr_TokenBase))}
-      ;!log_HexDump{Peek.l(?comPtr_Temp_TokenString1),64}
-      ;!asm
-      ;!stack2regs
-;      JSR cursor_on
 
       ; --- draw block mark if existing
   ;    SF comByte_StateBlockMark
   ;    TST.l comLong_BlockEndY
   ;    BMI.w exit_updateblock
   ;      MOVEM.l D0-D3/A0-A2,-(A7)
-  ;      MOVE.l comLong_DisplayLine,D1
-  ;      ADD.l comLong_DisplayLineOffset,D1
+  ;      MOVE.l comLong_DisplayLine,D1 : ADD.l comLong_DisplayLineOffset,D1
   ;      CMP.l comLong_BlockStartY,D1
   ;      BLT.w JL_0_C66
-  ;      CMP.l comLong_BlockEndY,D1
-  ;      BGT.w JL_0_C66
-  ;        !basic
-  ;        log_Print{"update block marking"}
-  ;        !asm
-  ;        MOVE.w comWord_BlockStartX,D0
-  ;        MOVE.l comLong_BlockStartY,D1
-  ;        MOVE.w comWord_BlockEndX,D2
-  ;        MOVE.l comLong_BlockEndY,D3
-  ;        CMP.l D1,D3
-  ;        BNE.w JL_0_C50
-  ;          CMP.w D0,D2
+  ;        CMP.l comLong_BlockEndY,D1
+  ;        BGT.w JL_0_C66
+  ;          !basic
+  ;          log_Print{"update block marking"}
+  ;          !asm
+  ;          MOVE.w comWord_BlockStartX,D0
+  ;          MOVE.l comLong_BlockStartY,D1
+  ;          MOVE.w comWord_BlockEndX,D2
+  ;          MOVE.l comLong_BlockEndY,D3
+  ;          CMP.l D1,D3
   ;          BNE.w JL_0_C50
-  ;            MOVE.w visiblecolumns,D2
-  ;        JL_0_C50:
-  ;        SUB.l comLong_DisplayLineOffset,D3
-  ;        SUB.l comLong_DisplayLineOffset,D1
-  ;        JSR _redrawBlock
-  ;        ST comByte_StateBlockMark
+  ;            CMP.w D0,D2
+  ;            BNE.w JL_0_C50
+  ;              MOVE.w visiblecolumns,D2
+  ;          JL_0_C50:
+  ;          SUB.l comLong_DisplayLineOffset,D3
+  ;          SUB.l comLong_DisplayLineOffset,D1
+  ;          JSR _redrawBlock
+  ;          ST comByte_StateBlockMark
   ;      JL_0_C66:
   ;      MOVEM.l (A7)+,D0-D3/A0-A2
   ;    exit_updateblock:
@@ -3967,7 +3971,6 @@ End
   ;        MOVEM.l (A7)+,D0-D3/D7/A0-A2
       JL_0_CC6:
       !basic
- ;     log_Print{"parse end."}
     EndIf
 
     ; -- check if an executable is running and prevent IDE from doing things
@@ -5487,9 +5490,9 @@ Return
 
   ; -- update modified flags
   ;CLR.w comWord_SourceChanged
-  CLR.w comWord_SourceModifiedFlag
+  ;CLR.w comWord_SourceModifiedFlag
   CLR.w comWord_KeyBeforeReturn
-  Gosub update_modifiermark
+  ;Gosub update_modifiermark
   Gosub update_debuggertoggle
 Return
 
@@ -5914,11 +5917,10 @@ str_replacestring:  Ds.b #MAX_STRINGSIZE
 Even
 
 .menu_find:                          ;find
-  *textline.l = TEDGetCurrentLine{} + 9
-  *detokened.l = TEDDetoke{*textline}
-  actualword$ = PED_GetWordAtPos{Peek$(*detokened), Peek.w(?comWord_Column),False}
+  ts.s = PED_Detoke{Peek.l(?comPtr_CurrentSourceLine)}
+  actualword$ = PED_GetWordAtPos{ts, Peek.w(?comWord_Column),False}
   If actualword$ <> ""
-    find_findStrOld.s = actualword$                                                                                                                                                                                                                      
+    find_findStrOld.s = actualword$
   EndIf
 
   If WZ_CheckOpen{"WIN_SEARCH"} = False
@@ -6304,7 +6306,7 @@ Return
 Return
 
 .close_actualsource:
-  CLR.w comWord_SourceChanged
+  ;CLR.w comWord_SourceChanged
 
   MOVEM.l D0-D2/A0-A1,-(A7)
   JSR delete_tempprefs
@@ -7402,8 +7404,7 @@ Return
   Wend
   Poke.l ?comPtr_CurrentSourceLine, *tempLine
 
-  *detokened.l = TEDDetoke{*tempLine + 9}
-  strline$ = Peek$(*detokened)
+  strline$ = PED_Detoke{*tempLine}
   log_Print{"current sourceline : " + strline$}
   log_Print{"currentline: " + Str$(tempY)}
 
@@ -7523,8 +7524,8 @@ Return
     Gosub set_pointer_normal_bas
 
   Case #MENU_COMPILERUN
-    TEDSetLabelList {?comPtr_LabelList}
-    TEDSetLabelCount{?comWord_LabelCounter}
+    ;TEDSetLabelList {?comPtr_LabelList}
+    ;TEDSetLabelCount{?comWord_LabelCounter}
     Gosub call_compiler
 
   Case #MENU_RUN
@@ -7704,9 +7705,8 @@ JUMP_JL_0_5054: JMP JL_0_5054
     EndIf
 
   Case #MENU_OPENFILEUNDERCURSOR
-    *textline.l = TEDGetCurrentLine{} + 9
-    *detokened.l = TEDDetoke{*textline}
-    _file$ = PED_GetWordAtPos{Peek$(*detokened), Peek.w(?comWord_Column),False,False}
+    strline$ = PED_Detoke{Peek.l(?comPtr_CurrentSourceLine)} ;{*textline}
+    _file$ = PED_GetWordAtPos{strline$, Peek.w(?comWord_Column),False,False}
     log_Print{"open file under cursor [" + _file$+ "]"}
     If _file$ <> ""
       a$ = _file$
@@ -7833,7 +7833,7 @@ BRA open_source
 
   !regs2stack
   !basic
-  log_Print{"menu opennew: value of AL_0_84BE: " + Hex$(Peek.l(?AL_0_84B2))}
+  log_Print{"menu opennew: value of AL_0_84B2: " + Hex$(Peek.l(?AL_0_84B2))}
   !asm
   !stack2regs
 
@@ -7846,7 +7846,7 @@ BRA open_source
   ;  JSR (a0)
   ;'l10
 
-  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin+10,d0
+ MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin+10,d0
   !newalloc
   TST.l D0
   BEQ.w error_xtramem
@@ -7871,9 +7871,38 @@ BRA open_source
   !asm
   RTS
 
-JL_0_2E70:
+
+
+  !basic
+  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin+10,d0 : tmpMemSize.l = PutD0
+  ptr_XtraMem.l = PED_AllocMem{tmpMemSize}
+  If ptr_XtraMem = 0
+    Gosub display_memoryalert
+    Pop If
+    !asm
+    RTS
+  EndIf
+
+  If Peek.l(?AL_0_84B2) = 0
+    !asm
+    JSR clear_sourcebuffer
+    !basic
+    Poke.l ?actualfile, ptr_XtraMem
+    Poke.l ?AL_0_84B2, ptr_XtraMem
+    Poke.l ?loadedfilesbase, ptr_XtraMem
+    Poke.l ptr_XtraMem + 4,0
+    Poke.l ptr_XtraMem,0
+    !asm
+    RTS
+  EndIf
+
+  GetD0 tmpMemSize
+  !asm
+
+
+  JL_0_2E70:
   JSR StoreXtraData
-  CLR.w comWord_SourceChanged
+  ;CLR.w comWord_SourceChanged
   MOVEA.l D0,A0
   MOVEA.l actualfile,A1
   MOVE.l D0,actualfile
@@ -8024,13 +8053,12 @@ Return
   If Peek.l(?comLong_BlockEndY) = -1 Then Return
 
   Gosub getCountOfMarkedLines
-  *detokened.l = TEDDetoke{*tempLine.sourceLine + 9}
-  log_Print{"address of detokened line: " + Hex$(*detokened)}
-  strlng.w = Len(Peek$(*detokened))
+  strline$ = PED_Detoke{*tempLine}
+  strlng.w = FLen(strline$)
   If strlng = 0
     log_Print{"no text to copy..."}
   Else
-    ;log_Print{"first marked sourceline: " + Peek$(*detokened)}
+    ;log_Print{"first marked sourceline: " + strline$}
     ;log_Print{"marked lines: " + Str$(getCountOfMarkedLines.l)}
 
     ;log_Print{"BlockEndX =" + Str$(Peek.w(?comWord_BlockEndX))}
@@ -8043,7 +8071,7 @@ Return
         strlng = strlng - Peek.w(?comWord_BlockStartX)
       EndIf
       ;log_Print{"before peeking " + Str$(strlng)}
-      strline$ = Peeks$(*detokened + Peek.w(?comWord_BlockStartX), strlng) ;+ Chr$(10)
+      strline$ = Mid$(strline$,Peek.w(?comWord_BlockStartX), strlng) ;+ Chr$(10)
       ;log_Print{">> [" + strline$ + "]"}
 
       clipboard_WriteText{&strline$}
@@ -8064,7 +8092,7 @@ Return
                   strline$ = Chr$(10)
                 Else
                   strlng = strlng - Peek.w(?comWord_BlockStartX)
-                  strline$ = Peeks$(*detokened + Peek.w(?comWord_BlockStartX), strlng) + Chr$(10)
+                  strline$ = Mid$(strline$, Peek.w(?comWord_BlockStartX), strlng) + Chr$(10)
                 EndIf
                 ;log_Print{Str$(Len(strline$))}
                 ;log_Print{">"+strline$+"<"}
@@ -8075,13 +8103,13 @@ Return
                 For si.w = 1 To getCountOfMarkedLines - 2
                   If *tempLine\nextLine
                     *tempLine = *tempLine\nextLine
-                    detokened.l = TEDDetoke{*tempLine + 9}
-                    strlng.w = Len(Peek$(*detokened))
+                    strline$ = PED_Detoke{*tempLine}
+                    strlng.w = FLen(strline$)
                     If ped\verticalCopyMode <> 0 AND (strlng > Peek.w(?comWord_BlockStartX))
                       strlng = strlng - Peek.w(?comWord_BlockStartX)
-                      strline$ = Peeks$(*detokened + Peek.w(?comWord_BlockStartX), strlng)  + Chr$(10)
+                      strline$ = Mid$(strline$, Peek.w(?comWord_BlockStartX), strlng)  + Chr$(10)
                     Else
-                      strline$ = Peeks$(*detokened, strlng) + Chr$(10)
+                      strline$ + Chr$(10)
                     EndIf
                     WriteChunkBytes_ *iff,&strline$,Len(strline$)
                   Else
@@ -8093,8 +8121,8 @@ Return
                 ;log_Print{"copy last line"}
                 *tempLine = *tempLine\nextLine
                 If *tempLine
-                  *detokened.l = TEDDetoke{*tempLine + 9}
-                  strline$ = Left$(Peek$(*detokened),Peek.w(?comWord_BlockEndX))
+                  strline$ = PED_Detoke{*tempLine}
+                  strline$ = Left$(strline$,Peek.w(?comWord_BlockEndX))
                   strlng = Len(strline$)
                   If ped\verticalCopyMode <> 0 AND (strlng > Peek.w(?comWord_BlockStartX))
                     strline$ = UnRight$(strline$,Peek.w(?comWord_BlockStartX)) + Chr$(10)
@@ -8214,16 +8242,15 @@ Return
     Return
   EndIf
 
-
   Gosub getCountOfMarkedLines
   log_Print{"marked Lines: " + Str$(getCountOfMarkedLines)}
-  *detokened.l = TEDDetoke{*tempLine.sourceLine + 9}
-  log_Print{"source of first blockline: " + Peeks$(*detokened,20)}
+  strline$ = PED_Detoke{*tempLine}
+  log_Print{"source of first blockline: " + Left$(strline$,20)}
   *previousLine.sourceLine = *tempLine\previousLine
 
   For si.w = 1 To getCountOfMarkedLines
-    detokened.l = TEDDetoke{*tempLine + 9}
-    log_Print{Str$(si) + " deleting " + Peeks$(detokened,20)}
+    strline$ = PED_Detoke{*tempLine}
+    log_Print{Str$(si) + " deleting " + Left$(strline$, 20)}
 
     ptr_line.l = *tempLine
     *tempLine = *tempLine\nextLine
@@ -8419,7 +8446,7 @@ Return
     Close_ *write_fh : *write_fh = 0
   EndIf
 
-  WZ_UnlockAllOpenWindows{}                                                                                                                                                                                                                              
+  WZ_UnlockAllOpenWindows{}
   Gosub set_pointer_normal_bas
   WZ_HideMessage{}
   PED_ShowMessage{""}
@@ -8433,17 +8460,17 @@ Return
       If *write_fh <> 0
         Gosub set_pointer_busy_bas
         Gosub getCountOfMarkedLines
-        *detokened.l = TEDDetoke{*tempLine.sourceLine + 9}
-        strlng.w = Len(Peek$(*detokened))
+        strline$ = PED_Detoke{*tempLine}
+        strlng.w = FLen(strline$)
 
         If getCountOfMarkedLines.l < 2
           If strlng >= Peek.w(?comWord_BlockEndX)
             strlng = Peek.w(?comWord_BlockEndX) - Peek.w(?comWord_BlockStartX) + 2
           EndIf
           strlng = strlng - 1
-          strline$ = Peeks$(*detokened + Peek.w(?comWord_BlockStartX), strlng) ;+ Chr$(10)
+          strline$ = Mid$(strline$, Peek.w(?comWord_BlockStartX), strlng) ;+ Chr$(10)
           ;log_Print{">>" + strline$}
-          Write_ *write_fh,&strline$,Len(strline$)
+          Write_ *write_fh,&strline$,FLen(strline$)
         Else
           If strlng <= Peek.w(?comWord_BlockStartX)
             ; end of String...
@@ -8453,21 +8480,21 @@ Return
 
            ; copy first line
            strlng = strlng - Peek.w(?comWord_BlockStartX)
-           strline$ = Peeks$(*detokened + Peek.w(?comWord_BlockStartX), strlng) + Chr$(10)
+           strline$ = Mid$(strline$, Peek.w(?comWord_BlockStartX), strlng) + Chr$(10)
            Write_ *write_fh, &strline$, Len(strline$)
 
            ; copy most lines
            For si.w = 1 To getCountOfMarkedLines - 2
              If *tempLine\nextLine
                *tempLine = *tempLine\nextLine
-               detokened.l = TEDDetoke{*tempLine + 9}
-               strlng.w = Len(Peek$(*detokened))
+               strline$ = PED_Detoke{*tempLine}
+               strlng.w = FLen(strline$)
                If ped\verticalCopyMode <> 0 AND (strlng > Peek.w(?comWord_BlockStartX))
-                 strline$ = Peeks$(*detokened + Peek.w(?comWord_BlockStartX), strlng - Peek.w(?comWord_BlockStartX)) + Chr$(10)
+                 strline$ = Mid$(strline$, Peek.w(?comWord_BlockStartX), strlng - Peek.w(?comWord_BlockStartX)) + Chr$(10)
                Else
-                 strline$ = Peeks$(*detokened, strlng) + Chr$(10)
+                 strline$ = Left$(strline$, strlng) + Chr$(10)
                EndIf
-               Write_ *write_fh,&strline$,Len(strline$)
+               Write_ *write_fh,&strline$,FLen(strline$)
              Else
                error{"Error copying to clipboard: no next line!",#log_error}
              EndIf
@@ -8476,8 +8503,8 @@ Return
            ; copy last selected Line
            *tempLine = *tempLine\nextLine
            If *tempLine
-             *detokened.l = TEDDetoke{*tempLine + 9}
-             strline$ = Left$(Peek$(*detokened),Peek.w(?comWord_BlockEndX))
+             strline$ = PED_Detoke{*tempLine}
+             strline$ = Left$(strline$,Peek.w(?comWord_BlockEndX))
              strlng = Len(strline$)
              If ped\verticalCopyMode <> 0 AND (strlng > Peek.w(?comWord_BlockStartX))
                strline$ = UnRight$(strline$,Peek.w(?comWord_BlockStartX)-1) + Chr$(10)
@@ -10531,14 +10558,15 @@ BRA 'l4
     MOVEQ.l #$00,D0
     MOVE.b (A0)+,D0
     BEQ.w JL_0_5050
+
     CMP.b #$22,d0
-     BNE 'l1
-    NOT.b instring3
+    BNE 'l1
+      NOT.b instring3
    'l1
     TST.b instring3
     BNE 'l2
-    TST.b d0
-    BMI.w JL_0_5040
+      TST.b d0
+      BMI.w JL_0_5040               ; beginning of token found
    'l2
     MOVE.b D0,(A1)+
     BNE.b detokenize_line2
@@ -10547,11 +10575,11 @@ BRA 'l4
     LSL.w #8,D0
     MOVE.b (A0)+,D0
     JSR token_to_ascii
-
     JL_0_5048:
       MOVE.b (A3)+,(A1)+
     BNE.b JL_0_5048
     SUBQ.w #1,A1
+
   BRA.b detokenize_line2
 
   JL_0_5050:
@@ -13574,8 +13602,8 @@ RTS
 
   If Peek.b(?comByte_DebugMode) Then info$ = "  Debug: On " Else info$ = "  Debug: Off"
   If ped\DoTokenize Then info$ + "  Tokenize: On " Else info$+ "  Tokenize: Off"
-  ;If Peek.w(?comWord_SourceModifiedFlag) Then info$ = "Modified: True  " + info$ Else info$= "Modified: False" + info$
-  info$ = "Total: " + Str$(Peek.l(?comLong_TotalLines)) + info$
+  If Peek.w(?comWord_SourceChanged) Then info$ = "Modified: True  " + info$ Else info$= "Modified: False" + info$
+  ;info$ = "Total: " + Str$(Peek.l(?comLong_TotalLines)) + info$
   PED_PrintStatus{info$,74,2}
 Return
 
@@ -13600,7 +13628,7 @@ Return
   Move_ \win\RPort,0,\statusAreaY + 1 : Draw_ \win\RPort,\win\GZZWidth,\statusAreaY + 1
   Move_ \win\RPort,0,\BoxTop-1 : Draw_ \win\RPort,\win\GZZWidth,\BoxTop-1
 
-  ; update EACH TIME ??? WHY??
+  ; for updating the modifier flag "*"
   Gosub draw_tabs
 
   PED_PrintStatus{"Line:        ", 24}
@@ -13939,16 +13967,18 @@ Return
 Return
 
 .update_modifiermark:
-  If Peek.w(?comWord_SourceChanged)
-    If Peek.w(?comWord_SourceModifiedFlag) <> -1
-      Poke.w ?comWord_SourceModifiedFlag, -1
+
+  If Peek.w(?comWord_SourceChanged) <> oldSourceChanged.w
+  ;  If Peek.w(?comWord_SourceModifiedFlag) <> -1
+  ;    Poke.w ?comWord_SourceModifiedFlag, -1
       Gosub draw_statusarea
-    EndIf
-  Else
-    If Peek.w(?comWord_SourceModifiedFlag) <> 0
-      Poke.w ?comWord_SourceModifiedFlag, 0
-      Gosub draw_statusarea
-    EndIf
+      oldSourceChanged = Peek.w(?comWord_SourceChanged)
+  ;  EndIf
+  ;Else
+  ;  If Peek.w(?comWord_SourceModifiedFlag) <> 0
+  ;    Poke.w ?comWord_SourceModifiedFlag, 0
+  ;    Gosub draw_statusarea
+  ;  EndIf
   EndIf
 Return
 
@@ -14332,9 +14362,8 @@ RTS
 .startguide:
   !basic
   log_Print{"startguide"}
-  *textline.l = TEDGetCurrentLine{} + 9
-  *detokened.l = TEDDetoke{*textline}
-  actualword$ = PED_GetWordAtPos{Peek$(*detokened), Peek.w(?comWord_Column),True}
+  strline$ = PED_Detoke{Peek.l(?comPtr_CurrentSourceLine)}
+  actualword$ = PED_GetWordAtPos{strline$, Peek.w(?comWord_Column),True}
   If actualword$ <> ""
     Gosub instructionbrowser_startguide
   Else
@@ -14397,9 +14426,8 @@ RTS
     Select _key
     Case $8b ; "HELP"
       ;If NOT already_displayed
-      *textline.l = TEDGetCurrentLine{} + 9
-      *detokened.l = TEDDetoke{*textline}
-      tokname$ = PED_GetWordAtPos{Peek$(*detokened), Peek.w(?comWord_Column),True}
+      strline$ = PED_Detoke{Peek.l(?comPtr_CurrentSourceLine)}
+      tokname$ = PED_GetWordAtPos{strline$, Peek.w(?comWord_Column),True}
       If tokname$ <> ""
         log_Print{"HELP on <" + tokname$ + ">"}
 
@@ -14680,7 +14708,7 @@ Return
 ;          If tokentable(acttoke2) = 1
 ;            tokname$ = PED_GetTokenName{*tokenbase,acttoke2}
 ;            If tokname$=""
-;              !cout{zeile,Peek$(TEDDetoke_(testaddr))}
+;              !cout{zeile,PED_Detoke{*textline})}
 ;              !cout{"found token ("+Hex$(acttoke2)+"): "+tokname$} ;,libname$,libnum}
 ;            EndIf
 ;          EndIf
@@ -15063,13 +15091,13 @@ Return
 Return
 
 
-.set_tedlibbase_bas:
-  TEDSetJumpTable  {?COMDATABASE}
-  TEDSetFirstLine  {?comPtr_FirstSourceLine}
-  TEDSetCurrentLine{?comPtr_CurrentSourceLine} ; or Peek.l(?comPtr_CurrentSourceLine) !?
-  TEDSetLabelList  {?comPtr_LabelList}
-  TEDSetLabelCount {?comWord_LabelCounter}
-RTS
+;.set_tedlibbase_bas:
+;  TEDSetJumpTable  {?COMDATABASE}
+;  TEDSetFirstLine  {?comPtr_FirstSourceLine}
+;  TEDSetCurrentLine{?comPtr_CurrentSourceLine} ; or Peek.l(?comPtr_CurrentSourceLine) !?
+;  TEDSetLabelList  {?comPtr_LabelList}
+; TEDSetLabelCount {?comWord_LabelCounter}
+;TS
 
 
 ;.set_tedlibbase
@@ -15302,8 +15330,8 @@ Return
 
       ; -- check out the help and display it
       If *tempLine
-        *detokened.l = TEDDetoke{*tempLine + 9}
-        helptext$ = PED_GetWordAtPos{Peek$(*detokened),textX, True}
+        strline$ = PED_Detoke{*tempLine}
+        helptext$ = PED_GetWordAtPos{strline$,textX, True}
         If helptext$ <> ""
           helpvalue.l = 0 : msg$ = ""
           ;-- check for a constant
@@ -15344,7 +15372,7 @@ Return
 .handle_event_menupick:
   log_Print{"handle_event_menupick - selected menuitem: " + Hex$(_menuitem.l)}
   If pedMessage\_Code <> -1
-    Gosub set_tedlibbase_bas                     ;why?
+    ;Gosub set_tedlibbase_bas                     ;why?
     _menuNumber.w = pedMessage\_Code
     _ItemAddress.l = ItemAddress_(Peek.l(?addr_menustrip),_menuNumber AND #MaxWord)
     _menuitem.l = Peek.l(_ItemAddress + $22)             ; Userdata of GadTools, longword right after MenuItem-struct
@@ -15466,9 +15494,8 @@ Return
     Mmx = pedMessage\_MouseX
     Mmy = pedMessage\_MouseY
     If isDoubleClick AND isSameMousePosition
-      *textline.l = TEDGetCurrentLine{} + 9
-      *detokened.l = TEDDetoke{*textline}
-      actualword$ = PED_GetWordAtPos{Peek$(*detokened), Peek.w(?comWord_Column),True}
+      strline$ = PED_Detoke{Peek.l(?comPtr_CurrentSourceLine)}
+      actualword$ = PED_GetWordAtPos{strline$, Peek.w(?comWord_Column),True}
       log_Print{"doubleclick on ==>" + actualword$}
       If WZ_CheckOpen{"WIN_LABELS"}
         search_label$ = StripLead$(LCase$(actualword$),32)
@@ -17740,8 +17767,7 @@ RTS
 
 .jump_onclick:
   *currLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
-  *detokened.l = TEDDetoke{*currLine + 9}
-  strline$ = Peek$(*detokened)
+  strline$ = PED_Detoke{*currLine}
   If Instr(strline$,"{") > 0 Then statement_in_line.b = True
 
   actualword$ = PED_GetWordAtPos{strline$, Peek.w(?comWord_Column),True}
@@ -17754,7 +17780,7 @@ RTS
   jump_search:
   log_Print{"search for <" + actualword$ + ">"}
 
-  *tempLine = TEDGetFirstLine{}
+  *tempLine = Peek.l(?comPtr_FirstSourceLine)
 
   linecounter.l = 0 : found_definition.b = False : found_to_jump.b = False
   Repeat
@@ -17765,11 +17791,9 @@ RTS
     Else
       char_before$ = ""
       found_definition = False
-      ;*detokened = TEDDetoke{*tempLine + 9}
-      ;log_Print{Peek$(*detokened)}
-      strline$ = Trim$(Peek.s(*tempLine + 9))
 
       ; check if it is the definition of a Statement/Function/Macro, we skip it!
+      strline$ = Trim$(Peek.s(*tempLine + 9))
       tokenID.l = Peek.w(&strline$) AND $FFFF
       Select tokenID
       Case #TOKEN_Statement : found_definition = True
@@ -17872,9 +17896,8 @@ Return
 .diag_redraw:
   If diag = 0 Then Return
 
-  *textline.l = TEDGetCurrentLine{} + 9
-  *detokened.l = TEDDetoke{*textline}
-  actualword$ = PED_GetWordAtPos{Peek$(*detokened), Peek.w(?comWord_Column),True}
+  strline$ = PED_Detoke{Peek.l(?comPtr_CurrentSourceLine)}
+  actualword$ = PED_GetWordAtPos{strline$, Peek.w(?comWord_Column),True}
   w$ = actualword$
   tokname$ = actualword$
   res$ = ""
@@ -18278,11 +18301,11 @@ RTS
 
 ;.notypehelp
 .help_checkforif:
-  actline.l   = ?comPtr_CurrentSourceLine
+  *tempLine.sourceLine = Peek.l(?comPtr_CurrentSourceLine)
   nestcount.b = 1
   Repeat
     iffound.b = 0
-    *textline.l = Peek.l(actline) + 9
+    *textline.l = *tempLine + 9
 
     ; kill any spaces before Token
     testaddr.l = Peek.l(*textline) : bytecount = 0
@@ -18312,14 +18335,13 @@ RTS
     If (nestcount = 1) Then Pop Repeat : Goto foundif
 
     ; get previous line pointer
-    actline.l = Peek.l(actline) + 4
-  Until Peek.l(actline) = 0
+    *tempLine = *tempLine\nextLine
+  Until *tempLine = 0
   foundif:
   If (iffound = 1)
-    *detokened.l = TEDDetoke{*textline}
-    tokname$ = Peek$(*detokened)
-    linestr$ = Trim$(tokname$)
-    PED_ShowMessage{"Corresponding Header: " + linestr$}
+    strline$ = PED_Detoke{*tempLine}
+    strline$ = Trim$(strline$)
+    PED_ShowMessage{"Corresponding Header: " + strline$}
   EndIf
 Return
 
@@ -20407,7 +20429,7 @@ Return                                                                        ; 
     *actualfile.l = Peek.l(?actualfile)
     *sourcefile.l = Peek.l(?loadedfilesbase)
 ;    xpos_text.l= #filenamepos * \font\tf_XSize ;Peek.w(?fontWidth)
-    Repeat 
+    Repeat
       modifiedFlag.b = False
       textlen.w = 10                        ; width of tab in characters
 
@@ -20440,9 +20462,9 @@ Return                                                                        ; 
 
 
       If *actualfile = *sourcefile
-        modifiedFlag = Peek.w(?comWord_SourceModifiedFlag)
+        modifiedFlag = Peek.w(?comWord_SourceChanged)
       Else
-        modifiedFlag = Peek.w(*sourcefile + 8 + $143)
+        modifiedFlag = Peek.w(*sourcefile + 8 + $14B)  ; $143
       EndIf
       If modifiedFlag
         Text_ \win\RPort,"*", 1
@@ -20533,14 +20555,14 @@ Return
             log_Print{"tab is actual file"}
             If pedMessage\_Qualifier AND (#IEQUALIFIER_CONTROL|#IEQUALIFIER_LALT|#IEQUALIFIER_RALT)
               log_Print{"control or alt pressed with mouse"}
-              If Peek.w(?comWord_SourceModifiedFlag) = -1
+              If Peek.w(?comWord_SourceChanged) 
                 Gosub storeline_bas
                 Delay_ 2
               EndIf
-              Gosub set_tedlibbase_bas
+              ;Gosub set_tedlibbase_bas
               If pedMessage\_Qualifier AND #IEQUALIFIER_CONTROL
                 log_Print{"control: create exe"}
-                Gosub cursor_off                                                                                                                                                                                                                            
+                Gosub cursor_off
                 !asm
                 MOVEM.l    D2-D7/A1-A6,-(A7)
                 MOVEQ.l    ##MENU_SAVECREATEEXE,D6
@@ -20550,7 +20572,7 @@ Return
               EndIf
               If pedMessage\_Qualifier AND (#IEQUALIFIER_LALT|#IEQUALIFIER_RALT)
                 log_Print{"alt: compile & run"}
-                Gosub cursor_off                                                                                                                                                                                                                            
+                Gosub cursor_off
                 !asm
                 MOVEM.l    D2-D7/A1-A6,-(A7)
                 MOVEQ.l    ##MENU_COMPILERUN,D6
