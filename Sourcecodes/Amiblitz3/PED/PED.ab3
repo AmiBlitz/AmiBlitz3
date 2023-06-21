@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2643
+; NumberOfBuilds  = 2644
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 7707
-; CursorColumn    = 47
+; CursorLine      = 7773
+; CursorColumn    = 1
 ; LabelSearch     = "actualsource"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -512,6 +512,7 @@ NEWTYPE.ped
   extention_xtra.s
   extention_bak.s
 
+  *sourceEntry.sourceEntry
   sourceFileHandle.l
   convert.b
 ;  flag_tokenization.w
@@ -545,7 +546,6 @@ NEWTYPE.ped
   LabelIdentifier.b
   LabelListChanged.w
 
-
   verticalCopyMode.b
   verticalPasteMode.b
   pasteMode.b
@@ -554,12 +554,6 @@ NEWTYPE.ped
 
   undeleteStrLen.w
   no_scrollrate.b
-
-  *FirstSourceLine.sourceLine
-  *CurrentSourceLine.sourceLine
-  *LastSourceLine.sourceLine
-  TotalLines.l
-
 End NEWTYPE
 DEFTYPE.ped ped
 
@@ -837,6 +831,9 @@ Dim pos2(15),pos$(15),postype$(15)
 MaxLen sourcename$        = 96
 MaxLen a$                 = 300      ;need for read .xtra
 a$ = ""
+
+messageErrorWriteFile.s = "Error writing file!"
+
 
 MaxLen tsourcedir$        = 192
 MaxLen tincludedir$       = 192
@@ -1220,7 +1217,7 @@ Function.b PED_ReplaceCurrentSourceLine{*newLine.sourceLine, tmpfsl.l, tmpcsl.l}
 SHARED ped
   *currentLine.sourceLine = Peek.l(tmpcsl)
   If *currentLine = Peek.l(tmpfsl) Then Poke.l tmpfsl, *newLine
-  If *currentLine = ped\LastSourceLine Then ped\LastSourceLine = *newLine
+  If *currentLine = ped\sourceEntry\LastSourceLine Then ped\sourceEntry\LastSourceLine = *newLine
 
   *previousLine.sourceLine = *currentLine\previousLine  ; $4(A4)
   If *previousLine
@@ -1256,7 +1253,7 @@ SHARED ped
   Else
     log_Print{"as there is no sourceline left, this will be the first and last one."}
     Poke.l tmpfsl, *newLine
-    ped\LastSourceLine = *newLine
+    ped\sourceEntry\LastSourceLine = *newLine
   EndIf
 
   Poke.l tmpcsl, *newLine
@@ -2256,7 +2253,7 @@ SHARED ped
       *nextLine\previousLine = *newLine
       *newLine\nextLine = *nextLine
     Else
-      ped\LastSourceLine = *newLine
+      ped\sourceEntry\LastSourceLine = *newLine
     EndIf
     *newLine\previousLine = *afterLine
     *afterLine\nextLine = *newLine
@@ -3683,7 +3680,7 @@ begin1:
   MOVE.l A0,comPtr_Temp_TokenString1 : ADDA.w #MAX_Columns,A0 : ADDQ.w #2,A0
   MOVE.l A0,comPtr_Temp_TokenString2 : ADDA.w #MAX_Columns,A0 : ADDQ.w #2,A0
   MOVE.l A0,comPtr_Temp_TokenString3 : ADDA.w #MAX_Columns,A0 : ADDQ.w #2,A0
-  MOVE.l A0,comPtr_Temp_TokenStringObsolete
+  ;MOVE.l A0,comPtr_Temp_TokenStringObsolete
 
   requestmemsize = $2F60 + 1000   ;12128 bytes
   textbuffers.l = PED_AllocMem{requestmemsize}
@@ -5150,7 +5147,7 @@ RTS
   EndIf
 
   aslfr_SetRequesterTitle {1,!TRANS{"Load source file"},!TRANS{"Load"},!TRANS{"Cancel"}}
-  
+
   If pedconfig\use_filepattern
     aslfr_SetPath  {1,ped\currentDir,ped\currentFile,ped\filePattern,False}
   Else
@@ -5225,20 +5222,17 @@ Return
     clearColumn.b = False : Gosub gotoline
 
     log_Print{"deleting and restoring prefs..."}
-    !asm
-    JSR delete_tempprefs
-    JSR save_tempprefs
-    !basic
+    Gosub delete_tempprefs
+    Gosub save_tempprefs
+
   Else
     Gosub other_loading_routine
     Gosub analyze_loadedsource
     Gosub calc_SourceWindowDimensions
   EndIf
 
-  !asm
-  JSR StoreXtraData
+  Gosub storeCurrentSourceData
 
-  !basic
   log_Print{"updating sourcewindow..."}
   Gosub draw_statusarea
   Gosub update_labelstuff
@@ -5296,7 +5290,7 @@ Return
   *newLine.sourceLine = PED_CreateNewSourceLine{tmpLine}
   Poke.l ?comPtr_FirstSourceLine, *newLine
   Poke.l ?comPtr_CurrentSourceLine, *newLine
-  ped\LastSourceLine = *newLine  ;Poke.l ?comPtr_LastSourceLine, *newLine
+  ped\sourceEntry\LastSourceLine = *newLine  ;Poke.l ?comPtr_LastSourceLine, *newLine
 
   Repeat
     *currLine.sourceLine = *newLine
@@ -5320,7 +5314,7 @@ Return
 
 ;      log_Print{"[" + Str$(*newLine\strLength)+ "] >> " + Peek.s(*newLine+9)}
 
-      ped\LastSourceLine = *newLine ;Poke.l ?comPtr_LastSourceLine, *newLine
+      ped\sourceEntry\LastSourceLine = *newLine ;Poke.l ?comPtr_LastSourceLine, *newLine
       *currLine\nextLine = *newLine
       *newLine\previousLine = *currLine
       Poke.l ?comLong_TotalLines, Peek.l(?comLong_TotalLines) + 1
@@ -5408,8 +5402,10 @@ Return
   !ComData_SetW{comWord_CreateDebugFile,#0}                ; to match the old default settings  tomsmart1
   !stack2regs
 
-  JSR delete_tempprefs
-  JSR save_tempprefs
+  !basic
+  Gosub delete_tempprefs
+  Gosub save_tempprefs
+  !asm
 
   skip_loadingxtrafile:
   !basic
@@ -5496,17 +5492,14 @@ Return
 
 
 .delete_tempprefs:
-  !basic
   If Peek.l(?comFunc_ReadXtraFile) <> 0
     tmp_string = "T:PED_" + Hex$(Peek.l(?actualfile)) + ".xtra"
     log_Print{"deleting <" + tmp_string + ">"}
     DeleteFile_ &tmp_string
   EndIf
-  !asm
-RTS
+Return
 
 .read_tempprefs:
-  !basic
   If Peek.l(?comFunc_ReadXtraFile) <> 0
     tmp_string = "T:PED_" + Hex$(Peek.l(?actualfile)) + ".xtra"
     tpfhandle.l = Open_(&tmp_string, #HUNK_RELOC_16__MODE_OLDFILE)
@@ -5522,11 +5515,9 @@ RTS
       Close_ tpfhandle
     EndIf
   EndIf
-  !asm
-RTS
+Return
 
 .save_tempprefs:
-  !basic
   If Peek.l(?comFunc_WriteXtraFile) <> 0
      tmp_string.s = "T:PED_" + Hex$(Peek.l(?actualfile)) + ".xtra"
     tpfhandle.l = Open_(&tmp_string, #HUNK_RELOC_8__MODE_NEWFILE)
@@ -5542,15 +5533,13 @@ RTS
       Close_ tpfhandle
     EndIf
   EndIf
-  !asm
 Return
 
 .menu_saveas:
   log_Print{"menu_saveas called."}
-  !asm
-  JSR StoreXtraData
-  !basic
-  tmp_string.s = PED_RequestFile{Peek.s(?comStr_CurrentDir),Peek.s(?comStr_SourceName),Peek.s(?comStr_ASLLoadFile),ped\filePattern}
+  Gosub storeCurrentSourceData
+
+  tmp_string.s = PED_RequestFile{Peek.s(?comStr_CurrentDir),Peek.s(?comStr_SourceName),"Name of file to open",ped\filePattern}
   ;Poke.s ?comStr_SourceFileComplete,BB2Filename$
   If tmp_string <> ""
     ped\check_existsfile = True
@@ -5564,7 +5553,7 @@ Return
 .menu_save:
   log_Print{"menu_save called on sourcefile: " + ped\currentFile}
   If ped\currentFile = ""
-    BB2Filename$ = PED_RequestFile{ped\currentDir,ped\currentFile,Peek.s(?comStr_ASLSaveFile),ped\filePattern}
+    BB2Filename$ = PED_RequestFile{ped\currentDir,ped\currentFile,"Name to save file as",ped\filePattern}
     ;ped\sourceFileComplete will be set in function as wekk
     Poke.s ?comStr_SourceName,ped\currentFile   ; info for compiler
     Poke.s ?comStr_CurrentDir,ped\currentDir
@@ -5611,9 +5600,7 @@ Return
   Poke.s ?comStr_SourceName, ped\currentFile
   Poke.s ?comStr_CurrentDir, ped\currentDir
 
-  !asm
-  JSR StoreXtraData
-  !basic
+  Gosub storeCurrentSourceData
 
   log_Print{"updated current source name: " + Peek.s(Peek.l(?comPtr_SourceName))}
 
@@ -5622,7 +5609,7 @@ Return
   Rename_ &ped\sourceFileComplete, tmp_string
 
 
-  WZ_LockAllOpenWindows{}                                                                                                                                                                                                                                
+  WZ_LockAllOpenWindows{}
   Gosub set_pointer_busy_bas
   PED_ShowMessage{!TRANS{"Saving file"} + "..."}
 
@@ -5670,7 +5657,7 @@ Return
     WZ_UnlockAllOpenWindows{}                                                                                                                                                                                                                            
     Gosub set_pointer_normal_bas
     WZ_HideMessage{}
-    error{!TRANS{Peek$(?comStr_ErrorWriteFile)}}
+    error{!TRANS{messageErrorWriteFile}}
   Else
     If Peek.l(?comLong_TotalLines) > 0
       *tempLine.sourceLine = Peek.l(?comPtr_FirstSourceLine)
@@ -5735,7 +5722,7 @@ Return
     WZ_UnlockAllOpenWindows{}                                                                                                                                                                                                                            
     Gosub set_pointer_normal_bas
     WZ_HideMessage{}
-    error{!TRANS{Peek$(?comStr_ErrorWriteFile)}}
+    error{!TRANS{messageErrorWriteFile}}
   Else
     *tempLine.sourceLine = Peek.l(?comPtr_FirstSourceLine)
     Repeat
@@ -6330,10 +6317,9 @@ Return
   PED_FreeMem{ptr_file}
 
   If Peek.l(?actualfile)
+    Gosub getCurrentSourceData
+    Gosub read_tempprefs
     !asm
-    MOVEA.l actualfile,A0
-    JSR GetXtraData
-    JSR read_tempprefs
     JSR JL_0_2Dca8
     !basic
   EndIf
@@ -6836,7 +6822,7 @@ Return
     If *prevLine <> 0
       If cutLine{*currentLine, ?comPtr_FirstSourceLine}
         Poke.l ?comPtr_CurrentSourceLine, *prevLine
-        ped\LastSourceLine = *prevLine ;Poke.l ?comPtr_LastSourceLine, *prevLine
+        ped\sourceEntry\LastSourceLine = *prevLine ;Poke.l ?comPtr_LastSourceLine, *prevLine
         PED_StoreSourceLine{*currentLine}
         PED_DeleteSourceLine{*currentLine}
         SUBQ.l #1,comLong_TotalLines
@@ -6857,7 +6843,7 @@ Return
       PED_DeleteSourceLine{*currentLine}
       *newLine.sourceLine = PED_CreateNewSourceLine{""}
       Poke.l ?comPtr_FirstSourceLine,*newLine
-      ped\LastSourceLine = *newLine ;Poke.l ?comPtr_LastSourceLine, *newLine
+      ped\sourceEntry\LastSourceLine = *newLine ;Poke.l ?comPtr_LastSourceLine, *newLine
       Poke.l ?comPtr_CurrentSourceLine, *newLine
       Gosub clear_sourcewindow
     EndIf
@@ -6996,7 +6982,7 @@ Return
     CLR.l (A4)
     !regs2stack
     !basic
-    ped\LastSourceLine = Peek.l(?comPtr_LastSourceLine)
+    ped\sourceEntry\LastSourceLine = Peek.l(?comPtr_LastSourceLine)
     !asm
     !stack2regs
   JL_0_28E8:
@@ -7148,7 +7134,7 @@ JL_0_2906:
     CLR.l (A0)
     !regs2stack
     !basic
-    ped\LastSourceLine = Peek.l(?comPtr_LastSourceLine)
+    ped\sourceEntry\LastSourceLine = Peek.l(?comPtr_LastSourceLine)
     !asm
     !stack2regs
 
@@ -7423,15 +7409,13 @@ Return
 
   Case #MENU_CALCULATOR
     Gosub set_pointer_busy_bas
-    !asm
-    JSR save_tempprefs                 ; save data to prevent crashes if the calculation routine is called an it coms back to Ped
-    !basic
+    Gosub save_tempprefs                 ; save data to prevent crashes if the calculation routine is called an it coms back to Ped
+
     WZ_LockAllOpenWindows{}                                                                                                                                                                                                                              
     Gosub open_calculator
     WZ_UnlockAllOpenWindows{}                                                                                                                                                                                                                            
-    !asm
-    JSR read_tempprefs                 ; restore data to prevent crashes if the calculation routine is called an it comes back to Ped
-    !basic
+    Gosub read_tempprefs                 ; restore data to prevent crashes if the calculation routine is called an it comes back to Ped
+
     Gosub set_pointer_normal_bas
 
   Case #MENU_DEFINITIONBROWSER
@@ -7457,9 +7441,7 @@ Return
     End If
     WZ_UnlockAllOpenWindows{}                                                                                                                                                                                                                            
     Gosub update_debuggertoggle
-    !asm
-    JSR save_tempprefs
-    !basic
+    Gosub save_tempprefs
     Gosub set_pointer_normal_bas
 
   Case #MENU_COMPILERUN
@@ -7492,9 +7474,8 @@ Return
     !basic
 
     Gosub call_compiler
-    !asm
-    JSR read_tempprefs
-    !basic
+
+    Gosub read_tempprefs
 
   Default
     Gosub call_compiler
@@ -7662,8 +7643,8 @@ JUMP_JL_0_5054: JMP JL_0_5054
         GetD0 &a$
         !asm
         JSR loadfile
-        JSR StoreXtraData
         !basic
+        Gosub storeCurrentSourceData
       Else
         log_Print{"could not find file: " +a$}
       EndIf
@@ -7793,9 +7774,7 @@ Return
     Return
   EndIf
 
-  !asm
-  JSR StoreXtraData
-  !basic
+  Gosub storeCurrentSourceData
 
   actualfile.l = Peek.l(?actualfile)
   log_Print{"actualfile at " + Hex$(actualfile)}
@@ -7824,106 +7803,67 @@ Return
     JSR JL_0_2Dca8
     !basic
 
-    If Peek.l(?loadAsNew)
+    If Peek.w(?loadAsNew)
       Gosub menu_load
-      !asm
-      JSR StoreXtraData
-      !basic
+      Gosub storeCurrentSourceData
       Gosub update_vertscroller
     EndIf
   EndIf
 Return
 
-;  If actualfile
-;    log_Print{"actualfile set, will insert new entry"}
-;    Poke.l ptr_XtraMem + 4, actualfile
-;    Poke.l ptr_XtraMem, nextfile
-;    Poke.l nextfile + 4, ptr_XtraMem
-;  Else
-;    log_Print{"no actualfile, will set new entry as actualfile"}
-;    Poke.l ?AL_0_84B2, ptr_XtraMem
-;    Poke.l ptr_XtraMem + 4, actualfile
-;    Poke.l ptr_XtraMem, 0
-;  EndIf
-;  Poke.l ?actualfile, ptr_XtraMem
-;  log_Print{"setting actualfile as " + Hex$(ptr_XtraMem)}
-
-  Gosub clear_sourcebuffer
-
-  !asm
-  JSR JL_0_2Dca8
-  !basic
-
-  If Peek.l(?loadAsNew)
-    Gosub menu_load
-    !asm
-    JSR StoreXtraData
-    !basic
-    Gosub update_vertscroller
-  EndIf
-Return
-
-
-.StoreXtraData:                      ;copy view data
+.storeCurrentSourceData:                      ;copy view data
   ; this function is called after a succesfull load of a sourcecode and befor and after a switch of the sourcecode  tomsmart1
-  MOVEM.l D0/A0-A1,-(A7)
-  !basic
   MOVE.l LabelList_FirstVisableItemNumber@(a5),comLong_Label1VisableItem      ; same as Poke
   MOVE.l comLong_Label1VisableItem,comLong_Label1VisableItemStore             ; to update both for a unified LabelList restore routine that work by load and switch of a Sourcecode  tomsmart1
-  !asm
-  MOVEA.l actualfile,A0
 
-  ADDQ.l #8,A0                       ; jump over list node header to xtra data
+  MOVEA.l actualfile,A0 : ADDQ.l #8,A0
   LEA comLongLong_XtraBegin,A1
-  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin,d0; #$504+72,D0
-  SUBQ.w #1,D0
+  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin, D0 : SUBQ.w #1,D0
  'copyloop
     MOVE.b (A1)+,(A0)+
   DBF D0,'copyloop
-
-  MOVEM.l (A7)+,D0/A0-A1
-RTS
+Return
 
 
-.GetXtraData:
+.getCurrentSourceData:
   ; zurueckholen der xtra-settings nach sourcewechsel
-  ADDQ.l #8,A0
+  MOVEA.l actualfile,A0 : ADDQ.l #8,A0
   LEA comLongLong_XtraBegin,A1
-  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin ,D0  ;MOVE.l #$504+72,D0
-  SUBQ.w #1,D0
+  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin, D0 : SUBQ.w #1,D0
  'copyloop:
     MOVE.b (A0)+,(A1)+
   DBF D0,'copyloop
 
-  !basic
-  ; restore windows
+  ped\sourceEntry = Peek.l(?actualfile)+8
+
+  ;-- restore some windows
   Gosub RestoreLabelAndNewtypeWin
-  !asm
-  MOVEA.l comPtr_CurrentSourceLine,A4
-RTS
+Return
 
 .selectfile:  ; A0: current entry in opened file table
-  MOVE.l A0,-(A7)
-  BSR.b StoreXtraData
-  JSR save_tempprefs
-  MOVEA.l (A7)+,A0
+  selectedEntry.l = PutD0
 
-  MOVE.l A0,actualfile : BSR.b GetXtraData
+  Gosub storeCurrentSourceData
+  Gosub save_tempprefs
 
+  Poke.l ?actualfile,selectedEntry
+  Gosub getCurrentSourceData
+
+  !asm
   JSR JL_0_2Dca8
-
-  JSR read_tempprefs
   !basic
+
+  Gosub read_tempprefs
+
   Gosub draw_statusarea              ;JSR linetext
   Gosub update_horizscroller
-  !asm
-RTS
+Return
 
 
 .menu_previousfile:
+  Gosub storeCurrentSourceData
+  Gosub save_tempprefs
   !asm
-  BSR.b StoreXtraData
-  JSR save_tempprefs
   MOVEA.l actualfile,A0
   TST.l $4(A0)
   BNE.w JL_0_2F38
@@ -7936,21 +7876,24 @@ RTS
   JL_0_2F38:
   MOVEA.l $4(A0),A0
 
- JL_0_2F3C:
+  JL_0_2F3C:
   MOVE.l A0,actualfile
-  BSR.b GetXtraData
-  JSR JL_0_2Dca8
-  JSR read_tempprefs
+
   !basic
+  Gosub getCurrentSourceData
+  !asm
+  JSR JL_0_2Dca8
+  !basic
+  Gosub read_tempprefs
   Gosub draw_statusarea              ;JSR linetext
   Gosub update_horizscroller
 Return
 
 
 .menu_nextfile:
+  Gosub storeCurrentSourceData
+  Gosub save_tempprefs
   !asm
-  JSR StoreXtraData
-  JSR save_tempprefs
 
   MOVEA.l actualfile,A0
   TST.l (A0)
@@ -7963,13 +7906,16 @@ Return
       RTS
   JL_0_2F72:
   MOVEA.l (A0),A0
-
   JL_0_2F74:
   MOVE.l A0,actualfile
-  JSR GetXtraData
-  JSR JL_0_2Dca8
-  JSR read_tempprefs
+
   !basic
+  Gosub getCurrentSourceData
+  !asm
+  JSR JL_0_2Dca8
+  !basic
+  Gosub read_tempprefs
+  
   Gosub draw_statusarea
   Gosub update_horizscroller
 Return
@@ -8190,7 +8136,7 @@ Return
     *tempLine\previousLine = *previousLine      ; set line after block as nextline of line before block
   Else
     *previousLine\nextLine = 0
-    ped\LastSourceLine = *newLine ;Poke.l ?comPtr_LastSourceLine, *previousLine
+    ped\sourceEntry\LastSourceLine = *newLine ;Poke.l ?comPtr_LastSourceLine, *previousLine
   EndIf
 
   Poke.l ?comPtr_CurrentSourceLine, *previousLine
@@ -8320,7 +8266,7 @@ Return
 
   *write_fh.l = Open_(&tmp_string, #HUNK_RELOC_8__MODE_NEWFILE)
   If *write_fh = 0
-    dummy.l = ask{!TRANS{Peek.s(?comStr_ErrorWriteFile)},!TRANS{"OK"},"Error!"}
+    dummy.l = ask{!TRANS{messageErrorWriteFile},!TRANS{"OK"},"Error!"}
   Else
     If Peek.l(?comLong_TotalLines) > 0
       *tempLine.sourceLine = Peek.l(?comPtr_FirstSourceLine)
@@ -8380,7 +8326,7 @@ Return
 
 .menu_saveblockas:
   If Peek.l(?comLong_BlockEndY) > -1
-    blockfn$ = PED_RequestFile{"","",Peek.s(?comStr_ASLSaveBlock),"(#?.info)"}
+    blockfn$ = PED_RequestFile{"","","Name to save block as","(#?.info)"}
     If blockfn$ <> ""
       *write_fh.l = Open_(&blockfn$, #HUNK_RELOC_8__MODE_NEWFILE)
       If *write_fh <> 0
@@ -8443,7 +8389,7 @@ Return
         Close_ *write_fh
         Gosub set_pointer_normal_bas
       Else
-        dummy.l = ask{!TRANS{Peek.s(?comStr_ErrorWriteFile)},!TRANS{"OK"},"Error!"}
+        dummy.l = ask{!TRANS{messageErrorWriteFile},!TRANS{"OK"},"Error!"}
       End If
     End If
   Else
@@ -8457,7 +8403,7 @@ Return
   log_Print{"includeblock"}
 
   Poke.w ?comWord__AL_0_8AD8,0
-  includeblockfile$ = PED_RequestFile{"","",Peek.s(?comStr_ASLLoadBlock),"(#?.info)"}
+  includeblockfile$ = PED_RequestFile{"","","Name of block to load","(#?.info)"}
   If includeblockfile$ <> ""
     Gosub do_paste
   EndIf
@@ -10772,7 +10718,7 @@ JL_0_5474:
     CLR.l (A0)
     !regs2stack
     !basic
-    ped\LastSourceLine = Peek.l(?comPtr_LastSourceLine)
+    ped\sourceEntry\LastSourceLine = Peek.l(?comPtr_LastSourceLine)
     !asm
     !stack2regs
 
@@ -11463,7 +11409,7 @@ Return
   If *tempLine
     Poke.l ?comPtr_FirstSourceLine, *tempLine
     Poke.l ?comPtr_CurrentSourceLine , *tempLine
-    ped\LastSourceLine = Peek.l(?comPtr_LastSourceLine)
+    ped\sourceEntry\LastSourceLine = Peek.l(?comPtr_LastSourceLine)
   EndIf
 Return
 
@@ -12905,7 +12851,7 @@ RTS
   If *newLine
     Poke.l ?comPtr_FirstSourceLine, *newLine
     Poke.l ?comPtr_CurrentSourceLine, *newLine
-    ped\LastSourceLine = *newLine ;Poke.l ?comPtr_LastSourceLine, *newLine
+    ped\sourceEntry\LastSourceLine = *newLine ;Poke.l ?comPtr_LastSourceLine, *newLine
   EndIf
 
   Gosub update_scrollers
@@ -16328,11 +16274,7 @@ Return
       Repeat
         If Peek.s(*sourcefile + 8 + $D4) = dos_FilePart{rememberfiles$(_rememberitem)}
           log_Print{"source already loaded, switching to that tab."}
-          GetD0 *sourcefile : MOVE.l d0,-(a7)
-          !asm
-          MOVE.l (a7)+,A0
-          JSR selectfile
-          !basic
+          GetD0 *sourcefile : Gosub selectfile
           Pop If : Pop Repeat : Return
         EndIf
         *sourcefile = Peek.l(*sourcefile)
@@ -16869,10 +16811,10 @@ RTS
 
 .menu_project:
   Gosub set_pointer_busy_bas
-  !asm
-  JSR StoreXtraData
-  !basic
-  WZ_LockAllOpenWindows{}                                                                                                                                                                                                                                
+
+  Gosub storeCurrentSourceData
+
+  WZ_LockAllOpenWindows{}
   If NOT WZ_CheckOpen{"WIN_PROJECT"}
     WZWindow WZID("WIN_PROJECT"),?wzgui,192,-2,-2,-2,-2,WZID("WIN_PROJECT")
     Use Window WZID("WIN_PROJECT")
@@ -20461,16 +20403,11 @@ Return
             EndIf
           Else
             log_Print{"tab is not actual file."}
-            ;!regs2stack
-            GetD0 *sourcefile : MOVE.l D0,-(a7)
-            !asm
-            MOVE.l (a7)+,A0
-            JSR storeline
-            JSR selectfile
-            JSR StoreXtraData
-            !basic
-            ;MOVE.b #0,refreshonstore
-            ;!stack2regs
+            Gosub storeline_bas
+
+            GetD0 *sourcefile : Gosub selectfile
+
+            Gosub storeCurrentSourceData
           EndIf
           log_Print{"exiting mouse routine"}
           Return
@@ -20503,12 +20440,9 @@ Return
       lfile.s = Peek.s(*sourcefile + 8 + $D4)
       If dos_AddPart{lpath,lfile} = fileToLoad
         log_Print{"source already loaded, switching to that tab."}
+        GetD0 *sourcefile : Gosub selectfile
         Pop If : Pop Repeat : Pop If
-        GetD0 *sourcefile : MOVE.l d0,-(a7)
-        !asm
-        MOVE.l (a7)+,A0
-        JSR selectfile
-        RTS
+        Return
       EndIf
       *sourcefile = Peek.l(*sourcefile)
     Until *sourcefile = 0
