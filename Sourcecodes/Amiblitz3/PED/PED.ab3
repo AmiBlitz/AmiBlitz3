@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2655
+; NumberOfBuilds  = 2707
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 5838
+; CursorLine      = 11351
 ; CursorColumn    = 1
-; LabelSearch     = "actualsource"
+; LabelSearch     = "ped_printhighlight"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -326,7 +326,7 @@ XINCLUDE "/BlitzLibs/Residents/libnums.ab3"
 XINCLUDE "/Shared/library_offsets.ab3"      ; only for Macro newalloc
 XINCLUDE "/Shared/common.ab3"
 XINCLUDE "/Shared/preprocessor.include.ab3"
-DEFTYPE.tokendata tokeninfo          ; moved to the Newtype definion  tomsmart1 2012 06 18
+DEFTYPE.tokendata *tokenbase
 
 XINCLUDE "v43+.definitions.ab3"                       ; for MouseWheel support  tomsmart1
 XINCLUDE "dos.include.ab3"
@@ -600,13 +600,9 @@ NEWTYPE.sourceWindow
   BoxTop.w
   BoxWidth.w
   BoxHeight.w
-
+ 
   cursorState.b
-  ColumnsOffset.w
-  ColumnsOffsetTmp.w
   ColumnsOffsetStore.w
-  Column.w
-  DisplayLine.l
 
   clearEndOfLine.b
 
@@ -1361,11 +1357,12 @@ Statement PED_ShowMessage{textMessage.s,@target.b,@style.b}
 End Statement
 
 
-Statement Show_Helpfile{libname$,node$,helpdir$}
+Statement Show_Helpfile{libname$, node$, helpdir$}
   SHARED pedconfig,ped
 
   If node$ = "" Then node$ = "main"
-  commandlineStr.s + "  -t " + node$
+  commandlineStr.s = " -t " + node$
+
   If helpdir$ <> ""
     commandlineStr + " -d " + helpdir$
   Else
@@ -1383,13 +1380,15 @@ Statement Show_Helpfile{libname$,node$,helpdir$}
       commandlineStr + " -s Workbench"
     EndIf
   EndIf
-  ; adjusting the window size
+
+  ;-- adjusting the window size
   commandlineStr + " w " + Str$(screen_GetWidth{} / 2) + " h " + Str$(screen_GetHeight{} / 1.5)
 
   log_Print{"opening Helpviewer for ["+ libname$ + "/" + node$ + "] ..."}
   log_Print{"commandstring <" + commandlineStr + ">"}
+
   PED_ShowMessage{"Opening Helpviewer for "+ libname$ + "/" + node$ + " ..."}
-  dos_RunCli{dos_AddPart{pedconfig\mainDir,"Tools/AB3HelpViewer"},0,8192,False,commandlineStr} ; changed to match up the last dos.include this fix the show of the help/doc files
+  dos_RunCli{dos_AddPart{pedconfig\mainDir,"Tools/AB3HelpViewer"},0,8192,False,commandlineStr}
 End Statement
 
 Function.b CheckWindow{title$}
@@ -1459,8 +1458,8 @@ Function.s PED_Detoke{*sourceLine.sourceLine}
 SHARED tmpDetokeStr.s
 
   If *sourceLine = 0 Then Function Return ""
-  
-  tmpDetokeStr = String$(Chr$(0),#MAX_Columns) 
+
+  tmpDetokeStr = String$(Chr$(0),#MAX_Columns)
   GetReg A0, *sourceLine + 9
   GetReg A1, &tmpDetokeStr
   MOVEM.l A0-a1,-(a7)
@@ -1474,45 +1473,57 @@ SHARED tmpDetokeStr.s
 End Function
 
 
+Function.s PED_GetTokenName{tokenNumber.l}
+SHARED *tokenbase
 
-
-
-Function.s PED_GetTokenName{*tokeninfo.tokeninfo,tnumber.w}
-  While *tokeninfo
-    If *tokeninfo\number = tnumber Then Function Return Peek.s(&*tokeninfo\dat)
-    *tokeninfo = *tokeninfo\next_token
-  Wend
-  Function Return "" ; token not found
+  ;-- search in tokencache
+  _tn.w = tokenNumber BitClr $f
+  *token.tokendata = Peek.l(?tokenCache + _tn * 4)
+  If *token
+    log_Print{"token " + Hexw$(tokenNumber) + " / " + Str$(_tn * 4) + " / " + Peek.s(&*token\dat) + " found in cache."}
+    Function Return Peek.s(&*token\dat)
+  Else
+    *token = *tokenbase
+    While *token
+      If *token\number = tokenNumber
+        log_Print{"token " + Hexw$(tokenNumber) + " cached."}
+        Poke.l ?tokenCache + _tn * 4, *token
+        Function Return Peek.s(&*token\dat)
+      EndIf
+      *token = *token\next_token
+    Wend
+  EndIf
+  Function Return "????Lib "+Str$(tokenNumber LSR 7)+"/"+Str$(tokenNumber & $7f)
 End Function
 
+Function.l PED_GetTokenPointer{tname.s}
+SHARED *tokenbase
 
-Function.w PED_GetTokenID{*tokeninfo.tokeninfo,tname$}
-  lname$ = LCase$(tname$)
-  While *tokeninfo
-    If LCase$(Peek.s(&*tokeninfo\dat)) = lname$ Then Function Return *tokeninfo\number
-    *tokeninfo = *tokeninfo\next_token
+  tname.s = LCase$(tname.s)
+
+  *token.tokendata = *tokenbase
+  While *token
+    If LCase$(Peek.s(&*token\dat)) = tname Then Function Return *token
+    *token = *token\next_token
   Wend
+End Function
+
+Function.w PED_GetTokenLibnum{tname.s}
+  *token.tokendata = PED_GetTokenPointer{tname}
+  If *token Then Function Return (*token\number LSR 7)
   Function Return -1 ; token not found
 End Function
 
-
-Function.w PED_GetTokenLibnum{*tokeninfo.tokeninfo,tname$}
-  number.w = PED_GetTokenID{*tokeninfo.tokeninfo,tname$}
-  If number><-1 Then Function Return (number LSR 7)
-  Function Return -1 ; token not found
+Function.w PED_GetTokenID{tname.s}
+  *token.tokendata = PED_GetTokenPointer{tname}
+  If *token Then Function Return *token\number
+  Function Return -1
 End Function
 
-
-Function.s PED_GetTokenHelp{*tokeninfo.tokeninfo,tname$}
-  lname$ = LCase$(tname$)
-  While *tokeninfo
-    If LCase$(Peek.s(&*tokeninfo\dat)) = lname$
-      ;Function Return tname$ + "  ; " + Peek.s(&*tokeninfo\dat+FLen(tname$)+1)
-      Function Return Peek.s(&*tokeninfo\dat+FLen(tname$)+1)
-    End If
-    *tokeninfo = *tokeninfo\next_token
-  Wend
-  Function Return "" ; token not found
+Function.s PED_GetTokenHelp{tname.s}
+  *token.tokendata = PED_GetTokenPointer{tname}
+  If *token Then Function Return Peek.s(&*token\dat + FLen(tname.s) + 1)
+  Function Return ""
 End Function
 
 Function.b PED_CheckForClassicToken{_token.l}
@@ -1739,7 +1750,7 @@ End Function
 
 
 Statement PED_PrintTextStandard{tx.w, ty.w, *textaddr.l}
-SHARED pedconfig,sourceWindow,AB3Pen()
+SHARED ped,sourceWindow,AB3Pen()
 
   ;log_Print{"print_standard_text"}
 
@@ -1748,7 +1759,7 @@ SHARED pedconfig,sourceWindow,AB3Pen()
     Poke.b Peek.l(?textbufferPrint) + i, Peek.b(*textaddr+i)
   Next i
 
-  startPos.w = sourceWindow\ColumnsOffsetTmp
+  startPos.w = ped\ptrCurrentSourceData\ColumnsOffsetTmp
   tmpString$ = UnRight$(Peek$(*textaddr),startPos)
 
   tlength.w = Len(tmpString$)
@@ -1842,10 +1853,10 @@ SHARED pedconfig, sourceWindow, AB3RGB(), AB3Pen()
 End Statement
 
 Statement PED_PrintHighlight{lineaddr.l, xPos.w, textlen.w, textcolor.w, textstyle.w}
-SHARED pedconfig,sourceWindow
+  SHARED ped, sourceWindow
   If textlen > 0
     ;log_Print{"macro to print: " + Peeks$(lineaddr,textlen)}
-    xPos = xPos - sourceWindow\ColumnsOffset
+    xPos = xPos - ped\ptrCurrentSourceData\ColumnsOffset
 
     If (textlen + xPos) > sourceWindow\visibleColumns
       textlen = sourceWindow\visibleColumns - xPos
@@ -1859,7 +1870,7 @@ SHARED pedconfig,sourceWindow
       EndIf
       If textlen > 0
         xText.w = sourceWindow\BoxLeft + xPos * sourceWindow\font\tf_XSize
-        yText.w = sourceWindow\BoxTop  + sourceWindow\DisplayLine * sourceWindow\font\tf_YSize + sourceWindow\font\tf_Baseline
+        yText.w = sourceWindow\BoxTop  + ped\ptrCurrentSourceData\DisplayLine * sourceWindow\font\tf_YSize + sourceWindow\font\tf_Baseline
         Move_ sourceWindow\win\RPort, xText, yText
         SetAPen_ sourceWindow\win\RPort,textcolor
         ;SetSoftStyle_ \win\RPort,textstyle,textstyle
@@ -1938,18 +1949,18 @@ SHARED ped
 End Statement
 
 Statement PED_ScrollHorizontal{direction.b, @scrollMode.b}
-  SHARED sourceWindow
+  SHARED sourceWindow, ped
   USEPATH sourceWindow
 
   If scrollMode = #SCROLL_CURRENT_LINE
-    ; WIP: shall replace gosub scroll_left/right
     dx.w = direction * \font\tf_XSize
     dy.w = 0
-    xMin.w = \BoxLeft + \Column * \font\tf_XSize
-    yMin.w = \BoxTop  + \DisplayLine * \font\tf_YSize
+    xMin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
+    yMin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine
     xMax.w = \BoxLeft + \visibleColumns * \font\tf_XSize - 1
     yMax.w = yMin + \font\tf_YSize - 1
   Else
+    ; WIP: shall replace gosub scroll_left/right for whole screen
     dx.w = direction * (\font\tf_XSize * \scrollSize)
     dy.w = 0
     xMin.w = \BoxLeft
@@ -2650,7 +2661,7 @@ End Statement
 
 
 Statement read_libmapping{_file.s}
-  SHARED *tokenbase.tokeninfo
+  SHARED *tokenbase
   SHARED lib_mapping$()
 
   Dim templist$(#Max_BlitzLibs,1)
@@ -2677,15 +2688,13 @@ Statement read_libmapping{_file.s}
     If libcounter = 0 Then Statement Return
 
     log_Print{"scanning tokenlist..."}
-    *tpointer.l = *tokenbase
-    If *tpointer
+    *token.tokendata = *tokenbase
+    If *token
       Repeat
-        token_next.l   = Peek.l(*tpointer)
-        token_name$    = Peek$(*tpointer+6)
-        libnum.w = Peek.w(*tpointer+4) LSR 7
+        libnum.w = *token\number LSR 7
 
         For i = 0 To libcounter
-          If templist$(i,1) = token_name$
+          If templist$(i,1) = Peek.s(&*token\dat)
             If libnum > 0
               libname$ = templist$(i,0)
               firsttoken$ =  templist$(i,1)
@@ -2709,8 +2718,8 @@ Statement read_libmapping{_file.s}
         Next i
         exit_this_loop:
 
-        *tpointer.l = token_next
-      Until (*tpointer = 0)
+        *token = *token\next_token
+      Until (*token = 0)
       log_Print{"scanning finished."}
     EndIf
   EndIf
@@ -2718,7 +2727,7 @@ End Statement
 
 
 Statement map_tokens_to_libs{_file.s}
-  SHARED *tokenbase.tokeninfo
+  SHARED *tokenbase
   SHARED lib_mapping$()
 
   fid.l = file_Open{_file,#file_read}
@@ -2761,16 +2770,15 @@ Statement map_tokens_to_libs{_file.s}
  
     ; running through the tokenindex and map tokens to library names
     log_Print{"scanning tokenlist..."}
-    *tpointer.l = *tokenbase
-    If *tpointer
+    *token.tokendata = *tokenbase
+    If *token
       libCounter.w = 0
       oldlibnum.w = -1
       Repeat
         libname$ = ""
 
-        token_next.l   = Peek.l(*tpointer)
-        token_name$    = Peek.s(*tpointer+6)
-        libnum.w       = Peek.w(*tpointer+4) LSR 7
+        token_name$    = Peek.s(&*token\dat)
+        libnum.w       = *token\number LSR 7
 
         If token_name$ = ""
           log_Print{ "#" + Str$(libnum) + ": nulltoken found"}
@@ -2811,8 +2819,8 @@ Statement map_tokens_to_libs{_file.s}
             lib_mapping$(libnum,1) = token_name$
           End If
         EndIf
-        *tpointer.l = token_next
-      Until (*tpointer = 0)
+        *token = *token\next_token
+      Until (*token = 0)
       log_Print{"scanning tokenlist done, processed " + Str$(libCounter) +" libs"}
 
 ;      write_libmapping{_file}    ; update the token_mapping file
@@ -3719,7 +3727,7 @@ begin1:
   ; -- fill mapping array with libnames from mapping-file
   ; -- and check consistency based on the mapping files and the internal libnums
   WZ_ShowMessage{!TRANS{"Building tokenindex..."}}
-  *tokenbase.tokeninfo = Peek.l(?comPtr_TokenBase)
+  *tokenbase = Peek.l(?comPtr_TokenBase)
   map_tokens_to_libs{dos_AddPart{pedconfig\systemDir,"token_mapping_libs.txt"}}
   map_tokens_to_libs{dos_AddPart{pedconfig\systemDir,"token_mapping_userlibs.txt"}}
 
@@ -3881,19 +3889,19 @@ End
       ;log_Print{"** parse the line after event, lastkey = " + Hexw$(Peek.w(?comWord_KeyBeforeReturn))}
 
       ; --- get address of actual source line ---
-      sourceWindow\lastEditedLine = Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
+      sourceWindow\lastEditedLine = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
 
       ped\ptrCurrentSourceData\SourceChanged = $FFFF
 
       lineaddr.l = Peek.l(?textbufferaddr) + Peek.w(?comWord_TextBufferOffset)
 
       ; --- store cursor column position ---
-      columnpos.w =  Peek.w(?comWord_Column) + Peek.w(?comWord_ColumnsOffset)
+      columnpos.w =  ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
 
 
       ; --- format source line and get new column position ---
       newcolumnpos.w = preparseline{columnpos, lineaddr, pedconfig\auto_format, pedconfig\correct_functions}
-      Poke.w ?comWord_Column, newcolumnpos - Peek.w(?comWord_ColumnsOffset)
+      ped\ptrCurrentSourceData\Column = newcolumnpos - ped\ptrCurrentSourceData\ColumnsOffset
       ;old_search_label$ = "|"  ;              WHY ?
       Gosub cursor_off
       !asm
@@ -7435,8 +7443,9 @@ Return
 
   Case #MENU_RELOAD_USERLIBS
     log_Print{"reload libs"}
+    ; clear intructioncache as the tokennumbers may change
     !asm
-    LEA instrtab,a1               ; clear intructionstable, but why?
+    LEA tokenCache,a1
     MOVE.l #32767,d0
    'l11:
       CLR.l (a1)+
@@ -7511,56 +7520,56 @@ Return
 Return
 
 
-.moveToEndOfLine:
-  MOVE.l d0,-(a7)
-  MOVEA.l comPtr_Temp_TokenString1,A1
-
-  MOVE.l a4,a0
-  LEA 9(a0),a0
-  MOVEQ #-1,d1
-
-  syn1:
-  TST.w comWord_DoTokenize
-  BEQ.w JUMP_JL_0_5054
-
-    CMP.l a0,a5
-    BEQ  JL_0_5050b
-      ADDQ.l #1,d1
-      MOVEQ.l #$00,D0
-      MOVE.b (A0)+,D0
-      BEQ.w JL_0_5050b                                    ; current character is NULL
-      BMI.w JL_0_5040b                                    ; current character is beginning of a token
-  MOVE.b D0,(A1)+
-  BNE.b syn1
-
-  JL_0_5040b:
-  LSL.w #8,D0
-  MOVE.b (A0)+,D0
-  MOVE.l d1,-(a7)
-  JSR token_to_ascii
-  MOVE.l (a7)+,d1
-
-  JL_0_5048b:
-    ADDQ.l #1,d1
-    MOVE.b (A3)+,(A1)+
-  BNE.b JL_0_5048b
-  SUBQ.w #1,A1
-  SUBQ.l #1,d1
-  BRA.b syn1
-
-  JL_0_5050b:
-  SUBQ.l #1,d1
-  CMP.w #MAX_Columns,d1
-  BGE 'l1
-    CMP.l #0,d1
-    BGE 'l1
-      MOVEQ #0,d1
- 'l1
-  MOVE.w d1,comWord_Column
-  MOVE.l (a7)+,d0
-RTS
-
-JUMP_JL_0_5054: JMP JL_0_5054
+;.moveToEndOfLine:
+;  MOVE.l d0,-(a7)
+;  MOVEA.l comPtr_Temp_TokenString1,A1
+;
+;  MOVE.l a4,a0
+;  LEA 9(a0),a0
+;  MOVEQ #-1,d1
+;
+;  syn1:
+;  TST.w comWord_DoTokenize
+;  BEQ.w JUMP_JL_0_5054
+;
+;    CMP.l a0,a5
+;    BEQ  JL_0_5050b
+;      ADDQ.l #1,d1
+;      MOVEQ.l #$00,D0
+;      MOVE.b (A0)+,D0
+;      BEQ.w JL_0_5050b                                    ; current character is NULL
+;      BMI.w JL_0_5040b                                    ; current character is beginning of a token
+;  MOVE.b D0,(A1)+
+;  BNE.b syn1
+;
+;  JL_0_5040b:
+;  LSL.w #8,D0
+;  MOVE.b (A0)+,D0
+;  MOVE.l d1,-(a7)
+;  JSR token_to_ascii
+;  MOVE.l (a7)+,d1
+;
+;  JL_0_5048b:
+;    ADDQ.l #1,d1
+;    MOVE.b (A3)+,(A1)+
+;  BNE.b JL_0_5048b
+;  SUBQ.w #1,A1
+;  SUBQ.l #1,d1
+;  BRA.b syn1
+;
+;  JL_0_5050b:
+;  SUBQ.l #1,d1
+;  CMP.w #MAX_Columns,d1
+;  BGE 'l1
+;    CMP.l #0,d1
+;    BGE 'l1
+;      MOVEQ #0,d1
+; 'l1
+;  MOVE.w d1,comWord_Column
+;  MOVE.l (a7)+,d0
+;RTS
+;
+;JUMP_JL_0_5054: JMP JL_0_5054
 
 .event_menu:
   log_Print{"selected menuitem: " + Hex$(_menuitem.l)}
@@ -10420,13 +10429,46 @@ RTS
 RTS
 
 
+Function.s PED_DetokenizeText2{ptrOrgString.l}
+
+  MaxLen linebuffer.s = 256
+  _strLen.w = Len(Peek.s(ptrOrgString))
+  If _strLen
+    If Peek.b(?keepstring) = 0 Then Poke.b ?instring2, 0
+
+    If Peek.b(?noDetokenizing)
+      linebuffer = Peek.s(ptrOrgString)
+    Else
+      For i.w = 0 To _strLen - 1
+        curChar.b  = Peek.b(ptrOrgString + i)
+        If curChar = $22 Then NOT.b instring2
+        If Peek.b(?instring2) OR curChar => 0
+          linebuffer + Chr$(curChar)
+        Else
+          If curChar < 0
+            i + 1
+            _token.w = curChar LSL 8 + Peek.b(ptrOrgString + i)
+            _tokname.s = PED_GetTokenName{_token}
+            For j.b = 1 To FLen(_tokname)
+              linebuffer + Chr$(Peek.b(&_tokname + j) BitSet 7)
+            Next j
+          EndIf
+        EndIf
+      Next i
+    EndIf
+  EndIf
+
+  Function Return linebuffer
+
+End Function
+
 .JL_0_5060:
   TST.b keepstring
   BNE 'l1
     CLR.b instring2
  'l1
 
-  TST.b noDetokenizing       ; if set, just copy whole line and return                                                                                                                                                                                    
+  TST.b noDetokenizing            ; if set, just copy whole line and return
   BEQ.w JL_0_5072
     JL_0_506A:
       MOVE.b (A0)+,(A1)+
@@ -10471,7 +10513,7 @@ RTS
 .token_to_ascii:
   ;MOVEA.l comPtr_TokenBase,A3       ;findtokenlib $80
   BCLR #$F,D0
-  LEA instrtab,a3
+  LEA tokenCache,a3
 
   Dc.l $26730400 ;Dc.l $26730600 MOVE.l 0(a3,d0.w*4),a3
 
@@ -10480,7 +10522,7 @@ RTS
     MOVEA.l comPtr_TokenBase,A3
    'JL_0_50A2:
       CMP.w $4(A3),D0
-      BEQ.w JL_0_50B4
+      BEQ.w knowntoken
         TST.l (A3)
         BEQ.w unknowntoken
           MOVEA.l (A3),A3
@@ -10489,9 +10531,9 @@ RTS
   ADDQ.w #6,A3
 RTS
 
-.JL_0_50B4:
+.knowntoken:
   MOVE.l a1,-(a7)
-  LEA instrtab,a1
+  LEA tokenCache,a1
 
   Dc.l $238B0400 ; MOVE.l a3,0(a1,d0.w*4)
   MOVE.l (a7)+,a1
@@ -11356,23 +11398,8 @@ lineundeletestore:    Ds.l 1
   MOVE.l (a7)+,d0 : *textaddr.l = PutD0
 
   If Peek.w(?comWord_DoTokenize)
-    ; clear textBufferPrint
-    tmpAddr.l = Peek.l(?textbufferPrint)
-    For i = 0 To #MAX_Columns/4-1 Step 4
-      Poke.l  tmpAddr + i, 0
-    Next i
-    ; copy the current line to a tempBuffer
-    For i = 0 To #MAX_Columns - 1
-      Poke.b Peek.l(?AL_0_5BA6) + i, Peek.b(*textaddr+i)
-    Next i
-    Poke.b Peek.l(?AL_0_5BA6) + #MAX_Columns-1, 0
-    GetReg d0,tposx
-    GetReg d1,tposy
-    !asm
-    JSR print_tokenized_text
-    !basic
+    Gosub print_tokenized_text
   Else
-    sourceWindow\ColumnsOffsetTmp = Peek.w(?comWord_ColumnsOffsetTmp)
     PED_PrintTextStandard{tposx, tposy, *textaddr}
   EndIf
 
@@ -11401,232 +11428,300 @@ lineundeletestore:    Ds.l 1
   MOVE.l (A7)+,D2
 RTS
 
-.print_tokenized_text_bas:
+.print_tokenized_text:
+  ; clear textBufferPrint
+  tmpAddr.l = Peek.l(?textbufferPrint)
+  For i = 0 To #MAX_Columns/4-1 Step 4
+    Poke.l  tmpAddr + i, 0
+  Next i
+  ; copy the current line to a tempBuffer
+  For i = 0 To #MAX_Columns - 1
+    Poke.b Peek.l(?AL_0_5BA6) + i, Peek.b(*textaddr+i)
+  Next i
+  Poke.b Peek.l(?AL_0_5BA6) + #MAX_Columns-1, 0
+
+  !asm
   MOVEA.l AL_0_5BA6,A0
   MOVEA.l textbufferPrint,A1
-
   MOVEM.l D0-D1/A1,-(A7)
-  JSR JL_0_5060                               ;copy whole line from A0 to A1 and detokenize
+  ; copy whole line from A0 to A1 and detokenize it but keep token indicator (bit7)
+  JSR JL_0_5060
   MOVEM.l (A7)+,D0-D1/A1
-
   !basic
-  PutReg d1,tposy
-  PutReg d0,tposx
-  PutReg a1,tmpA1.l
-  log_Print{Str$(tposx) + ", " + Str$(tposy)}
-  log_Print{Peek.s(Peek.l(tmpA1))}
-  tmpString.s = Peek.s(Peek.l(?AL_0_5BA6))
 
-  ;-- check if source left of display start position has an opened string
+  ;-- original string
+  tmpString1.s = Peek.s(Peek.l(?AL_0_5BA6))
+
+  ;-- detokenized string, tokens are still marked with bit 7 set in each character
+  tmpString2.s = Peek.s(Peek.l(?textbufferPrint))
+
+  ;-- check if source left of display start position has an opened string literal
   If Peek.b(?keepstring) = 0
-    Poke.b ?instring,0
+    chkString.b = 0
 
-    If tmpString <> ""
-      tmpD2.w = 1
-      While Peek.w(?comWord_ColumnsOffset) > tmpD2
-        If Mid$(tmpString,tmpD2,1) = Chr$($22) Then NOT.b instring2
-        tmpD2 + 1
+    If tmpString1 <> ""
+      runner.w = 0
+      While runner < Peek.w(?comWord_ColumnsOffset)
+        If Peek.b(&tmpString1 + runner) = $22 Then chkString = NOT chkString
+        runner + 1
       Wend
     EndIf
   EndIf
-  log_Print{"instring: " + Str$(Peek.b(?instring2))}
-  log_Print{">" + tmpString + "<"}
-  tmpPrint.s = UnRight$(Peek.s(Peek.l(?textbufferPrint)), Peek.w(?comWord_ColumnsOffsetTmp)  )
-  log_Print{">" + tmpPrint + "<"}
+  ;log_Print{"we are in a string: " + Str$(chkString)}
 
+  tmpPrint.s = UnRight$(tmpString2, Peek.w(?comWord_ColumnsOffsetTmp))
   lastVisibleChar$ = Mid$(tmpPrint,\visibleColumns,1)
   tmpPrint = Left$(tmpPrint,\visibleColumns)
 
   tposx = tposx / \font\tf_XSize
-  tlength.w = Len(tmpPrint)
-  log_Print{tmpPrint}
-  PED_PrintText{&tmpPrint,tposx,tposy,tlength,AB3Pen(#AB3_cother)}
-  !asm
-RTS
+  runner.w = -1
 
+  print_loop:
+  tmpExpand.s = ""
+  Repeat
+    runner + 1
+    curChar.b = Peek.b(&tmpPrint + runner)
+    If curChar <> 0
+      If curChar = $22 Then chkString.b = NOT chkString
+      If chkString = 0
+        If curChar < 0 Then Goto exit_printloop
+      EndIf
+      tmpExpand + Chr$(curChar)
+    EndIf
+  Until curChar = 0
+  exit_printloop:
 
-.print_tokenized_text:
-  MOVEA.l AL_0_5BA6,A0
-  MOVEA.l textbufferPrint,A1
+  If FLen(tmpExpand)
+    PED_PrintText{&tmpExpand, tposx, tposy, FLen(tmpExpand), AB3Pen(#AB3_cother)}
+    tposx + FLen(tmpExpand)
+  EndIf
+  If curChar = 0 Then Goto exit_print
+  If curChar > 0 Then Goto print_loop
 
-  MOVEM.l D0-D1/A1,-(A7)
-  JSR JL_0_5060                               ;copy whole line from A0 to A1 and detokenize
-  MOVEM.l (A7)+,D0-D1/A1
+  tmpExpand.s = ""
+  While curChar < 0
+    tmpExpand + Chr$(curChar BitClr 7)
+    runner + 1
+    curChar = Peek.b(&tmpPrint + runner)
+  Wend
+  runner - 1
 
-  !regs2stack
-  !basic
-  PutReg a1,tmpA1
-;  log_Print{Peek.s(tmpA1)}
-;  log_Print{Peek.s(Peek.l(tmpA1))}
-;  log_Print{Peek.s(Peek.l(?expandstore))}
-  !asm
-  !stack2regs
+  If FLen(tmpExpand)
+    ;-- check for classic token and set color else set standard token color
+    tcolor.w = AB3Pen(#AB3_ctoken)
+    If AB3Pen(#AB3_cclassic) > 0
+      _token.l = PED_GetTokenID{tmpExpand}
+      If PED_CheckForClassicToken{_token} Then tcolor.w = AB3Pen(#AB3_cclassic)
+    EndIf
 
-  TST.b keepstring
-  BNE 'l3
-    CLR.b instring2
-    MOVEA.l AL_0_5BA6,A0
-    MOVE.w #0,d2
-    MOVEM.l d0/d1,-(a7)
-    CMP.l #0,a0
-    BEQ 'l2b
-   'l1
-      CMP.w comWord_ColumnsOffset,d2
-      BGE 'l2b
-        MOVE.b (a0)+,d0
-        CMP.b #$22,d0
-        BNE 'l2
-          NOT.b instring2
-       'l2
-        ADDQ.w #1,d2
-    BRA 'l1
-   'l2b
-    MOVEM.l (a7)+,d0/d1
- 'l3
-  ADDA.w comWord_ColumnsOffsetTmp,A1                ;offset
-  MOVE.w visiblecolumns,D4
-  MOVE.b $0(A1,D4.W),comByte__AL_0_8662
-  MOVEM.l D4/A1,-(A7)
-  MOVE.b #$0,$0(A1,D4.W)
-  MOVEA.l expandstore,A2
-  MOVEA.l A1,A0
+    ;-- print the token
+    SetBPen_ \win\RPort, AB3Pen(#AB3_ctokenbackground)
+    If pedconfig\bold_tokens
+      SetFont_ \win\RPort, \fontB
+      SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
+    EndIf
 
-  EXT.l d0 : DIVU fontWidth,d0                          ; d0: xPos
+    PED_PrintText{&tmpExpand, tposx, tposy,FLen(tmpExpand), tcolor}
 
-  JL_0_5C9C:
-    MOVE.b (A1)+,D2
-    BEQ.w JL_0_5CAA
-      CMP.b #$22,d2                        ; "
-      BNE 'l10
-        NOT.b instring2
-     'l10
-      TST.b instring2
-      BNE 'l11
-        TST.b d2
-        BMI.w JL_0_5CAA                     ;morechar
-     'l11
-      MOVE.b D2,(A2)+
-    BRA.b JL_0_5C9C
-    JL_0_5CAA:
+    ;-- reset font and style
+    SetBPen_ \win\RPort, AB3Pen(#AB3_cbackground)
+    If pedconfig\bold_tokens
+      SetFont_ \win\RPort, \font
+      SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
+    EndIf
 
-    MOVE.b #$0,(A2)
-    CMPA.l expandstore,A2
-    BEQ.w JL_0_5CE6
-      MOVEM.l a6/d0-d1/a0/a1,-(a7)
-      MOVE.w D0,-(A7)      ; x-position
+    tposx + FLen(tmpExpand)
 
-      MOVEA.l A1,A2 : SUBA.l A0,A2
-      MOVE.b D2,D4                          ; store last read character
-      MOVE.w A2,D2
-      MOVE.w D2,D5
-      SUBQ.w #1,D2
-      MOVEA.l expandstore,A0
-
-      MOVE.l A0,-(a7)   ; string
-      MOVE.l D0,-(a7)   ; x-pos
-      MOVE.l D1,-(a7)   ; y-pos
-      MOVE.l D2,-(a7)   ; textlength
-      !basic
-      MOVE.l (a7)+,d0 : tlength.w = PutD0
-      MOVE.l (a7)+,d0 : tposy.w = (PutD0 AND $FFFF)
-      MOVE.l (a7)+,d0 : tposx.w = PutD0
-      MOVE.l (a7)+,d0 : *textaddr.l = PutD0
-      ;log_Print{"call PrintText: " + Str$(tlength) + "... " + Str$(tposx) + ", " + Str$(tposy) + " : [" + Peek.s(*textaddr) + "]"}
-      PED_PrintText{*textaddr,tposx,tposy,tlength,AB3Pen(#AB3_cother)}
-      !asm
-      MOVE.w (A7)+,D0
-      MOVEM.l (a7)+,a6/d0-d1/a0/a1
-      MOVE.b D4,D2                          ; restore last read character to D2
-      ADD.w D5,D0
-      SUBQ.w #1,D0
-      TST.b D2
-      BEQ.w exit_print_tokenized_text
-    JL_0_5CE6:
-    TST.b D2
-    BEQ.w exit_print_tokenized_text
-
-    ;find string state
-    SUBQ.w #1,A1
-    MOVEA.l A1,A0
-    MOVEA.l expandstore,A2
-  TST.b D2 
-  BPL.b JL_0_5C9C
-
-  a_loop:
-    MOVE.b (A1)+,D2
-    BEQ.w JL_0_5D0A
-    BPL.w JL_0_5D0A
-      BCLR #$7,D2
-      MOVE.b D2,(A2)+
-  BRA.b a_loop
-  JL_0_5D0A:
-
-  MOVE.b #$0,(A2)
-  CMPA.l expandstore,A2
-  BEQ.w exit_print_tokenized_text
-
-  MOVE.w D0,-(A7)                   ; get x position
-  MOVEA.l A1,A2
-  SUBA.l A0,A2
-  MOVE.b D2,D4
-  MOVE.w A2,D2
-  MOVE.w D2,D5
-  SUBQ.w #1,D2
-  MOVEA.l expandstore,A0
-
-  !regs2stack
-  MOVE.l A0,-(a7)   ; string
-  MOVE.l D0,-(a7)   ; x-pos
-  MOVE.l D1,-(a7)   ; y-pos
-  MOVE.l D2,-(a7)   ; textlength
-  !basic
-  MOVE.l (a7)+,d0 : tlength.w = PutD0
-  MOVE.l (a7)+,d0 : tposy.w = (PutD0 AND $FFFF)
-  MOVE.l (a7)+,d0 : tposx.w = PutD0
-  MOVE.l (a7)+,d0 : *textaddr.l = PutD0
-
-  ;-- check for classic token and set color else set standard token color
-  tcolor.w = AB3Pen(#AB3_ctoken)
-  If AB3Pen(#AB3_cclassic) > 0
-    !asm
-    MOVEA.l expandstore,A0 : MOVE.l A0,D0
-    JSR ascii_to_token
-    !basic
-     _token.l = PutD0
-     If PED_CheckForClassicToken{_token} Then tcolor.w = AB3Pen(#AB3_cclassic)
+    If curChar <> 0 Then Goto print_loop
   EndIf
 
-  ;-- print the token
-  SetBPen_ \win\RPort, AB3Pen(#AB3_ctokenbackground)
-  If pedconfig\bold_tokens
-    SetFont_ \win\RPort, \fontB
-    SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
-  EndIf
-  PED_PrintText{*textaddr,tposx,tposy,tlength,tcolor}
+  exit_print:
+Return
 
-  ;-- reset font and style
-  SetBPen_ \win\RPort, AB3Pen(#AB3_cbackground)
-  If pedconfig\bold_tokens
-    SetFont_ \win\RPort, \font
-    SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
-  EndIf
-  !asm
-  !stack2regs
 
-  MOVE.w (A7)+,D0 : ADD.w D5,D0 : SUBQ.w #1,D0 ; update x-pos
-  MOVE.b D4,D2
-  TST.b D2
-  BEQ.w exit_print_tokenized_text
-
-  SUBQ.w #1,A1
-  MOVEA.l A1,A0
-  MOVEA.l expandstore,A2
-  BRA.w JL_0_5C9C                ; start loop again
-
-  exit_print_tokenized_text:
-  MOVEM.l (A7)+,D4/A1
-  MOVE.b comByte__AL_0_8662,$0(A1,D4.W)
-RTS
+;.print_tokenized_text_asm:
+;  MOVEA.l AL_0_5BA6,A0
+;  MOVEA.l textbufferPrint,A1
+;
+;  MOVEM.l D0-D1/A1,-(A7)
+;  JSR JL_0_5060                               ;copy whole line from A0 to A1 and detokenize
+;  MOVEM.l (A7)+,D0-D1/A1
+;
+;  !regs2stack
+;  !basic
+;  log_Print{"t:" + Peek.s(Peek.l(?textbufferPrint))}
+;  log_Print{"e:" + Peek.s(Peek.l(?expandstore))}
+;  !asm
+;  !stack2regs
+;
+;  TST.b keepstring
+;  BNE 'l3
+;    CLR.b instring2
+;    MOVEA.l AL_0_5BA6,A0
+;    MOVE.w #0,d2
+;    MOVEM.l d0/d1,-(a7)
+;    CMP.l #0,a0
+;    BEQ 'l2b
+;   'l1
+;      CMP.w comWord_ColumnsOffset,d2
+;      BGE 'l2b
+;        MOVE.b (a0)+,d0
+;        CMP.b #$22,d0
+;        BNE 'l2
+;          NOT.b instring2
+;       'l2
+;        ADDQ.w #1,d2
+;    BRA 'l1
+;   'l2b
+;    MOVEM.l (a7)+,d0/d1
+; 'l3
+;  ADDA.w comWord_ColumnsOffsetTmp,A1                ;offset
+;  MOVE.w visiblecolumns,D4
+;  MOVE.b $0(A1,D4.W),comByte__AL_0_8662
+;  MOVEM.l D4/A1,-(A7)
+;  MOVE.b #$0,$0(A1,D4.W)                            ; cut the string a visiblecolumns border
+;  MOVEA.l expandstore,A2
+;  MOVEA.l A1,A0
+;
+;  EXT.l d0 : DIVU fontWidth,d0                          ; d0: xPos
+;
+;  JL_0_5C9C:
+;    MOVE.b (A1)+,D2
+;    BEQ.w JL_0_5CAA
+;      CMP.b #$22,d2                        ; "
+;      BNE 'l10
+;        NOT.b instring2
+;     'l10
+;      TST.b instring2
+;      BNE 'l11
+;        TST.b d2
+;        BMI.w JL_0_5CAA                     ;morechar
+;     'l11
+;      MOVE.b D2,(A2)+                     ; fill expandstore
+;    BRA.b JL_0_5C9C
+;    JL_0_5CAA:
+;
+;    MOVE.b #$0,(A2)
+;    CMPA.l expandstore,A2
+;    BEQ.w JL_0_5CE6
+;      MOVEM.l a6/d0-d1/a0/a1,-(a7)
+;      MOVE.w D0,-(A7)      ; x-position
+;
+;      MOVEA.l A1,A2 : SUBA.l A0,A2
+;      MOVE.b D2,D4                          ; D4: store last read character
+;      MOVE.w A2,D2                          ; D2: store read bytes
+;      MOVE.w D2,D5                          ; D5: store read bytes
+;      SUBQ.w #1,D2                          ; D2: read bytes - 1
+;      MOVEA.l expandstore,A0
+;
+;      MOVE.l A0,-(a7)   ; string
+;      MOVE.l D0,-(a7)   ; x-pos
+;      MOVE.l D1,-(a7)   ; y-pos
+;      MOVE.l D2,-(a7)   ; textlength
+;      !basic
+;      MOVE.l (a7)+,d0 : tlength.w = PutD0
+;      MOVE.l (a7)+,d0 : tposy.w = (PutD0 AND $FFFF)
+;      MOVE.l (a7)+,d0 : tposx.w = PutD0
+;      MOVE.l (a7)+,d0 : *textaddr.l = PutD0
+;
+;      log_Print{"call PrintText: " + Str$(tlength) + "... " + Str$(tposx) + ", " + Str$(tposy) + " : [" + Peek.s(*textaddr) + "]"}
+;      PED_PrintText{*textaddr,tposx,tposy,tlength,AB3Pen(#AB3_cother)}
+;      !asm
+;      MOVE.w (A7)+,D0
+;      MOVEM.l (a7)+,a6/d0-d1/a0/a1
+;      MOVE.b D4,D2                          ; restore last read character to D2
+;      ADD.w D5,D0
+;      SUBQ.w #1,D0
+;      TST.b D2
+;      BEQ.w exit_print_tokenized_text
+;    JL_0_5CE6:
+;    TST.b D2
+;    BEQ.w exit_print_tokenized_text
+;
+;    ;find string state
+;    SUBQ.w #1,A1
+;    MOVEA.l A1,A0
+;    MOVEA.l expandstore,A2
+;  TST.b D2
+;  BPL.b JL_0_5C9C
+;
+;  a_loop:
+;    MOVE.b (A1)+,D2
+;    BEQ.w JL_0_5D0A
+;    BPL.w JL_0_5D0A
+;      BCLR #$7,D2
+;      MOVE.b D2,(A2)+
+;  BRA.b a_loop
+;  JL_0_5D0A:
+;
+;  MOVE.b #$0,(A2)
+;  CMPA.l expandstore,A2
+;  BEQ.w exit_print_tokenized_text
+;
+;  MOVE.w D0,-(A7)                   ; get x position
+;  MOVEA.l A1,A2
+;  SUBA.l A0,A2
+;  MOVE.b D2,D4
+;  MOVE.w A2,D2
+;  MOVE.w D2,D5
+;  SUBQ.w #1,D2
+;  MOVEA.l expandstore,A0
+;
+;  !regs2stack
+;  MOVE.l A0,-(a7)   ; string
+;  MOVE.l D0,-(a7)   ; x-pos
+;  MOVE.l D1,-(a7)   ; y-pos
+;  MOVE.l D2,-(a7)   ; textlength
+;  !basic
+;  MOVE.l (a7)+,d0 : tlength.w = PutD0
+;  MOVE.l (a7)+,d0 : tposy.w = (PutD0 AND $FFFF)
+;  MOVE.l (a7)+,d0 : tposx.w = PutD0
+;  MOVE.l (a7)+,d0 : *textaddr.l = PutD0
+;
+;  ;-- check for classic token and set color else set standard token color
+;  tcolor.w = AB3Pen(#AB3_ctoken)
+;  If AB3Pen(#AB3_cclassic) > 0
+;    ;log_Print{">>" + Peek$(Peek.l(?expandstore))}
+;    ;!asm
+;    ;MOVEA.l expandstore,A0 : MOVE.l A0,D0
+;    ;JSR ascii_to_token
+;    ;!basic
+;     _token.l = PED_GetTokenID{Peek$(Peek.l(?expandstore))} ;PutD0
+;     If PED_CheckForClassicToken{_token} Then tcolor.w = AB3Pen(#AB3_cclassic)
+;  EndIf
+;
+;  ;-- print the token
+;  SetBPen_ \win\RPort, AB3Pen(#AB3_ctokenbackground)
+;  If pedconfig\bold_tokens
+;    SetFont_ \win\RPort, \fontB
+;    SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
+;  EndIf
+;  log_Print{"call PrintText2: " + Str$(tlength) + "... " + Str$(tposx) + ", " + Str$(tposy) + " : [" + Peek.s(*textaddr) + "]"}
+;  PED_PrintText{*textaddr,tposx,tposy,tlength,tcolor}
+;
+;  ;-- reset font and style
+;  SetBPen_ \win\RPort, AB3Pen(#AB3_cbackground)
+;  If pedconfig\bold_tokens
+;    SetFont_ \win\RPort, \font
+;    SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
+;  EndIf
+;  !asm
+;  !stack2regs
+;
+;  MOVE.w (A7)+,D0 : ADD.w D5,D0 : SUBQ.w #1,D0 ; update x-pos
+;  MOVE.b D4,D2
+;  TST.b D2
+;  BEQ.w exit_print_tokenized_text
+;
+;  SUBQ.w #1,A1
+;  MOVEA.l A1,A0
+;  MOVEA.l expandstore,A2
+;  BRA.w JL_0_5C9C                ; start loop again
+;
+;  exit_print_tokenized_text:
+;  MOVEM.l (A7)+,D4/A1
+;  MOVE.b comByte__AL_0_8662,$0(A1,D4.W)
+;RTS
 
 .print_linenumber:
   USEPATH sourceWindow
@@ -11904,8 +11999,6 @@ Return
         textlen = FindByte(Peek.s(lineaddr + runner + 1),$22) + 1   ; search for string mark
         If textlen
           ;log_Print { "string [" + Peeks$(lineaddr+runner+1 ,textlen) + "]" + Str$(textlen)}
-          sourceWindow\ColumnsOffset = Peek.w(?comWord_ColumnsOffset)
-          sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
           PED_PrintHighlight{lineaddr + runner, runner , textlen, AB3Pen(#AB3_cstring), 0}
         EndIf
       EndIf
@@ -11930,8 +12023,6 @@ Return
 
             If !PED_CheckUnAllowedChar{checkchr} OR (i = 0)
               textlen = runner - i
-              sourceWindow\ColumnsOffset = Peek.w(?comWord_ColumnsOffset)
-              sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
               PED_PrintHighlight{lineaddr + i, i , textlen, AB3Pen(#AB3_cfunction), 0}
               Pop For : Pop If : Pop If : Pop If
               Goto Exit_function
@@ -11951,8 +12042,6 @@ Return
           ;log_Print{"macro checking [" + Peeks$(lineaddr + i,1) +  "] in "+ Peeks$(lineaddr,20)}
           If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
             textlen = i - runner
-            sourceWindow\ColumnsOffset = Peek.w(?comWord_ColumnsOffset)
-            sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
             PED_PrintHighlight{lineaddr + runner, runner, textlen, AB3Pen(#AB3_cmacro), 0}
             Pop For : Pop If
             Goto Exit_macro
@@ -11973,8 +12062,6 @@ Return
             If checkchr <> @"$" AND checkchr <> @"%"; OR checkchr = @"-"
               If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
                 textlen = i - runner
-                sourceWindow\ColumnsOffset = Peek.w(?comWord_ColumnsOffset)
-                sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
                 PED_PrintHighlight{lineaddr + runner, runner , textlen, AB3Pen(#AB3_cconstant), 0}
                 Pop For : Pop If : Pop If : Pop If
                 Goto Exit_constant
@@ -11998,8 +12085,6 @@ Return
             If checkchr <> @"\"
               If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
                 textlen = i - runner
-                sourceWindow\ColumnsOffset = Peek.w(?comWord_ColumnsOffset)
-                sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
                 PED_PrintHighlight{lineaddr + runner, runner , textlen, AB3Pen(#AB3_cnewtype), 0}
                 Pop For : Pop If : Pop If : Pop If
                 Goto Exit_newtype
@@ -12280,27 +12365,24 @@ RTS
 RTS
 
 .scroll_rest_of_line_left:
-  xPos.w = Peek.w(?comWord_Column) + Peek.w(?comWord_ColumnsOffset)
-  yPos.l = Peek.l(?comLong_DisplayLine) + Peek.l(?comLong_DisplayLineOffset)
-  ;log_Print{"scroll line to left xpos "+ Str$(xPos)+  ", ypos " + Str$(yPos) + " BlockEndY " +Str$(Peek.l(?comLong_BlockEndY))}
+  USEPATH ped\ptrCurrentSourceData
+  xPos.w = \Column + \ColumnsOffset
+  yPos.l = \DisplayLine + \DisplayLineOffset
+  ;log_Print{"scroll line to left xpos "+ Str$(xPos)+  ", ypos " + Str$(yPos) + " BlockEndY " +Str$(\BlockEndY)}
 
   ;-- scroll block
-  If Peek.l(?comLong_BlockEndY) > -1
-    If (yPos <= Peek.l(?comLong_BlockEndY)) AND (yPos >= Peek.l(?comLong_BlockStartY))
-      If yPos = Peek.l(?comLong_BlockStartY)
-        If xPos <= Peek.w(?comWord_BlockStartX) Then Poke.w ?comWord_BlockStartX, Peek.w(?comWord_BlockStartX) - 1
-        If Peek.w(?comWord_BlockEndX) <> #MAX_Columns - 1
-          If xPos <= Peek.w(?comWord_BlockEndX)
-            Poke.w ?comWord_BlockEndX, Peek.w(?comWord_BlockEndX) - 1
-            xPos = \visibleColumns + Peek.w(?comWord_ColumnsOffset)
-            If xPos > Peek.w(?comWord_BlockEndX)
-              sourceWindow\Column = Peek.w(?comWord_Column)
-              sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
+  If \BlockEndY <> -1
+    If (yPos <= \BlockEndY) AND (yPos >= \BlockStartY)
+      If yPos = \BlockStartY
+        If xPos <= \BlockStartX Then \BlockStartX - 1
+        If \BlockEndX <> #MAX_Columns - 1
+          If xPos <= \BlockEndX
+            \BlockEndX - 1
+            xPos = sourceWindow\visibleColumns + \ColumnsOffset
+            If xPos > \BlockEndX
               PED_ScrollHorizontal{#SCROLL_LEFT,  #SCROLL_CURRENT_LINE}
             EndIf
           Else
-            sourceWindow\Column = Peek.w(?comWord_Column)
-            sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
             PED_ScrollHorizontal{#SCROLL_LEFT,  #SCROLL_CURRENT_LINE}
           EndIf
         EndIf
@@ -12310,8 +12392,6 @@ RTS
     EndIf
   EndIf
 
-  sourceWindow\Column = Peek.w(?comWord_Column)
-  sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
   PED_ScrollHorizontal{#SCROLL_LEFT,  #SCROLL_CURRENT_LINE}
 
 Return
@@ -13908,8 +13988,6 @@ Return
 
   Gosub cursor_off
 
-  sourceWindow\Column = Peek.w(?comWord_Column)
-  sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
   PED_ScrollHorizontal{#SCROLL_RIGHT, #SCROLL_CURRENT_LINE}
 
   ;-- update blockmarking
@@ -14134,7 +14212,7 @@ RTS
              PED_ShowMessage{a_new$ + " " + PED_GetIncludeHelp{a_new$} }
              a$ = a_new$ + "{"
            Else          ; is command
-             PED_ShowMessage{a$ + " " + PED_GetTokenHelp{*tokenbase,a$} }
+             PED_ShowMessage{a$ + " " + PED_GetTokenHelp{a$} }
            EndIf
 
            a$ = UnRight$(a$,FLen(poptok$)) ; cut string
@@ -14169,8 +14247,7 @@ RTS
 Return
 
 
-Function.s FindTokenHelpStr{tokname$}
-  SHARED *tokenbase.tokeninfo         ;add because it is global now  tomsmart1 2012 06 16
+Function.s FindHelp{tokname$}
 
   If Left$(tokname$,1) = "!"
     MOVE.l comPtr_MacroBase,d0 : *macrobase.l = PutD0
@@ -14178,12 +14255,12 @@ Function.s FindTokenHelpStr{tokname$}
 ;    tokhelp$ = PED_GetMacroHelp{*macrobase,tokname$}
     tokexte$ = "Macro"
   Else
-    tokid.l = PED_GetTokenID{*tokenbase,tokname$}
-    If tokid>=0
-      tokname$ = PED_GetTokenName{*tokenbase,tokid}
-      libnum.l = PED_GetTokenLibnum{*tokenbase,tokname$}
+    tokid.l = PED_GetTokenID{tokname$}
+    If tokid >= 0
+      tokname$ = PED_GetTokenName{tokid}
+      libnum.l = PED_GetTokenLibnum{tokname$}
       If libnum>=0
-        tokhelp$ = PED_GetTokenHelp{*tokenbase,tokname$}
+        tokhelp$ = PED_GetTokenHelp{tokname$}
         tokexte$ = "BlitzLib: " + PED_GetLibname{libnum}
       End If
     Else
@@ -14208,7 +14285,7 @@ End Function
 
   strhelp.s = ""
   If tokname$ <> ""
-    strhelp =  FindTokenHelpStr{tokname$}
+    strhelp =  FindHelp{tokname$}
     If Len(strhelp) < 3
       ; keine Hilfe und kein Word unter Cursor
       PED_ShowMessage{""}
@@ -14300,10 +14377,9 @@ RTS
           ; -- open list if something found
           If popfound > 0
             WZ_SetPopUpMenu{tokenliste$,1}
-            sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
             USEPATH sourceWindow
-            xpos.w = \WinLeft + \BoxLeft + Peek.w(?comWord_Column) * \font\tf_XSize
-            ypos.w = \WinTop  + \BoxTop  + (\DisplayLine+1) * \font\tf_YSize + \font\tf_Baseline
+            xpos.w = \WinLeft + \BoxLeft + ped\ptrCurrentSourceData\Column * \font\tf_XSize
+            ypos.w = \WinTop  + \BoxTop  + (ped\ptrCurrentSourceData\DisplayLine+1) * \font\tf_YSize + \font\tf_Baseline
             log_Print{"opening popup at " + Str$(xpos) + ", " + Str$(ypos)}
             WZ_PopUp_Nonmodal{xpos,ypos,-1,-1,*myscreen\RastPort}
           Else
@@ -14404,8 +14480,8 @@ Return
   For i = 0 To 65535
     If tokentable(i) > 0
       acttoke2 = i
-      tokname$ = PED_GetTokenName{*tokenbase,acttoke2}
-      libnum.l = acttoke2 LSR 7 ;PED_GetTokenLibnumID{*tokenbase,tokname$})
+      tokname$ = PED_GetTokenName{acttoke2}
+      libnum.l = acttoke2 LSR 7 ;PED_GetTokenLibnumID{tokname$})
       libname$ = lib_mapping$(libnum,0)
 
       If tokname$<>""
@@ -15658,8 +15734,6 @@ Return
       Poke.w ?comWord_Column, Peek.w(?comWord_Column) + Peek.w(?comWord_ColumnsOffset)
       For cupos.w = 0 To moveCount - 1
         Poke.b lineaddr + currentColumn + cupos,$20 ; insert space character
-        sourceWindow\Column = Peek.w(?comWord_Column)
-        sourceWindow\DisplayLine = Peek.l(?comLong_DisplayLine)
         PED_ScrollHorizontal{#SCROLL_RIGHT, #SCROLL_CURRENT_LINE}
         enteredChar.b = $20 : Gosub print_entered_char
       Next cupos
@@ -18096,7 +18170,7 @@ event_librarybrowser:
       pos.l = WZ_Row{"FUNCTIONSTABLE"}
       actualword$ = WZ_GetCell{"FUNCTIONSTABLE",WZ_Row{"FUNCTIONSTABLE"},1}
       If actualword$<>""
-        libinfo$ = lib_mapping$(libnumber.l,0)+" (LibNr. "+Str$(libnumber)+" Token "+Hexw$(PED_GetTokenID{*tokenbase,actualword$}) +")"
+        libinfo$ = lib_mapping$(libnumber.l,0)+" (LibNr. "+Str$(libnumber)+" Token "+Hexw$(PED_GetTokenID{actualword$}) +")"
         WZPrint "ARGS_LIBRARYNAME",&libinfo$
       EndIf
 
@@ -18147,25 +18221,21 @@ event_librarybrowser:
           libID.l = 0 : olibID.l = 0
           For i = 0 To (#Max_BlitzLibs-1) : lib_check(i) = False : Next i
 
-          *tpointer.l = *tokenbase
-          Repeat
-            tokeninfo\next_token = Peek.l(*tpointer)
-            tokeninfo\number     = Peek.w(*tpointer + 4)
-            tokeninfo\name       = Peek.s(*tpointer + 6)
-            tokeninfo\help       = Peek.s(*tpointer + 6 + FLen(tokeninfo\name) + 1)
-            libID.l = (tokeninfo\number LSR 7)
+          *token.tokendata = *tokenbase
+          Repeat 
+            libID.l = (*token\number LSR 7)
 
             If (libID.l <> olibID.l) AND (libID>1) ; skip internal systemlib and dhandlerlib
               If lib_check(libID) = False
                 lib_check(libID) = True
               Else
                 For i = 0 To (#Max_BlitzLibs-1)
-                  If lib_mapping$(i,1) = tokeninfo\name
-                    old_libname.s = StripTrail$(UnRight$(lib_mapping$(i,0),Instr(lib_mapping$(libID,0),"with ")+4),Asc(")"))
+                  If lib_mapping$(i,1) = Peek.s(&*token\dat)
+                    old_libname.s = StripTrail$(UnRight$(lib_mapping$(i,0),Instr(lib_mapping$(libID,0),"with ")+4),@")")
                     Pop If : Pop For : Goto exit_for2
                   EndIf
                 Next i
-                log_Print{"nothing found for token [" + tokeninfo\name + "], libID #" + Str$(libID)}
+                log_Print{"nothing found for token [" + Peek.s(&*token\dat) + "], libID #" + Str$(libID)}
                 exit_for2:
                 error_libname.s = Left$(lib_mapping$(libID,0),Instr(lib_mapping$(libID,0)," ")-1)
                 tmp_string + "+ " + old_libname + " has been overwritten by\\n"
@@ -18174,8 +18244,8 @@ event_librarybrowser:
               olibID = libID
               !WZ_GaugeInfo{&lib_mapping$(libID,0)}
             EndIf
-            *tpointer.l = tokeninfo\next_token
-          Until (*tpointer = 0)
+            *token = *token\next_token
+          Until (*token = 0)
 
           WZ_HideMessage{}
           If tmp_string = ""
@@ -18222,19 +18292,15 @@ Return
 
   WZ_ClearTable{"FUNCTIONSTABLE"}
 
-  If *tokenbase<>0
-    *tpointer.l = *tokenbase : tfound.b = False : tcounter.l = 0 : tname$ = ""
+  If *tokenbase
+    *token.tokendata = *tokenbase : tfound.b = False : tcounter.l = 0 : tname$ = ""
     Repeat
-      tokeninfo\next_token = Peek.l(*tpointer)
-      tokeninfo\number     = Peek.w(*tpointer+4)
-      tokeninfo\name       = Peek$(*tpointer+6)
-      tokeninfo\help       = Peek$(*tpointer+6+FLen(tokeninfo\name)+1)
-
-      If (tokeninfo\number LSR 7) = libnumber
-        WZ_AddRow{"FUNCTIONSTABLE",tokeninfo\name,tokeninfo\help}
+      If (*token\number LSR 7) = libnumber
+        tname.s = Peek.s(&*token\dat)
+        WZ_AddRow{"FUNCTIONSTABLE",tname ,Peek.s(&*token\dat + FLen(tname) + 1)}
       EndIf
-      *tpointer.l = tokeninfo\next_token : tcounter + 1
-    Until (*tpointer = 0)
+      *token = *token\next_token : tcounter + 1
+    Until *token = 0
   EndIf
   WZ_TableSort{"FUNCTIONSTABLE",1}
   WZ_UpdateTable{"FUNCTIONSTABLE"}
@@ -18262,7 +18328,7 @@ Return
     WZ_UpdateTable{"INSTRUCTIONTABLE"}
     WZPrint "INSTRUCTION_STRING",search_instruction$
   End If
-  WZ_ActivateGadget{"INSTRUCTION_STRING"}                                                                                                                                                                                                                
+  WZ_ActivateGadget{"INSTRUCTION_STRING"}
 RTS
 
 
@@ -18272,20 +18338,19 @@ RTS
   Select wev
 
     Case #WZTABLEEVENT_CELLSELECTED
-      MOVE.l comPtr_TokenBase,token@(a5)
-
       b$ = WZ_GetCell{"INSTRUCTIONTABLE",WZ_Row{"INSTRUCTIONTABLE"},1}
       bstr$ = b$
-      While token
-        If b$ = Peek$(token+6) Then Pop While: Goto tfound
-        token = Peek.l(token)
+      *token.tokendata = *tokenbase
+      While *token
+        If b$ = Peek.s(&*token\dat) Then Pop While: Goto tfound
+        *token = *token\next_token
       Wend
 
      tfound:
-      If token
-        tok.l = Peek.w(token+4)
-        iinfo$ = "Library: " + PED_GetLibname{tok LSR 7}
-        iinfo$ + " - LibNr.: "+Str$(tok LSR 7)+" - TokenID: "+Str$((tok AND $7f)-1)+" - MemPointer $"+Hex$(tok)
+      If *token
+        tokenNumber.w = *token\number
+        iinfo$ = "Library: " + PED_GetLibname{tokenNumber LSR 7}
+        iinfo$ + " - LibNr.: " + Str$(tokenNumber LSR 7) + " - TokenNr: " + Str$((tokenNumber AND $7f)-1) + " - TokenId: $" + Hexw$(tokenNumber)
       Else
         iinfo$ = "Include: " + PED_GetIncludeName{bstr$}
       EndIf
@@ -18333,7 +18398,7 @@ RTS
                 tempph + 1
               Wend
               log_Print{Str$(tempph) + " spaces after last char"}
-              Gosub cursor_off                                                                                                                                                                                                                              
+              Gosub cursor_off
               For i = 1 To tempph
                 Gosub deletechar
               Next i
@@ -18345,17 +18410,17 @@ RTS
         Case "macros"
           browse_macros = WZInput
           previoussearch_instruction$ = "|"
-          WZ_ActivateGadget{"INSTRUCTION_STRING"}                                                                                                                                                                                                        
+          WZ_ActivateGadget{"INSTRUCTION_STRING"}
 
         Case "instr"
           browse_instructions = WZInput
           previoussearch_instruction$ = "|"
-          WZ_ActivateGadget{"INSTRUCTION_STRING"}                                                                                                                                                                                                        
+          WZ_ActivateGadget{"INSTRUCTION_STRING"}
 
         Case "incdir"
           browse_includes = WZInput
           previoussearch_instruction$ = "|"
-          WZ_ActivateGadget{"INSTRUCTION_STRING"}                                                                                                                                                                                                        
+          WZ_ActivateGadget{"INSTRUCTION_STRING"}
 
       End Select
 
@@ -18379,25 +18444,24 @@ Return
     InitArgParse search_instruction$
     word1$ = NextArg$
     word2$ = NextArg$
-    MOVE.l comPtr_TokenBase,token@(a5)
     numcount.l = 0
     If browse_instructions
-      While token
-        token_name$ = Peek$(token + 6)
-        token_help$ = Peek$(token + 7 + Len(token_name$))
-        ;token_libname$ = PED_GetLibname{Peek.w(token+4) LSR 7}
-        If Instr(token_name$,word1$) AND numcount < #maxlabels
-          If Instr(token_help$,word2$)
+      log_Print{"instruction browser: searching for <" + word1$ + "/" + word2$+ ">"}
+      *token.tokendata = *tokenbase
+      While *token
+        token_name$ = Peek.s(&*token\dat)
+        If Instr(token_name$, word1$) AND numcount < #maxlabels
+          token_help$ = Peek.s(&*token\dat + FLen(token_name$) + 1)
+          If Instr(token_help$, word2$)
             numcount = numcount + 1
-            WZ_AddRow{"INSTRUCTIONTABLE",token_name$,token_help$}
-
-            If PED_CheckForClassicToken{Peek.w(token+4)} Then WZ_SetRowPen{"INSTRUCTIONTABLE",AB3Pen(#AB3_cclassic),0}
-          End If
-        End If
-        token = Peek.l(token)
+            WZ_AddRow{"INSTRUCTIONTABLE",token_name$, token_help$}
+            If PED_CheckForClassicToken{*token\number} Then WZ_SetRowPen{"INSTRUCTIONTABLE",AB3Pen(#AB3_cclassic),0}
+          EndIf
+        EndIf
+        *token = *token\next_token
       Wend
-    End If
-    ;
+    EndIf
+    ; 
     If browse_macros
       MOVE.l comPtr_MacroBase,a0:MOVE.l (a0),token@(a5)
       c.l = 0
@@ -18504,53 +18568,26 @@ Return
 
   PED_ShowMessage{!TRANS{"Searching help for <" + actualword$ + ">"}}
 
-  MOVE.l comPtr_TokenBase,token@(a5)
-  b$ = actualword$
-  While token
-    If b$ = Peek$(token+6) Then Pop While:Goto found
-    token = Peek.l(token)
-  Wend
-
- found:
-  If token
-    tok.l = Peek.w(token+4)
-    tokname$ = b$
-    libnumber = tok LSR 7
-  Else ;no token, but a function or macro
-    tokname$ = b$
-    libnumber = 0
-  End If
-  Gosub open_helptool
-Return
-
-
-.open_helptool:
-  tokid.l = PED_GetTokenID{*tokenbase,tokname$}
-  libnumber = PED_GetTokenLibnum{*tokenbase,tokname$}
-  helpdir$ = pedconfig\helpDir
-
-  ;If tokid <= 0
-  ;  tokname$ = Left$(tokname$,FLen(tokname$)-1)
-  ;  tokid = PED_GetTokenID{*tokenbase,tokname$}
-  ;  libnumber = PED_GetTokenLibnum{*tokenbase,tokname$}
-  ;EndIf
-
-  If tokid > 0
-    If Right$(tokname$,1)="_"
-      tokname$ = Left$(tokname$,Len(tokname$)-1)
-      helpdir$ = pedconfig\autodocDir + " -d " + helpdir$
+  *token.tokendata = PED_GetTokenPointer{actualword$}
+  If *token
+    libnumber = *token\number LSR 7
+    If Right$(actualword$,1) = "_"
+      actualword$ = Left$(actualword$,FLen(actualword$) - 1)
+      helpdir$ = pedconfig\autodocDir
     EndIf
-    libname$ = lib_mapping$( libnumber,0)
+    libname$ = lib_mapping$(libnumber,0)
+
+    ;-- check if library has an number extention (e.g. for libraries that have more than 128 tokens)
     mostright$ = Right$(libname$,1)
-    If mostright$ = "1" OR mostright$ = "2" Then libname$ = Left$(libname$,Len(libname$)-1)
+    If mostright$ = "1" OR mostright$ = "2" Then libname$ = Left$(libname$,FLen(libname$)-1)
   Else
-    libname$ = PED_GetIncludeName{tokname$}
+    libname$ = PED_GetIncludeName{actualword$}
   EndIf
 
-  If Instr(libname$,"unused")=0 AND (libname$<>"")
-    Show_Helpfile{libname$,tokname$,helpdir$}
+  If (libname$ <> "") AND Instr(libname$,"unused") = 0
+    Show_Helpfile{libname$, actualword$, helpdir$}
   Else
-    search_instruction$ = tokname$
+    search_instruction$ = actualword$
     Gosub open_instructionbrowser
     ;dummy.l = ask{"No help available",!TRANS{"Ok"},!TRANS{"Info"}}
   EndIf
@@ -19985,54 +20022,54 @@ Return
 ;  CLR.w comWord_KeyBeforeReturn
 ;  MOVE.l comPtr_CurrentSourceLine,a4
 ;RTS
-
-
-.ascii_to_token: ;d0 = token
-  MOVEM.l d1-d7/a0-a6,-(a7)
-  MOVE.l d0,a2                    ; D0: expandstore
-  MOVEA.l comPtr_TokenBase,A3
-
-  JL_0_6036b:
-    MOVEA.l A2,A4
-    MOVE.l A3,-(A7)
-    ADDQ.w #6,A3
-
-    JL_0_603Cb:
-      MOVE.b (A3)+,D3
-      BEQ.w JL_0_6082b     ;found
-        MOVE.b (A4)+,D2
-        ;BCLR #$7,D2
-        ;ORI.b #$20,D3
-        ;ORI.b #$20,D2
-    CMP.b D3,D2
-    BEQ.b JL_0_603Cb
-
-    JL_0_6054b:
-    MOVEA.l (A7)+,A3
-    MOVE.l (A3),D3
-    BEQ.w JL_0_6060b
-      MOVEA.l D3,A3
-  BRA.b JL_0_6036b
-  JL_0_6082b:
-
-  MOVE.b (A4),D2
-  BNE JL_0_6054b
-  BCLR #$7,D2
-  BNE.b JL_0_6054b       ;not found
-  MOVEA.l (A7)+,A3
-  ADDQ.w #4,A3
-  MOVEQ #0,d0
-  MOVE.b (A3)+,d0
-  ASL.l #8,d0
-  MOVE.b (a3),d0
-  MOVEM.l (a7)+,d1-d7/a0-a6
-RTS
-
- JL_0_6060b
-  MOVEQ #0,d0
-  MOVEM.l (a7)+,d1-d7/a0-a6
-RTS
-
+;
+;
+;.ascii_to_token: ;d0 = token
+;  MOVEM.l d1-d7/a0-a6,-(a7)
+;  MOVE.l d0,a2                    ; D0: expandstore
+;  MOVEA.l comPtr_TokenBase,A3
+;
+;  JL_0_6036b:
+;    MOVEA.l A2,A4
+;    MOVE.l A3,-(A7)
+;    ADDQ.w #6,A3
+;
+;    JL_0_603Cb:
+;      MOVE.b (A3)+,D3
+;      BEQ.w JL_0_6082b     ;found
+;        MOVE.b (A4)+,D2
+;        ;BCLR #$7,D2
+;        ;ORI.b #$20,D3
+;        ;ORI.b #$20,D2
+;    CMP.b D3,D2
+;    BEQ.b JL_0_603Cb
+;
+;    JL_0_6054b:
+;    MOVEA.l (A7)+,A3
+;    MOVE.l (A3),D3
+;    BEQ.w JL_0_6060b
+;      MOVEA.l D3,A3
+;  BRA.b JL_0_6036b
+;  JL_0_6082b:
+;
+;  MOVE.b (A4),D2
+;  BNE JL_0_6054b
+;  BCLR #$7,D2
+;  BNE.b JL_0_6054b       ;not found
+;  MOVEA.l (A7)+,A3
+;  ADDQ.w #4,A3
+;  MOVEQ #0,d0
+;  MOVE.b (A3)+,d0
+;  ASL.l #8,d0
+;  MOVE.b (a3),d0
+;  MOVEM.l (a7)+,d1-d7/a0-a6
+;RTS
+;
+; JL_0_6060b
+;  MOVEQ #0,d0
+;  MOVEM.l (a7)+,d1-d7/a0-a6
+;RTS
+;
 .activatesourcewindow                                                         ; changed name to better show it pourpos  tomsmart1
   If sourceWindow\win
      ActivateWindow_ sourceWindow\win                                         ; replaced ASM part with Basic commands  tomsmart1
@@ -21176,15 +21213,15 @@ Even
 comWord_BoundLinesX:  Dc.w 2
 comWord_BoundLinesY:  Dc.w 2
 comLong_Label1VisableItem: Dc.l 0
-noDetokenizing:       Ds.w 1                                                         
+noDetokenizing:       Ds.w 1
 loadAsNew             Ds.w 1
 fontWidth             Ds.w 1
-foldnum               Ds.l 1 
+foldnum               Ds.l 1
 typestr               Ds.b 80
 is_stat_func_macro    Ds.b 1                ; labellist identifier for statement, function or macro  tomsmart1 ; was isfunction
 keepstring            Ds.b 1
 ;helpstring            Ds.b 260
-searchmode            Ds.w 1 
+searchmode            Ds.w 1
 slen2                 Ds.l 1
 straddr2              Dc.l 0
 straddr               Dc.l 0
@@ -21192,7 +21229,7 @@ numcount              Dc.l 0
 constantbase          Dc.l 0
 newtypebase           Dc.l 0
 newsyntax             Dc.l 0
-instrtab              Ds.l 32769
+tokenCache              Ds.l 32769
 newted                Dc.l 0
 history               Ds.l 10
 tempbuf               Ds.b 260
