@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2713
+; NumberOfBuilds  = 2761
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 14010
-; CursorColumn    = 7
-; LabelSearch     = "newcolumn"
+; CursorLine      = 13508
+; CursorColumn    = 10
+; LabelSearch     = "open_gui"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelPosition   = 0
@@ -1749,7 +1749,7 @@ Function.s PED_GetMacroName{macrobase.l,macname.s}
 End Function
 
 
-Statement PED_PrintTextStandard{tx.w, ty.w, *textaddr.l}
+Statement PED_PrintTextStandard{*textaddr.l, tx.w, ty.w}
 SHARED ped,sourceWindow,AB3Pen()
 
   ;log_Print{"print_standard_text"}
@@ -1852,6 +1852,122 @@ SHARED pedconfig, sourceWindow, AB3RGB(), AB3Pen()
 
 End Statement
 
+Statement PED_PrintTokenizedText{*textaddr.l, tposx.w, tposy.w}
+SHARED sourceWindow, ped, pedconfig, AB3Pen()
+USEPATH sourceWindow
+  ; clear textBufferPrint
+  tmpAddr.l = Peek.l(?textbufferPrint)
+  For i.w = 0 To #MAX_Columns/4-1 Step 4
+    Poke.l  tmpAddr + i, 0
+  Next i
+  ; copy the current line to a tempBuffer
+  For i = 0 To #MAX_Columns - 1
+    Poke.b Peek.l(?AL_0_5BA6) + i, Peek.b(*textaddr + i)
+  Next i
+  Poke.b Peek.l(?AL_0_5BA6) + #MAX_Columns-1, 0
+
+  !asm
+  MOVEA.l AL_0_5BA6,A0
+  MOVEA.l textbufferPrint,A1
+  MOVEM.l D0-D1/A1,-(A7)
+  ; copy whole line from A0 to A1 and detokenize it but keep token indicator (bit7)
+  JSR JL_0_5060
+  MOVEM.l (A7)+,D0-D1/A1
+  !basic
+
+  ;-- original string
+  tmpString1.s = Peek.s(Peek.l(?AL_0_5BA6))
+
+  ;-- detokenized string, tokens are still marked with bit 7 set in each character
+  tmpString2.s = Peek.s(Peek.l(?textbufferPrint))
+
+  ;-- check if source left of display start position has an opened string literal
+  If Peek.b(?keepstring) = 0
+    chkString.b = 0
+
+    If tmpString1 <> ""
+      runner.w = 0
+      While runner < ped\ptrCurrentSourceData\ColumnsOffset
+        If Peek.b(&tmpString1 + runner) = $22 Then chkString = NOT chkString
+        runner + 1
+      Wend
+    EndIf
+  EndIf
+  ;log_Print{"we are in a string: " + Str$(chkString)}
+
+  tmpPrint.s = UnRight$(tmpString2, ped\ptrCurrentSourceData\ColumnsOffsetTmp)
+  lastVisibleChar$ = Mid$(tmpPrint,\visibleColumns,1)
+  tmpPrint = Left$(tmpPrint,\visibleColumns)
+
+  tposx = tposx / \font\tf_XSize
+  runner.w = -1
+
+  print_loop:
+  tmpExpand.s = ""
+  Repeat
+    runner + 1
+    curChar.b = Peek.b(&tmpPrint + runner)
+    If curChar <> 0
+      If curChar = $22 Then chkString.b = NOT chkString
+      If chkString = 0
+        If curChar < 0 Then Goto exit_printloop
+      EndIf
+      tmpExpand + Chr$(curChar)
+    EndIf
+  Until curChar = 0
+  exit_printloop:
+
+  If FLen(tmpExpand)
+    PED_PrintText{&tmpExpand, tposx, tposy, FLen(tmpExpand), AB3Pen(#AB3_cother)}
+    tposx + FLen(tmpExpand)
+  EndIf
+  If curChar = 0 Then Goto exit_print
+  If curChar > 0 Then Goto print_loop
+
+  tmpExpand.s = ""
+  While curChar < 0
+    tmpExpand + Chr$(curChar BitClr 7)
+    runner + 1
+    curChar = Peek.b(&tmpPrint + runner)
+  Wend
+  runner - 1
+
+  If FLen(tmpExpand)
+    ;-- check for classic token and set color else set standard token color
+    tcolor.w = AB3Pen(#AB3_ctoken)
+    If AB3Pen(#AB3_cclassic) > 0
+      _token.l = PED_GetTokenID{tmpExpand}
+      If PED_CheckForClassicToken{_token} Then tcolor.w = AB3Pen(#AB3_cclassic)
+    EndIf
+
+    ;-- print the token
+    SetBPen_ \win\RPort, AB3Pen(#AB3_ctokenbackground)
+    If pedconfig\bold_tokens
+      SetFont_ \win\RPort, \fontB
+      SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
+    EndIf
+
+    PED_PrintText{&tmpExpand, tposx, tposy,FLen(tmpExpand), tcolor}
+
+    ;-- reset font and style
+    SetBPen_ \win\RPort, AB3Pen(#AB3_cbackground)
+    If pedconfig\bold_tokens
+      SetFont_ \win\RPort, \font
+      SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
+    EndIf
+
+    tposx + FLen(tmpExpand)
+
+    If curChar <> 0 Then Goto print_loop
+  EndIf
+
+  exit_print:
+End Statement
+
+
+
+
+
 Statement PED_PrintHighlight{lineaddr.l, xPos.w, textlen.w, textcolor.w, textstyle.w}
   SHARED ped, sourceWindow
   If textlen > 0
@@ -1879,6 +1995,283 @@ Statement PED_PrintHighlight{lineaddr.l, xPos.w, textlen.w, textcolor.w, textsty
     EndIf
    EndIf
 End Statement
+
+
+Statement PED_ProcessHighlighting{}
+SHARED pedconfig, ped, sourceWindow, AB3Pen()
+
+ If NOT pedconfig\highlighting Then Goto skip_highlighting
+
+  lineaddr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
+  ;log_Print{"process highlighting -  textbufferaddr:"}
+  ;log_Print{Peeks$(lineaddr,20)}
+  runner.w = 0 : exit_highlight.b = False
+  Repeat
+    curchar.s = Chr$(Peek.b(lineaddr + runner)) : textlen.w = 0
+    Select curchar
+    Case ";"
+      ;skip parsing as we have a comment here
+      ;log_Print{"comment found" + Peeks$(lineaddr + runner,40)}
+      exit_highlight = True
+
+    Case Chr$($22)
+      If AB3Pen(#AB3_cstring) <> AB3Pen(#AB3_cother)
+        ;log_Print { "search string [" + Peeks$(lineaddr + runner + 1,40)+ "]"}
+        textlen = FindByte(Peek.s(lineaddr + runner + 1),$22) + 1   ; search for string mark
+        If textlen
+          ;log_Print { "string [" + Peeks$(lineaddr+runner+1 ,textlen) + "]" + Str$(textlen)}
+          PED_PrintHighlight{lineaddr + runner, runner , textlen, AB3Pen(#AB3_cstring), 0}
+        EndIf
+      EndIf
+
+    Case "{"
+      ;log_Print{"statement found ??"}
+      If AB3Pen(#AB3_cfunction) <> AB3Pen(#AB3_cother)
+        ; skip all spaces backwards
+        i.w = -1
+        While (runner+i => 0) AND Peek.b(lineaddr + runner + i) = 32
+          ;log_Print{Str$(runner+i) + " ["+Peeks$(lineaddr+runner+i,1)+"]"}
+          i - 1
+        Wend
+        If runner + i => 0
+          For i.w = runner + i To 0 Step -1
+            checkchr.b = Peek.b(lineaddr + i)
+            ;log_Print{"function checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr + i,20)}
+            If checkchr = @"!" OR (checkchr < 0) ; check if we have a token before "{"
+              Pop For : Pop If : Pop If : Pop If
+              Goto Exit_function
+            EndIf
+
+            If !PED_CheckUnAllowedChar{checkchr} OR (i = 0)
+              textlen = runner - i
+              PED_PrintHighlight{lineaddr + i, i , textlen, AB3Pen(#AB3_cfunction), 0}
+              Pop For : Pop If : Pop If : Pop If
+              Goto Exit_function
+            EndIf
+          Next i
+        EndIf
+        Exit_function:
+        instring.b = False
+        textlen = 0
+      EndIf
+
+
+    Case "!"
+      ;log_Print{"macro found: " + Peeks$(lineaddr,20)}
+      If AB3Pen(#AB3_cmacro) <> AB3Pen(#AB3_cother)
+        For i.w = runner + 1 To #MAX_Columns - 1
+          ;log_Print{"macro checking [" + Peeks$(lineaddr + i,1) +  "] in "+ Peeks$(lineaddr,20)}
+          If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
+            textlen = i - runner
+            PED_PrintHighlight{lineaddr + runner, runner, textlen, AB3Pen(#AB3_cmacro), 0}
+            Pop For : Pop If
+            Goto Exit_macro
+          EndIf
+        Next i
+        Exit_macro:
+      EndIf
+
+    Case "#"
+      If AB3Pen(#AB3_cconstant) <> AB3Pen(#AB3_cother)
+        For i.w = runner + 1 To #MAX_Columns - 1
+          checkchr.b = Peek.b(lineaddr + i)
+
+          If checkchr = $22 Then instring.b = NOT instring
+
+          If instring = False
+            ;log_Print{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
+            If checkchr <> @"$" AND checkchr <> @"%"; OR checkchr = @"-"
+              If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
+                textlen = i - runner
+                PED_PrintHighlight{lineaddr + runner, runner , textlen, AB3Pen(#AB3_cconstant), 0}
+                Pop For : Pop If : Pop If : Pop If
+                Goto Exit_constant
+              EndIf
+            EndIf
+          EndIf
+        Next i
+        Exit_constant:
+        instring.b = False
+      EndIf
+
+    Case "\"
+      If AB3Pen(#AB3_cnewtype) <> AB3Pen(#AB3_cother)
+        For i.w = runner + 1 To #MAX_Columns - 1
+          checkchr.b = Peek.b(lineaddr + i)
+
+          If checkchr = $22 Then instring.b = NOT instring
+
+          If instring = False
+            ;log_Print{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
+            If checkchr <> @"\"
+              If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
+                textlen = i - runner
+                PED_PrintHighlight{lineaddr + runner, runner , textlen, AB3Pen(#AB3_cnewtype), 0}
+                Pop For : Pop If : Pop If : Pop If
+                Goto Exit_newtype
+              EndIf
+            EndIf
+          EndIf
+        Next i
+        Exit_newtype:
+        instring.b = False
+       EndIf
+
+    End Select
+    If textlen Then runner = runner + textlen - 1
+    runner + 1
+  Until exit_highlight OR runner >= #MAX_Columns - 1
+  skip_highlighting:
+End Statement
+
+
+Statement PED_PrintSourceText{*textaddr.l, tposx.w, tposy.w, doTokenize.b}
+SHARED sourceWindow, ped, AB3Pen()
+
+  If doTokenize
+    ;Gosub print_tokenized_text
+    PED_PrintTokenizedText{*textaddr, tposx,tposy}
+  Else
+    PED_PrintTextStandard{*textaddr, tposx, tposy}
+  EndIf
+
+  If sourceWindow\clearEndOfLine
+    USEPATH sourceWindow
+
+    If \win\RPort\cp_x <= \BoxLeft
+      rectx.w = \win\RPort\cp_x + 1
+    Else
+      rectx.w = \win\RPort\cp_x
+    EndIf
+    recty.w = \BoxTop + ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize
+    rectw.w = \BoxWidth
+    recth.w = recty + \font\tf_YSize-1
+    If (rectw => rectx) AND (recth => recty)
+      SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
+      RectFill_ \win\RPort, rectx, recty, rectw, recth
+    Else
+      log_Print{"illegal area for clear bottom:",#log_error}
+      log_Print{Str$(rectx) + ", " + Str$(rectw)}
+      log_Print{Str$(recty) + ", " + Str$(recth)}
+    EndIf
+  EndIf
+End Statement
+
+Statement PED_PrintLineNumber{}
+SHARED sourceWindow, ped, AB3Pen()
+USEPATH sourceWindow
+
+  dl.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine + 1
+  linenum$ = Str$(dl)
+
+  lx.w = \BoxLeft - 3 - (FLen(linenum$) * \font\tf_XSize)
+  ly.w = \BoxTop + ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize
+
+  SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+  RectFill_ \win\RPort,0,ly,\BoxLeft,ly + \font\tf_YSize - 1
+
+  SetAPen_ \win\RPort,AB3Pen(#AB3_screenfill)
+  SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+  Move_ \win\RPort,lx,ly + \font\tf_Baseline
+  Text_ \win\RPort,&linenum$,FLen(linenum$)
+
+  ;Move_ \win\RPort,0,ly; + \font\tf_Baseline
+  ;Draw_ \win\RPort,\BoxLeft,ly
+
+  SetAPen_ \win\RPort,AB3Pen(#AB3_screentext)
+  Move_ \win\RPort,\BoxLeft-2,ly
+  Draw_ \win\RPort,\BoxLeft-2,ly + \font\tf_YSize
+End Statement
+
+Statement PED_PrintCurrentSourceLine{doTokenize.b}
+SHARED pedconfig, ped, sourceWindow, AB3Pen()
+
+  If pedconfig\linenumbers Then PED_PrintLineNumber{}
+
+  *sl.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+
+  If *sl = 0 Then Statement Return
+
+  If Peek.b(*sl + 9) <> 0   ; first character of text
+    ped\ptrCurrentSourceData\ColumnsOffsetTmp = ped\ptrCurrentSourceData\ColumnsOffset
+    PED_PrintSourceText{*sl + 9,0,ped\ptrCurrentSourceData\DisplayLine, doTokenize}
+  Else
+    USEPATH sourceWindow
+    SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+    ;SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+    xMin.w = \BoxLeft
+    yMin.w = \BoxTop + ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize
+    xMax.w = \BoxWidth
+    yMax.w = yMin + \font\tf_YSize - 1
+    If (xMax => xMin) AND (yMax => yMin)
+      RectFill_ \win\RPort, xMin, yMin, xMax, yMax
+   Else
+      log_Print{"illegal area for JL_0_5E72!",#log_error}
+      log_Print{Str$(xMin) + ", " + Str$(xMax)}
+      log_Print{Str$(yMin) + ", " + Str$(yMax)}
+    EndIf
+    Move_ \win\RPort, 0, ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize + \font\tf_YSize ; move cursor to next line
+
+    Poke.l Peek.l(?textbufferPrint),0
+  EndIf                                                                                                                                                                                                                                                ;
+
+
+  ;-- copy current printed line to textbuffer
+  tmpColumn.w = ped\ptrCurrentSourceData\Column                           ; save Columnpos as it is changed for process_highlighting
+
+  char.b = Peek.b(Peek.l(?textbufferPrint))
+  If char <> 0
+    tmpD2.w = 0
+    tmpD3.w = 0
+    textBufferPos.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
+    If char <> ped\LabelIdentifier Then Goto jump_into_it
+    Gosub copy_to_textBuffer
+    Repeat
+      tmpD2 + 1
+      char = Peek.b(Peek.l(?textbufferPrint) + tmpD2)
+      If char <> 0
+jump_into_it:
+        Gosub copy_to_textBuffer
+      End If
+    Until char = 0
+  EndIf
+
+  ;-- do highlighting
+  ;!asm
+  ;BSR process_highlighting
+  ;!basic
+  PED_ProcessHighlighting{}
+
+  ; -- handle blockmark - seems useless ?
+  ;If ped\ptrCurrentSourceData\BlockEndY<> $ffffFFFF
+  ;  If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine > ped\ptrCurrentSourceData\BlockStartY
+  ;    If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine < ped\ptrCurrentSourceData\BlockEndY
+  ;      While tmpD3 <= \visibleColumns
+  ;        ; fill with blanks
+  ;        ;  MOVEQ.l #$20,D0 (displaylineoffset + displayline)
+  ;        ped\ptrCurrentSourceData\Column = tmpD3
+  ;        tmpD3 + 1
+  ;      Wend
+  ;    EndIf
+  ;  EndIf
+  ;EndIf
+
+  ;-- restore Columnposition
+  ped\ptrCurrentSourceData\Column = tmpColumn
+  Statement Return
+
+.copy_to_textBuffer:
+  Poke.b textBufferPos + tmpD2, char
+  If tmpD2 <= ped\ptrCurrentSourceData\ColumnsOffset
+    If tmpD3 <= Peek.w(?visiblecolumns)
+      ped\ptrCurrentSourceData\Column = tmpD3
+      tmpD3 + 1
+    EndIf
+  EndIf
+Return
+
+End Statement
+
 
 
 
@@ -3957,10 +4350,15 @@ End
 
       JSR replaceCurrentLine  ; insert new parsed line into source
   ;
-      MOVE.w comWord_DoTokenize,D0
-      BEQ.w JL_0_CC6
-        MOVEA.l comPtr_CurrentSourceLine,A2
-        JSR print_sourceline
+  ;    MOVE.w comWord_DoTokenize,D0
+  ;    BEQ.w JL_0_CC6
+  ;      MOVEA.l comPtr_CurrentSourceLine,A2
+  ;      JSR print_sourceline
+      !basic
+      If Peek.w(?comWord_DoTokenize)
+        PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
+      EndIf
+      !asm
   ;
   ;      TST.b comByte_StateBlockMark
   ;      BEQ.w JL_0_CC6
@@ -6461,7 +6859,7 @@ RTS
     maxLineNumber.l = Min(ped\ptrCurrentSourceData\TotalLines,Peek.l(?viewablelines))-1
     For y.w = storeCurrentLineNumber To maxLineNumber
       ped\ptrCurrentSourceData\DisplayLine = y
-      Gosub print_linenumber
+      PED_PrintLineNumber{}
     Next y
     ped\ptrCurrentSourceData\DisplayLine = storeCurrentLineNumber
   EndIf
@@ -6767,10 +7165,11 @@ Return
     PED_UpdateBlockPosY{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine}
     If PED_InsertSourceLine{*newLine}
       PED_ScrollVertical{#SCROLL_DOWN, ped\ptrCurrentSourceData\DisplayLine}
-      !asm
-      MOVE.l comPtr_CurrentSourceLine,A2 : JSR print_sourceline
+      ;!asm
+      ;MOVE.l comPtr_CurrentSourceLine,A2 : JSR print_sourceline
       ;JSR _redraw
-      !basic
+      ;!basic
+      PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
       Gosub update_linenumbers
     Else
       error{"Couldn't insert sourceline!"}
@@ -11034,11 +11433,10 @@ RTS
 
 
 ._redraw:
-;!regs2stack
-;!basic
-;log_Print{"redraw, displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
-;!asm
-;!stack2regs
+  !basic
+  ;log_Print{"redraw, displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
+  tmpcsl.l = ped\ptrCurrentSourceData\CurrentSourceLine
+  !asm
 
   MOVEA.l comPtr_CurrentSourceLine,A2       ; if no source available, quit redraw!
   CMPA.l #$0,A2
@@ -11090,7 +11488,7 @@ RTS
   !regs2stack
   !basic
   sourceWindow\clearEndOfLine = True
-  Gosub cursor_off                                                                                                                                                                                                                                          
+  Gosub cursor_off
   !asm
   !stack2regs
   MOVE.l viewablelines,D7 : SUBQ.l #1,D7
@@ -11119,12 +11517,16 @@ RTS
         MOVE.l (a2),d0
         BEQ JL_0_5902
           MOVE.l d0,a2
-    BRA 'nr
+    BRA 'nr 
    'do
     CEND
 
     MOVE.l (A2),-(A7)
-    JSR print_sourceline
+    ;JSR print_sourceline
+    !basic
+    PutReg A2, tmpcsl2.l : ped\ptrCurrentSourceData\CurrentSourceLine = tmpcsl2
+    PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
+    !asm
     MOVE.l (A7)+,D0
 
     BEQ.w JL_0_5902           ; no next line left
@@ -11134,7 +11536,7 @@ RTS
   JL_0_5902:
 
   !basic
-
+  ped\ptrCurrentSourceData\CurrentSourceLine = tmpcsl
   ; -- better refresh: clear bottom
   sourceWindow\clearEndOfLine = False
   USEPATH sourceWindow
@@ -11316,12 +11718,13 @@ Return
     tmpDL - 1
   Wend
   ped\ptrCurrentSourceData\DisplayLine = tmpDL
-  GetReg A2, *currentline
-  MOVE.l A2,-(a7)
-  !asm
-  MOVE.l (a7)+,A2
-  JSR print_sourceline
-  !basic
+  ;GetReg A2, *currentline
+  ;MOVE.l A2,-(a7)
+  ;!asm
+  ;MOVE.l (a7)+,A2
+  ;JSR print_sourceline
+  ;!basic
+  PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
 
   no_prev_line:
   JSR restore_cursorposition
@@ -11350,13 +11753,14 @@ Return
     JSR increase_DisplayLine
 
   Wend
-  
-  GetReg A2,*currentline
-  MOVE.l A2,-(a7)
-  !asm
-  MOVE.l (a7)+,A2
-  JSR print_sourceline
-  !basic
+
+  PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
+  ;GetReg A2,*currentline
+  ;MOVE.l A2,-(a7)
+  ;!asm
+  ;MOVE.l (a7)+,A2
+  ;JSR print_sourceline
+  ;!basic
 
   no_next_line:
   JSR restore_cursorposition
@@ -11372,159 +11776,48 @@ textbufferPrint:    Ds.l 1
 expandstore:  Ds.l 1
 lineundeletestore:    Ds.l 1
 
-.print_complete_line:                  ; d0:x, d1:y, a0: text
-  MOVE.l D2,-(A7)
-  !regs2stack
-  MOVE.l A0,-(a7)   ; string
-  MOVE.l D0,-(a7)   ; x-pos
-  MOVE.l D1,-(a7)   ; y-pos
-  !basic
-  MOVE.l (a7)+,d0 : tposy.w = PutD0
-  MOVE.l (a7)+,d0 : tposx.w = PutD0
-  MOVE.l (a7)+,d0 : *textaddr.l = PutD0
-
-  If Peek.w(?comWord_DoTokenize)
-    Gosub print_tokenized_text
-  Else
-    PED_PrintTextStandard{tposx, tposy, *textaddr}
-  EndIf
-
-  If sourceWindow\clearEndOfLine
-    USEPATH sourceWindow
-
-    If \win\RPort\cp_x <= \BoxLeft
-      rectx.w = \win\RPort\cp_x + 1
-    Else
-      rectx.w = \win\RPort\cp_x
-    EndIf
-    recty.w = \BoxTop + ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize
-    rectw.w = \BoxWidth
-    recth.w = recty + \font\tf_YSize-1
-    If (rectw => rectx) AND (recth => recty)
-      SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
-      RectFill_ \win\RPort, rectx, recty, rectw, recth
-    Else
-      log_Print{"illegal area for clear bottom:",#log_error}
-      log_Print{Str$(rectx) + ", " + Str$(rectw)}
-      log_Print{Str$(recty) + ", " + Str$(recth)}
-    EndIf
-  EndIf
-  !asm
-  !stack2regs
-  MOVE.l (A7)+,D2
-RTS
-
-.print_tokenized_text:
-  ; clear textBufferPrint
-  tmpAddr.l = Peek.l(?textbufferPrint)
-  For i = 0 To #MAX_Columns/4-1 Step 4
-    Poke.l  tmpAddr + i, 0
-  Next i
-  ; copy the current line to a tempBuffer
-  For i = 0 To #MAX_Columns - 1
-    Poke.b Peek.l(?AL_0_5BA6) + i, Peek.b(*textaddr+i)
-  Next i
-  Poke.b Peek.l(?AL_0_5BA6) + #MAX_Columns-1, 0
-
-  !asm
-  MOVEA.l AL_0_5BA6,A0
-  MOVEA.l textbufferPrint,A1
-  MOVEM.l D0-D1/A1,-(A7)
-  ; copy whole line from A0 to A1 and detokenize it but keep token indicator (bit7)
-  JSR JL_0_5060
-  MOVEM.l (A7)+,D0-D1/A1
-  !basic
-
-  ;-- original string
-  tmpString1.s = Peek.s(Peek.l(?AL_0_5BA6))
-
-  ;-- detokenized string, tokens are still marked with bit 7 set in each character
-  tmpString2.s = Peek.s(Peek.l(?textbufferPrint))
-
-  ;-- check if source left of display start position has an opened string literal
-  If Peek.b(?keepstring) = 0
-    chkString.b = 0
-
-    If tmpString1 <> ""
-      runner.w = 0
-      While runner < ped\ptrCurrentSourceData\ColumnsOffset
-        If Peek.b(&tmpString1 + runner) = $22 Then chkString = NOT chkString
-        runner + 1
-      Wend
-    EndIf
-  EndIf
-  ;log_Print{"we are in a string: " + Str$(chkString)}
-
-  tmpPrint.s = UnRight$(tmpString2, ped\ptrCurrentSourceData\ColumnsOffsetTmp)
-  lastVisibleChar$ = Mid$(tmpPrint,\visibleColumns,1)
-  tmpPrint = Left$(tmpPrint,\visibleColumns)
-
-  tposx = tposx / \font\tf_XSize
-  runner.w = -1
-
-  print_loop:
-  tmpExpand.s = ""
-  Repeat
-    runner + 1
-    curChar.b = Peek.b(&tmpPrint + runner)
-    If curChar <> 0
-      If curChar = $22 Then chkString.b = NOT chkString
-      If chkString = 0
-        If curChar < 0 Then Goto exit_printloop
-      EndIf
-      tmpExpand + Chr$(curChar)
-    EndIf
-  Until curChar = 0
-  exit_printloop:
-
-  If FLen(tmpExpand)
-    PED_PrintText{&tmpExpand, tposx, tposy, FLen(tmpExpand), AB3Pen(#AB3_cother)}
-    tposx + FLen(tmpExpand)
-  EndIf
-  If curChar = 0 Then Goto exit_print
-  If curChar > 0 Then Goto print_loop
-
-  tmpExpand.s = ""
-  While curChar < 0
-    tmpExpand + Chr$(curChar BitClr 7)
-    runner + 1
-    curChar = Peek.b(&tmpPrint + runner)
-  Wend
-  runner - 1
-
-  If FLen(tmpExpand)
-    ;-- check for classic token and set color else set standard token color
-    tcolor.w = AB3Pen(#AB3_ctoken)
-    If AB3Pen(#AB3_cclassic) > 0
-      _token.l = PED_GetTokenID{tmpExpand}
-      If PED_CheckForClassicToken{_token} Then tcolor.w = AB3Pen(#AB3_cclassic)
-    EndIf
-
-    ;-- print the token
-    SetBPen_ \win\RPort, AB3Pen(#AB3_ctokenbackground)
-    If pedconfig\bold_tokens
-      SetFont_ \win\RPort, \fontB
-      SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
-    EndIf
-
-    PED_PrintText{&tmpExpand, tposx, tposy,FLen(tmpExpand), tcolor}
-
-    ;-- reset font and style
-    SetBPen_ \win\RPort, AB3Pen(#AB3_cbackground)
-    If pedconfig\bold_tokens
-      SetFont_ \win\RPort, \font
-      SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
-    EndIf
-
-    tposx + FLen(tmpExpand)
-
-    If curChar <> 0 Then Goto print_loop
-  EndIf
-
-  exit_print:
-Return
-
-
+;.print_complete_line:                  ; d0:x, d1:y, a0: text
+;  MOVE.l D2,-(A7)
+;  !regs2stack
+;  MOVE.l A0,-(a7)   ; string
+;  MOVE.l D0,-(a7)   ; x-pos
+;  MOVE.l D1,-(a7)   ; y-pos
+;  !basic
+;  MOVE.l (a7)+,d0 : tposy.w = PutD0
+;  MOVE.l (a7)+,d0 : tposx.w = PutD0
+;  MOVE.l (a7)+,d0 : *textaddr.l = PutD0
+;
+;  If Peek.w(?comWord_DoTokenize)
+;    ;Gosub print_tokenized_text
+;    PED_PrintTokenizedText{*textaddr, tposx,tposy}
+;  Else
+;    PED_PrintTextStandard{*textaddr, tposx, tposy}
+;  EndIf
+;
+;  If sourceWindow\clearEndOfLine
+;    USEPATH sourceWindow
+;
+;    If \win\RPort\cp_x <= \BoxLeft
+;      rectx.w = \win\RPort\cp_x + 1
+;    Else
+;      rectx.w = \win\RPort\cp_x
+;    EndIf
+;    recty.w = \BoxTop + ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize
+;    rectw.w = \BoxWidth
+;    recth.w = recty + \font\tf_YSize-1
+;    If (rectw => rectx) AND (recth => recty)
+;      SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
+;      RectFill_ \win\RPort, rectx, recty, rectw, recth
+;    Else
+;      log_Print{"illegal area for clear bottom:",#log_error}
+;      log_Print{Str$(rectx) + ", " + Str$(rectw)}
+;      log_Print{Str$(recty) + ", " + Str$(recth)}
+;    EndIf
+;  EndIf
+;  !asm
+;  !stack2regs
+;  MOVE.l (A7)+,D2
+;RTS
 ;.print_tokenized_text_asm:
 ;  MOVEA.l AL_0_5BA6,A0
 ;  MOVEA.l textbufferPrint,A1
@@ -11709,37 +12002,37 @@ Return
 ;  MOVE.b comByte__AL_0_8662,$0(A1,D4.W)
 ;RTS
 
-.print_linenumber:
-  USEPATH sourceWindow
-
-  dl.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine + 1
-  linenum$ = Str$(dl)
-
-  lx.w = \BoxLeft - 3 - (FLen(linenum$) * \font\tf_XSize)
-  ly.w = \BoxTop + ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize
-
-  SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
-  RectFill_ \win\RPort,0,ly,\BoxLeft,ly + \font\tf_YSize - 1
-
-  SetAPen_ \win\RPort,AB3Pen(#AB3_screenfill)
-  SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
-  Move_ \win\RPort,lx,ly + \font\tf_Baseline
-  Text_ \win\RPort,&linenum$,FLen(linenum$)
-
-  ;Move_ \win\RPort,0,ly; + \font\tf_Baseline
-  ;Draw_ \win\RPort,\BoxLeft,ly
-
-  SetAPen_ \win\RPort,AB3Pen(#AB3_screentext)
-  Move_ \win\RPort,\BoxLeft-2,ly
-  Draw_ \win\RPort,\BoxLeft-2,ly + \font\tf_YSize
-Return
-
-
+;.print_linenumber:
+;  USEPATH sourceWindow
+;
+;  dl.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine + 1
+;  linenum$ = Str$(dl)
+;
+;  lx.w = \BoxLeft - 3 - (FLen(linenum$) * \font\tf_XSize)
+;  ly.w = \BoxTop + ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize
+;
+;  SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+;  RectFill_ \win\RPort,0,ly,\BoxLeft,ly + \font\tf_YSize - 1
+;
+;  SetAPen_ \win\RPort,AB3Pen(#AB3_screenfill)
+;  SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+;  Move_ \win\RPort,lx,ly + \font\tf_Baseline
+;  Text_ \win\RPort,&linenum$,FLen(linenum$)
+;
+;  ;Move_ \win\RPort,0,ly; + \font\tf_Baseline
+;  ;Draw_ \win\RPort,\BoxLeft,ly
+;
+;  SetAPen_ \win\RPort,AB3Pen(#AB3_screentext)
+;  Move_ \win\RPort,\BoxLeft-2,ly
+;  Draw_ \win\RPort,\BoxLeft-2,ly + \font\tf_YSize
+;Return
+;
+;
 .print_sourceline:                     ; a2: pointer to sourceline
   !basic
   PutReg A2, *sourceline.sourceLine
 
-  If pedconfig\linenumbers Then Gosub print_linenumber
+  If pedconfig\linenumbers Then PED_PrintLineNumber{}
 
   If *sourceline = 0
     Pop If
@@ -11749,14 +12042,7 @@ Return
 
   If Peek.b(*sourceline + 9) <> 0   ; first character of text
     ped\ptrCurrentSourceData\ColumnsOffsetTmp = ped\ptrCurrentSourceData\ColumnsOffset
-    ;log_Print{">>" + Peek.s(*sourceline+9)}
-    GetReg D0,*sourceline + 9
-    !asm
-    MOVE.l D0,A0
-    MOVEQ.l #0,D0
-    MOVE.l comLong_DisplayLine,d1
-    JSR print_complete_line         ; d0:x, d1:y, a0: text
-    !basic
+    PED_PrintSourceText{*sourceline + 9,0,ped\ptrCurrentSourceData\DisplayLine, Peek.w(?comWord_DoTokenize)}
   Else
     USEPATH sourceWindow
     SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
@@ -11786,22 +12072,23 @@ Return
     tmpD2.w = 0
     tmpD3.w = 0
     textBufferPos.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
-    If char <> Peek.b(?comByte_LabelIdentifier) Then Goto jump_in
-    Gosub copy_to_textBuffer
+    If char <> ped\LabelIdentifier Then Goto jump_in
+    Gosub copy_to_textBuffer2
     Repeat
       tmpD2 + 1
       char = Peek.b(Peek.l(?textbufferPrint) + tmpD2)
       If char <> 0
 jump_in:
-        Gosub copy_to_textBuffer
+        Gosub copy_to_textBuffer2
       End If
     Until char = 0
   EndIf
 
   ;-- do highlighting
-  !asm
-  BSR process_highlighting
-  !basic
+  ;!asm
+  ;BSR process_highlighting
+  ;!basic
+  PED_ProcessHighlighting{}
 
   ; -- handle blockmark - seems useless ?
   ;If ped\ptrCurrentSourceData\BlockEndY<> $ffffFFFF
@@ -11822,7 +12109,7 @@ jump_in:
   !asm
 RTS
 
-.copy_to_textBuffer:
+.copy_to_textBuffer2:
   Poke.b textBufferPos + tmpD2, char
   If tmpD2 <= ped\ptrCurrentSourceData\ColumnsOffset
     If tmpD3 <= Peek.w(?visiblecolumns)
@@ -11831,8 +12118,8 @@ RTS
     EndIf
   EndIf
 Return
-
-
+;
+;
 ;
 ;.print_sourceline_old:
 ;  MOVE.l A2,-(a7)
@@ -11963,135 +12250,135 @@ Return
 ;  SUBQ.w #1,D2
 ;RTS
 
-.process_highlighting:
-  MOVEM.l a2/d2,-(a7)
-  !basic
-  If NOT pedconfig\highlighting Then Goto skip_highlighting
-
-  lineaddr = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
-  ;log_Print{"process highlighting -  textbufferaddr:"}
-  ;log_Print{Peeks$(lineaddr,20)}
-  runner.w = 0 : exit_highlight.b = False
-  Repeat
-    curchar.s = Chr$(Peek.b(lineaddr + runner)) : textlen.w = 0
-    Select curchar
-    Case ";"
-      ;skip parsing as we have a comment here
-      ;log_Print{"comment found" + Peeks$(lineaddr + runner,40)}
-      exit_highlight = True
-
-    Case Chr$($22)
-      If AB3Pen(#AB3_cstring) <> AB3Pen(#AB3_cother)
-        ;log_Print { "search string [" + Peeks$(lineaddr + runner + 1,40)+ "]"}
-        textlen = FindByte(Peek.s(lineaddr + runner + 1),$22) + 1   ; search for string mark
-        If textlen
-          ;log_Print { "string [" + Peeks$(lineaddr+runner+1 ,textlen) + "]" + Str$(textlen)}
-          PED_PrintHighlight{lineaddr + runner, runner , textlen, AB3Pen(#AB3_cstring), 0}
-        EndIf
-      EndIf
-
-    Case "{"
-      ;log_Print{"statement found ??"}
-      If AB3Pen(#AB3_cfunction) <> AB3Pen(#AB3_cother)
-        ; skip all spaces backwards
-        i = -1
-        While (runner+i => 0) AND Peek.b(lineaddr + runner + i) = 32
-          ;log_Print{Str$(runner+i) + " ["+Peeks$(lineaddr+runner+i,1)+"]"}
-          i - 1
-        Wend
-        If runner+i => 0
-          For i.l = runner + i To 0 Step -1
-            checkchr.b = Peek.b(lineaddr + i)
-            ;log_Print{"function checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr + i,20)}
-            If checkchr = @"!" OR (checkchr < 0) ; check if we have a token before "{"
-              Pop For : Pop If : Pop If : Pop If
-              Goto Exit_function
-            EndIf
-
-            If !PED_CheckUnAllowedChar{checkchr} OR (i = 0)
-              textlen = runner - i
-              PED_PrintHighlight{lineaddr + i, i , textlen, AB3Pen(#AB3_cfunction), 0}
-              Pop For : Pop If : Pop If : Pop If
-              Goto Exit_function
-            EndIf
-          Next i
-        EndIf
-        Exit_function:
-        instring.b = False
-        textlen = 0
-      EndIf
-
-
-    Case "!"
-      ;log_Print{"macro found: " + Peeks$(lineaddr,20)}
-      If AB3Pen(#AB3_cmacro) <> AB3Pen(#AB3_cother)
-        For i.l = runner + 1 To #MAX_Columns - 1
-          ;log_Print{"macro checking [" + Peeks$(lineaddr + i,1) +  "] in "+ Peeks$(lineaddr,20)}
-          If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
-            textlen = i - runner
-            PED_PrintHighlight{lineaddr + runner, runner, textlen, AB3Pen(#AB3_cmacro), 0}
-            Pop For : Pop If
-            Goto Exit_macro
-          EndIf
-        Next i
-        Exit_macro:
-      EndIf
-
-    Case "#"
-      If AB3Pen(#AB3_cconstant) <> AB3Pen(#AB3_cother)
-        For i.l = runner + 1 To #MAX_Columns - 1
-          checkchr.b = Peek.b(lineaddr + i)
-
-          If checkchr = $22 Then instring.b = NOT instring
-
-          If instring = False
-            ;log_Print{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
-            If checkchr <> @"$" AND checkchr <> @"%"; OR checkchr = @"-"
-              If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
-                textlen = i - runner
-                PED_PrintHighlight{lineaddr + runner, runner , textlen, AB3Pen(#AB3_cconstant), 0}
-                Pop For : Pop If : Pop If : Pop If
-                Goto Exit_constant
-              EndIf
-            EndIf
-          EndIf
-        Next i
-        Exit_constant:
-        instring.b = False
-      EndIf
-
-    Case "\"
-      If AB3Pen(#AB3_cnewtype) <> AB3Pen(#AB3_cother)
-        For i.l = runner + 1 To #MAX_Columns - 1
-          checkchr.b = Peek.b(lineaddr + i)
-
-          If checkchr = $22 Then instring.b = NOT instring
-
-          If instring = False
-            ;log_Print{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
-            If checkchr <> @"\"
-              If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
-                textlen = i - runner
-                PED_PrintHighlight{lineaddr + runner, runner , textlen, AB3Pen(#AB3_cnewtype), 0}
-                Pop For : Pop If : Pop If : Pop If
-                Goto Exit_newtype
-              EndIf
-            EndIf
-          EndIf
-        Next i
-        Exit_newtype:
-        instring.b = False
-       EndIf
-
-    End Select
-    If textlen Then runner = runner + textlen - 1
-    runner + 1
-  Until exit_highlight OR runner >= #MAX_Columns - 1
-  skip_highlighting:
-  !asm
-  ;!stack2regs
-  MOVEM.l (a7)+,a2/d2
-Return
+;.process_highlighting:
+;  MOVEM.l a2/d2,-(a7)
+;  !basic
+;  If NOT pedconfig\highlighting Then Goto skip_highlighting2
+;
+;  lineaddr = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
+;  ;log_Print{"process highlighting -  textbufferaddr:"}
+;  ;log_Print{Peeks$(lineaddr,20)}
+;  runner.w = 0 : exit_highlight.b = False
+;  Repeat
+;    curchar.s = Chr$(Peek.b(lineaddr + runner)) : textlen.w = 0
+;    Select curchar
+;    Case ";"
+;      ;skip parsing as we have a comment here
+;      ;log_Print{"comment found" + Peeks$(lineaddr + runner,40)}
+;      exit_highlight = True
+;
+;    Case Chr$($22)
+;      If AB3Pen(#AB3_cstring) <> AB3Pen(#AB3_cother)
+;        ;log_Print { "search string [" + Peeks$(lineaddr + runner + 1,40)+ "]"}
+;        textlen = FindByte(Peek.s(lineaddr + runner + 1),$22) + 1   ; search for string mark
+;        If textlen
+;          ;log_Print { "string [" + Peeks$(lineaddr+runner+1 ,textlen) + "]" + Str$(textlen)}
+;          PED_PrintHighlight{lineaddr + runner, runner , textlen, AB3Pen(#AB3_cstring), 0}
+;        EndIf
+;      EndIf
+;
+;    Case "{"
+;      ;log_Print{"statement found ??"}
+;      If AB3Pen(#AB3_cfunction) <> AB3Pen(#AB3_cother)
+;        ; skip all spaces backwards
+;        i = -1
+;        While (runner+i => 0) AND Peek.b(lineaddr + runner + i) = 32
+;          ;log_Print{Str$(runner+i) + " ["+Peeks$(lineaddr+runner+i,1)+"]"}
+;          i - 1
+;        Wend
+;        If runner+i => 0
+;          For i.l = runner + i To 0 Step -1
+;            checkchr.b = Peek.b(lineaddr + i)
+;            ;log_Print{"function checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr + i,20)}
+;            If checkchr = @"!" OR (checkchr < 0) ; check if we have a token before "{"
+;              Pop For : Pop If : Pop If : Pop If
+;              Goto Exit_function2
+;            EndIf
+;
+;            If !PED_CheckUnAllowedChar{checkchr} OR (i = 0)
+;              textlen = runner - i
+;              PED_PrintHighlight{lineaddr + i, i , textlen, AB3Pen(#AB3_cfunction), 0}
+;              Pop For : Pop If : Pop If : Pop If
+;              Goto Exit_function2
+;            EndIf
+;          Next i
+;        EndIf
+;        Exit_function2:
+;        instring.b = False
+;        textlen = 0
+;      EndIf
+;
+;
+;    Case "!"
+;      ;log_Print{"macro found: " + Peeks$(lineaddr,20)}
+;      If AB3Pen(#AB3_cmacro) <> AB3Pen(#AB3_cother)
+;        For i.l = runner + 1 To #MAX_Columns - 1
+;          ;log_Print{"macro checking [" + Peeks$(lineaddr + i,1) +  "] in "+ Peeks$(lineaddr,20)}
+;          If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
+;            textlen = i - runner
+;            PED_PrintHighlight{lineaddr + runner, runner, textlen, AB3Pen(#AB3_cmacro), 0}
+;            Pop For : Pop If
+;            Goto Exit_macro2
+;          EndIf
+;        Next i
+;        Exit_macro2:
+;      EndIf
+;
+;    Case "#"
+;      If AB3Pen(#AB3_cconstant) <> AB3Pen(#AB3_cother)
+;        For i.l = runner + 1 To #MAX_Columns - 1
+;          checkchr.b = Peek.b(lineaddr + i)
+;
+;          If checkchr = $22 Then instring.b = NOT instring
+;
+;          If instring = False
+;            ;log_Print{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
+;            If checkchr <> @"$" AND checkchr <> @"%"; OR checkchr = @"-"
+;              If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
+;                textlen = i - runner
+;                PED_PrintHighlight{lineaddr + runner, runner , textlen, AB3Pen(#AB3_cconstant), 0}
+;                Pop For : Pop If : Pop If : Pop If
+;                Goto Exit_constant2
+;              EndIf
+;            EndIf
+;          EndIf
+;        Next i
+;        Exit_constant2:
+;        instring.b = False
+;      EndIf
+;
+;    Case "\"
+;      If AB3Pen(#AB3_cnewtype) <> AB3Pen(#AB3_cother)
+;        For i.l = runner + 1 To #MAX_Columns - 1
+;          checkchr.b = Peek.b(lineaddr + i)
+;
+;          If checkchr = $22 Then instring.b = NOT instring
+;
+;          If instring = False
+;            ;log_Print{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
+;            If checkchr <> @"\"
+;              If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
+;                textlen = i - runner
+;                PED_PrintHighlight{lineaddr + runner, runner , textlen, AB3Pen(#AB3_cnewtype), 0}
+;                Pop For : Pop If : Pop If : Pop If
+;                Goto Exit_newtype2
+;              EndIf
+;            EndIf
+;          EndIf
+;        Next i
+;        Exit_newtype2:
+;        instring.b = False
+;       EndIf
+;
+;    End Select
+;    If textlen Then runner = runner + textlen - 1
+;    runner + 1
+;  Until exit_highlight OR runner >= #MAX_Columns - 1
+;  skip_highlighting2:
+;  !asm
+;  ;!stack2regs
+;  MOVEM.l (a7)+,a2/d2
+;Return
 
 
 
@@ -12499,7 +12786,7 @@ Return
   CLR.w comWord_TextBufferOffset
   MOVEA.l textbufferaddr,A5 : ADDA.w comWord_ColumnsOffset,A5
   MOVE.l viewablelines,D2 : SUBQ.w #1,D2
-
+ 
 
   JL_0_67AA:
     MOVEA.l AL_0_5B9E,A0
@@ -12508,7 +12795,7 @@ Return
 
     MOVEQ.l #$00,D0 : MOVE.w comWord_Column,D0 : MULU fontWidth,d0
     MOVE.l comLong_DisplayLine,D1 ;: MULU fontHeight,D1
-    ST noDetokenizing                                                                                                                                                                                                                                    
+    ST noDetokenizing
 
     MOVEM.l D2/A5,-(A7)
     MOVEM.l d0-d2/a0,-(a7)
@@ -12517,27 +12804,36 @@ Return
     MOVE.w #0,d2
     CMP.l #0,a0
     BEQ 'l2b
-    MOVE.w comWord_ColumnsOffset,d1
-   'l1
-      CMP.w d1,d2
-      BGE 'l2b
-      MOVE.b (a0)+,d0
-      CMP.b #$22,d0
-      BNE 'l2
-      NOT.b instring2
-     'l2
-      ADDQ.w #1,d2
-    BRA 'l1
+      MOVE.w comWord_ColumnsOffset,d1
+    'l1
+        CMP.w d1,d2
+        BGE 'l2b
+        MOVE.b (a0)+,d0
+        CMP.b #$22,d0
+        BNE 'l2
+          NOT.b instring2
+      'l2
+        ADDQ.w #1,d2
+      BRA 'l1
    'l2b
     MOVEM.l (a7)+,d0-d2/a0
 
-    MOVE.b #$1,keepstring
-    JSR print_complete_line          ; print the text ; d0:x, d1:y, a0: text
-    CLR.b keepstring
+    ;MOVE.b #$1,keepstring
+    ;JSR print_complete_line          ; print the text ; d0:x, d1:y, a0: text
+    ;CLR.b keepstring
+    MOVE.l A0,-(a7)
+    !basic
+    MOVE.l (a7)+,A0 : PutReg A0, *textaddr.l
+    Poke.b ?keepstring, 1
+    PED_PrintSourceText{*textaddr.l, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, Peek.w(?comWord_DoTokenize)}
+    Poke.b ?keepstring, 0
+    PED_ProcessHighlighting{}
+    !asm
+
     MOVEM.l (A7)+,D2/A5
-    BSR process_highlighting        ; beim markieren nicht verwenden, da sonst
-                                     ; unter umstaenden mit falscher Hintergrundfarbe ueber den
-                                     ; Block gemalt wird.
+    ;BSR process_highlighting        ; beim markieren nicht verwenden, da sonst
+    ;                                 ; unter umstaenden mit falscher Hintergrundfarbe ueber den
+    ;                                 ; Block gemalt wird.
     SF noDetokenizing
     MOVEQ.l #$00,D0
     MOVE.w #MAX_Columns,D0
@@ -12739,10 +13035,20 @@ Return
     MOVEM.l (a7)+,d0-d2/a0
 
     ST noDetokenizing                 ; handle as normal text, no detokenizing necessary                                                                                                                                                                 
-    MOVE.b #1,keepstring
-    JSR print_complete_line               ; inputs d0:x, d1:y, a0: text
-    CLR.b keepstring
-    BSR process_highlighting
+
+    MOVE.l A0,-(a7)
+    !basic
+    MOVE.l (a7)+,A0 : PutReg A0, *textaddr.l
+    ;MOVE.b #1,keepstring
+    ;JSR print_complete_line               ; inputs d0:x, d1:y, a0: text
+    ;CLR.b keepstring
+    Poke.b ?keepstring, 1
+    PED_PrintSourceText{*textaddr.l, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, Peek.w(?comWord_DoTokenize)}
+    Poke.b ?keepstring, 0
+    PED_ProcessHighlighting{}
+    !asm
+
+    ;BSR process_highlighting
     SF noDetokenizing
 
     MOVEQ.l #$00,D0  : MOVE.w #MAX_Columns,D0  :ADDA.w D0,A5 : ADD.w D0,comWord_TextBufferOffset
@@ -13268,14 +13574,19 @@ Return
   \BoxWidth = \win\Width   - \win\BorderLeft - \win\BorderRight
 
   If pedconfig\linenumbers
-    digits.b = 5
     log_Print{"TotalLines: " + Str$(ped\ptrCurrentSourceData\TotalLines)}
-    If ped\ptrCurrentSourceData\TotalLines < 10000 Then digits = 4
-    If ped\ptrCurrentSourceData\TotalLines < 1000 Then digits = 3
-    If ped\ptrCurrentSourceData\TotalLines < 100 Then digits = 2
-    If ped\ptrCurrentSourceData\TotalLines < 10 Then digits = 2
+    If ped\ptrCurrentSourceData ; maybe there is no source loaded at begin
+      digits.b = 5
+      If ped\ptrCurrentSourceData\TotalLines < 10000 Then digits = 4
+      If ped\ptrCurrentSourceData\TotalLines < 1000 Then digits = 3
+      If ped\ptrCurrentSourceData\TotalLines < 100 Then digits = 2
+      If ped\ptrCurrentSourceData\TotalLines < 10 Then digits = 2
+    Else
+      digits = 2
+    EndIf
     linenumberWidth.w = digits * \font\tf_XSize
     \BoxLeft = linenumberWidth + 3
+    log_Print{"boxleft: " + Str$(\BoxLeft)}
   Else
     \BoxLeft = 0
   EndIf
@@ -13761,19 +14072,21 @@ JL_0_7962_bas:
     EndIf
 
     Poke.b ?keepstring,1
-    GetD0 curline : MOVE.l d0,-(a7)
-    GetD0 cury : MOVE.l d0,-(a7)
-    !asm
-    MOVE.l (a7)+,D1
-    MOVE.l (a7)+,A0
-    MOVEQ.l #0,D0
+    ;GetD0 curline : MOVE.l d0,-(a7)
+    ;GetD0 cury : MOVE.l d0,-(a7)
+    ;!asm
+    ;MOVE.l (a7)+,D1
+    ;MOVE.l (a7)+,A0
+    ;MOVEQ.l #0,D0
 
-    JSR print_complete_line                             ; d0:x, d1:y, a0: text
-    !basic
+    ;JSR print_complete_line                             ; d0:x, d1:y, a0: text
+    ;!basic
+    PED_PrintSourceText{curline, 0, cury, Peek.w(?comWord_DoTokenize)}
     Poke.b ?keepstring,0
+    PED_ProcessHighlighting{}
     !asm
     SF noDetokenizing
-    JSR process_highlighting
+    ;JSR process_highlighting
     ADD.l #1,comLong_DisplayLine
     ADD.w #MAX_Columns, comWord_TextBufferOffset
     !basic
@@ -19907,10 +20220,11 @@ RTS
   MOVE.l a4,comPtr_CurrentSourceLine
   !basic
 
-  If Peek.l(?comWord_DoTokenize)
-    !asm
-    MOVEA.l comPtr_CurrentSourceLine,A2 : JSR print_sourceline
-    !basic
+  If Peek.w(?comWord_DoTokenize)
+    ;!asm
+    ;MOVEA.l comPtr_CurrentSourceLine,A2 : JSR print_sourceline
+    ;!basic
+    PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
 
     If Peek.b(?comByte_StateBlockMark)
       log_Print{"storeline: redrawing blockmark"}
