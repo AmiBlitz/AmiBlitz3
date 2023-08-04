@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2761
+; NumberOfBuilds  = 2769
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 13508
-; CursorColumn    = 10
+; CursorLine      = 11411
+; CursorColumn    = 1
 ; LabelSearch     = "open_gui"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -559,6 +559,7 @@ NEWTYPE.ped
 
   undeleteStrLen.w
   no_scrollrate.b
+  foldNumber.l
 End NEWTYPE
 DEFTYPE.ped ped
 
@@ -6785,14 +6786,14 @@ RTS
       tmpViewableLines.l = Peek.l(?viewablelines)
       If tmpDisplayLineOffset + tmpViewableLines > tmpTotalLines
         log_Print{"increase displayline, current: " + Str$(tmpDisplayLine)}
+        Gosub increase_DisplayLine
         !asm
-        JSR increase_DisplayLine
         JSR _redraw
         !basic
       Else
         If tmpViewableLines > (tmpDisplayLine + 1 + Peek.w(?comWord_BoundLinesY))
+          Gosub increase_DisplayLine
           !asm
-          JSR increase_DisplayLine
           JSR _redraw
           !basic
         Else
@@ -6875,7 +6876,7 @@ Return
     EndIf
   EndIf
 
-  JSR increase_DisplayLine
+  Gosub increase_DisplayLine
 
   ;-- update linenumbers from here
   Gosub update_linenumbers
@@ -6967,9 +6968,8 @@ JMP set_blockend
       ; check if text is scrolled
       If ped\ptrCurrentSourceData\DisplayLineOffset = 0 OR (ped\ptrCurrentSourceData\DisplayLine > Peek.w(?comWord_BoundLinesY))
         log_Print{"decrease displayline, current: " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
+        Gosub decrease_DisplayLine
         !asm
-        ;!stack2regs
-        JSR decrease_DisplayLine
         JSR _redraw
         !basic
       Else
@@ -6989,21 +6989,43 @@ JMP set_blockend
   EndIf
 Return
 
+Function.b PED_CheckFoldingState{}
+SHARED ped
+  If ped\currentSourceEntry\FirstSourceLine <> 0
+    foldstatus.b = 0
+    *tmpcsl.sourceLine = ped\currentSourceEntry\FirstSourceLine
+    While *tmpcsl <> ped\currentSourceEntry\CurrentSourceLine
+      If Peek.w(*tmpcsl + 9) = @";@"
+        foldstr.w = Peek.w(*tmpcsl + 11)
+        Select foldstr
+        Case @"@1" : foldstatus = 1
+        Case @"@0" : foldstatus = 0
+        End Select
+      EndIf
+      *tmpcsl = *tmpcsl\nextLine
+    Wend
+    Function Return foldstatus
+  Else
+    Function Return 0
+  EndIf
+End Function
+
 Function.l PED_CheckFoldingReverse{*tmpLine.sourceLine}
-  foldnumber.l = 0
+SHARED ped
+  ped\foldNumber = 0
   linePtr.l = 0
 
   log_Print{"check line:  [" + Peeks$(*tmpLine + 9,8) + "]"}
   marker.s = Peeks$(*tmpLine + 11,2)
   If marker = "@0"
-    foldnumber = 0
+    ped\foldNumber = 0
     *tmpPrev.sourceLine = *tmpLine\previousLine
     While *tmpPrev
       marker2.s = Peeks$(*tmpPrev + 9,4)
       If Left$(marker2,2) = ";@"
         log_Print{" found a marker upwarts: " + marker2}
         If Right$(marker2,2) = "@1"
-          foldnumber = 1
+          ped\foldNumber = 1
           linePtr = *tmpPrev
           Pop If: Pop If : Pop While
           Goto exit_while
@@ -7017,7 +7039,7 @@ Function.l PED_CheckFoldingReverse{*tmpLine.sourceLine}
     exit_while:
   EndIf
 
-  If marker = "@1" Then foldnumber = 0
+  If marker = "@1" Then ped\foldNumber = 0
 
   Function Return linePtr
 End Function
@@ -7063,9 +7085,7 @@ End Function
         Return
       EndIf
     EndIf
-    !asm
-    JSR decrease_DisplayLine
-    !basic
+    Gosub decrease_DisplayLine
     Gosub cursor_on
   EndIf
 Return
@@ -7241,9 +7261,7 @@ Return
           Gosub draw_new_sourceline_top
         Else
           PED_ScrollVertical{#SCROLL_UP, ped\ptrCurrentSourceData\DisplayLine}
-          !asm
-          JSR decrease_DisplayLine
-          !basic
+          Gosub decrease_DisplayLine
         EndIf
       EndIf
     Else
@@ -9497,7 +9515,7 @@ Return
   log_Print{msg$}
 
   ;-- todo: add hardfold support (compare with old asm code at this place!
-  Poke.l ?foldnum,0
+  ped\foldNumber = 0
 
   ;-- set cursor position to beginning of block mark
   ped\ptrCurrentSourceData\Column = ped\ptrCurrentSourceData\LinePosStartX - ped\ptrCurrentSourceData\ColumnsOffset
@@ -11371,177 +11389,109 @@ Return
 RTS
 
 
-
-.getfoldstatus
-  CLR.l foldnum
-  MOVE.l a1,-(a7)
-  MOVE.l comPtr_FirstSourceLine,d0
-  BEQ 'out
- 'l1
-    MOVE.l d0,a1
-    CMP.l a2,a1
-    BEQ 'out
-      CMP.w #";@",9(a1)
-      BNE 'l2
-        CMP.w #"@1",11(a1)
-        BNE 'no1
-          MOVE.l #1,foldnum
-       'no1
-        CMP.w #"@0",11(a1)
-        BNE 'no2
-          MOVE.l #0,foldnum
-       'no2
-     'l2
-  MOVE.l (a1),d0
-  BNE 'l1
- 'out
-  realline
-  MOVE.l (a7)+,a1
-RTS
-
-.doreverse:
-  CMP.w #"@0",11(a2)                   ;reverse ok !!!
-  BNE 'no1
-    MOVEM.l d0/a1,-(a7)
-    MOVE.l #0,foldnum
-    MOVE.l 4(a2),d0
-    BEQ 'lp4
-   'lp1
-      MOVE.l d0,a1                    ;check if previous is ;@@1
-      CMP.w #";@",9(a1)
-      BNE 'lp2
-        CMP.w #"@1",11(a1)
-        BNE 'lp3
-          MOVE.l #1,foldnum
-          BRA 'lp4                             ;block is folded
-       'lp3
-        CMP.w #"@0",11(a1)
-        BEQ 'lp4
-     'lp2
-      MOVE.l 4(a1),d0
-     BNE 'lp1
-   'lp4
-    MOVEM.l (a7)+,a1/d0
- 'no1
-  CMP.w #"@1",11(a2)
-  BNE 'no2
-    MOVE.l #0,foldnum
- 'no2
- 'l2
-;MOVE.l a1,a2
-RTS
-
-
 ._redraw:
   !basic
-  ;log_Print{"redraw, displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
-  tmpcsl.l = ped\ptrCurrentSourceData\CurrentSourceLine
-  !asm
-
-  MOVEA.l comPtr_CurrentSourceLine,A2       ; if no source available, quit redraw!
-  CMPA.l #$0,A2
-  BNE.w JL_0_58B6
+  ;log_Print{"redraw, displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine)  
+  *tmpcsl.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+  If *tmpcsl = 0
+    Pop If
+    !asm
     RTS
-  JL_0_58B6:
+  EndIf
 
-  MOVE.l comLong_BlockEndY,-(A7)
-
-  MOVE.l #$ffffFFFF,comLong_BlockEndY
-  JSR save_cursorposition
-  JSR clear_sourcetextbuffer
+  *storeCurrentSourceLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+  storeBlockEndY.l = ped\ptrCurrentSourceData\BlockEndY
+  ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
+  Gosub store_cursorposition
+  Gosub clear_sourcetextbuffer
 
   CNIF #hardfold = 1
-    JSR getfoldstatus
+    ped\foldNumber = PED_CheckFoldingState{}
   CEND
 
-  MOVE.l comLong_DisplayLine,D1
+  *tmpcsl.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
 
-  JL_0_58BA:
-    BEQ.w JL_0_58C6
+  tmpdl.l = ped\ptrCurrentSourceData\DisplayLine
+  While (tmpdl > 0) AND (*tmpcsl <> 0)
+    *tmpcsl = *tmpcsl\previousLine
 
-    MOVE.l $4(A2),d0
-    BEQ JL_0_58C6
-      MOVE.l d0,a2
+    If *tmpcsl
 
-      CNIF #hardfold = 0
-        BRA 'l3
+      CNIF #hardfold = 1
+      If Peek.w(*tmpcsl + 9) = @";@"
+        PED_CheckFoldingReverse{*tmpcsl}
+        If Peek.w(*tmpcsl + 11) = @"@0"
+          If ped\foldNumber <> 0
+            Pop If : Pop If : Pop If : Goto cont_redraw
+          EndIf
+        EndIf
+      EndIf
+      If ped\foldNumber <> 0
+        ; jump to beginning of loop without reducing tmpdl
+      EndIf
+      cont_redraw:
       CEND
 
-      CMP.w #";@",9(a2)
-      BNE 'l2
-        BSR doreverse
-        CMP.w #"@0",11(a2)
-        BNE 'l2
-          TST.l foldnum
-          BNE 'l3
-     'l2
-      TST.l foldnum
-      BNE JL_0_58BA
-     'l3
-      SUBQ.l #1,D1
-  BRA.b JL_0_58BA
-  JL_0_58C6:
-  MOVE.l D1,comLong_DisplayLine
+      tmpdl - 1
+    EndIf
+   
+  Wend
+  log_Print{"tmpdl:" + Str$(tmpdl)}
+  log_Print{"*tmpcsl: " + Str$(*tmpcsl)}
+  ped\ptrCurrentSourceData\DisplayLine = tmpdl
+  ped\ptrCurrentSourceData\TextBufferOffset = 0
+  ped\ptrCurrentSourceData\ColumnsOffsetTmp = ped\ptrCurrentSourceData\ColumnsOffset
 
-  CLR.w comWord_TextBufferOffset
-  CLR.l foldnum
-  !regs2stack
-  !basic
   sourceWindow\clearEndOfLine = True
+  
   Gosub cursor_off
-  !asm
-  !stack2regs
-  MOVE.l viewablelines,D7 : SUBQ.l #1,D7
-  MOVE.w comWord_ColumnsOffset,comWord_ColumnsOffsetTmp
-  MOVE.l comLong_LinePosStartY,d0
 
-  JL_0_58E8:                         ;print whole window
-    CNIF #hardfold = 1
-   'nr
-      CMP.l #";@@1",9(a2)
-      BNE 'l1
-        MOVE.l #1,foldnum
-        BRA 'do
-     'l1
-      CMP.l #";@@0",9(a2)
-      BNE 'l2
-      MOVE.l #0,foldnum
-     'l2
+  ;-- draw all the lines
+  For cl.l = 1 To Peek.l(?viewablelines)
+    ped\ptrCurrentSourceData\CurrentSourceLine = *tmpcsl
+
+;    CNIF #hardfold = 1
+;   'nr
+;      CMP.l #";@@1",9(a2)
+;      BNE 'l1
+;        MOVE.l #1,foldnum
+;        BRA 'do
+;     'l1
+;      CMP.l #";@@0",9(a2)
+;      BNE 'l2
+;      MOVE.l #0,foldnum
+;     'l2
 ;      MOVE.l comLong_DisplayLine,d0
 ;      CMP.l store_comLong_DisplayLine,d0
 ;      BNE 'l3b
 ;      ;MOVE.l a2,comPtr_CurrentSourceLine
 ;     'l3b
-      TST.l foldnum
-      BEQ 'do
-        MOVE.l (a2),d0
-        BEQ JL_0_5902
-          MOVE.l d0,a2
-    BRA 'nr 
-   'do
-    CEND
+;      TST.l foldnum
+;      BEQ 'do
+;        MOVE.l (a2),d0
+;        BEQ JL_0_5902
+;          MOVE.l d0,a2
+;    BRA 'nr 
+;   'do
+;    CEND
 
-    MOVE.l (A2),-(A7)
-    ;JSR print_sourceline
-    !basic
-    PutReg A2, tmpcsl2.l : ped\ptrCurrentSourceData\CurrentSourceLine = tmpcsl2
-    PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
-    !asm
-    MOVE.l (A7)+,D0
+    If ped\ptrCurrentSourceData\CurrentSourceLine
+      PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
+      *tmpcsl = *tmpcsl\nextLine
+      Gosub increase_DisplayLine
+      log_Print{"next line at displayline " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
+    Else
+      log_Print{"no next line at displayline " + Str$(cl)}
+    EndIf
+  Next cl
 
-    BEQ.w JL_0_5902           ; no next line left
-      MOVEA.l D0,A2
-      JSR increase_DisplayLine
-  DBF D7,JL_0_58E8
-  JL_0_5902:
+  log_Print{"after tmpdl:" + Str$(ped\ptrCurrentSourceData\DisplayLine)}
 
-  !basic
-  ped\ptrCurrentSourceData\CurrentSourceLine = tmpcsl
   ; -- better refresh: clear bottom
-  sourceWindow\clearEndOfLine = False
+  sourceWindow\clearEndOfLine = False ; for function PED_PrintCurrentSourceLine()
   USEPATH sourceWindow
   If ped\ptrCurrentSourceData\DisplayLine < Peek.l(?viewablelines)
-    ;log_Print{"redraw: clear rest of window at displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine+1)}
+    log_Print{"redraw: clear rest of window at displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine+1)}
     SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
     rectx.w = \BoxLeft
     recty.w = \BoxTop + (ped\ptrCurrentSourceData\DisplayLine+1) * \font\tf_YSize
@@ -11559,13 +11509,13 @@ RTS
       log_Print{Str$(recty) + ", " + Str$(recth),#log_error}
     EndIf
   EndIf
-  !asm
 
-  JSR restore_cursorposition
-  MOVE.l (A7)+,comLong_BlockEndY
+  ; -- restore saved values
+  ped\ptrCurrentSourceData\CurrentSourceLine = *storeCurrentSourceLine
+  ped\ptrCurrentSourceData\BlockEndY = storeBlockEndY
+  Gosub restore_cursorposition
 
-  JL_0_590C:
-  !basic
+  draw_block_after_refresh::
   If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
     ;log_Print{"draw block (after refresh.)"}
     bmark\xMin = ped\ptrCurrentSourceData\BlockStartX
@@ -11615,9 +11565,9 @@ RTS
 
   Gosub update_modifiermark
   Gosub cursor_on
+
   !asm
 RTS
-
 
 
 ._redrawBlock:                           ;redraw blockmark
@@ -11705,7 +11655,7 @@ Return
   log_Print{"print 1 line up from line " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
   *currentline.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
 
-  JSR save_cursorposition
+  Gosub store_cursorposition
 
   CLR.w comWord_TextBufferOffset
 
@@ -11727,7 +11677,7 @@ Return
   PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
 
   no_prev_line:
-  JSR restore_cursorposition
+  Gosub restore_cursorposition
 
   ; what for ? the result is returned in registers D0, D1, D6 ??
   ;TST.l comLong_BlockEndY
@@ -11742,7 +11692,7 @@ Return
   log_Print{"print 1 line down from line " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
   *currentline.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
 
-  JSR save_cursorposition
+  JSR store_cursorposition
 
   While Peek.l(?viewablelines) > (ped\ptrCurrentSourceData\DisplayLine + 1)
     *currentline = *currentline\nextLine
@@ -11763,7 +11713,7 @@ Return
   ;!basic
 
   no_next_line:
-  JSR restore_cursorposition
+  Gosub restore_cursorposition
 Return
 
 
@@ -12629,14 +12579,18 @@ RTS
 
 
 .increase_DisplayLine:
-  ADDQ.l #1,comLong_DisplayLine
-  MOVEQ.l #$00,D0 : MOVE.w #MAX_Columns,D0 : ADD.w D0,comWord_TextBufferOffset
-RTS
+  ;ADDQ.l #1,comLong_DisplayLine
+  ;MOVEQ.l #$00,D0 : MOVE.w #MAX_Columns,D0 : ADD.w D0,comWord_TextBufferOffset
+  ped\ptrCurrentSourceData\DisplayLine + 1
+  ped\ptrCurrentSourceData\TextBufferOffset + #MAX_Columns
+Return
 
 .decrease_DisplayLine:
-  SUBQ.l #1,comLong_DisplayLine
-  MOVEQ.l #$00,D0 : MOVE.w #MAX_Columns,D0 : SUB.w D0,comWord_TextBufferOffset
-RTS
+  ;SUBQ.l #1,comLong_DisplayLine
+  ;MOVEQ.l #$00,D0 : MOVE.w #MAX_Columns,D0 : SUB.w D0,comWord_TextBufferOffset
+  ped\ptrCurrentSourceData\DisplayLine - 1
+  ped\ptrCurrentSourceData\TextBufferOffset - #MAX_Columns
+Return
 
 .scroll_rest_of_line_left:
   USEPATH ped\ptrCurrentSourceData
@@ -12778,7 +12732,7 @@ Return
 
 
 .draw_new_columns_left:
-  JSR save_cursorposition
+  JSR store_cursorposition
 
   CLR.w comWord_ColumnsOffsetTmp
   CLR.w comWord_Column
@@ -12841,7 +12795,9 @@ Return
     ADD.w D0,comWord_TextBufferOffset
     ADDQ.l #1,comLong_DisplayLine
   DBF D2,JL_0_67AA
-  JSR restore_cursorposition
+  !basic
+  Gosub restore_cursorposition
+  !asm
 RTS
 
 .scroll_right:
@@ -12996,7 +12952,7 @@ Return
 Return
 
 .draw_new_columns_right:
-  JSR save_cursorposition
+  JSR store_cursorposition
 
   CLR.w comWord_ColumnsOffsetTmp
   CLR.w comWord_TextBufferOffset
@@ -13054,7 +13010,9 @@ Return
     MOVEQ.l #$00,D0  : MOVE.w #MAX_Columns,D0  :ADDA.w D0,A5 : ADD.w D0,comWord_TextBufferOffset
     ADDQ.l #1,comLong_DisplayLine
   DBF D2,JL_0_6AFA
-  JSR restore_cursorposition
+  !basic
+  Gosub restore_cursorposition
+  !asm
 RTS
 
 .clear_sourcebuffer:
@@ -13833,18 +13791,26 @@ Return
 RTS
 
 
-
-.save_cursorposition:
-  MOVE.w comWord_Column,comWord_StoreColumn
-  MOVE.l comLong_DisplayLine,comLong_StoreDisplayLine
-  MOVE.w comWord_TextBufferOffset,comWord_StoreTextBufferOffset
-RTS
+ 
+.store_cursorposition:
+  ;MOVE.w comWord_Column,comWord_StoreColumn
+  ;MOVE.l comLong_DisplayLine,comLong_StoreDisplayLine
+  ;MOVE.w comWord_TextBufferOffset,comWord_StoreTextBufferOffset
+  USEPATH ped\ptrCurrentSourceData
+  \StoreColumn = \Column
+  \StoreDisplayLine = \DisplayLine
+  \StoreTextBufferOffset = \TextBufferOffset
+Return
 
 .restore_cursorposition:
-  MOVE.w comWord_StoreColumn,comWord_Column
-  MOVE.l comLong_StoreDisplayLine,comLong_DisplayLine
-  MOVE.w comWord_StoreTextBufferOffset, comWord_TextBufferOffset
-RTS
+  ;MOVE.w comWord_StoreColumn,comWord_Column
+  ;MOVE.l comLong_StoreDisplayLine,comLong_DisplayLine
+  ;MOVE.w comWord_StoreTextBufferOffset, comWord_TextBufferOffset
+  USEPATH ped\ptrCurrentSourceData
+  \Column = \StoreColumn
+  \DisplayLine = \StoreDisplayLine
+  \TextBufferOffset = \StoreTextBufferOffset
+Return
 
 .clear_sourcewindow:
   ; -- clear the codelines in window
@@ -14048,8 +14014,8 @@ Return
 Return
 
 JL_0_7962_bas:
-  JSR save_cursorposition
   !basic
+  Gosub store_cursorposition
   log_Print{"JL_0_7962_bas"}
   ped\ptrCurrentSourceData\TextBufferOffset = 0
   ped\ptrCurrentSourceData\DisplayLine = 0
@@ -14093,9 +14059,9 @@ JL_0_7962_bas:
     curline = curline + #MAX_Columns
     cury = cury + 1 ;\font\tf_YSize
   Next v
+  Gosub restore_cursorposition
+  Gosub draw_block_after_refresh
   !asm
-  JSR restore_cursorposition
-  JSR JL_0_590C
 RTS
 
 
