@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2778
+; NumberOfBuilds  = 2833
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,11 +30,12 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 9884
+; CursorLine      = 7647
 ; CursorColumn    = 1
-; LabelSearch     = "error{"1"
+; LabelSearch     = "insertreturn"
 ; LabelRemark     = 0
 ; LabelAll        = 1
+; LabelCase       = 0
 ; LabelPosition   = 0
 ; 
 ; Blitz Objects
@@ -106,7 +107,7 @@ DEBUG
 .CONST
 #USE_AREXX           = 1     ; include the arrexport?
 #hardfold            = 0     ; not working
-#filenamepos         = 1     ; startpos of fileclocknames, was 27 honitos 20191123
+#filenamepos         = 1     ; startpos of filenames, was 27 honitos 20191123
 #filenameoffs        = 11    ; space betweeen filenames
 
 #maxlabels           = 512
@@ -328,6 +329,7 @@ XINCLUDE "/Shared/common.ab3"
 XINCLUDE "/Shared/preprocessor.include.ab3"
 DEFTYPE.tokendata *tokenbase
 
+;XINCLUDE "eclock.include.ab3"
 XINCLUDE "v43+.definitions.ab3"                       ; for MouseWheel support  tomsmart1
 XINCLUDE "dos.include.ab3"
 XINCLUDE "file.include.ab3"
@@ -553,6 +555,8 @@ NEWTYPE.ped
   mempool.l
   LabelIdentifier.b
   LabelListChanged.w
+  LabelIsFunction.b
+  labelSearchMode.b
 
   verticalCopyMode.b
   verticalPasteMode.b
@@ -610,8 +614,6 @@ NEWTYPE.sourceWindow
  
   cursorState.b
   ColumnsOffsetStore.w
-
-  clearEndOfLine.b
 
   lastEditedLine.l
   bookmarkLine1.l
@@ -820,13 +822,6 @@ Until key_char$ = ""
 key_chars:
 Data.s "=",":","<",">","+","-","/","*","&","|",";",""
 
-Dim lowerchars.b(129)                  ; create a chartable with all characters lowercase
-For i.l = 1 To 127
-  a$ = LCase$(Chr$(i))
-  lowerchars(i) = Asc(a$)
-Next
-Poke.l ?lowerchartable,&lowerchars(0)      ; make it basic!
-Poke.b ?casemode,1
 CaseSense Off
 
 browse_macros.l           = Off
@@ -836,7 +831,6 @@ browse_includes.l         = Off
 ; for listtype window
 Dim pos2(15),pos$(15),postype$(15)
 
-MaxLen sourcename$        = 96
 MaxLen a$                 = 300      ;need for read .xtra
 a$ = ""
 
@@ -848,18 +842,16 @@ MaxLen tincludedir$       = 192
 MaxLen thelpdir$          = 192
 MaxLen tautodocdir$       = 192
 
-MaxLen tmp_string.s       = 1024     ; used for passing strings to os-functions
-MaxLen pedmessage.s       = 96       ; used for display the text area
+MaxLen tmp_string.s       = 1024                   ; used for passing strings to os-functions
+MaxLen pedmessage.s       = 96                     ; used for display the text area
 MaxLen tmpDetokeStr.s     = #MAX_Columns
 
-WZListAdd lst.List         ," "
-WZListAdd lst2.List        ," "
 WZListAdd list_labels.List ," "
 
 #Max_BlitzLibs             = 256                   ; added and set to 256 to replace wrong 255 hardcoded Array dimension because we use entry 0 to 255 and this are 256 entrys  tomsmart1
 Dim lib_mapping$(#Max_BlitzLibs,1)                 ; replaced the wrong 255 with the #Max_Blitzlibs Constant  tomsmart1
 Dim lib_check.b(#Max_BlitzLibs)                    ; replaced the wrong 255 with the #Max_Blitzlibs Constant  tomsmart1
-For i = 0 To (#Max_BlitzLibs-1)                    ; replaced the hardcoded 255 with (#Max_Blitzlibs-1) because we start at 0  tomsmart1
+For i.l = 0 To (#Max_BlitzLibs-1)                    ; replaced the hardcoded 255 with (#Max_Blitzlibs-1) because we start at 0  tomsmart1
   lib_mapping$(i,0) = "* unused ID"+Str$(i)+" *"
   lib_mapping$(i,1) = ""
 Next i
@@ -897,28 +889,18 @@ Macro stack2regs
   MOVEM.l (a7)+,d0-d7/a0-a6
 End Macro
 
-Macro skipspace
- 'nspace1`@
-    CMP.b #" ",(`1)
-    BNE 'nspace`@
-      ADDQ.l #1,`1
-  BRA 'nspace1`@
- 'nspace`@
+Macro updateBlockMark ;{d1 = currentLine, d0 = currentColumn}
+  ped\ptrCurrentSourceData\StateBlockMark = False
+
+  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
+    If (ped\ptrCurrentSourceData\BlockStartY < `1) OR (ped\ptrCurrentSourceData\BlockStartY = `1 AND ped\ptrCurrentSourceData\BlockStartX <= `2)
+      If (ped\ptrCurrentSourceData\BlockEndY > `1) OR (ped\ptrCurrentSourceData\BlockEndY = `1 AND ped\ptrCurrentSourceData\BlockEndX <= `2)
+        ped\ptrCurrentSourceData\StateBlockMark = True
+      EndIf
+    EndIf
+  EndIf
 End Macro
 
-Macro isLetter
-  CMP.b #"A",D2
-  BCS.w 'JL_0_60E8`@
-    CMP.b #"z",D2
-    BHI.w 'JL_0_60E8`@
-      CMP.b #"[",D2
-      BCS.w 'JL_0_60E6`@
-        CMP.b #"a",D2
-        BCS.w 'JL_0_60E8`@
-     'JL_0_60E6`@:
-      CMP.w D2,D2
- 'JL_0_60E8`@:
-End Macro
 
 Function.l PED_AllocMem{memsize.l}
 SHARED ped
@@ -933,25 +915,8 @@ End Function
 
 Statement PED_FreeMem{memptr.l}
 SHARED ped
-;  log_Print{"loesche zeile: " + Peek.s(memptr+9)}
-;  log_Print{"speicher: " + Str$(Peek.l(memptr-4))}
   FreePooled_ ped\mempool,memptr-4,Peek.l(memptr-4)
 End Statement
-
-;Macro newalloc                 ; d0: memSize
-;  ADDQ.l #4,d0
-;  MOVE.l _execbase,a6
-;  MOVE.l comPtr_MemPool,a0
-;  MOVE.l d0,-(a7)
-;  JSR _AllocPooled(a6)         ; (a0: poolHeader, d0: memSize)
-;  MOVE.l (a7)+,d1
-;  TST.l d0                      ; allocpooled returns memadress in d0
-;  BEQ 'avp_fail1`@
-;    MOVE.l d0,a0
-;    MOVE.l d1,(a0)+
-;    MOVE.l a0,d0
-; 'avp_fail1`@
-;End Macro
 
 Macro newfree      ; A1: memoryentry in Pool
   MOVE.l _execbase,a6
@@ -1274,6 +1239,33 @@ SHARED ped
 End Function
 
 
+Function.l PED_GetBlockStartSourceLine{}
+SHARED ped
+
+  USEPATH ped\ptrCurrentSourceData
+  currentY.l = \DisplayLineOffset + \DisplayLine
+
+  ;log_Print{"currentY: "  + Str$(currentY)}
+  ;log_Print{"BlockStartY: "  + Str$(\BlockStartY)}
+  If \BlockStartY = currentY Then Function Return \CurrentSourceLine
+
+  *tempLine.sourceLine = \CurrentSourceLine
+  If \BlockStartY < currentY
+    Repeat 
+      *tempLine.sourceLine = *tempLine\previousLine
+      currentY - 1
+    Until currentY = \BlockStartY
+  Else
+    Repeat 
+      *tempLine.sourceLine = *tempLine\nextLine
+      currentY + 1
+    Until currentY = \BlockStartY
+  EndIf
+  Function Return *tempLine  
+End Function
+
+
+
 Function PED_GetConstantValue{ptr_constantbase.l,cname$}
   *cb.l = ptr_constantbase
   If *cb
@@ -1460,6 +1452,22 @@ Function.s PED_GetFirstTokenname{libnum.w}
   EndIf
 End Function
 
+
+Function.s PED_ParseCurrentSourceLine{strLine.s}
+  GetReg D0,&strLine : MOVE.l D0,-(a7)
+  !asm
+  MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
+  MOVEA.l comPtr_CurrentSourceLine,A4 : JSR parse_line
+  MOVE.l D5,-(a7)                     ; returns length of string in D5
+  !basic
+  MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
+  MOVE.l comPtr_Temp_TokenString1,D0 : PutReg D0,ptrTokenString1.l
+  result.s = Peeks$(Peek.l(ptrTokenString1),tmpd0)
+  Function Return result
+End Function
+
+
+
 Function.s PED_Detoke{*sourceLine.sourceLine}
 SHARED tmpDetokeStr.s
 
@@ -1475,6 +1483,35 @@ SHARED tmpDetokeStr.s
   !basic
   result.s = Peek.s(&tmpDetokeStr)
   Function Return result
+End Function
+
+Function.s PED_DetokeText{strLine.s}
+SHARED tmpDetokeStr.s
+
+  If strLine = "" Then Function Return ""
+
+  tmpDetokeStr = String$(Chr$(0),#MAX_Columns)
+  GetReg A0, &strLine
+  GetReg A1, &tmpDetokeStr
+  MOVEM.l A0-a1,-(a7)
+  !asm
+  MOVEM.l (a7)+,A0-a1
+  JSR detokenize_line   ;input A0: tokenized string; returns A1: detokenized string
+  !basic
+  result.s = Peek.s(&tmpDetokeStr)
+  Function Return result
+End Function
+
+Function.s PED_DetokenizeText{strLine.s}
+SHARED ped,*PreProcessor
+
+  If ped\DoTokenize
+    MaxLen linebuff$ = 256
+    preproc_Detokenize{*PreProcessor,&strline$,&linebuff$,FLen(strline$)}
+    strLine = Peek.s(&linebuff$)
+  EndIf
+
+  Function Return strLine
 
 End Function
 
@@ -1558,6 +1595,53 @@ Function.b PED_CheckForClassicToken{_token.l}
     Until classicID = 0 OR exit_classicloop
     Function Return False
 End Function
+
+
+Function.s PED_TokenizeText{strLine.s}
+SHARED ped,*PreProcessor
+
+  If ped\DoTokenize
+    MaxLen linebuff$ = 256
+    preproc_Tokenize{*PreProcessor,&replacedline.s,&linebuff$,FLen(replacedline)}
+    strLine.s = Peek.s(&linebuff$)
+  EndIf
+
+  Function Return strLine
+End Function
+
+Function.s PED_DetokenizeText2{ptrOrgString.l}
+
+  MaxLen linebuffer.s = 256
+  _strLen.w = Len(Peek.s(ptrOrgString))
+  If _strLen
+    If Peek.b(?keepstring) = 0 Then Poke.b ?instring2, 0
+
+    If Peek.b(?noDetokenizing)
+      linebuffer = Peek.s(ptrOrgString)
+    Else
+      For i.w = 0 To _strLen - 1
+        curChar.b  = Peek.b(ptrOrgString + i)
+        If curChar = $22 Then NOT.b instring2
+        If Peek.b(?instring2) OR curChar => 0
+          linebuffer + Chr$(curChar)
+        Else
+          If curChar < 0
+            i + 1
+            _token.w = curChar LSL 8 + Peek.b(ptrOrgString + i)
+            _tokname.s = PED_GetTokenName{_token}
+            For j.b = 1 To FLen(_tokname)
+              linebuffer + Chr$(Peek.b(&_tokname + j) BitSet 7)
+            Next j
+          EndIf
+        EndIf
+      Next i
+    EndIf
+  EndIf
+
+  Function Return linebuffer
+
+End Function
+
 
 
 
@@ -1861,22 +1945,23 @@ End Statement
 Statement PED_PrintTokenizedText{*textaddr.l, tposx.w, tposy.w}
 SHARED sourceWindow, ped, pedconfig, AB3Pen()
 USEPATH sourceWindow
-  ; clear textBufferPrint
+  ;-- clear textBufferPrint
   tmpAddr.l = Peek.l(?textbufferPrint)
   For i.w = 0 To #MAX_Columns/4-1 Step 4
     Poke.l  tmpAddr + i, 0
   Next i
-  ; copy the current line to a tempBuffer
+
+  ;-- copy the current line to a tempBuffer
   For i = 0 To #MAX_Columns - 1
     Poke.b Peek.l(?AL_0_5BA6) + i, Peek.b(*textaddr + i)
   Next i
   Poke.b Peek.l(?AL_0_5BA6) + #MAX_Columns-1, 0
 
+  ;-- copy whole line from A0 to A1 and detokenize it but keep token indicator (bit7)
   !asm
   MOVEA.l AL_0_5BA6,A0
   MOVEA.l textbufferPrint,A1
   MOVEM.l D0-D1/A1,-(A7)
-  ; copy whole line from A0 to A1 and detokenize it but keep token indicator (bit7)
   JSR JL_0_5060
   MOVEM.l (A7)+,D0-D1/A1
   !basic
@@ -1953,7 +2038,7 @@ USEPATH sourceWindow
       SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
     EndIf
 
-    PED_PrintText{&tmpExpand, tposx, tposy,FLen(tmpExpand), tcolor}
+    PED_PrintText{&tmpExpand, tposx, tposy, FLen(tmpExpand), tcolor}
 
     ;-- reset font and style
     SetBPen_ \win\RPort, AB3Pen(#AB3_cbackground)
@@ -2131,24 +2216,23 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
 End Statement
 
 
-Statement PED_PrintSourceText{*textaddr.l, tposx.w, tposy.w, doTokenize.b}
+Statement PED_PrintSourceText{*textaddr.l, tposx.w, tposy.w, doTokenize.b, @clearEndOfLine.b}
 SHARED sourceWindow, ped, AB3Pen()
 
   If doTokenize
-    ;Gosub print_tokenized_text
     PED_PrintTokenizedText{*textaddr, tposx,tposy}
   Else
     PED_PrintTextStandard{*textaddr, tposx, tposy}
   EndIf
 
-  If sourceWindow\clearEndOfLine
+  If clearEndOfLine = True
     USEPATH sourceWindow
 
     If \win\RPort\cp_x <= \BoxLeft
       rectx.w = \win\RPort\cp_x + 1
     Else
       rectx.w = \win\RPort\cp_x
-    EndIf
+    EndIf 
     recty.w = \BoxTop + ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize
     rectw.w = \BoxWidth
     recth.w = recty + \font\tf_YSize-1
@@ -2189,7 +2273,7 @@ USEPATH sourceWindow
   Draw_ \win\RPort,\BoxLeft-2,ly + \font\tf_YSize
 End Statement
 
-Statement PED_PrintCurrentSourceLine{doTokenize.b}
+Statement PED_PrintCurrentSourceLine{doTokenize.b, @clearEndOfLine.b}
 SHARED pedconfig, ped, sourceWindow, AB3Pen()
 
   If pedconfig\linenumbers Then PED_PrintLineNumber{}
@@ -2200,7 +2284,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
 
   If Peek.b(*sl + 9) <> 0   ; first character of text
     ped\ptrCurrentSourceData\ColumnsOffsetTmp = ped\ptrCurrentSourceData\ColumnsOffset
-    PED_PrintSourceText{*sl + 9,0,ped\ptrCurrentSourceData\DisplayLine, doTokenize}
+    PED_PrintSourceText{*sl + 9,0,ped\ptrCurrentSourceData\DisplayLine, doTokenize, clearEndOfLine}
   Else
     USEPATH sourceWindow
     SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
@@ -2310,25 +2394,6 @@ Function PED_PrintStatus{txt$,xpos.w,@ypos.w}
     log_Print{"PrintStatus(): window pointer empty!"}
   EndIf
 End Function
-
-
-
-Statement move_cursor {a$,lst.l,pos.l}
-         ;Select EventCode
-;loopm1:vvblank_resetsync{}
-;           If RawKeyState(#RAWKEY_UP)
-;                   i.l = WZListPos (a$)
-;                   If i Then i = i-1 : WZPrint a$,pos,lst,i
-;                   vvblank_wait_sync{4}:Goto loopm1
-;           End If
-;           If RawKeyState(RAWKEY_DOWN)
-;                   i = WZListPos (a$):
-;                   If i <WZListItems(lst)-2 Then i = i+1:WZPrint a$,pos,lst,i
-;                   vvblank_wait_sync{4}:Goto loopm1
-;           End If
-;         ;End Select
-End Statement
-
 
 
 Statement PED_ScrollDelay{}
@@ -3419,7 +3484,6 @@ Statement CloseAllWZWindows{}                    ; made a Statement to close all
   WZCloseWindow WZID("WIN_SHORTCUTS")
   WZCloseWindow WZID("WIN_HELPDIAG")
   ; windows with no menu added
-  WZCloseWindow WZID("WIN_AUTODOC")
   WZCloseWindow WZID("WIN_HELP")
   WZCloseWindow WZID("WIN_SETTINGS")
 End Statement
@@ -4080,8 +4144,8 @@ readcache\fib = AllocDosObject_ (#DOS_FIB,0)
 ; -- alloc some memory for tokenization
 tokenstringptr.l = PED_AllocMem{(#MAX_Columns + 2) * 3}
 If tokenstringptr = 0 Then Goto exit_PED_closelibraries
-Poke.l ?comPtr_Temp_TokenString1, tokenstringptr
-Poke.l ?comPtr_Temp_TokenString2, tokenstringptr + (#MAX_Columns + 2)
+Poke.l ?comPtr_Temp_TokenString1, tokenstringptr + (#MAX_Columns + 2) * 0
+Poke.l ?comPtr_Temp_TokenString2, tokenstringptr + (#MAX_Columns + 2) * 1
 Poke.l ?comPtr_Temp_TokenString3, tokenstringptr + (#MAX_Columns + 2) * 2
 
 ; --
@@ -4331,7 +4395,7 @@ End
       ; --- format source line and get new column position ---
       newcolumnpos.w = preparseline{columnpos, lineaddr, pedconfig\auto_format, pedconfig\correct_functions}
       ped\ptrCurrentSourceData\Column = newcolumnpos - ped\ptrCurrentSourceData\ColumnsOffset
-      ;old_search_label$ = "|"  ;              WHY ?
+      ;old_LabelListSearchString = "|"  ;              WHY ?
       Gosub cursor_off
       !asm
 
@@ -4379,7 +4443,7 @@ End
   ;      JSR print_sourceline
       !basic
       If Peek.w(?comWord_DoTokenize)
-        PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
+        PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize), False}
       EndIf
       !asm
   ;
@@ -4451,9 +4515,7 @@ End
           a$ = check_constructs{ped\ptrCurrentSourceData\CurrentSourceLine}
           If a$<>""
             Gosub insertstring
-            !asm
-            JSR insertreturn
-            !basic
+            Gosub insertreturn
             Gosub movecursorlinedown
           EndIf
         EndIf
@@ -4470,7 +4532,7 @@ End
 
     bottom_of_mainloop:
     If NOT exit_mainloop
-      If ped\LabelListChanged Then Gosub update_labelstuff
+      If ped\LabelListChanged Then Gosub reset_labellist
       Gosub update_vertscroller
     EndIf
   Wend
@@ -5674,7 +5736,7 @@ Return
 
   log_Print{"updating sourcewindow..."}
   Gosub draw_statusarea
-  Gosub update_labelstuff
+  Gosub reset_labellist
   Gosub update_scrollers
   Gosub _redraw
 
@@ -5844,21 +5906,22 @@ Return
   !asm
 
   skip_loadingxtrafile:
-  !basic
+  !basic 
 Return
 
 
 ;subroutine to restore Source_Browser(Label) and Definition_Browser(Newtype) window status after load and switch of Sourecode  tomsmart1
 .RestoreLabelAndNewtypeWin
-  search_label$ = Peek$(?comStr_LabelSearchString) ; set the searchlabel_string
-  old_search_label$ = search_label$                ; set also old searchlabel_string to prevent a unessacary reset and jump of the labellist tomsmart1
+  LabelListSearchString.s = Peek$(?comStr_LabelSearchString) ; set the searchlabel_string
+  old_LabelListSearchString.s = LabelListSearchString                ; set also old searchlabel_string to prevent a unessacary reset and jump of the labellist tomsmart1
   MOVE.l comLong_Label1VisableItemStore,comLong_Label1VisableItem          ;  move stored entry to tempbuffer manly for case of load a source  tomsmart1
   LabelList_FirstVisableItemNumber.l = Peek.l(?comLong_Label1VisableItem)  ;  set/restore the first visable entry of the labellist  tomsmart1
   LabelList_PreSelectItemNumber.l    = -1          ; set the preselected labellist entry to -1 because we don't save/store it. ; change from 0 to -1 so not the first entry was preselect  tomsmart1
 
   If WZ_CheckOpen{"WIN_LABELS"}
     Use Window WZID("WIN_LABELS")
-    WZPrint "STRING_LABEL",search_label$
+    WZPrint "STRING_LABEL",LabelListSearchString
+    WZPrint "case"         ,Peek.w(?comWord_LabelCase)
     WZPrint "rem"         ,Peek.w(?comWord_LabelRemark)
     WZPrint "all"         ,Peek.w(?comWord_LabelAll)
     WZListRemove lib_list.List
@@ -6190,7 +6253,7 @@ Return
       If *xtra_fh <> 0
         log_Print{"writing additional stuff..."}
         ped\ptrCurrentSourceData\CursorPosStore = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
-        Poke$ ?comStr_LabelSearchString,search_label$
+        Poke$ ?comStr_LabelSearchString,LabelListSearchString
         MOVE.l LabelList_FirstVisableItemNumber@(a5),comLong_Label1VisableItemStore
         ; moved the write of the 4 extra fill/pad/termination bytes to the Compiler xtra save routine because the Compiler xtra load routine needs it!  tomsmart1
         Write_ *xtra_fh,?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin
@@ -6500,43 +6563,35 @@ Return
     Pop If: Return
   EndIf
 
-  !asm
-  JSR update_currsourceline
-  JSR move_to_blockstarty
+  Gosub update_currsourceline
 
-  MOVEA.l A5,A4
+  ped\ptrCurrentSourceData\CurrentSourceLine = PED_GetBlockStartSourceLine{}
+  startY.l = ped\ptrCurrentSourceData\BlockStartY
+  log_Print{"startY: "  +Str$(startY)}
+  Repeat
+    If Peek.w(?comWord_DoTokenize)
+      strline$ = PED_Detoke{ped\ptrCurrentSourceData\CurrentSourceLine}
+    Else
+      strline$ = Peek.s(ped\ptrCurrentSourceData\CurrentSourceLine + 9)
+    EndIf
+    strline$ = ";" + strline$
+    log_Print{">> " + strline$}
 
-  JL_0_21F0:
-    MOVEA.l comPtr_Temp_TokenString2,A1
-    MOVE.b #";",(A1)+
-    LEA $9(A4),A0
-    MOVE.w comWord_DoTokenize,D0
-    BNE.w JL_0_220E
-      JL_0_2206:
-        MOVE.b (A0)+,(A1)+
-      BNE.b JL_0_2206
-      BRA.w JL_0_2212
-    JL_0_220E:
-      JSR detokenize_line
-    JL_0_2212:
+    newline$ = PED_TokenizeText{strline$}
+    ;newline$ = PED_ParseCurrentSourceLine{strline$}
+    ;newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
 
-    CMPA.l comPtr_Temp_TokenString3,A1
-    BCC.w JL_0_2220
-      MOVE.b #$20,(A1)+
-      BRA.b JL_0_2212
-    JL_0_2220:
+    *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+    PED_ReplaceCurrentSourceLine{*newLine}
 
-    MOVE.l A4,comPtr_CurrentSourceLine
-    JSR tokenizeAndInsertNewLine
-    MOVEA.l (A4),A4
-    ADDQ.l #1,D6
-  CMP.l comLong_BlockEndY,D6
-  BLS.b JL_0_21F0
-
-  JSR update_currsourceline
-  !basic
+    ped\ptrCurrentSourceData\CurrentSourceLine = ped\ptrCurrentSourceData\CurrentSourceLine\nextLine
+    startY + 1
+  Until startY = ped\ptrCurrentSourceData\BlockEndY + 1
+  
+  Gosub update_currsourceline
   Gosub _redraw
 Return
+
 
 .menu_blockuncomment:
   log_Print{"menu blockuncomment called."}
@@ -6546,8 +6601,8 @@ Return
     Pop If: Return
   EndIf
 
+  Gosub update_currsourceline
   !asm
-  JSR update_currsourceline
   JSR move_to_blockstarty
 
   MOVEA.l A5,A4
@@ -6592,13 +6647,14 @@ Return
 
  JL_0_229C:
   MOVE.l A4,comPtr_CurrentSourceLine
-  JSR tokenizeAndInsertNewLine
+  JSR parseAndReplaceCurrentLine
   MOVEA.l (A4),A4
   ADDQ.l #1,D6
   CMP.l comLong_BlockEndY,D6
   BLS.b JL_0_224E
-  JSR update_currsourceline
+
   !basic
+  Gosub  update_currsourceline
   Gosub _redraw
 Return
 
@@ -6609,9 +6665,10 @@ Return
     Gosub set_pointer_normal_bas
     Pop If: Return
   EndIf
-
+  
+  Gosub  update_currsourceline
+  
   !asm
-  JSR update_currsourceline
   JSR move_to_blockstarty
 
   MOVEA.l A5,A4
@@ -6645,14 +6702,14 @@ Return
     JL_0_230A:
 
     MOVE.l A4,comPtr_CurrentSourceLine
-    JSR tokenizeAndInsertNewLine
+    JSR parseAndReplaceCurrentLine
     MOVEA.l (A4),A4
     ADDQ.l #1,D6
   CMP.l comLong_BlockEndY,D6
   BLS.b JL_0_22CA                    ; -- next line until comLong_BlockEndY is reached
 
-  JSR update_currsourceline
   !basic
+  Gosub  update_currsourceline
   Gosub _redraw
 Return
 
@@ -6664,8 +6721,8 @@ Return
     Pop If: Return
   EndIf
 
+  Gosub  update_currsourceline
   !asm
-  JSR update_currsourceline
   JSR move_to_blockstarty
   MOVEA.l A5,A4
 
@@ -6705,14 +6762,14 @@ Return
     JL_0_2386:
 
     MOVE.l A4,comPtr_CurrentSourceLine
-    JSR tokenizeAndInsertNewLine
+    JSR parseAndReplaceCurrentLine
     MOVEA.l (A4),A4
     ADDQ.l #1,D6
   CMP.l comLong_BlockEndY,D6
   BLS.b JL_0_2338
 
-  JSR update_currsourceline
   !basic
+  Gosub  update_currsourceline  
   Gosub _redraw
 Return
 
@@ -7152,7 +7209,7 @@ Return
 
 
 .handle_blockmark:
-;  log_Print{"handle blockmark"}
+  ;log_Print{"handle blockmark"}
   sourceWindow\deleteMode = 0
 
   If ped\blockmarkRemovalMode <> 0
@@ -7180,7 +7237,7 @@ Return
     PED_UpdateBlockPosY{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine}
     If PED_InsertSourceLine{*newLine}
       PED_ScrollVertical{#SCROLL_DOWN, ped\ptrCurrentSourceData\DisplayLine}
-      PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
+      PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize), False}
       ;Gosub _redraw
       Gosub update_linenumbers
     Else
@@ -7450,14 +7507,11 @@ JL_0_2906:
   CMP.w comWord_BlockStartX,D0
   BHI.b JL_0_2972
 
-  MOVE.w comWord_BlockEndX,D3
-  SUB.w comWord_BlockStartX,D3
-  MOVE.w comWord_BlockStartX,D2
-  SUB.w D0,D2
-  MOVE.w D2,comWord_BlockStartX
+  MOVE.w comWord_BlockEndX,D3 : SUB.w comWord_BlockStartX,D3
+  MOVE.w comWord_BlockStartX,D2 : SUB.w D0,D2 : MOVE.w D2,comWord_BlockStartX
   ADD.w D3,D2
   MOVE.w D2,comWord_BlockEndX
-  JSR JL_0_7A14
+  JSR JL_0_7A14 ; adjustBlockPosition_asm
 
   JL_0_29B0:
   ADDQ.l #1,comLong_BlockStartY
@@ -7466,7 +7520,7 @@ JL_0_2906:
   ADDQ.l #1,comLong_BlockEndY
   JL_0_29BC:
   ;----------------------------------
-
+  MOVE.l comPtr_CurrentSourceLine,a4
   MOVEA.l comPtr_Temp_TokenString2,A0
   MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
   CLR.w comWord_Column
@@ -7496,7 +7550,7 @@ JL_0_2906:
         MOVE.l d0,-(a7)
         MOVE.w comWord_ColumnsOffset,d0 : ADD.w visiblecolumns,d0
         MOVE.w d0,comWord_ColumnsOffset
-        MOVE.l (a7)+,d0
+        MOVE.l (a7)+,d0 
  'ld
   MOVE.w d0,comWord_Column
 
@@ -7517,15 +7571,13 @@ JL_0_2906:
   BRA.b JL_0_29DA
   JL_0_29E8:
 
-  JSR parse_line
-  JSR replaceCurrentLine
-  MOVEA.l comPtr_Temp_TokenString2,A2
-  JSR parse_line
+  JSR parse_line : JSR replaceCurrentLine
 
+  MOVEA.l comPtr_Temp_TokenString2,A2         ; tokenize and create a new source line
+  JSR parse_line
   MOVE.l D5,D0
   ADDI.w #$9,D0
   JSR AllocPoolMem
-
   MOVEA.l D0,A0
   MOVE.b D5,$8(A0)
   LEA $9(A0),A0
@@ -7545,25 +7597,19 @@ JL_0_2906:
   JL_0_2A32:
     MOVE.l A0,comPtr_LastSourceLine
     CLR.l (A0)
-
-
   JL_0_2A3A:
 
   MOVE.l A0,(A4)
   ADDQ.l #1,comLong_TotalLines
 ;  CLR.w comWord_Column
-  !regs2stack
   !basic
   Gosub movecursorlinedown
   Gosub _redraw
-  !asm
-  !stack2regs
-RTS
-
+Return
 
 .indent:
   If NOT pedconfig\auto_indent
-    log_Print{"no auto indent."}
+    ;log_Print{"no auto indent."}
     ped\ptrCurrentSourceData\Column = 0
   Else
     *currentLine = ped\ptrCurrentSourceData\CurrentSourceLine
@@ -7572,119 +7618,73 @@ RTS
       tmpColumn + 1
     Until Peek.b(*currentLine + 9 + tmpColumn) <> $20
     ped\ptrCurrentSourceData\Column = tmpColumn
-    log_Print{"indent: " + Str$(tmpColumn)}
+    ;log_Print{"indent: " + Str$(tmpColumn)}
   EndIf
 Return
 
-.insertreturn:                       ;return_key
-  !basic
-  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
+.insertreturn: 
+  USEPATH ped\ptrCurrentSourceData
+
+  If \BlockEndY <> $ffffFFFF
     ped\blockmarkRemovalMode = 2 : Gosub handle_blockmark
   EndIf
 
   sourceWindow\redrawFlag = True
-
-  !asm
-
-  MOVE.l comPtr_CurrentSourceLine,a4
-
-  MOVE.w comWord_QualifierStore,D0 : ANDI.w #$3,D0  ; SHIFT pressed as well ?
-  BEQ.w JL_0_2906                                   ; if not pressed, dont split current line at cursor pos
-
-  !basic
   Gosub cursor_off
+
+  log_Print{Hexw$(\QualifierStore)}     ; ToDo
+  If \QualifierStore AND $3 = 0         ; SHIFT pressed as well ?
+    log_Print{"split current line"}
+    Goto JL_0_2906                      ; if pressed, do notsplit current line at cursor pos!
+  EndIf
+ 
   *newLine.sourceLine = PED_CreateNewSourceLine{""}
   If *newLine = 0
     Pop If
     Goto memAlert_CloseSource
   EndIf
 
-  ped\ptrCurrentSourceData\SourceChanged = True
-  ped\ptrCurrentSourceData\TotalLines + 1
-  PED_UpdateBlockPosY{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine}
+  \SourceChanged = True
+  \TotalLines + 1
+  PED_UpdateBlockPosY{\DisplayLineOffset + \DisplayLine}
   Gosub indent
 
-  PutReg A0,*newLine
-  MOVE.l A0,-(a7)
-  !asm
-  MOVE.l (a7)+,A0
+  appendLine{\CurrentSourceLine,*newLine} : \CurrentSourceLine = *newLine
 
-  ;MOVE.w #$FFFF,comWord_SourceChanged
-  ;MOVE.l comLong_DisplayLineOffset,D0 : ADD.l comLong_DisplayLine,D0 : ADDQ.w #1,D0
-  ;JSR block_updatePosY
-  ;ADDQ.l #1,comLong_TotalLines
-  ;BSR.b indent
+  If \ColumnsOffset > 0
+    log_Print{"reset columnsoffset, redraw with offset"}
+    \ColumnsOffset = 0
+    Gosub redrawWithOffset
+  EndIf
 
-  MOVE.l (A4),D1
-  BNE.w JL_0_2AD0
-    MOVE.l A0,(A4)
-    MOVE.l A4,$4(A0)
-    MOVE.l A0,comPtr_LastSourceLine
-    BRA.w JL_0_2ADE
-  JL_0_2AD0:
-    MOVEA.l D1,A1
-    MOVE.l A0,$4(A1)
-    MOVE.l A0,(A4)
-    MOVE.l A1,(A0)
-    MOVE.l A4,$4(A0)
-  JL_0_2ADE:
-  MOVE.l A0,comPtr_CurrentSourceLine
-
-  MOVE.w comWord_ColumnsOffset,D0
-  BEQ.w JL_0_2AF6
-    CLR.w comWord_ColumnsOffset
-    JSR JL_0_7962_bas                        ;horiz scroll
-  JL_0_2AF6:
-
-  !basic
   Gosub update_horizscroller
-  !asm
-  MOVE.l comLong_DisplayLine,D0 : ADDQ.w #1,D0 : ADD.w comWord_BoundLinesY,D0
-  CMP.l viewablelines,D0
-  BCS.w JL_0_2B6C
-    ADDQ.l #1,comLong_DisplayLineOffset
 
-    MOVE.l viewablelines,-(A7)
-    MOVE.l comLong_DisplayLine,D0 : ADDQ.l #1,D0 : MOVE.l D0,viewablelines
-    !basic
-    PED_ScrollVertical{#SCROLL_UP}
-    !asm
-    MOVE.l (A7)+,viewablelines
+  If Peek.l(?viewablelines) <= \DisplayLine + 1 + Peek.w(?comWord_BoundLinesY)
+    log_Print{"scroll up"}
+        Gosub update_sourcewindow_bottom
+    ;\DisplayLineOffset + 1
 
-    MOVEM.w D0-D1,-(A7)
-    MOVEQ.l #$00,D0
-    MOVE.l comLong_DisplayLine,D1 : ADD.l comLong_DisplayLineOffset,D1
-    JSR checkCursorInBlockmark
-    MOVEM.w (A7)+,D0-D1
+    ;tmpViewableLines.l = Peek.l(?viewablelines)
+    ;Poke.l ?viewablelines, \DisplayLine + 1
+    ;PED_ScrollVertical{#SCROLL_UP}
+    ;Poke.l ?viewablelines, tmpViewableLines
 
-    TST.b comByte_StateBlockMark
-    BNE.w JL_0_2B68
-      RTS
-    JL_0_2B68:
-    !basic
-    Gosub _redraw
-    !asm
-    RTS
-  JL_0_2B6C:
+    tmpCurrentColumn.w = 0
+    tmpCurrentLine.l = \DisplayLine + \DisplayLineOffset
+    !updateBlockMark{tmpCurrentLine, tmpCurrentColumn}
+    If \StateBlockMark Then Gosub _redraw
+  Else
+    log_Print{"scroll down"}
+    ;-- scroll rest of source downwarts
+    PED_ScrollVertical{#SCROLL_DOWN,\DisplayLine + 1}
+    Gosub update_sourcewindow_bottom
 
-  ;-- scroll rest of source downwarts
-  !basic
-  PED_ScrollVertical{#SCROLL_DOWN,ped\ptrCurrentSourceData\DisplayLine + 1}
-  Gosub update_sourcewindow_bottom
-  !asm
-
-  MOVEM.w D0-D1,-(A7)
-  MOVEQ.l #$00,D0
-  MOVE.l comLong_DisplayLine,D1 : ADD.l comLong_DisplayLineOffset,D1
-  JSR checkCursorInBlockmark
-  MOVEM.w (A7)+,D0-D1
-
-  TST.b comByte_StateBlockMark
-  BNE.w JL_0_2BA0
-    RTS
-  JL_0_2BA0:
-JMP JL_0_7962_bas
-
+    tmpCurrentColumn.w = 0
+    tmpCurrentLine.l = \DisplayLine + \DisplayLineOffset
+    !updateBlockMark{tmpCurrentLine, tmpCurrentColumn}
+    If \StateBlockMark Then Gosub redrawWithOffset
+  EndIf
+Return
 
 .menu_top:
   !asm
@@ -7707,21 +7707,20 @@ Return
 .gotoline: ;input: lineNum.l, clearColumn.b
   If lineNum.l < 0 Then lineNum = 0
   If lineNum > ped\ptrCurrentSourceData\TotalLines Then lineNum = ped\ptrCurrentSourceData\TotalLines - 1
-  log_Print{"gotoline: " + Str$(lineNum)}
 
   Gosub cursor_off
 
   ; same code as in routine mouseclick_in_source
   *tempLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
   tempY.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
-  log_Print{"current line is: " + Str$(tempY)}
+
   While lineNum <> tempY
     If lineNum > tempY
       If *tempLine\nextLine
         *tempLine = *tempLine\nextLine
         tempY + 1
       Else
-        error{"GotoLine: no next line!"}
+        log_Print{"GotoLine: no next line!",#log_error}
         lineNum = ped\ptrCurrentSourceData\TotalLines - 1
         tempY = lineNum
       EndIf
@@ -7733,9 +7732,7 @@ Return
   ped\ptrCurrentSourceData\CurrentSourceLine = *tempLine
 
   strline$ = PED_Detoke{*tempLine}
-  log_Print{"current sourceline : " + strline$}
-  log_Print{"currentline: " + Str$(tempY)}
-
+  
   ; TODO: move cursor to end of line
   ;TST.b newsyntax
   ;BEQ 'l10
@@ -7942,58 +7939,6 @@ Return
   log_Print{"*** compiler finished with return code [" + Hex$(compile_state) + "]"}
 Return
 
-
-;.moveToEndOfLine:
-;  MOVE.l d0,-(a7)
-;  MOVEA.l comPtr_Temp_TokenString1,A1
-;
-;  MOVE.l a4,a0
-;  LEA 9(a0),a0
-;  MOVEQ #-1,d1
-;
-;  syn1:
-;  TST.w comWord_DoTokenize
-;  BEQ.w JUMP_JL_0_5054
-;
-;    CMP.l a0,a5
-;    BEQ  JL_0_5050b
-;      ADDQ.l #1,d1
-;      MOVEQ.l #$00,D0
-;      MOVE.b (A0)+,D0
-;      BEQ.w JL_0_5050b                                    ; current character is NULL
-;      BMI.w JL_0_5040b                                    ; current character is beginning of a token
-;  MOVE.b D0,(A1)+
-;  BNE.b syn1
-;
-;  JL_0_5040b:
-;  LSL.w #8,D0
-;  MOVE.b (A0)+,D0
-;  MOVE.l d1,-(a7)
-;  JSR token_to_ascii
-;  MOVE.l (a7)+,d1
-;
-;  JL_0_5048b:
-;    ADDQ.l #1,d1
-;    MOVE.b (A3)+,(A1)+
-;  BNE.b JL_0_5048b
-;  SUBQ.w #1,A1
-;  SUBQ.l #1,d1
-;  BRA.b syn1
-;
-;  JL_0_5050b:
-;  SUBQ.l #1,d1
-;  CMP.w #MAX_Columns,d1
-;  BGE 'l1
-;    CMP.l #0,d1
-;    BGE 'l1
-;      MOVEQ #0,d1
-; 'l1
-;  MOVE.w d1,comWord_Column
-;  MOVE.l (a7)+,d0
-;RTS
-;
-;JUMP_JL_0_5054: JMP JL_0_5054
-
 .event_menu:
   log_Print{"selected menuitem: " + Hex$(_menuitem.l)}
 
@@ -8096,7 +8041,7 @@ Return
 
   Gosub calc_SourceWindowDimensions
   Gosub clear_sourcewindow
-  Gosub update_labelstuff
+  Gosub reset_labellist
   Gosub update_scrollers
 
   Gosub analyze_loadedsource
@@ -8415,39 +8360,6 @@ exit_copy:
   log_Print{"copy finished."}
 Return
 
-
-Macro updateBlockMark ;{d1 = currentLine, d0 = currentColumn}
-  SF comByte_StateBlockMark
-
-  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-    If (ped\ptrCurrentSourceData\BlockStartY < `1) OR (ped\ptrCurrentSourceData\BlockStartY = `1 AND ped\ptrCurrentSourceData\BlockStartX <= `2)
-      If (ped\ptrCurrentSourceData\BlockEndY > `1) OR (ped\ptrCurrentSourceData\BlockEndY = `1 AND ped\ptrCurrentSourceData\BlockEndX <= `2)
-        ST comByte_StateBlockMark
-      EndIf
-    EndIf
-  EndIf
-End Macro
-
-checkCursorInBlockmark:
-  SF comByte_StateBlockMark
-  TST.l comLong_BlockEndY
-  BMI.w JL_0_319A
-    CMP.l comLong_BlockStartY,D1
-    BLT.w JL_0_319A
-    BNE.w JL_0_317C
-      CMP.w comWord_BlockStartX,D0
-      BLT.w JL_0_319A
-    JL_0_317C:
-    CMP.l comLong_BlockEndY,D1
-    BGT.w JL_0_319A
-    BNE.w JL_0_3194
-      CMP.w comWord_BlockEndX,D0
-      BGT.w JL_0_319A
-    JL_0_3194:
-    ST comByte_StateBlockMark
- JL_0_319A:
-RTS
-
 .getCountOfMarkedLines:
   diff.l = 0
   log_Print{"BlockStartY: " + Str$(ped\ptrCurrentSourceData\BlockStartY)}
@@ -8528,12 +8440,12 @@ Return
     ped\ptrCurrentSourceData\DisplayLine = 0
 
     ped\ptrCurrentSourceData\Column = ped\ptrCurrentSourceData\BlockStartX
-    Gosub update_currsourceline_bas
+    Gosub update_currsourceline
     Gosub _redraw
     lineNum.l = ped\ptrCurrentSourceData\DisplayLineOffset : Gosub gotoline
   Else
     ped\ptrCurrentSourceData\Column = ped\ptrCurrentSourceData\BlockStartX
-    Gosub update_currsourceline_bas
+    Gosub update_currsourceline
     Gosub _redraw
   EndIf
 Return
@@ -8607,7 +8519,7 @@ Return
   JL_0_3510:
     MOVEA.l A5,A4
     MOVE.l A4,comPtr_CurrentSourceLine
-    JSR tokenizeAndInsertNewLine                   ; parse the newline in TokenString2 and allocate memory for it
+    JSR parseAndReplaceCurrentLine                   ; parse the newline in TokenString2 and allocate memory for it
   JL_0_351C:
 
   !basic
@@ -8617,11 +8529,11 @@ Return
     ped\ptrCurrentSourceData\DisplayLineOffset = ped\ptrCurrentSourceData\TotalLines
     ped\ptrCurrentSourceData\DisplayLine = 0
 
-    Gosub update_currsourceline_bas
+    Gosub update_currsourceline
     Gosub _redraw
     lineNum.l = ped\ptrCurrentSourceData\DisplayLineOffset : Gosub gotoline
   Else
-    Gosub update_currsourceline_bas
+    Gosub update_currsourceline
     Gosub _redraw
   EndIf
 Return
@@ -8780,32 +8692,6 @@ Return
   EndIf
 Return
 
-Function.s PED_DetokenizeText{strLine.s}
-SHARED ped,*PreProcessor
-
-  If ped\DoTokenize
-    MaxLen linebuff$ = 256
-    preproc_Detokenize{*PreProcessor,&strline$,&linebuff$,FLen(strline$)}
-    strLine = Peek.s(&linebuff$)
-  EndIf
-
-  Function Return strLine
-
-End Function
-
-Function.s PED_TokenizeText{strLine.s}
-SHARED ped,*PreProcessor
-
-  If ped\DoTokenize
-    MaxLen linebuff$ = 256
-    preproc_Tokenize{*PreProcessor,&replacedline.s,&linebuff$,FLen(replacedline)}
-    strLine.s = Peek.s(&linebuff$)
-  EndIf
-
-  Function Return strLine
-End Function
-
-
 .do_paste:
   log_Print{"pastemode " + Hexw$(ped\pasteMode)}
 
@@ -8942,7 +8828,7 @@ End Function
   If ped\pasteMode = 0 Then PED_CloseFile{ped\sourceFileHandle}
   Poke.b ?instring,0
 
-  Gosub update_currsourceline_bas
+  Gosub update_currsourceline
   Gosub update_statusarea
   Gosub reset_Blockflag
   Gosub _redraw
@@ -9044,31 +8930,29 @@ JL_0_3928:
   MOVE.l A0,$4(A4)
   MOVE.l A4,(A0)
   CMP.l comLong_BlockEndY,D6
-   BCC.w JL_0_3968
-  MOVEQ.l #$00,D0
-  MOVE.b $8(A5),D0
-  MOVE.w D0,D5
-  ADDI.w #$9,D0
-  MOVEQ.l #$01,D1
-  MOVEA.l _execbase,A6
-   JSR AllocPoolMem
-  MOVEA.l D0,A0
-  MOVEM.l A0/A5,-(A7)
-  LEA $9(A0),A0
-  LEA $9(A5),A5
-JL_0_395A:
-  MOVE.b (A5)+,(A0)+
-   BNE.b JL_0_395A
-  MOVEM.l (A7)+,A0/A5
-  ADDQ.l #1,D6
-  MOVEA.l (A5),A5
- BRA.b JL_0_3900
+  BCC.w JL_0_3968
+    MOVEQ.l #$00,D0
+    MOVE.b $8(A5),D0
+    MOVE.w D0,D5
+    ADDI.w #$9,D0
+    JSR AllocPoolMem
+    MOVEA.l D0,A0
+    MOVEM.l A0/A5,-(A7)
+    LEA $9(A0),A0
+    LEA $9(A5),A5
+    JL_0_395A:
+      MOVE.b (A5)+,(A0)+
+    BNE.b JL_0_395A
+    MOVEM.l (A7)+,A0/A5
+    ADDQ.l #1,D6
+    MOVEA.l (A5),A5
+  BRA.b JL_0_3900
+  JL_0_3968:
 
-JL_0_3968:
   MOVE.w comWord_DoTokenize,D0
-   BEQ.w JL_0_3976
-   JSR JL_0_553A
-JL_0_3976:
+  BEQ.w JL_0_3976
+    JSR JL_0_553A
+  JL_0_3976:
   MOVEA.l comPtr_Temp_TokenString2,A0
   MOVEQ.l #$00,D5
   MOVEQ.l #$00,D1
@@ -9092,7 +8976,7 @@ JL_0_399A:
  BRA.b JL_0_399A
 
 JL_0_39A8:
-   JSR tokenizeAndInsertNewLine
+   JSR parseAndReplaceCurrentLine
   MOVE.w comWord_ColumnsOffset,D0
   ADD.w comWord_Column,D0
   MOVE.l comLong_DisplayLineOffset,D7
@@ -9140,8 +9024,9 @@ JL_0_3A1C:
   ADD.l D1,comLong_BlockStartY
   ADD.l D1,comLong_BlockEndY
   JL_0_3A42:
-  JSR update_currsourceline
+  
   !basic
+  Gosub  update_currsourceline
   Gosub _redraw
   log_Print{"menu dublicate finished."}
 Return
@@ -9158,6 +9043,9 @@ Return
   Gosub _redraw
 Return
 
+
+.jump_to_keyword_bas:
+Return
 
 .jump_to_keyword:                    ; A0 = pointer zieltextzeile
   MOVEA.l comPtr_FirstSourceLine,A1
@@ -9243,7 +9131,7 @@ RTS
         If mousePos\textY => 0
           Gosub mouse_scrollno
         Else
-          If mousePos\Y <= \BoxTop
+          If mousePos\Y <= sourceWindow\BoxTop
             Gosub mouse_scrollup
           Else
             If Peek.l(?viewablelines) + ped\ptrCurrentSourceData\DisplayLineOffset <= ped\ptrCurrentSourceData\TotalLines
@@ -9354,7 +9242,7 @@ Return
       ped\ptrCurrentSourceData\BlockEndY   = ped\ptrCurrentSourceData\LinePosEndY
       Gosub AbsBlockDimensions_bas
 
-      ped\ptrCurrentSourceData\ColumnsOffset - \scrollSize
+      ped\ptrCurrentSourceData\ColumnsOffset - sourceWindow\scrollSize
       Gosub scroll_right
       Gosub reset_Blockflag
     EndIf
@@ -9371,7 +9259,7 @@ Return
         ped\ptrCurrentSourceData\BlockEndY   = ped\ptrCurrentSourceData\LinePosEndY
         Gosub AbsBlockDimensions_bas
 
-        ped\ptrCurrentSourceData\ColumnsOffset + \scrollSize
+        ped\ptrCurrentSourceData\ColumnsOffset + sourceWindow\scrollSize
         Gosub scroll_left
         Gosub reset_Blockflag
       EndIf
@@ -9928,383 +9816,236 @@ JMP tokenizeA1
 ;  BSR.b JL_0_454C
 ;
 ; JL_0_458E:
-;  JSR update_currsourceline
+;  Gosub update_currsourceline
 ;JMP _redraw
 ;
 JUMP_setpointer_to_normal:
 JMP setpointer_to_normal
 
-.update_labellist:  
-  !basic
-  If Peek.l(?comPtr_FirstSourceLine) = 0
-    Pop If
-    !asm
-    RTS
+
+.update_labellist:
+  CLR.w comWord_LabelCounter
+
+  *nextline.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
+  If *nextline = 0 Then Return
+ 
+  ;eclock_Open{1000}
+  ;eclock_Start{1000}
+
+  log_Print{"updating labellist, search string [" + LabelListSearchString + "]"}
+
+  ped\labelSearchMode = 0
+  If LabelListSearchString <> ""
+    InitArgParse LabelListSearchString
+    labelWord1.s = NextArg$
+    labelWord2.s = NextArg$
+    If labelWord2 <> ""
+      ped\labelSearchMode = 2
+    Else
+      If labelWord1 <> "" Then ped\labelSearchMode = 1
+    EndIf
   EndIf
 
-  InitArgParse search_label$
-  word1$ = NextArg$
-  word2$ = NextArg$
-  MOVE.b #0,searchmode
-  t.l = 0
-  If word2$<>""
-    t = 1
-    MOVE.b #1,searchmode
-  End If
-  search_label$ = search_label$
-  skip.l = 0
-  MOVE.l (a2),straddr
-  !asm
-  MOVEA.l comPtr_FirstSourceLine,A0
-  MOVE.l comLong_TotalLines,D0
-  MOVE.b comByte_LabelIdentifier,D1
-  MOVE.l A1,-(A7)
-  CLR.l numcount
-  TST.w comWord_LabelAll
-  BNE alladd
+  labelBreak.b = False
+  If Peek.w(?comWord_LabelAll) OR Peek.w(?comWord_LabelRemark) OR Peek.w(?comWord_LabelCase) 
+    Gosub LabelSpecial
+  Else
+    Gosub LabelStandard
+  EndIf
+  
+  log_Print{"updating labellist done"}
+  ;ttt.l = eclock_Stop{}
+  ;log_Print{"time elapsed " + Str$(ttt/1000.0)}
+  ;eclock_Close{}
+Return
 
-  TST.w comWord_LabelRemark
-  BNE click_remark
+.LabelStandard:
+  log_Print{"LabelStandard"}
 
-  ; loop the source
-  JL_0_467C:
-    LEA $9(A0),A1
+  While *nextline AND NOT labelBreak.b = False
+    tmpStr.s = Trim$(Peek.s(*nextline + 9))
+    found.b = False
 
-    JL_0_4680:
-    CMPI.b #$20,(A1)                   ;space
-    BNE.b 'no
-      ADDQ.l #1,a1
-      BRA JL_0_4680
-   'no
-    CMP.w ##TOKEN_Stop,(a1)
-    BEQ 'l20
-    CMP.w ##TOKEN_TRAP,(a1)
-    BEQ 'l20
-    CMP.w ##TOKEN_Macro,(a1)          ; added to show Macros in labellist  tomsmart1
-    BNE 'nomacro                      ; no, macro
-      MOVE.b #2,is_stat_func_macro      ; yes, set it to 2 to identify as macro
-      ADDQ.l #2,a1                      ; add 2 to position to get the macroname
-      BRA 'l20
-   'nomacro
-    CMP.w ##TOKEN_Statement,(a1)
-    BNE 'nex
-      ADDQ #3,a1
-      MOVE.l a1,-(a7)
-      !skipspace a1
-      CMP.w ##TOKEN_Return,(a1)
-      BNE 'ok
-        MOVE.l (a7)+,a1
-        BRA 'nex
-     'ok
-      MOVE.l (a7)+,a1
-      MOVE.b #1,is_stat_func_macro        ; set it to 1 to identify it as Statement or Function
-      BRA 'l20
-   'nex
-    CMP.w ##TOKEN_Function,(a1)
-    BNE 'nex2
-      ADDQ #3,a1
-      MOVE.l a1,-(a7)
-      !skipspace a1
-      CMP.w ##TOKEN_Return,(a1)
-      BNE 'ok
-        MOVE.l (a7)+,a1
-   'nex2
-    CMP.b (A1),D1
-    BNE.w JL_0_4696
+    If tmpStr <> ""
+      ;-- check for some tokens
+      Select Cvi(tmpStr)
+      Case #TOKEN_Stop : found.b = True
+      Case #TOKEN_TRAP : found.b = True
+      Case #TOKEN_Macro
+        tmpStr = UnRight$(tmpStr,2)
+        ped\LabelIsFunction = 2
+        found = True
 
-   'l10
-    ADDQ.l #1,a1
-    TST.b (a1)
-    BEQ JL_0_4696
+      Case #TOKEN_Statement
+        tmpStr = UnRight$(tmpStr,2)
+        tmpStr = Trim$(tmpStr)
+        If Left$(tmpStr,5) = "FAST "            ; skip token "FAST"
+          tmpStr = UnRight$(tmpStr,5)
+          tmpStr = Trim$(tmpStr)
+        EndIf
+        If Cvi(tmpStr) <> #TOKEN_Return 
+          ped\LabelIsFunction = 1
+          found = True
+        EndIf
 
-   'l20
-    !skipspace a1
-    CMP.b #".",-1(a1)
-    BNE 'noformat
+      Case #TOKEN_Function
+        tmpStr = UnRight$(tmpStr,2)
+        tmpStr = Trim$(tmpStr)
+        If Left$(tmpStr,5) = "FAST "            ; skip token "FAST"
+          tmpStr = UnRight$(tmpStr,5)
+          tmpStr = Trim$(tmpStr)
+        EndIf
+        If Cvi(tmpStr) <> #TOKEN_Return 
+          ped\LabelIsFunction = 1
+          found = True
+        EndIf
 
-   'lnewtype                       ; added to support correct display the name of newtype functions in the labellist  tomsmart1
-    ADDQ.l #1,a1                   ; pos +1
-    CMP.b #1,is_stat_func_macro    ; test if we have a Statement or Function
-    BNE 'nostatfunc                ; no, skip
-    CMP.b #" ",(a1)                ; yes, test if it a space
-    BNE 'lnewtype                  ; no, we have a newtype
-                                   ; yes, end of the functiontype
-   'nostatfunc
-    !skipspace a1
+      Default
+        If Peek.b(&tmpStr) = Peek.b(?comByte_LabelIdentifier)
+          found = True
+        EndIf
+      End Select
 
-   'noformat
-    CMP.l #"FAST",(a1)
-    BNE 'nf
-      CMP.b #" ",4(a1)
-      BNE 'nf
-        ADDQ.l #5,a1
-   'nf
-   !regs2stack
-   !basic
-   ped\LabelListChanged = True
-   !asm
-   !stack2regs
-   ;MOVE.w D1,comWord_LabelListChanged
-    JSR JL_0_46D6
+      If found
+        If Peek.w(?comWord_LabelCounter) >= #maxlabels 
+          log_Print{"maximum labels reached: " + Str$(#maxlabels),#log_warning}
+          labelBreak = True
+        Else
+          If Left$(tmpStr,1) = "."            
+            If ped\LabelIsFunction = 1    ; skip datatypes
+              While Left$(tmpStr,1)<>" "
+                tmpStr = UnRight$(tmpStr,1)
+              Wend
+            Else
+              tmpStr = UnRight$(tmpStr,1)
+            EndIf
+            tmpStr = Trim$(tmpStr)
+          Else
+            tmpStr = Trim$(tmpStr)
+          EndIf
+          Gosub label_add
+        EndIf
+      EndIf
+    EndIf
 
-    JL_0_4696:
-    MOVEA.l (A0),A0
-    SUBQ .l #1,d0
-  BNE JL_0_467C
+    *nextline = *nextline\nextLine
+  Wend
+Return
 
-  MOVEA.l (A7)+,A1
-RTS
+.LabelSpecial:
+  If Peek.w(?comWord_LabelAll) Then log_Print{"LabelAll"}
+  If Peek.w(?comWord_LabelRemark) Then log_Print{"LabelRemark"}
+  If Peek.w(?comWord_LabelCase) Then log_Print{"LabelCase"}  
 
-.alladd
-  MOVEM.l d2-d3/a2/a3,-(a7)
+  While *nextline AND NOT labelBreak
+    tmpStr.s = Trim$(Peek.s(*nextline + 9))
+    found.b = False
 
-  MOVE.l comLong_TotalLines,D0
+    If Peek.w(?comWord_LabelAll)
+      If tmpStr <> "" 
+        tmpStr = Trim$(tmpStr)
 
-.click_all
-  MOVE.b comByte_LabelIdentifier,D1
-  MOVEQ #0,d3
-  MOVE.l lowerchartable,a3
- 'l15
-  MOVE.b #";",d1
-  LEA $9(A0),A1
-  TST.b (a1)
-  BEQ 'nowrite
+        checkWord.w = Peek.w(&tmpStr)
+        If checkWord = #TOKEN_Stop OR checkWord = #TOKEN_TRAP
+          WZTags #WENTRYA_TextPen,2
+          labelCaption.s = " --Breakpoint---"
+          WZListAdd list_labels, labelCaption, 0, *nextline
+        Else      
+          found = True
+        EndIf
+      EndIf
+    EndIf
 
- 'lc1
-    CMP.b #" ",(a1)
-    BNE 'l1
-      ADDQ.l #1,a1
-  BRA 'lc1
- 'l1
+    If Peek.w(?comWord_LabelRemark)
+      CLR.b instring
+      found.b = False
+      Repeat
+        checkByte.b = Peek.b(&tmpStr)
+        If checkByte = $22 Then NOT.b instring
+        If checkByte = @";" AND (Peek.b(?instring) = 0) Then found = True
+        tmpStr = UnRight$(tmpStr,1)
+      Until found OR tmpStr = ""
+    EndIf
 
-  MOVE.l a1,straddr2
-  CMP.b #".",(a1)
-  BNE 'l1b
-    ADDQ.l #1,a1
-    ;BRA 'addlist
- 'l1b
+    If Peek.w(?comWord_LabelCase)
+      checkWord.w = Peek.w(&tmpStr)
+      If checkWord = #TOKEN_Case Then found = True
+    EndIf
 
-  CMP.w ##TOKEN_Stop,(a1)
-  BEQ 'addstop
-    CMP.w ##TOKEN_TRAP,(a1)
-    BEQ 'addstop
-      MOVE.l straddr,a2
-      CLR.l slen2
- 'cok
-  MOVE.b (a2)+,d2
-  BEQ 'addlist
- 'cf
-  MOVE.b (a1)+,d3
-  TST.b searchmode
-  BEQ 'nopat
-    BRA 'addlist
- 'nopat
+    If found 
+      If Peek.w(?comWord_LabelCounter) >= #maxlabels 
+        log_Print{"maximum labels reached: " + Str$(#maxlabels),#log_warning}
+        labelBreak = True
+      Else
+        Gosub label_add
+      EndIf
+    EndIf
 
-  TST.b d3
-  BEQ 'nowrite
-    TST.b casemode
-    BEQ 'lca1
-      MOVE.b 0(a3,d3.w),d3            ; convert character to lowercase
- 'lca1
+    *nextline = *nextline\nextLine
+  Wend
+Return
 
-  ADD.l #1,slen2
-  CMP.b d2,d3
-  BEQ 'cok
-  MOVE.l slen2,a2
-  SUBQ.l #1,a2
-  SUB.l a2,a1
-  CLR.l slen2
-  MOVE.l straddr,a2
-  BRA 'cok
- 'addstop
-  MOVEM.l a0/d0,-(a7)
-  MOVE.l a0,d0
-  !basic
-  s.l = PutD0
-  WZTags #WENTRYA_TextPen,2
-  s$ = " --Breakpoint---"
-  WZListAdd list_labels,s$,0,s
-  !asm
-  MOVEM.l (a7)+,d0/a0
-  BRA 'nowrite
- 'v1
- 'addlist
-  CMP.l #maxlabels,numcount          ;reduce this for slower computers
-  BGE 'nowrite
-  MOVEM.l a0/d0,-(a7)
-  MOVE.l a0,d0
-  !basic
-  s.l = PutD0
-  MOVE.l straddr2,a1
-  ;SUB.l slen2,a1
-  ;SUBQ.l #5,a1
-  MOVE.l a1,a0
-  MOVE.l expandstore,a1
-  JSR detokenize_line
-  MOVE.l expandstore,d0
-  i = PutD0
-  If i Then s$ = Peek$(i) : Else s$="!NULL!"
-   If t
-     If Instr(s$,word1$)
-         If Instr(s$,word2$)
-           WZListAdd list_labels,s$,-1,s
-           ADDQ.l #1,numcount
-         End If
-     End If
-   Else
-     WZListAdd list_labels,s$,-1,s
-     ADDQ.l #1,numcount
-   End If
 
-  ADDQ.w #1,comWord_LabelCounter
-  !asm
-  MOVEM.l (a7)+,d0/a0
- 'l15b
- 'nowrite
-  MOVEA.l (A0),A0
-  SUBQ.l #1,d0
-  BNE 'l15
- 'out
-  MOVEM.l (a7)+,d2-d3/a2/a3
-  MOVEA.l (A7)+,A1
-RTS
+.label_add:
+  If Left$(tmpStr,1)="." ;OR Left$(tmpStr,1)=";"
+    tmpStr = UnRight$(tmpStr,1)
+  EndIf
+  labelCaption.s = PED_DetokeText{tmpStr}
 
-.click_remark
-  CLR.b instring
-  MOVE.b #";",d1
-  LEA $9(A0),A1
-  TST.b (a1)
-  BEQ 'nowrite
-'l1  CMP.b #" ",(a1)
-  BNE 'l1b
-  ADDQ.l #1,a1
-  BRA 'l1
-'l1b
+  addok.b = False
 
-'co
-  CMP.b #".",(a1)
-  ;BEQ 'addlist
-  CMP.b #$22,(a1)
-  BNE 'is1
-  NOT.b instring
+  If ped\labelSearchMode = 2
+    If Instr(labelCaption, labelWord1) 
+      If Instr(labelCaption, labelWord2) Then addok = True
+    EndIf
+  Else 
+    If ped\labelSearchMode = 1
+      If Instr(labelCaption,LabelListSearchString) Then addok = True
+    Else
+      addok = True
+    EndIf
+  EndIf
+ 
+  If addok
+    ;log_Print{"adding <" + tmpStr + "> <" + labelCaption + "> data " + Hex$(*nextline)}
+  
+    Select ped\LabelIsFunction
+      Case 1 : ;labelCaption = UnRight$(labelCaption,2) 
+                WZTags #WENTRYA_TextPen,AB3Pen(#AB3_cfunction)
+      Case 2 : ;labelCaption = UnRight$(labelCaption,2) 
+                WZTags #WENTRYA_TextPen,AB3Pen(#AB3_cmacro)
+      Default : WZTags #WENTRYA_TextPen,1
+    End Select
 
- 'is1
-  CMP.w ##TOKEN_Stop,(a1)
-  BEQ 'addlist
-  CMP.w ##TOKEN_Case,(a1)
-  BNE 'l10
-  MOVE.l a0,-(a7)
-  MOVE.l straddr,a0
-  CMP.l #"Case",(a0)
-  BNE 'l10a
-  !basic
-  skip = 1
-  !asm
-  MOVE.l (a7)+,a0
-  ADDQ.l #3,a1
-  BRA 'addlist
- 'l10a
-  MOVE.l (a7)+,a0
- 'l10
-  CMP.b (a1),d1
-  BNE 'skip
- 'l5
-  ADDQ.l #1,a1
-  TST.b instring
-  BNE 'nowrite
-  TST.b (a1)
-  BEQ 'nowrite
-  CMP.b #".",(a1)
-  BEQ 'nowrite
- 'l1s
-  CMP.b #" ",(a1)
-  BNE 'l1bs
-  ADDQ.l #1,a1
-  BRA 'l1s
- 'l1bs
- 'addlist
-  CMP.l #maxlabels,numcount          ;reduce this for slow computer
-  BGE 'out
-  !regs2stack
-  !basic
-  ped\LabelListChanged = True
-  !asm
-  !stack2regs
-  ;MOVE.w D1,comWord_LabelListChanged
-  JSR JL_0_46D6                      ;remarklistadd
+    WZListAdd list_labels,labelCaption,pedconfig\sort_labels,*nextline
+    ADDQ.w #1,comWord_LabelCounter
+    ped\LabelListChanged = True
+  EndIf
 
- 'skip
-  TST.b (a1)+
-  BNE 'co
- 'nowrite
-  MOVEA.l (A0),A0
-  SUBQ.l #1,d0
-  BNE click_remark
- 'out
-  MOVEA.l (A7)+,A1
-RTS
+  ped\LabelIsFunction = 0
+Return
+
+
 
 .free_labellist:
   WZListRemove list_labels
+
   CLR.w comWord_LabelCounter
+  CLR.l comLong_Label1VisableItem                        ; added to clear all old list datas  tomsmart1
+  LabelList_FirstVisableItemNumber = 0
+  LabelList_PreSelectItemNumber = -1
 Return
 
-;JL_0_46CC:
-;  MOVE.w #$FFFF,comWord_LabelListChanged
-;RTS
 
-;.oldlistadd:
-;  MOVEM.l D0-D1/A1-A2,-(A7)
-;  MOVEQ.l #$08,D0
-;  MOVE.l #$10000,D1
-;  MOVEA.l _execbase,A6
-;  MOVE.l A0,-(A7)
-;  !newalloc
-;  TST.l D0
-;  BEQ.w memAlert_CloseSource
-;
-;  MOVEA.l (A7)+,A0
-;  MOVEA.l D0,A2
-;  MOVE.w comWord_LabelCounter,D1
-;  BEQ.w JL_0_4714
-;
-;  MOVEA.l comPtr_LabelList,A1
-;  SUBQ.w #2,D1
-;  BMI.w JL_0_470E
-;
-;  JL_0_4708:
-;    MOVEA.l (A1),A1
-;  DBF D1,JL_0_4708
-;
-;  JL_0_470E:
-;  MOVE.l A2,(A1)
-;  BRA.w JL_0_471A
-;
-;  JL_0_4714:
-;  MOVE.l A2,comPtr_LabelList
-;
-;  JL_0_471A:
-;  MOVE.l A0,$4(A2)
-;  ADDQ.w #1,comWord_LabelCounter
-;
-;  MOVEM.l (A7)+,D0-D1/A1-A2
-;RTS
-;
-;JL_0_472A:
-;  MOVE.w #$FFFF,comWord_LabelListChanged
-;RTS
+.reset_labellist:
+  log_Print{"resetting labellist?"}
 
-
-.update_labelstuff:
-  If Peek.b(?comByte_LabelIdentifier) <> $FF
-    Gosub free_labellist
-    !asm
-    JSR update_labellist
-    !basic
-    ped\LabelListChanged = False
-  EndIf
+  Gosub free_labellist
+  Gosub update_labellist
+  ped\LabelListChanged = False
 
 .redraw_labellist:
+  log_Print{"redrawing labellist..."}
   If Peek.w(?comWord_LabelCounter) <= Peek.l(?comLong_Label1VisableItem)
     Poke.l ?comLong_Label1VisableItem,0
   EndIf
@@ -10320,7 +10061,6 @@ Return
 
 
 .AllocPoolMem:
- 
   !basic
   tmpMemSize.l = PutD0
   ptr_MemAlloc.l = PED_AllocMem{tmpMemSize}
@@ -10789,39 +10529,6 @@ RTS
 RTS
 
 
-Function.s PED_DetokenizeText2{ptrOrgString.l}
-
-  MaxLen linebuffer.s = 256
-  _strLen.w = Len(Peek.s(ptrOrgString))
-  If _strLen
-    If Peek.b(?keepstring) = 0 Then Poke.b ?instring2, 0
-
-    If Peek.b(?noDetokenizing)
-      linebuffer = Peek.s(ptrOrgString)
-    Else
-      For i.w = 0 To _strLen - 1
-        curChar.b  = Peek.b(ptrOrgString + i)
-        If curChar = $22 Then NOT.b instring2
-        If Peek.b(?instring2) OR curChar => 0
-          linebuffer + Chr$(curChar)
-        Else
-          If curChar < 0
-            i + 1
-            _token.w = curChar LSL 8 + Peek.b(ptrOrgString + i)
-            _tokname.s = PED_GetTokenName{_token}
-            For j.b = 1 To FLen(_tokname)
-              linebuffer + Chr$(Peek.b(&_tokname + j) BitSet 7)
-            Next j
-          EndIf
-        EndIf
-      Next i
-    EndIf
-  EndIf
-
-  Function Return linebuffer
-
-End Function
-
 .JL_0_5060:
   TST.b keepstring
   BNE 'l1
@@ -11044,28 +10751,27 @@ Return
 JL_0_5474:
   CMPI.l #$1,comLong_TotalLines
   BEQ.w JL_0_54EA
-    SUBQ.l #1,comLong_TotalLines
-    MOVE.l (A5),D1
-    MOVE.l $4(A5),D2
-    BEQ.w JL_0_54A4
-      TST.l D1
-      BEQ.w JL_0_54B4
-        MOVEA.l D2,A0
-        MOVE.l D1,(A0)
-        MOVEA.l D1,A0
-        MOVE.l D2,$4(A0)
-        BRA.w JL_0_54BE
-    JL_0_54A4:
-      MOVE.l D1,comPtr_FirstSourceLine
+
+  SUBQ.l #1,comLong_TotalLines
+  MOVE.l (A5),D1
+  MOVE.l $4(A5),D2
+  BEQ.w JL_0_54A4
+    TST.l D1
+    BEQ.w JL_0_54B4
+      MOVEA.l D2,A0
+      MOVE.l D1,(A0)
       MOVEA.l D1,A0
-      CLR.l $4(A0)
+      MOVE.l D2,$4(A0)
       BRA.w JL_0_54BE
-
     JL_0_54B4:
-    MOVE.l D2,comPtr_LastSourceLine
-    MOVEA.l D2,A0
-    CLR.l (A0)
-
+      MOVE.l D2,comPtr_LastSourceLine
+      MOVEA.l D2,A0
+      CLR.l (A0)
+      BRA.w JL_0_54BE
+  JL_0_54A4:
+    MOVE.l D1,comPtr_FirstSourceLine
+    MOVEA.l D1,A0
+    CLR.l $4(A0)
   JL_0_54BE:
 
   MOVEA.l A5,A1
@@ -11097,7 +10803,6 @@ JL_0_54EA:
   !asm
 BRA.b JL_0_54BE
 
-
 .move_to_blockstarty:                ; in A4: currentsourceline, out A5: adjusted currentsourceline
   MOVEA.l A4,A5
 
@@ -11105,15 +10810,12 @@ BRA.b JL_0_54BE
   CMP.l comLong_BlockStartY,D6
   BEQ.w JL_0_5522
     BCC.w JL_0_5516
-
-    JL_0_5508:
-      MOVEA.l (A5),A5
-      ADDQ.l #1,D6
-    CMP.l comLong_BlockStartY,D6
-    BNE.b JL_0_5508
-
-    BRA.w JL_0_5522
-
+      JL_0_5508:
+        MOVEA.l (A5),A5
+        ADDQ.l #1,D6
+      CMP.l comLong_BlockStartY,D6
+      BNE.b JL_0_5508
+      BRA.w JL_0_5522
     JL_0_5516:
       MOVEA.l $4(A5),A5
       SUBQ.l #1,D6
@@ -11178,7 +10880,7 @@ JL_0_5556:
   JL_0_5574:
 RTS
 
-.update_currsourceline_bas:
+.update_currsourceline:
   *currentSourceLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
   currentLine.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
   If currentLine > 0
@@ -11191,28 +10893,7 @@ RTS
   ped\ptrCurrentSourceData\CurrentSourceLine = *currentSourceLine
 Return
 
-.update_currsourceline:
-  MOVEA.l comPtr_FirstSourceLine,A4
-  MOVE.l comLong_DisplayLineOffset,D0 : ADD.l comLong_DisplayLine,D0
-  BEQ.w JL_0_558E
-  ;SUBQ.l #1,D0
-  JL_0_5588:
-    MOVEA.l (A4),A4
-    SUBQ.l #1,d0
-    ; DBF D0,JL_0_5588
-  BNE JL_0_5588
-
-  JL_0_558E:
-  MOVE.l A4,comPtr_CurrentSourceLine
-RTS
-
-JL_0_5596:
-  MOVE.l A3,D5
-  SUB.l comPtr_Temp_TokenString1,D5
-  ADDQ.l #1,D5                                      ; get length of TokenString1
-BRA.w replaceCurrentLine
-
-.tokenizeAndInsertNewLine:
+.parseAndReplaceCurrentLine:
   MOVEA.l comPtr_Temp_TokenString2,A2
   JSR parse_line
 
@@ -11383,11 +11064,10 @@ RTS
   ped\ptrCurrentSourceData\TextBufferOffset = 0
   ped\ptrCurrentSourceData\ColumnsOffsetTmp = ped\ptrCurrentSourceData\ColumnsOffset
 
-  sourceWindow\clearEndOfLine = True
-  
   Gosub cursor_off
 
   ;-- draw all the lines
+
   For cl.l = 1 To Peek.l(?viewablelines)
     ped\ptrCurrentSourceData\CurrentSourceLine = *tmpcsl
 
@@ -11417,28 +11097,27 @@ RTS
 ;    CEND
 
     If ped\ptrCurrentSourceData\CurrentSourceLine
-      PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
+      PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize),True}
       *tmpcsl = *tmpcsl\nextLine
       Gosub increase_DisplayLine
-      ;log_Print{"next line at displayline " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
-    Else
-      ;log_Print{"no next line at displayline " + Str$(cl)}
+      ;log_Print{"redraw: next line at displayline " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
+    ;Else
+      ;log_Print{"redraw: no next line at displayline " + Str$(cl)}
     EndIf
-  Next cl
+  Next cl 
 
   ; -- better refresh: clear bottom
-  sourceWindow\clearEndOfLine = False ; for function PED_PrintCurrentSourceLine()
   USEPATH sourceWindow
   If ped\ptrCurrentSourceData\DisplayLine < Peek.l(?viewablelines)
-    ;log_Print{"redraw: clear rest of window at displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine+1)}
+    log_Print{"redraw: clear rest of window at displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine+1)}
     SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
     rectx.w = \BoxLeft
-    recty.w = \BoxTop + (ped\ptrCurrentSourceData\DisplayLine+1) * \font\tf_YSize
+    recty.w = \BoxTop + (ped\ptrCurrentSourceData\DisplayLine) * \font\tf_YSize
     rectw.w = \BoxWidth
     recth.w = \statusAreaY
     If (rectw => rectx) AND (recth => recty)
       RectFill_ \win\RPort, rectx, recty, rectw, recth
-      If pedconfig\linenumbers
+      If pedconfig\linenumbers 
         RectFill_ \win\RPort, 0, recty, rectx-3,recth
       EndIf
     Else
@@ -11603,7 +11282,7 @@ Return
     tmpDL - 1
   Wend
   ped\ptrCurrentSourceData\DisplayLine = tmpDL
-  PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
+  PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize), False}
   no_prev_line:
 
   Gosub restore_cursorposition
@@ -11630,7 +11309,7 @@ Return
     EndIf
     Gosub increase_DisplayLine
   Wend
-  PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
+  PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize), False}
   no_next_line:
 
   Gosub restore_cursorposition
@@ -12097,7 +11776,7 @@ Return
     !basic
     MOVE.l (a7)+,A0 : PutReg A0, *textaddr.l
     Poke.b ?keepstring, 1
-    PED_PrintSourceText{*textaddr.l, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, Peek.w(?comWord_DoTokenize)}
+    PED_PrintSourceText{*textaddr.l, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, Peek.w(?comWord_DoTokenize), False}
     Poke.b ?keepstring, 0
     PED_ProcessHighlighting{}
     !asm
@@ -12319,7 +11998,7 @@ Return
     ;JSR print_complete_line               ; inputs d0:x, d1:y, a0: text
     ;CLR.b keepstring
     Poke.b ?keepstring, 1
-    PED_PrintSourceText{*textaddr.l, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, Peek.w(?comWord_DoTokenize)}
+    PED_PrintSourceText{*textaddr.l, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, Peek.w(?comWord_DoTokenize), False}
     Poke.b ?keepstring, 0
     PED_ProcessHighlighting{}
     !asm
@@ -13318,19 +12997,18 @@ Return
   Gosub update_modifiermark
 Return
 
-JL_0_7962_bas:
-  !basic
+.redrawWithOffset:
+  log_Print{"redrawWithOffset"}
   Gosub store_cursorposition
-  log_Print{"JL_0_7962_bas"}
   ped\ptrCurrentSourceData\TextBufferOffset = 0
   ped\ptrCurrentSourceData\DisplayLine = 0
   ped\ptrCurrentSourceData\Column = 0
   ped\ptrCurrentSourceData\ColumnsOffsetTmp = 0
-  curline.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset + ped\ptrCurrentSourceData\ColumnsOffset
-  cury.w = 0
-  For v.l = Peek.l(?viewablelines) - 1 To 0 Step -1
-    ST noDetokenizing
+  
+  ST noDetokenizing
 
+  curline.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset + ped\ptrCurrentSourceData\ColumnsOffset
+  For curY.w = 0 To Peek.l(?viewablelines) - 1
     lineaddr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
     If Peek.b(lineaddr) <> 0
       tmpd2.l = 0
@@ -13340,25 +13018,25 @@ JL_0_7962_bas:
         EndIf
         tmpd2 = tmpd2 + 1
       Wend
+
+      Poke.b ?keepstring,1
+      PED_PrintSourceText{curline, 0, curY, Peek.w(?comWord_DoTokenize), False}
+      Poke.b ?keepstring,0
+
+      PED_ProcessHighlighting{}
     EndIf
 
-    Poke.b ?keepstring,1
-    PED_PrintSourceText{curline, 0, cury, Peek.w(?comWord_DoTokenize)}
-    Poke.b ?keepstring,0
-    PED_ProcessHighlighting{}
-    !asm
-    SF noDetokenizing
-    ;JSR process_highlighting
-    ADD.l #1,comLong_DisplayLine
-    ADD.w #MAX_Columns, comWord_TextBufferOffset
-    !basic
+    ped\ptrCurrentSourceData\DisplayLine + 1
+    ped\ptrCurrentSourceData\TextBufferOffset + #MAX_Columns
+
     curline = curline + #MAX_Columns
-    cury = cury + 1 ;\font\tf_YSize
-  Next v
+  Next curY
+
+  SF noDetokenizing
+   
   Gosub restore_cursorposition
   Gosub draw_block_after_refresh
-  !asm
-RTS
+Return
 
 
 Macro checkBeforeBlockStartX
@@ -13493,7 +13171,7 @@ RTS
   exit_eventloop.b = False
 
   While exit_eventloop = False
-    Gosub handle_blockmark      ; if new editmode, delete a marked block if inserchar or deletechar happens                                                                                                                                                 
+    ;Gosub handle_blockmark      ; if new editmode, delete a marked block if insertchar or deletechar happens                                                                                                                                            
     ;CLR.b blockmark_removal
     Gosub update_horizscroller
 ;    Gosub print_actualsourceline
@@ -14176,9 +13854,7 @@ Return
         Return
       EndIf
     EndIf
-    !asm
-    JSR JL_0_7962_bas ; horizontal scroll
-    !basic
+    Gosub redrawWithOffset ; horizontal scroll
   EndIf
   delete_mode = 0
 Return
@@ -14209,9 +13885,7 @@ Return
   EndIf
 
   If ped\ptrCurrentSourceData\ColumnsOffset <> oldColumnsOffset
-    !asm
-    Gosub JL_0_7962_bas
-    !basic
+    Gosub redrawWithOffset
   EndIf
 
   Gosub cursor_on
@@ -14767,11 +14441,11 @@ Return
       actualword$ = PED_GetWordAtPos{strline$, ped\ptrCurrentSourceData\Column,True}
       log_Print{"doubleclick on ==>" + actualword$}
       If WZ_CheckOpen{"WIN_LABELS"}
-        search_label$ = StripLead$(LCase$(actualword$),32)
-        If StrLeft(search_label$,1)="." Then search_label$ = StrRight(search_label$,-1)
+        LabelListSearchString = StripLead$(LCase$(actualword$),32)
+        If StrLeft(LabelListSearchString,1)="." Then LabelListSearchString = StrRight(LabelListSearchString,-1)
         Use Window WZID("WIN_LABELS")
-        WZPrint "STRING_LABEL",search_label$
-        Gosub update_labelstuff
+        WZPrint "STRING_LABEL",LabelListSearchString
+        Gosub reset_labellist
       EndIf
     Else
       exit_eventloop = True
@@ -14996,39 +14670,24 @@ Return
       Gosub _redraw
 
     Case $0e                        ; ctrl-n
-      a$ = "newtype ."
-      Gosub insertstring
-      !asm
-      JSR insertreturn
-      JSR insertreturn
-      !basic
-      a$ = "end newtype "
-      Gosub insertstring
+      a$ = "newtype ." : Gosub insertstring
+      Gosub insertreturn
+      Gosub insertreturn
+      a$ = "end newtype " : Gosub insertstring
 
     Case $06                        ; ctrl-f
-      a$ = "function.l { }"
-      Gosub insertstring
-      !asm
-      JSR insertreturn
-      JSR insertreturn
-      !basic
-      a$ = "function return 0"
-      Gosub insertstring
-      !asm
-      JSR insertreturn
-      !basic
-      a$ = "end function "
-      Gosub insertstring
+      a$ = "function.l { }" : Gosub insertstring
+      Gosub insertreturn
+      Gosub insertreturn
+      a$ = "function return 0" : Gosub insertstring
+      Gosub insertreturn
+      a$ = "end function " : Gosub insertstring
 
     Case $13                        ; ctrl-s
-      a$ = "statement { }"
-      Gosub insertstring
-      !asm
-      JSR insertreturn
-      JSR insertreturn
-      !basic
-      a$ = "end statement "
-      Gosub insertstring
+      a$ = "statement { }" : Gosub insertstring
+      Gosub insertreturn
+      Gosub insertreturn
+      a$ = "end statement " : Gosub insertstring
 
     Case $05                        ; ctrl-e
       a$ = "end if "
@@ -15160,10 +14819,7 @@ Return
 .do_VANILLAKEY_RETURN:
   log_Print{"RETURN"}
   Gosub close_popupwindow
-  !asm
-  JSR insertreturn
-  ;JSR immediate_syntaxhelp
-  !basic
+  Gosub insertreturn
 Return
 
 .do_VANILLAKEY_DELETE
@@ -15693,7 +15349,12 @@ Return
         If Peek.s(*fileEntry + 8 + $D4) = dos_FilePart{rememberfiles$(_rememberitem)}
           log_Print{"source already loaded, switching to that tab."}
           GetD0 *fileEntry : Gosub selectfile
-          Pop If : Pop Repeat : Return
+          dummy.l = ask{!TRANS{"The file ist already open. Do you want to reload it?"},!TRANS{"Yes|Cancel"},!TRANS{"Load File"}}
+          If dummy = 0 
+            Pop Repeat : Return
+          Else
+            Pop Repeat : Goto load_selected_file
+          EndIf
         EndIf
         *fileEntry = *fileEntry\nextEntry
       Until *fileEntry = 0
@@ -15709,6 +15370,7 @@ Return
   ;
   ; -- loading the selected source file
   ;
+  .load_selected_file:
   log_Print{"loading selected sourcefile"}
   ; TODO: refacoring of following code, is used more than one time (see menu_load)
   If ped\ptrCurrentSourceData\SourceChanged
@@ -17398,7 +17060,7 @@ RTS
   JSR gettype
   TST.l d0
   BNE 'found
-  JSR findvar
+    JSR findvar
  'found
   MOVE.l (a7)+,a2
   LEA typestr,a0
@@ -17602,22 +17264,22 @@ RTS
   !basic
   MOVE.l comPtr_VarBase,d0
   BEQ 'oldped
-  MOVE.l d0,a0
-  CMP.l #0,(a0)
-  BEQ 'oldped
-  *nt.l = PutD0:*nt = Peek.l(*nt):
-  fvar$ = Peek$(?typestr)
-  fvar$ = StripLead$(fvar$,@"*")
-  While *nt
-    a$ = Peek$(*nt+$13)
-    If a$ = fvar$
-      it.l = Peek.l(*nt+10)
-      If it
-        Poke$ ?typestr,Peek$(it+$b)
-      End If
-    End If
-    *nt = Peek.l(*nt)
-  Wend
+    MOVE.l d0,a0
+    CMP.l #0,(a0)
+    BEQ 'oldped
+      *nt.l = PutD0 : *nt = Peek.l(*nt)
+      fvar$ = Peek$(?typestr)
+      fvar$ = StripLead$(fvar$, @"*")
+      While *nt
+        a$ = Peek$(*nt + $13)
+        If a$ = fvar$
+          it.l = Peek.l(*nt + 10)
+          If it
+            Poke$ ?typestr, Peek$(it + $b)
+          End If
+        End If
+        *nt = Peek.l(*nt)
+      Wend
  'oldped
   !asm
 RTS
@@ -17975,16 +17637,16 @@ Return
     InitArgParse search_instruction$
     word1$ = NextArg$
     word2$ = NextArg$
-    numcount.l = 0
+    instruction_counter.l = 0
     If browse_instructions
       log_Print{"instruction browser: searching for <" + word1$ + "/" + word2$+ ">"}
       *token.tokendata = *tokenbase
       While *token
         token_name$ = Peek.s(&*token\dat)
-        If Instr(token_name$, word1$) AND numcount < #maxlabels
+        If Instr(token_name$, word1$) AND instruction_counter < #maxlabels
           token_help$ = Peek.s(&*token\dat + FLen(token_name$) + 1)
           If Instr(token_help$, word2$)
-            numcount = numcount + 1
+            instruction_counter = instruction_counter + 1
             WZ_AddRow{"INSTRUCTIONTABLE",token_name$, token_help$}
             If PED_CheckForClassicToken{*token\number} Then WZ_SetRowPen{"INSTRUCTIONTABLE",AB3Pen(#AB3_cclassic),0}
           EndIf
@@ -17999,9 +17661,9 @@ Return
       While token
         b$ = Peek$(token+13)
 ;        !cout{word1$,b$}
-        If Instr(b$,word1$) AND numcount<#maxlabels
+        If Instr(b$,word1$) AND instruction_counter<#maxlabels
           If Instr(b$,word2$)
-            numcount = numcount + 1
+            instruction_counter = instruction_counter + 1
             i = Peek.w(token+8)
             If i > 90 Then i = 90
             b$ = "!" + b$
@@ -18018,9 +17680,9 @@ Return
     If browse_includes
       ResetList HelpIndexCache()
       While NextItemFast(HelpIndexCache())
-        If Instr(HelpIndexCache()\name,word1$) AND numcount<#maxlabels
+        If Instr(HelpIndexCache()\name,word1$) AND instruction_counter<#maxlabels
           If Instr(HelpIndexCache()\name,word2$)
-            numcount = numcount+1
+            instruction_counter = instruction_counter+1
             WZ_AddRow{"INSTRUCTIONTABLE",HelpIndexCache()\name,HelpIndexCache()\help}
           End If
         End If
@@ -18423,7 +18085,7 @@ Return
     Select ped\newtype_mode
 
       Case 0 ; Constants
-        temp$ = WZ_GetCell{"TYPETABLE",WZ_Row{"TYPETABLE"},1} ;WZListString(lst2.List,WZInput)
+        temp$ = WZ_GetCell{"TYPETABLE",WZ_Row{"TYPETABLE"},1}
         typestr$ = temp$
         WZTags #WZRD_TEXTPEN,AB3Pen(#AB3_cnewtype)
         WZPrint "NEWTYPE_ENTRY",&typestr$
@@ -18431,7 +18093,7 @@ Return
       Default
         ;str2$ = "" : str2b$ = ""
         ;WZPrint "STRING2",&str2$
-        temp$ = WZ_GetCell{"TYPETABLE",WZ_Row{"TYPETABLE"},1} ;WZListString(lst2.List,WZInput)
+        temp$ = WZ_GetCell{"TYPETABLE",WZ_Row{"TYPETABLE"},1}
         c2$ = WZ_GetCell{"TYPETABLE",WZ_Row{"TYPETABLE"},2}
         If c2$<>"" Then c2$ = " ."+c2$
         c3$ = WZ_GetCell{"TYPETABLE",WZ_Row{"TYPETABLE"},3}
@@ -18566,7 +18228,7 @@ Return
               End If
             Else
               a$ = pos$(lev)
-              JSR newtype_listsubtype
+              Gosub newtype_listsubtype
             End If
             a$ = "" : pos$(lev+1) = ""
             For i = 1 To lev:
@@ -19082,7 +18744,7 @@ Return
       CloseWZWinWithMenu{"WIN_NEWTYPE"}
     EndIf
   End If
-
+ 
   log_Print{"opening/updating source window"}
   If sourceWindow\win <> 0
     ChangeWindowBox_ sourceWindow\win,sourceWindow\WinLeft,sourceWindow\WinTop,sourceWindow\WinWidth,sourceWindow\WinHeight
@@ -19091,7 +18753,6 @@ Return
     Gosub resize_sourcewindow
   Else
     Gosub open_sourcewindow
-    error{"open source window3"}
     If ped\errorCode = #PEDERROR_OPENWINDOW
       dummy.l = ask{!TRANS{"Unable to open window"},!TRANS{"Ok"},!TRANS{"Error"}}
       Pop If
@@ -19115,7 +18776,6 @@ Return
   Else
     Gosub activatesourcewindow
   EndIf
-  error{"source window done"}
 Return
 
 
@@ -19127,7 +18787,7 @@ Return
   LabelList_PreSelectItemNumber = -1                             ;added because we don't know what was the preselectitem  tomsmart1
   WZPrint "rem",Peek.w(?comWord_LabelRemark)
   WZPrint "all",Peek.w(?comWord_LabelAll)
-  WZPrint "STRING_LABEL",search_label$
+  WZPrint "STRING_LABEL",LabelListSearchString
   WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_labels,LabelList_FirstVisableItemNumber
   ;Gosub update_versiongadgets
 Return
@@ -19137,25 +18797,16 @@ Return
   Select pedMessage\_Class
     Case #IDCMP_INTUITICKS
       ;all activities of the window like mouse move
-
       ;only need this to auto update the listview by typ in the search string   tomsmart1
-      search_label$ = LCase$( WZGetString("STRING_LABEL") )
-      If search_label$<>old_search_label$
-        LabelList_FirstVisableItemNumber = 0
-        CLR.l comLong_Label1VisableItem
-        LabelList_PreSelectItemNumber = -1                       ; added to clear all old list datas  tomsmart1
-        LabelList_NewSelectItemNumber.l = 0
-        old_search_label$ = search_label$
-        Gosub free_labellist
-        !asm
-        JSR update_labellist
-        !basic
-        Gosub redraw_labellist
-        Poke$ ?comStr_LabelSearchString ,search_label$
-      End If
 
-    Case #IDCMP_RAWKEY
-       ;move_cursor{"LISTVIEW_LABELS",list_labels,LabelList_PreSelectItemNumber}
+      LabelListSearchString = LCase$( WZGetString("STRING_LABEL") )
+      If LabelListSearchString <> old_LabelListSearchString
+        old_LabelListSearchString = LabelListSearchString
+        LabelList_NewSelectItemNumber.l = 0
+        Gosub reset_labellist
+
+        Poke$ ?comStr_LabelSearchString ,LabelListSearchString
+      End If
 
     Case #IDCMP_VANILLAKEY:
       If EventCode = #VANILLAKEY_ESC Then Gosub close_label
@@ -19168,98 +18819,64 @@ Return
       Select LCase$(WZGadName)
 
         Case "string_label"
-          ; no needed becaus is handled in #IDCMP_INTUITICKS
+          ; no need because event is handled in #IDCMP_INTUITICKS
           ;Gosub activatesourcewindow                            ; replaced jsr by gosub to show that this is a BASIC subroutine  tomsmart1
-
-        Case "case"
-          search_label$ = "Case"
-          WZPrint "STRING_LABEL",search_label$
-          Poke.w ?comWord_LabelRemark,1
-          Poke.w ?comWord_LabelAll,0
-          WZPrint "rem",1
-          WZPrint "all",0
-          LabelList_FirstVisableItemNumber = 0
-          CLR.l comLong_Label1VisableItem                        ; added to clear all old list datas  tomsmart1
-          LabelList_PreSelectItemNumber = -1
-          Gosub free_labellist
-          !asm
-          JSR update_labellist
-          !basic
-          Gosub redraw_labellist
-          WZ_ActivateGadget{"STRING_LABEL"}
 
         Case "listview_labels"
           ; removed code that checked if the last and the new select item
           ; was the same because wizard.lib do it and by overwritable by doublellick  tomsmart1
           LabelList_PreSelectItemNumber = WZListNum("LISTVIEW_LABELS")
           LabelList_FirstVisableItemNumber = WZListPos("LISTVIEW_LABELS")
-          wzlistitem
           Poke.l ?comLong_Label1VisableItem,LabelList_FirstVisableItemNumber
           ;WZPrint "LISTVIEW_LABELS",-1,list_labels,LabelList_FirstVisableItemNumber
           Gosub activatesourcewindow
           Gosub storeline_bas
           lineaddress.l = WZListData (list_labels, WZInput)
-          log_Print{"jump to corresponding source line, itemnumber:"+ Str$(WZInput)}
+          log_Print{"jump to corresponding source line, (address: " + Hex$(lineaddress)+ ") itemnumber:"+ Str$(WZInput)}
+
           GetD0 lineaddress
           !asm
           MOVE.l comPtr_CurrentSourceLine,a4
           MOVE.l d0,a0
-          ;JSR storeline
           JSR jump_addhistory
           JSR jump_to_keyword
           !basic
-          GetReg d1,jumpresult.b
-          log_Print{"jump_to_keyword returned: " + Str$(jumpresult)}
-          ;Gosub cursor_on
+          GetReg d1,jumpresult.b : log_Print{"jump_to_keyword returned: " + Str$(jumpresult)}
+
+        Case "case"
+          Poke.w ?comWord_LabelCase,WZInput
+          Poke.w ?comWord_LabelRemark,0
+          Poke.w ?comWord_LabelAll,0
+          WZPrint "rem",0
+          WZPrint "all",0
+          Gosub reset_labellist
+          WZ_ActivateGadget{"STRING_LABEL"}
 
         Case "rem"
+          Poke.w ?comWord_LabelCase,0
           Poke.w ?comWord_LabelRemark,WZInput
           Poke.w ?comWord_LabelAll,0
+          WZPrint "case",0
           WZPrint "all",0
-          ;search_label$ = "":WZGadSet "STRING_LABEL",search_label$
-          LabelList_FirstVisableItemNumber = 0
-          CLR.l comLong_Label1VisableItem                        ; added to clear all old list datas  tomsmart1
-          LabelList_PreSelectItemNumber = -1
-          Gosub free_labellist
-          !asm
-          JSR update_labellist
-          !basic
-          Gosub redraw_labellist
+          Gosub reset_labellist
           WZ_ActivateGadget{"STRING_LABEL"}
 
         Case "all"
-          Poke.w ?comWord_LabelAll,WZInput
+          Poke.w ?comWord_LabelCase,0
           Poke.w ?comWord_LabelRemark,0
+          Poke.w ?comWord_LabelAll,WZInput
+          WZPrint "case",0
           WZPrint "rem",0
-          LabelList_FirstVisableItemNumber = 0
-          CLR.l comLong_Label1VisableItem                        ; added to clear all old list datas  tomsmart1
-          LabelList_PreSelectItemNumber = -1
-          Gosub free_labellist
-          !asm
-          JSR update_labellist
-          !basic
-          Gosub redraw_labellist
+          Gosub reset_labellist          
           WZ_ActivateGadget{"STRING_LABEL"}
 
         Case "clr"
-          search_label$ = ""
-          WZPrint "STRING_LABEL",search_label$
-          LabelList_FirstVisableItemNumber = 0
-          CLR.l comLong_Label1VisableItem                        ; added to clear all old list datas  tomsmart1
-          LabelList_PreSelectItemNumber = -1
-          Gosub free_labellist
-          !asm
-          JSR update_labellist
-          !basic
-          Gosub redraw_labellist
+          LabelListSearchString = ""
+          WZPrint "STRING_LABEL",LabelListSearchString
+          Gosub reset_labellist
           WZ_ActivateGadget{"STRING_LABEL"}
 
         Case "button_update_liblist"
-
-          ; MOVE.l comdata,D0   : *cd.l = PutD0
-          ; MOVE.l varbase,D0   : *vb.l = PutD0
-          ; MOVE.l instrbase,D0 : *intructionbase.l = PutD0
-          ; MOVE.l libpointer,D0: *librarybase.l = PutD0
           Gosub scan_source_for_used_libs
 
         Case "library_list"
@@ -19293,9 +18910,7 @@ Return
           EndIf
 
       End Select
-
   End Select
-  move_cursor{"LISTVIEW_LABELS",list_labels,LabelList_PreSelectItemNumber}
 Return
 
 .close_label:
@@ -19350,82 +18965,6 @@ Return
   End If
 Return
 
-
-JL_0_46D6:
-  MOVE.l d0,-(a7)
-  MOVEM.l a0-a1,-(a7)
-  MOVE.l a1,a0
-  CMP.b #".",-1(a0)
-  BEQ 'sk1
-    CMP.b #";",-1(a0)
-    BEQ 'sk1
-      SUBQ.l #1,a0
- 'sk1
-  MOVE.l expandstore,a1
-  JSR detokenize_line
-  MOVEM.l (a7)+,a0-a1
-  MOVE.l a0,d0
-  MOVE.l a1,temp
-  !basic
-  s = PutD0
-  MOVE.l expandstore,d0
-  i = PutD0
-  If i Then s$ = Peek$(i) : Else s$=""
-  If Instr(s$,"Stop") OR Instr(s$,"Trap")
-    MOVE.l temp,a0
-   'l1
-    MOVE.b (a0)+,d0
-    BEQ no_breakpoint
-      CMP.b #$80,d0
-      BNE 'l1
-        CMP.b #$ae,(a0)
-        BEQ 'l2
-          CMP.b #$2d,(a0)
-          BNE 'l1
-   'l2
-    WZTags #WENTRYA_TextPen,2
-    If pedconfig\sort_labels = -1
-      WZListAdd list_labels," --Breakpoint---",0,s
-    Else
-      WZListAdd list_labels," --Breakpoint---",2000,s
-    End If
-    ADDQ.w #1,comWord_LabelCounter
-    ADDQ.l #1,numcount
-    Goto nostr
-  End If
-
-  no_breakpoint:
-  Select Peek.b(?is_stat_func_macro)                                          ; replaced IF... with Select... to support Macros  tomsmart1
-    Case 1 : s$ = Mid$(s$,2) : WZTags #WENTRYA_TextPen,AB3Pen(#AB3_cfunction)
-    Case 2 : s$ = Mid$(s$,2) : WZTags #WENTRYA_TextPen,AB3Pen(#AB3_cmacro)
-   Default :                   WZTags #WENTRYA_TextPen,1
-  End Select
-
-  If t
-    If Instr(s$,word1$) OR skip = 1
-      If Instr(s$,word2$) OR skip = 1
-        WZListAdd list_labels,s$,pedconfig\sort_labels,s
-        ADDQ.w #1,comWord_LabelCounter
-        ADDQ.l #1,numcount
-        skip = 0
-      End If
-    End If
-  Else
-    If Instr(s$,search_label$) OR skip = 1
-      WZListAdd list_labels,s$,pedconfig\sort_labels,s
-      ADDQ.w #1,comWord_LabelCounter
-      ADDQ.l #1,numcount
-      skip = 0
-    End If
-  End If
-
-  nostr:
-  !asm
-  MOVE.l (a7)+,d0
-  CLR.b is_stat_func_macro
-RTS
-
-
 .storeline_bas:
   log_Print{"storeline"}
   If ped\ptrCurrentSourceData\KeyBeforeReturn = 0 Then Return
@@ -19468,7 +19007,7 @@ RTS
     ;!asm
     ;MOVEA.l comPtr_CurrentSourceLine,A2 : JSR print_sourceline
     ;!basic
-    PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize)}
+    PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize),False}
 
     If Peek.b(?comByte_StateBlockMark)
       log_Print{"storeline: redrawing blockmark"}
@@ -19603,7 +19142,6 @@ Return                                                                        ; 
         wpx.w = \win\RPort\cp_x + 1
         wpy.w = \win\RPort\cp_y - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2 - 1
         For wp.b = -4 To 4 Step 2
-          ;WritePixel_ \win\RPort,  wpx , wpy + wp
           Move_ \win\RPort, wpx, wpy + wp
           Draw_ \win\RPort, wpx + 2, wpy  + wp
         Next wp
@@ -19611,7 +19149,6 @@ Return                                                                        ; 
 
       ;SetDrMd_ \win\RPort, #JAM2
       xpos_text = xpos_text + #filenameoffs * \font\tf_XSize
-      log_Print{">> " + Hex$(*fileEntry) }
       *fileEntry = *fileEntry\nextEntry
     Until *fileEntry = 0
   EndIf
@@ -20129,7 +19666,7 @@ RTS
               Gosub cursor_off
               Gosub set_pointer_busy_bas
               Gosub menu_replaceall
-              Gosub update_currsourceline_bas
+              Gosub update_currsourceline
               Gosub _redraw
               Gosub cursor_on
               Gosub set_pointer_normal_bas
@@ -20673,27 +20210,17 @@ comLong_Label1VisableItem: Dc.l 0
 noDetokenizing:       Ds.w 1
 loadAsNew             Ds.w 1
 fontWidth             Ds.w 1
-foldnum               Ds.l 1
 typestr               Ds.b 80
-is_stat_func_macro    Ds.b 1                ; labellist identifier for statement, function or macro  tomsmart1 ; was isfunction
 keepstring            Ds.b 1
-;helpstring            Ds.b 260
-searchmode            Ds.w 1
-slen2                 Ds.l 1
-straddr2              Dc.l 0
-straddr               Dc.l 0
-numcount              Dc.l 0
 constantbase          Dc.l 0
 newtypebase           Dc.l 0
 newsyntax             Dc.l 0
-tokenCache              Ds.l 32769
+tokenCache            Ds.l 32769
 newted                Dc.l 0
 history               Ds.l 10
 tempbuf               Ds.b 260
 convert               Dc.b 0
 instru                Ds.w 1
 chartab               Ds.b 260      ;last
-lowerchartable        Ds.l 1
-casemode              Ds.w 1
 temp                  Ds.w 1
 deftypefound          Ds.w 1
