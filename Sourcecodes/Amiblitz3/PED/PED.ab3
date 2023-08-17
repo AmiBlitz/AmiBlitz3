@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2833
+; NumberOfBuilds  = 2856
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 7647
+; CursorLine      = 4372
 ; CursorColumn    = 1
-; LabelSearch     = "insertreturn"
+; LabelSearch     = "?textbuffer"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -108,7 +108,7 @@ DEBUG
 #USE_AREXX           = 1     ; include the arrexport?
 #hardfold            = 0     ; not working
 #filenamepos         = 1     ; startpos of filenames, was 27 honitos 20191123
-#filenameoffs        = 11    ; space betweeen filenames
+#bevelsize             = 11    ; space betweeen filenames
 
 #maxlabels           = 512
 #maxhistory          = 4*8
@@ -525,7 +525,6 @@ NEWTYPE.ped
 
   sourceFileHandle.l
   convert.b
-;  flag_tokenization.w
   DoTokenize.w
   amigaguide.b
   debugmode.b
@@ -1453,7 +1452,7 @@ Function.s PED_GetFirstTokenname{libnum.w}
 End Function
 
 
-Function.s PED_ParseCurrentSourceLine{strLine.s}
+Function.s PED_ParseText{strLine.s}
   GetReg D0,&strLine : MOVE.l D0,-(a7)
   !asm
   MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
@@ -1602,8 +1601,10 @@ SHARED ped,*PreProcessor
 
   If ped\DoTokenize
     MaxLen linebuff$ = 256
-    preproc_Tokenize{*PreProcessor,&replacedline.s,&linebuff$,FLen(replacedline)}
+    preproc_Tokenize{*PreProcessor,&strLine.s,&linebuff$,FLen(strLine)}
     strLine.s = Peek.s(&linebuff$)
+  Else
+    log_Print{"PED_TokenizeText: tokenization turned off"}
   EndIf
 
   Function Return strLine
@@ -1870,7 +1871,7 @@ End Statement
 Statement PED_PrintText{*textaddr.l, xPos.w, yPos.w, textlength.w, textcolor.w}
 SHARED pedconfig, sourceWindow, AB3RGB(), AB3Pen()
 
-  printtext.s = Peek.s(*textaddr)
+  printtext.s = Peeks$(*textaddr, textlength)
 
   ; -- clip text to visible columns
   If (textlength > sourceWindow\visibleColumns) Then textlength = sourceWindow\visibleColumns
@@ -2055,6 +2056,51 @@ USEPATH sourceWindow
   exit_print:
 End Statement
 
+Function PED_PrintChar{enteredChar.b}
+SHARED sourceWindow,ped,AB3Pen()
+USEPATH ped\ptrCurrentSourceData
+
+  currentColumn.w = \Column + \ColumnsOffset
+
+  ;-- write character to textbuffer
+  plineaddr.l = Peek.l(?textbufferaddr) + \TextBufferOffset + currentColumn
+  Poke.b plineaddr,enteredChar
+
+  ;-- check if cursor in block
+  If \BlockEndY <> $ffffFFFF
+    currentLine.l = \DisplayLine + \DisplayLineOffset
+    !updateBlockMark{currentLine, currentColumn}
+  EndIf
+
+  ; -- print entered character to source window
+  \ColumnsOffsetTmp
+
+  tposx.w = \Column
+  tposy.w = \DisplayLine
+  textaddr.l = &enteredChar ;?comByte_EnteredCharacter
+
+  If \StateBlockMark
+    log_Print{"cursor in block, routine called."}
+     ; --- print actual character with blockbackgroundcolor
+     SetBPen_ sourceWindow\win\RPort,3
+     PED_PrintText{&enteredChar,tposx,tposy,1,AB3Pen(#AB3_cother)}
+     SetBPen_ sourceWindow\win\RPort,AB3Pen(#AB3_cbackground)
+  Else 
+    If Peek.b(&enteredChar) > 0
+      ;log_Print{"Print ["  + Chr$(enteredChar) + "] at " + Str$(tposx) + ", " + Str$(tposy) + " - offset " + Str$(\ColumnsOffset)}
+      PED_PrintText{&enteredChar, tposx, tposy, 1, AB3Pen(#AB3_cother)}
+    Else
+      textaddr.l = &enteredChar
+      If Peek.w(?instru)
+        log_Print{"instru handling missing.",#log_warning}
+        textaddr = textaddr BitClr 7
+      Else
+        log_Print{"whats up?",#log_warning}
+      EndIf
+      PED_PrintText{textaddr,tposx,tposy,1,AB3Pen(#AB3_cclassic)}
+    EndIf
+  EndIf
+End Function
 
 
 
@@ -2216,11 +2262,11 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
 End Statement
 
 
-Statement PED_PrintSourceText{*textaddr.l, tposx.w, tposy.w, doTokenize.b, @clearEndOfLine.b}
+Statement PED_PrintSourceText{*textaddr.l, tposx.w, tposy.w, @clearEndOfLine.b}
 SHARED sourceWindow, ped, AB3Pen()
 
-  If doTokenize
-    PED_PrintTokenizedText{*textaddr, tposx,tposy}
+  If ped\DoTokenize
+    PED_PrintTokenizedText{*textaddr, tposx, tposy}
   Else
     PED_PrintTextStandard{*textaddr, tposx, tposy}
   EndIf
@@ -2257,23 +2303,23 @@ USEPATH sourceWindow
   lx.w = \BoxLeft - 3 - (FLen(linenum$) * \font\tf_XSize)
   ly.w = \BoxTop + ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize
 
-  SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+  SetAPen_ \win\RPort,AB3Pen(#AB3_screenfill)
   RectFill_ \win\RPort,0,ly,\BoxLeft,ly + \font\tf_YSize - 1
 
-  SetAPen_ \win\RPort,AB3Pen(#AB3_screenfill)
-  SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+  SetAPen_ \win\RPort,AB3Pen(#AB3_screenshine)
+  SetBPen_ \win\RPort,AB3Pen(#AB3_screenfill)
   Move_ \win\RPort,lx,ly + \font\tf_Baseline
   Text_ \win\RPort,&linenum$,FLen(linenum$)
 
   ;Move_ \win\RPort,0,ly; + \font\tf_Baseline
   ;Draw_ \win\RPort,\BoxLeft,ly
 
-  SetAPen_ \win\RPort,AB3Pen(#AB3_screentext)
+  SetAPen_ \win\RPort,AB3Pen(#AB3_screenback)
   Move_ \win\RPort,\BoxLeft-2,ly
   Draw_ \win\RPort,\BoxLeft-2,ly + \font\tf_YSize
 End Statement
 
-Statement PED_PrintCurrentSourceLine{doTokenize.b, @clearEndOfLine.b}
+Statement PED_PrintCurrentSourceLine{@clearEndOfLine.b}
 SHARED pedconfig, ped, sourceWindow, AB3Pen()
 
   If pedconfig\linenumbers Then PED_PrintLineNumber{}
@@ -2284,7 +2330,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
 
   If Peek.b(*sl + 9) <> 0   ; first character of text
     ped\ptrCurrentSourceData\ColumnsOffsetTmp = ped\ptrCurrentSourceData\ColumnsOffset
-    PED_PrintSourceText{*sl + 9,0,ped\ptrCurrentSourceData\DisplayLine, doTokenize, clearEndOfLine}
+    PED_PrintSourceText{*sl + 9,0,ped\ptrCurrentSourceData\DisplayLine, clearEndOfLine}
   Else
     USEPATH sourceWindow
     SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
@@ -2856,10 +2902,12 @@ Function.s check_constructs{*currentline.sourceLine}    ; fixed this function  t
   Function Return construct
 End Function
 
-Function.w preparseline{columnpos.w,lineaddr.l,auto_format.b,correct_funcnames.b}
-  SHARED operators$(),num_operators
+Function.w PED_PreparseTextLine{lineaddr.l}
+  SHARED ped, pedconfig, operators$(),num_operators
 
-  ; clear highlight info but dont trash strings
+  columnpos.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
+
+  ;--  clear highlight info but dont trash strings
   ;If (lineaddr MOD 2) <> 0 Then !cout{"alert: odd address " + Hex$(lineaddr)}
   If (lineaddr & $1) <> 0 Then !cout{"alert: odd address " + Hex$(lineaddr)}
   nostring.b = 0
@@ -2883,7 +2931,10 @@ Function.w preparseline{columnpos.w,lineaddr.l,auto_format.b,correct_funcnames.b
   ; -- checking if editing a comment
   test_semi$ = StripLead$(strg$,@" ")
   kommata.w  = Instr(test_semi$,";")
-  If kommata AND (kommata < columnpos) Then Function Return columnpos
+  If kommata AND (kommata < columnpos) 
+    ped\ptrCurrentSourceData\Column = columnpos - ped\ptrCurrentSourceData\ColumnsOffset
+    Function Return columnpos
+  EndIf 
 
   len_strg.w = StrLen(StripTrail$(strg$,@" ") )
 
@@ -2891,7 +2942,7 @@ Function.w preparseline{columnpos.w,lineaddr.l,auto_format.b,correct_funcnames.b
 
   ; --
   ; -- replace lower written functionames with correct cases
-  If correct_funcnames
+  If pedconfig\correct_functions
     correctpos.w = 0                                               ; added to make a test of the complete line and begin at position 0  tomsmart1
     Repeat                                                         ; added loop to test the complete line  tomsmart1
       correctklammer.w = 0                                         ; added to clear it every loop entry and renamed it to make it unique  tomsmart1
@@ -2924,7 +2975,7 @@ Function.w preparseline{columnpos.w,lineaddr.l,auto_format.b,correct_funcnames.b
   EndIf 
 
   ; structurization of source
-  If auto_format
+  If pedconfig\auto_format
     neustrg$ = ""
     make_struct.b = On
     For j.w = 1 To len_strg
@@ -3011,6 +3062,7 @@ Function.w preparseline{columnpos.w,lineaddr.l,auto_format.b,correct_funcnames.b
   EndIf
 
   ; --- return new cursorposition if something as changed
+  ped\ptrCurrentSourceData\Column = columnpos - ped\ptrCurrentSourceData\ColumnsOffset
   Function Return columnpos
 End Function
 
@@ -3545,12 +3597,10 @@ SHARED ped, pedconfig
     If fext = "bb2" OR fext = "ab2" OR fext = "ab3" OR fext = "bb"
       log_Print{"activating tokenization"}
       ped\DoTokenize = $FFFF
-;      ped\flag_tokenization = $FFFF
     Else
 ;      If fext = "txt" OR fext = "guide"
         log_Print{"deactivating tokenization"}
         ped\DoTokenize = False
-;        ped\flag_tokenization = False
         If fext = "guide" Then ped\amigaguide = True
 ;      EndIf
     EndIf
@@ -4187,7 +4237,7 @@ If *tokenbase = 0
 Else
   ped\DoTokenize = $ffff
 EndIf
-Poke.w ?comWord_DoTokenize,ped\DoTokenize
+Poke.w ?comWord_DoTokenize, ped\DoTokenize
 
 ; --
 ; -- add the source history to the menu
@@ -4383,33 +4433,26 @@ End
 
       ; --- get address of actual source line ---
       sourceWindow\lastEditedLine = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
-
       ped\ptrCurrentSourceData\SourceChanged = $FFFF
 
-      lineaddr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
-
-      ; --- store cursor column position ---
-      columnpos.w =  ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
-
-
       ; --- format source line and get new column position ---
-      newcolumnpos.w = preparseline{columnpos, lineaddr, pedconfig\auto_format, pedconfig\correct_functions}
-      ped\ptrCurrentSourceData\Column = newcolumnpos - ped\ptrCurrentSourceData\ColumnsOffset
-      ;old_LabelListSearchString = "|"  ;              WHY ?
-      Gosub cursor_off
-      !asm
-
+      lineaddr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
+      PED_PreparseTextLine{lineaddr}
+      
       ; -- parse the current line
-      MOVEA.l comPtr_CurrentSourceLine,A4
-      MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
-      JSR parse_line
+      newline$ = Peeks$(lineaddr,#MAX_Columns-1)
+      newline$ = PED_ParseText{newline$}
+      newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+      *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+      PED_ReplaceCurrentSourceLine{*newLine}
 
       ; --- draw block mark if existing
+      Gosub cursor_off      
   ;    SF comByte_StateBlockMark
   ;    TST.l comLong_BlockEndY
   ;    BMI.w exit_updateblock
   ;      MOVEM.l D0-D3/A0-A2,-(A7)
-  ;      MOVE.l comLong_DisplayLine,D1 : ADD.l comLong_DisplayLineOffset,D1
+  ;      MOVE.l comLong_DisplayLine,D1 : ADD.l comLong_DisplayLineOffset,D1 
   ;      CMP.l comLong_BlockStartY,D1
   ;      BLT.w JL_0_C66
   ;        CMP.l comLong_BlockEndY,D1
@@ -4435,17 +4478,7 @@ End
   ;      MOVEM.l (A7)+,D0-D3/A0-A2
   ;    exit_updateblock:
 
-      JSR replaceCurrentLine  ; insert new parsed line into source
-  ;
-  ;    MOVE.w comWord_DoTokenize,D0
-  ;    BEQ.w JL_0_CC6
-  ;      MOVEA.l comPtr_CurrentSourceLine,A2
-  ;      JSR print_sourceline
-      !basic
-      If Peek.w(?comWord_DoTokenize)
-        PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize), False}
-      EndIf
-      !asm
+      If ped\DoTokenize Then PED_PrintCurrentSourceLine{False}
   ;
   ;      TST.b comByte_StateBlockMark
   ;      BEQ.w JL_0_CC6
@@ -4464,8 +4497,7 @@ End
   ;        SUB.l comLong_DisplayLineOffset,D1
   ;        JSR _redrawBlock
   ;        MOVEM.l (A7)+,D0-D3/D7/A0-A2
-      JL_0_CC6:
-      !basic
+  ;    JL_0_CC6:
     EndIf
 
     ; -- check if an executable is running and prevent IDE from doing things
@@ -4475,7 +4507,7 @@ End
         Gosub check_panic
       EndIf
     EndIf
-
+ 
     If NOT skip_update
       sourceWindow\redrawFlag = False
       If exit_loop_class.b = -3 Then sourceWindow\redrawFlag = True
@@ -5757,7 +5789,6 @@ Return
   log_Print{"... file " + loadsourcefilename + " opened with handle " + Hex$(ped\sourceFileHandle)}
 
   Poke.w ?comWord_DoTokenize, ped\DoTokenize
-;  Poke.w ?flag_tokenization, ped\flag_tokenization
   Poke.b ?convert, ped\convert
 
   log_Print{"loading file to cache"}
@@ -5950,7 +5981,7 @@ Return
   ;sourceWindow\Title = ""
   If ped\currentFile = ""
     sourceWindow\Title = "unnamed"
-    If pedconfig\smart_tokenization Then Poke.w ?comWord_DoTokenize,$FFFF
+    If pedconfig\smart_tokenization Then ped\DoTokenize = $FFFF
   Else
     sourceWindow\Title = ped\currentFile + " (" + ped\currentDir + ")"
 
@@ -5959,14 +5990,15 @@ Return
     log_Print{"checking file extention of loaded file: " + fext$}
     If fext$ = "bb2" OR fext$ = "ab2" OR fext$ = "ab3" OR fext$ = "bb"
       log_Print{"activating tokenization"}
-      Poke.w ?comWord_DoTokenize, $FFFF
+      ped\DoTokenize = $FFFF
     EndIf
     If fext$ = "txt" OR fext$ = "guide"
       log_Print{"deactivating tokenization"}
-      Poke.w ?comWord_DoTokenize, 0
+      ped\DoTokenize = 0
       If fext$ = "guide" Then ped\amigaguide = True
     EndIf
   EndIf
+  Poke.w ?comWord_DoTokenize, ped\DoTokenize
 
   SetWindowTitles_ sourceWindow\win, &sourceWindow\Title, -1
 
@@ -6159,7 +6191,7 @@ Return
     If ped\ptrCurrentSourceData\TotalLines > 0
       *tempLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
 
-      If Peek.w(?comWord_DoTokenize) <> 0
+      If ped\DoTokenize <> 0
         log_Print{"write as text: writing detokenized file"}
 
         ;-- detokenize and write to file
@@ -6226,7 +6258,7 @@ Return
       baseptr.l = *tempLine + 9
       linelength.l = *tempLine\strLength
 
-      If Peek.w(?comWord_DoTokenize) = 0
+      If ped\DoTokenize = 0
         strLine$ = Peeks$(baseptr,linelength) + Chr$(10)
       Else
         strLine$ = Peeks$(baseptr,linelength)
@@ -6556,37 +6588,40 @@ Return
 
 
 .menu_blockcomment:
+  USEPATH ped\ptrCurrentSourceData
+
   log_Print{"menu blockcomment called."}
-  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
+
+  If \BlockEndY = $ffffFFFF
     log_Print{"no block selected."}
     Gosub set_pointer_normal_bas
     Pop If: Return
   EndIf
 
   Gosub update_currsourceline
-
-  ped\ptrCurrentSourceData\CurrentSourceLine = PED_GetBlockStartSourceLine{}
-  startY.l = ped\ptrCurrentSourceData\BlockStartY
+ 
+  \CurrentSourceLine = PED_GetBlockStartSourceLine{}
+  startY.l = \BlockStartY
   log_Print{"startY: "  +Str$(startY)}
+
   Repeat
-    If Peek.w(?comWord_DoTokenize)
-      strline$ = PED_Detoke{ped\ptrCurrentSourceData\CurrentSourceLine}
+    If ped\DoTokenize
+      strline$ = PED_Detoke{\CurrentSourceLine}
     Else
-      strline$ = Peek.s(ped\ptrCurrentSourceData\CurrentSourceLine + 9)
+      strline$ = Peek.s(\CurrentSourceLine + 9)
     EndIf
     strline$ = ";" + strline$
     log_Print{">> " + strline$}
 
-    newline$ = PED_TokenizeText{strline$}
-    ;newline$ = PED_ParseCurrentSourceLine{strline$}
-    ;newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+    newline$ = PED_ParseText{strline$}
+    newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
 
     *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
     PED_ReplaceCurrentSourceLine{*newLine}
 
-    ped\ptrCurrentSourceData\CurrentSourceLine = ped\ptrCurrentSourceData\CurrentSourceLine\nextLine
+    \CurrentSourceLine = \CurrentSourceLine\nextLine
     startY + 1
-  Until startY = ped\ptrCurrentSourceData\BlockEndY + 1
+  Until startY = \BlockEndY + 1
   
   Gosub update_currsourceline
   Gosub _redraw
@@ -7237,7 +7272,7 @@ Return
     PED_UpdateBlockPosY{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine}
     If PED_InsertSourceLine{*newLine}
       PED_ScrollVertical{#SCROLL_DOWN, ped\ptrCurrentSourceData\DisplayLine}
-      PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize), False}
+      PED_PrintCurrentSourceLine{False}
       ;Gosub _redraw
       Gosub update_linenumbers
     Else
@@ -7334,7 +7369,7 @@ Return
 
     Gosub set_pointer_normal_bas
     Pop If: Return
-  else
+  Else
     *nextLine.sourceLine = *currLine\nextLine
   EndIf
 
@@ -7466,161 +7501,60 @@ Return
   Gosub _redraw
 Return
 
-JL_0_2906:
-  MOVE.w #$FFFF,comWord_SourceChanged
-  MOVE.w comWord_ColumnsOffset,D0 : ADD.w comWord_Column,D0
+.splitlines:
+  USEPATH ped\ptrCurrentSourceData
+  \SourceChanged = True
 
-  ;------------------------------------
-  CMPI.l #$ffffFFFF,comLong_BlockEndY
-  BEQ.w JL_0_29BC
-    MOVE.l comLong_DisplayLineOffset,D2 : ADD.l comLong_DisplayLine,D2
-    CMP.l comLong_BlockEndY,D2
-    BHI.w JL_0_29BC
-    BEQ.w JL_0_2962
-      CMP.l comLong_BlockStartY,D2
-      BCS.w JL_0_29B0
-      BNE.w JL_0_29B6
-        CMP.l comLong_BlockEndY,D2
-        BEQ.w JL_0_2982
-          CMP.w comWord_BlockStartX,D0
-          BHI.w JL_0_29B6
-            MOVE.w comWord_BlockStartX,D2
-            SUB.w D0,D2
-            MOVE.w D2,comWord_BlockStartX
-            BRA.w JL_0_29B0
-    JL_0_2962:
-      CMP.l comLong_BlockStartY,D2
-      BEQ.w JL_0_2982
-        CMP.w comWord_BlockEndX,D0
-        BHI.w JL_0_29BC
+  tmpColumn.w = \ColumnsOffset + \Column
+  
+  ;TODO: Blockhandling, if PED supports writing in Blockmarks again, see old asmcode in JL_0_2906
 
-    JL_0_2972:
-    MOVE.w comWord_BlockEndX,D2
-    SUB.w D0,D2
-    MOVE.w D2,comWord_BlockEndX
-    BRA.w JL_0_29B6
+  ;-- get the string until cursorposition
+  \Column = 0
+  lineaddr.l = Peek.l(?textbufferaddr) + \TextBufferOffset
+  While Peek.b(lineaddr + \Column) = $20 AND (\Column <= #MAX_Columns)
+    \Column + 1
+  Wend
+  newline$ = SPACE$(\Column)
 
-  JL_0_2982:
-  CMP.w comWord_BlockEndX,D0
-  BHI.w JL_0_29BC
+  If \Column < #MAX_Columns
+    If \ColumnsOffset
+      \ColumnsOffset = 0
+      If \Column > Peek.l(?visiblecolumns)
+        \Column - Peek.l(?visiblecolumns)
+        \ColumnsOffset = Peek.l(?visiblecolumns)
+        If \Column > Peek.l(?visiblecolumns)
+          \Column - Peek.l(?visiblecolumns)
+          \ColumnsOffset + Peek.l(?visiblecolumns)
+        EndIf
+      EndIf
+    EndIf 
+  EndIf
+ 
+  ;-- save rest of line and remove from current line
+  For tcol.w = tmpColumn To #MAX_Columns-1
+    newline$ + Chr$(Peek.b(lineaddr + tcol))    ; copy rest of line to parsebuffer
+    Poke.b lineaddr + tcol, $20                 ; remove rest of line from textbuffer
+  Next tcol
+ 
+  ;-- update current line
+  strline$ = Peeks$(lineaddr,#MAX_Columns-1)  
+  strline$ = PED_ParseText{strline$}
+  strline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+  *newLine.sourceLine = PED_CreateNewSourceLine{strline$}
+  PED_ReplaceCurrentSourceLine{*newLine}
 
-  CMP.w comWord_BlockStartX,D0
-  BHI.b JL_0_2972
+  ;-- append rest of line as new line
+  newline$ = PED_ParseText{newline$}
+  newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+  log_Print{"new line *" + newline$ + "*"}
+  *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+  appendLine{\CurrentSourceLine,*newLine} : \TotalLines + 1
 
-  MOVE.w comWord_BlockEndX,D3 : SUB.w comWord_BlockStartX,D3
-  MOVE.w comWord_BlockStartX,D2 : SUB.w D0,D2 : MOVE.w D2,comWord_BlockStartX
-  ADD.w D3,D2
-  MOVE.w D2,comWord_BlockEndX
-  JSR JL_0_7A14 ; adjustBlockPosition_asm
-
-  JL_0_29B0:
-  ADDQ.l #1,comLong_BlockStartY
-
-  JL_0_29B6:
-  ADDQ.l #1,comLong_BlockEndY
-  JL_0_29BC:
-  ;----------------------------------
-  MOVE.l comPtr_CurrentSourceLine,a4
-  MOVEA.l comPtr_Temp_TokenString2,A0
-  MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
-  CLR.w comWord_Column
-  MOVE.l d0,-(a7)                        ; x-position of cursor
-  MOVEQ #0,d0
-
- 'l2
-    CMP.b #$20,0(a2,d0)
-    BNE 'l1
-      ADDQ #1,d0
-      MOVE.b #32,(a0)+                   ;split line to column
-      CMP.l #MAX_Columns,d0
-      BGE 'l3
-  BRA 'l2
-
- 'l1
-  TST.w comWord_ColumnsOffset
-  BEQ 'ld
-    CLR.w comWord_ColumnsOffset
-    CMP.w visiblecolumns,d0
-    BLE 'ld
-      SUB.w visiblecolumns,d0
-      MOVE.w visiblecolumns,comWord_ColumnsOffset
-      CMP.w visiblecolumns,d0
-      BLE 'ld
-        SUB.w visiblecolumns,d0
-        MOVE.l d0,-(a7)
-        MOVE.w comWord_ColumnsOffset,d0 : ADD.w visiblecolumns,d0
-        MOVE.w d0,comWord_ColumnsOffset
-        MOVE.l (a7)+,d0 
- 'ld
-  MOVE.w d0,comWord_Column
-
- 'l3
-  MOVE.l (a7)+,d0
-
-  JL_0_29C8:
-    MOVE.b $0(A2,D0.W),(A0)+
-    MOVE.b #$20,$0(A2,D0.W)
-    ADDQ.w #1,D0
-  CMP.w #MAX_Columns,D0
-  BCS.b JL_0_29C8
-
-  JL_0_29DA:
-    CMPA.l comPtr_Temp_TokenString3,A0
-    BCC.w JL_0_29E8
-      MOVE.b #$20,(A0)+
-  BRA.b JL_0_29DA
-  JL_0_29E8:
-
-  JSR parse_line : JSR replaceCurrentLine
-
-  MOVEA.l comPtr_Temp_TokenString2,A2         ; tokenize and create a new source line
-  JSR parse_line
-  MOVE.l D5,D0
-  ADDI.w #$9,D0
-  JSR AllocPoolMem
-  MOVEA.l D0,A0
-  MOVE.b D5,$8(A0)
-  LEA $9(A0),A0
-  MOVEA.l comPtr_Temp_TokenString1,A1
-  JL_0_2A16:
-    MOVE.b (A1)+,(A0)+
-  BNE.b JL_0_2A16
-
-  MOVEA.l D0,A0
-  MOVE.l A4,$4(A0)
-  MOVE.l (A4),D1
-  BEQ.w JL_0_2A32
-    MOVEA.l D1,A1
-    MOVE.l A0,$4(A1)
-    MOVE.l A1,(A0)
-    BRA.w JL_0_2A3A
-  JL_0_2A32:
-    MOVE.l A0,comPtr_LastSourceLine
-    CLR.l (A0)
-  JL_0_2A3A:
-
-  MOVE.l A0,(A4)
-  ADDQ.l #1,comLong_TotalLines
-;  CLR.w comWord_Column
-  !basic
   Gosub movecursorlinedown
   Gosub _redraw
 Return
 
-.indent:
-  If NOT pedconfig\auto_indent
-    ;log_Print{"no auto indent."}
-    ped\ptrCurrentSourceData\Column = 0
-  Else
-    *currentLine = ped\ptrCurrentSourceData\CurrentSourceLine
-    tmpColumn.w = -1
-    Repeat
-      tmpColumn + 1
-    Until Peek.b(*currentLine + 9 + tmpColumn) <> $20
-    ped\ptrCurrentSourceData\Column = tmpColumn
-    ;log_Print{"indent: " + Str$(tmpColumn)}
-  EndIf
-Return
 
 .insertreturn: 
   USEPATH ped\ptrCurrentSourceData
@@ -7632,24 +7566,33 @@ Return
   sourceWindow\redrawFlag = True
   Gosub cursor_off
 
-  log_Print{Hexw$(\QualifierStore)}     ; ToDo
-  If \QualifierStore AND $3 = 0         ; SHIFT pressed as well ?
-    log_Print{"split current line"}
-    Goto JL_0_2906                      ; if pressed, do notsplit current line at cursor pos!
+  log_Print{Hexw$(\QualifierStore) + "  AND 3 " + Hexw$(\QualifierStore AND $3)}     ; ToDo
+  If \QualifierStore AND $3 <> 0         ; SHIFT pressed as well ?
+    log_Print{"split current line, BlockEndY = " + Hex$(\BlockEndY)}
+    Goto splitlines                      ; if pressed, do notsplit current line at cursor pos!
   EndIf
- 
+
+  ;-- if autoindent, align cursor for line
+  If NOT pedconfig\auto_indent
+    \Column = 0
+  Else
+    \Column = -1
+    Repeat
+      \Column + 1
+    Until Peek.b(\CurrentSourceLine + 9 + \Column) <> $20
+    ;log_Print{"indent after return: " + Str$(\Column)}
+  EndIf
+
   *newLine.sourceLine = PED_CreateNewSourceLine{""}
   If *newLine = 0
     Pop If
     Goto memAlert_CloseSource
   EndIf
-
+  appendLine{\CurrentSourceLine,*newLine} : \CurrentSourceLine = *newLine
   \SourceChanged = True
   \TotalLines + 1
-  PED_UpdateBlockPosY{\DisplayLineOffset + \DisplayLine}
-  Gosub indent
 
-  appendLine{\CurrentSourceLine,*newLine} : \CurrentSourceLine = *newLine
+  PED_UpdateBlockPosY{\DisplayLineOffset + \DisplayLine}
 
   If \ColumnsOffset > 0
     log_Print{"reset columnsoffset, redraw with offset"}
@@ -8554,7 +8497,7 @@ Return
     If ped\ptrCurrentSourceData\TotalLines > 0
       *tempLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
 
-      If Peek.w(?comWord_DoTokenize) <> 0
+      If ped\DoTokenize <> 0
         log_Print{"write ab2: writing detokenized file"}
 
         ;-- detokenize and write to file
@@ -8702,7 +8645,6 @@ Return
     ; includeblock mode
     ped\sourceFileHandle = PED_OpenFile{includeblockfile$,#HUNK_RELOC_16__MODE_OLDFILE,False}
     Poke.w ?comWord_DoTokenize, ped\DoTokenize
-;    Poke.w ?flag_tokenization, ped\flag_tokenization
     Poke.b ?convert, ped\convert
     If NOT PED_ReadFileCache{}
       PED_CloseFile{ped\sourceFileHandle}
@@ -8724,7 +8666,7 @@ Return
     If NOT Peek.b(?instring) Then currentbyte = currentbyte BitClr 7
     pasteString + Chr$(currentbyte)
   Next p
-  ; get rest of current line
+  ;-- get rest of current line
   restString.s = ""
   For p.w = currentColumn To #MAX_Columns-1
     currentbyte.b = Peek.b(lineaddr + p)
@@ -8734,36 +8676,19 @@ Return
     restString + " "
   Next p
 
-  ; get first line and join it with currentline
+  ;-- get first line and join it with currentline
   pasteString = pasteString + PED_ReadNextLine{}
  
-  ; check labelidentifier, update labellist ?
+  ;-- check labelidentifier, update labellist ?
   If PED_CheckLabelRelevance{pasteString} Then ped\LabelListChanged = True
 
-  ; replace line with current one
-  GetReg D0,&pasteString : MOVE.l D0,-(a7)
-  !asm
-  MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
-  MOVEA.l comPtr_CurrentSourceLine,A4
-  JSR parse_line
-  MOVE.l d5,-(a7)                     ; returns length of string in D5
-  !basic
-  MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
+  ;-- replace line with current one
+  newline$ = PED_ParseText{pasteString}
+  newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+  *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+  PED_ReplaceCurrentSourceLine{*newLine}
 
-  *newLine.sourceLine = PED_CreateNewSourceLine{ Peeks$(Peek.l(?comPtr_Temp_TokenString1),tmpd0) }
-  ;*newLine.sourceLine = PED_CreateNewSourceLine{pasteString}
-
-  *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  *previousLine.sourceLine = *currentLine\previousLine
-  If cutLine{*currentLine}
-    appendLine{*previousLine, *newLine}
-    PED_FreeMem{*currentLine}
-  Else
-    PED_InsertSourceLine{*newLine}
-  EndIf
-  ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
-
-  ; import all further lines
+  ;-- import all further lines
   Repeat
     tmpLine = PED_ReadNextLine{}
     tmpLen = FLen(tmpLine)
@@ -8775,16 +8700,9 @@ Return
       Else
         pasteString = tmpLine
       EndIf
-      ;log_Print{"got line: " + pasteString}
-      GetReg D0,&pasteString : MOVE.l D0,-(a7)
-      !asm
-      MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
-      MOVEA.l comPtr_CurrentSourceLine,A4
-      JSR parse_line
-      MOVE.l d5,-(a7)                     ; returns length of string in D5
-      !basic
-      MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
-      *newLine = PED_CreateNewSourceLine{ Peeks$(Peek.l(?comPtr_Temp_TokenString1),tmpd0)}
+      newline$ = PED_ParseText{pasteString}
+      newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+      *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
       appendLine{ped\ptrCurrentSourceData\CurrentSourceLine, *newLine}
       ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
       ped\ptrCurrentSourceData\TotalLines + 1
@@ -8799,32 +8717,14 @@ Return
   If Len(Trim$(restString)) > 0
     restString = pasteString + restString
 
-    GetReg D0,&restString : MOVE.l D0,-(a7)
-    !asm
-    MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
-    MOVEA.l comPtr_CurrentSourceLine,A4
-    JSR parse_line
-    MOVE.l d5,-(a7)                     ; returns length of string in D5
-    !basic
-    MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
-    pasteString = Peeks$(Peek.l(?comPtr_Temp_TokenString1),tmpd0)
-
-    *currentLine = ped\ptrCurrentSourceData\CurrentSourceLine
-    *newLine = PED_CreateNewSourceLine{pasteString}
-    *currentLine =ped\ptrCurrentSourceData\CurrentSourceLine
-    *previousLine.sourceLine = *currentLine\previousLine
-    If cutLine{*currentLine}
-      appendLine{*previousLine,*newLine}
-      PED_FreeMem{*currentLine}
-      ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
-    Else
-      error{"Could not replace the current source line"}
-      Return
-    EndIf
+    newline$ = PED_ParseText{restString}
+    newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+    *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+    PED_ReplaceCurrentSourceLine{*newLine}
   ;Else
   ;  log_Print{"no restString: " + restString}
   EndIf
-
+ 
   If ped\pasteMode = 0 Then PED_CloseFile{ped\sourceFileHandle}
   Poke.b ?instring,0
 
@@ -10892,7 +10792,7 @@ RTS
 
   ped\ptrCurrentSourceData\CurrentSourceLine = *currentSourceLine
 Return
-
+ 
 .parseAndReplaceCurrentLine:
   MOVEA.l comPtr_Temp_TokenString2,A2
   JSR parse_line
@@ -11097,7 +10997,7 @@ RTS
 ;    CEND
 
     If ped\ptrCurrentSourceData\CurrentSourceLine
-      PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize),True}
+      PED_PrintCurrentSourceLine{True}
       *tmpcsl = *tmpcsl\nextLine
       Gosub increase_DisplayLine
       ;log_Print{"redraw: next line at displayline " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
@@ -11114,10 +11014,11 @@ RTS
     rectx.w = \BoxLeft
     recty.w = \BoxTop + (ped\ptrCurrentSourceData\DisplayLine) * \font\tf_YSize
     rectw.w = \BoxWidth
-    recth.w = \statusAreaY
+    recth.w = \statusAreaY-1
     If (rectw => rectx) AND (recth => recty)
       RectFill_ \win\RPort, rectx, recty, rectw, recth
       If pedconfig\linenumbers 
+        SetAPen_  \win\RPort, AB3Pen(#AB3_screenfill)
         RectFill_ \win\RPort, 0, recty, rectx-3,recth
       EndIf
     Else
@@ -11282,7 +11183,7 @@ Return
     tmpDL - 1
   Wend
   ped\ptrCurrentSourceData\DisplayLine = tmpDL
-  PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize), False}
+  PED_PrintCurrentSourceLine{False}
   no_prev_line:
 
   Gosub restore_cursorposition
@@ -11309,7 +11210,7 @@ Return
     EndIf
     Gosub increase_DisplayLine
   Wend
-  PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize), False}
+  PED_PrintCurrentSourceLine{False}
   no_next_line:
 
   Gosub restore_cursorposition
@@ -11556,7 +11457,7 @@ JL_0_60B2:
 BRA.w JL_0_5F5A
 
 
-checkForLetter:
+.checkForLetter:
   CMP.b #"A",D2
    BCS.w JL_0_60E8
   CMP.b #"z",D2
@@ -11776,7 +11677,7 @@ Return
     !basic
     MOVE.l (a7)+,A0 : PutReg A0, *textaddr.l
     Poke.b ?keepstring, 1
-    PED_PrintSourceText{*textaddr.l, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, Peek.w(?comWord_DoTokenize), False}
+    PED_PrintSourceText{*textaddr.l, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, False}
     Poke.b ?keepstring, 0
     PED_ProcessHighlighting{}
     !asm
@@ -11998,7 +11899,7 @@ Return
     ;JSR print_complete_line               ; inputs d0:x, d1:y, a0: text
     ;CLR.b keepstring
     Poke.b ?keepstring, 1
-    PED_PrintSourceText{*textaddr.l, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, Peek.w(?comWord_DoTokenize), False}
+    PED_PrintSourceText{*textaddr.l, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, False}
     Poke.b ?keepstring, 0
     PED_ProcessHighlighting{}
     !asm
@@ -12801,18 +12702,18 @@ Return
   ; -- clear the codelines in window
   USEPATH sourceWindow
   SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
-  RectFill_ \win\RPort,\BoxLeft,\BoxTop,\BoxWidth,\statusAreaY
+  RectFill_ \win\RPort,\BoxLeft,\BoxTop,\BoxWidth,\statusAreaY-1
 
   ; draw vertical line to seperate numbers and source code
   If pedconfig\linenumbers
     lx.w = \BoxLeft - 1
     SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
-    RectFill_ \win\RPort,0,\BoxTop,lx,\statusAreaY
+    RectFill_ \win\RPort,0,\BoxTop,lx,\statusAreaY-1
 
     lx - 1
     SetAPen_ \win\RPort,AB3Pen(#AB3_screentext)
     Move_ \win\RPort,lx, \BoxTop
-    Draw_ \win\RPort,lx, \statusAreaY
+    Draw_ \win\RPort,lx, \statusAreaY-1
   EndIf
 
   Gosub draw_statusarea
@@ -12843,54 +12744,6 @@ RTS
     EndIf
   CEND
 Return
-
-.print_entered_char:      ; input: enteredChar
-  currentColumn.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
-
-  ; write character to textbuffer
-  plineaddr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
-  plineaddr + currentColumn
-  Poke.b plineaddr,enteredChar.b
-
-  ; check if cursor in block
-  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-    currentLine.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
-    !updateBlockMark{currentLine,currentColumn}
-    If Peek.b(?comByte_StateBlockMark) Then ST comWord_CursorInMarkedBlock
-  EndIf
-
-  ; -- print entered character to source window
-  CLR.w comWord_ColumnsOffsetTmp
-
-  tposx.w = ped\ptrCurrentSourceData\Column
-  tposy.w = ped\ptrCurrentSourceData\DisplayLine
-  textaddr.l = &enteredChar ;?comByte_EnteredCharacter
-
-  If Peek.w(?comWord_CursorInMarkedBlock)
-    log_Print{"cursor in block, routine called."}
-     ; --- print actual character with blockbackgroundcolor
-     SetBPen_ \win\RPort,3
-     PED_PrintText{&enteredChar,tposx,tposy,1,AB3Pen(#AB3_cother)}
-     SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
-  Else
-    If Peek.w(&enteredChar) > 0
-     ; log_Print{"Print ["  + Chr$(enteredChar) + "] at " + Str$(tposx) + ", " + Str$(tposy) + "  " + Str$(ped\ptrCurrentSourceData\ColumnsOffset)}
-      PED_PrintText{&enteredChar,tposx,tposy,1,AB3Pen(#AB3_cother)}
-    Else
-      textaddr.l = &enteredChar
-      If Peek.w(?instru)
-        log_Print{"instru handling missing.",#log_warning}
-        textaddr = textaddr BitClr 7
-      Else
-;        error{"whats up?"}
-      EndIf
-      PED_PrintText{textaddr,tposx,tposy,1,AB3Pen(#AB3_cclassic)}
-    EndIf
-  EndIf
-  SF comWord_CursorInMarkedBlock
-Return
-
-
 
 .update_TextBufferOffset:                                    ; calculate Textbufferoffset
   ;MOVE.l comLong_DisplayLine,D1 : MULU #MAX_Columns,D1 : MOVE.w D1,comWord_TextBufferOffset
@@ -13020,7 +12873,7 @@ Return
       Wend
 
       Poke.b ?keepstring,1
-      PED_PrintSourceText{curline, 0, curY, Peek.w(?comWord_DoTokenize), False}
+      PED_PrintSourceText{curline, 0, curY, False}
       Poke.b ?keepstring,0
 
       PED_ProcessHighlighting{}
@@ -13208,20 +13061,21 @@ Return
 
 
 .insertchar:
-  ped\ptrCurrentSourceData\KeyBeforeReturn = last_vankey
+  USEPATH ped\ptrCurrentSourceData
+  \KeyBeforeReturn = last_vankey
 
-  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
+  If \BlockEndY <> $ffffFFFF
     ped\blockmarkRemovalMode = 2 : Gosub handle_blockmark
   EndIf
 
 
   ;-- move everything right from cursor 1 to right
-  lineaddr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
-  currentColumn.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
+  lineaddr.l = Peek.l(?textbufferaddr) + \TextBufferOffset
+  currentColumn.w = \Column + \ColumnsOffset
   tempColumn.w = #MAX_Columns
   While tempColumn > currentColumn
     tempColumn - 1
-    Poke.b lineaddr + tempColumn,Peek.b(lineaddr + tempColumn - 1)
+    Poke.b lineaddr + tempColumn, Peek.b(lineaddr + tempColumn - 1)
   Wend
 
   Gosub cursor_off
@@ -13229,35 +13083,33 @@ Return
   PED_ScrollHorizontal{#SCROLL_RIGHT, #SCROLL_CURRENT_LINE}
 
   ;-- update blockmarking
-  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-    currentColumn = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
-    currentLine.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
-    !updateBlockMark{currentLine,currentColumn}
+  If \BlockEndY <> $ffffFFFF
+    currentColumn = \Column + \ColumnsOffset
+    currentLine.l = \DisplayLine + \DisplayLineOffset
+    !updateBlockMark{currentLine, currentColumn}
 
-    If ped\ptrCurrentSourceData\BlockStartY <> currentLine AND ped\ptrCurrentSourceData\BlockEndY <> currentLine
-      If ped\ptrCurrentSourceData\BlockStartX > currentColumn
+    If \BlockStartY <> currentLine AND \BlockEndY <> currentLine
+      If \BlockStartX > currentColumn
         If Peek.b(?comByte_StateBlockMark) <> 0
-          ped\ptrCurrentSourceData\BlockEndX + 1
-          If ped\ptrCurrentSourceData\BlockEndX > #MAX_Columns-1
-            ped\ptrCurrentSourceData\BlockEndX = #MAX_Columns-1
+          \BlockEndX + 1
+          If \BlockEndX > #MAX_Columns-1
+            \BlockEndX = #MAX_Columns-1
           EndIf
         EndIf
       EndIf
-      If ped\ptrCurrentSourceData\BlockEndX < currentColumn
-        ped\ptrCurrentSourceData\BlockEndX + 1
-        If ped\ptrCurrentSourceData\BlockEndX > #MAX_Columns-1
-          ped\ptrCurrentSourceData\BlockEndX = #MAX_Columns-1
+      If \BlockEndX < currentColumn
+        \BlockEndX + 1
+        If \BlockEndX > #MAX_Columns-1
+          \BlockEndX = #MAX_Columns-1
         EndIf
       EndIf
 
-      ped\ptrCurrentSourceData\BlockStartX = (ped\ptrCurrentSourceData\BlockStartX + 1) AND $7F
-      ped\ptrCurrentSourceData\BlockEndX = (ped\ptrCurrentSourceData\BlockEndX + 1) AND $7F
-
+      \BlockStartX = (\BlockStartX + 1) AND $7F
+      \BlockEndX = (\BlockEndX + 1) AND $7F
     EndIf
   EndIf
   ;--
-
-  enteredChar.b = ped\ptrCurrentSourceData\KeyBeforeReturn : Gosub print_entered_char
+  PED_PrintChar{\KeyBeforeReturn}
   Gosub moveCursorRight
 Return
 
@@ -13771,8 +13623,8 @@ Return
   Poke.b ?instru, 0
   If NOT (quotation AND 1) Then Poke.b ?instru,1
 
-  ; show character that comes visible at the right if line is longer than visiblecolumns
-  enteredChar.b = Peek.b(lineaddr + newcol) : Gosub print_entered_char
+  ;-- show character that comes visible at the right if line is longer than visiblecolumns
+  PED_PrintChar{Peek.b(lineaddr + newcol)}
   Poke.b ?instru, 0
   ped\ptrCurrentSourceData\Column = storcol
 
@@ -13787,7 +13639,8 @@ Return
   storcol.w = ped\ptrCurrentSourceData\Column
   ped\ptrCurrentSourceData\Column = 0
   For cupos.w = 0 To \visibleColumns - 1
-    enteredChar.b = Peek.b(lineaddr + ped\ptrCurrentSourceData\ColumnsOffset + cupos) : Gosub print_entered_char
+    enteredChar.b = Peek.b(lineaddr + ped\ptrCurrentSourceData\ColumnsOffset + cupos)
+    PED_PrintChar{enteredChar}
     ADDQ.w #1,comWord_Column
   Next cupos
   ped\ptrCurrentSourceData\Column = storcol
@@ -13832,7 +13685,7 @@ Return
     If NOT (quotation AND 1) Then Poke.b ?instru,1
 
     ; show character that comes visible at the right if line is longer than visiblecolumns
-    enteredChar.b = Peek.b(lineaddr + newcol) : Gosub print_entered_char
+    PED_PrintChar{Peek.b(lineaddr + newcol)}
     Poke.b ?instru, 0
     ped\ptrCurrentSourceData\Column = storcol
 
@@ -14931,9 +14784,9 @@ Return
       For cupos.w = 0 To moveCount - 1
         Poke.b lineaddr + currentColumn + cupos,$20 ; insert space character
         PED_ScrollHorizontal{#SCROLL_RIGHT, #SCROLL_CURRENT_LINE}
-        enteredChar.b = $20 : Gosub print_entered_char
+        PED_PrintChar{$20}
       Next cupos
-
+ 
       ;-- set new cursor position
       newColumn.w = ped\ptrCurrentSourceData\Column + moveCount : Gosub moveCursorToX
 
@@ -18995,21 +18848,16 @@ Return
     EndIf
   EndIf
 
-  !asm
-  MOVE.l comPtr_CurrentSourceLine,a4
-  MOVEA.l textbufferaddr,A2 :  ADDA.w comWord_TextBufferOffset,A2
-  JSR parse_line
-  JSR replaceCurrentLine
-  MOVE.l a4,comPtr_CurrentSourceLine
-  !basic
+  pasteString.s = Peeks$(Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset,#MAX_Columns)
+  newline$ = PED_ParseText{pasteString}
+  newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+  *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+  PED_ReplaceCurrentSourceLine{*newLine}
 
-  If Peek.w(?comWord_DoTokenize)
-    ;!asm
-    ;MOVEA.l comPtr_CurrentSourceLine,A2 : JSR print_sourceline
-    ;!basic
-    PED_PrintCurrentSourceLine{Peek.w(?comWord_DoTokenize),False}
+  If ped\DoTokenize
+    PED_PrintCurrentSourceLine{False}
 
-    If Peek.b(?comByte_StateBlockMark)
+    If ped\ptrCurrentSourceData\StateBlockMark
       log_Print{"storeline: redrawing blockmark"}
       AbsDimensions{bmark}
       PED_DrawBlock{bmark}
@@ -19078,77 +18926,25 @@ Return                                                                        ; 
 
 .draw_tabs:
   USEPATH sourceWindow
+
+  xpos_text.w = #filenamepos * \font\tf_XSize
+  ypos_text.w = \statusAreaY + 4 + \font\tf_Baseline
+
+  ;-- clear statusarea
+  ;-- statusarea has to seperator lines, a white and a black one
   SetAPen_ \win\RPort, AB3Pen(#AB3_screenfill)
-
-  xpos_text.l = #filenamepos * \font\tf_XSize
-  ypos_sa.w = \statusAreaY + 1
-  ypos_text.w = ypos_sa + 2 + \font\tf_Baseline
-
-  RectFill_ \win\RPort,xpos_text - 4,ypos_sa + 2,\win\Width - \win\BorderRight,ypos_sa + 1 + \font\tf_YSize
+  RectFill_ \win\RPort, xpos_text - 4, \statusAreaY + 2, \win\Width - \win\BorderRight,\statusAreaY + 2 + \font\tf_YSize + 1
 
   ; -- draw all sourcefilename tabs
   If ped\firstSourceEntry
     *fileEntry.sourceEntry = ped\firstSourceEntry
-;    xpos_text.l= #filenamepos * \font\tf_XSize ;Peek.w(?fontWidth)
 
     Repeat
-      modifiedFlag.b = False
-      textlen.w = 10                        ; width of tab in characters
-
-      Move_ \win\RPort, xpos_text, ypos_text
-
-      If *fileEntry = ped\currentSourceEntry
-        fcol.w = AB3Pen(#AB3_screentext)    ; selected
-        bcol.w = AB3Pen(#AB3_cbackground)
-        bevel_recessed.b = True
-        stylestate.w = #FSF_BOLD
-      Else
-        fcol.w = AB3Pen(#AB3_screentext)    ; unselected
-        bcol.w = AB3Pen(#AB3_screenback)
-        bevel_recessed.b = False
-        stylestate.w = #FS_NORMAL
-      EndIf
-
+      bevelsize.w = #bevelsize - 1
       Gosub draw_bevel
 
-      ;SetDrMd_ \win\RPort, #JAM2
-      SetAPen_ \win\RPort, fcol
-      SetBPen_ \win\RPort, bcol
+      xpos_text = xpos_text + #bevelsize * \font\tf_XSize
 
-      If stylestate = #FSF_BOLD
-        SetFont_ \win\RPort,\fontB
-      Else
-        SetFont_ \win\RPort,\font
-      EndIf
-      SetSoftStyle_ \win\RPort,stylestate.w,#FSF_BOLD
-
-
-      If *fileEntry = ped\currentSourceEntry
-        modifiedFlag = ped\ptrCurrentSourceData\SourceChanged
-      Else
-        modifiedFlag = Peek.w(*fileEntry + 8 + $14B)  ; $143
-      EndIf
-      If modifiedFlag
-        Text_ \win\RPort,"*", 1
-        textlen - 1
-      EndIf
-
-      tmp_string = Peek.s(*fileEntry + 8 + $D4)
-      If tmp_string = "" Then tmp_string = "unnamed"
-      tmp_string = StrLeft(tmp_string,16)
-      Text_ \win\RPort, &tmp_string, textlen
-
-      If FLen(tmp_string) > textlen             ;indicator for more characters
-        wpx.w = \win\RPort\cp_x + 1
-        wpy.w = \win\RPort\cp_y - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2 - 1
-        For wp.b = -4 To 4 Step 2
-          Move_ \win\RPort, wpx, wpy + wp
-          Draw_ \win\RPort, wpx + 2, wpy  + wp
-        Next wp
-      EndIf 
-
-      ;SetDrMd_ \win\RPort, #JAM2
-      xpos_text = xpos_text + #filenameoffs * \font\tf_XSize
       *fileEntry = *fileEntry\nextEntry
     Until *fileEntry = 0
   EndIf
@@ -19158,35 +18954,86 @@ Return                                                                        ; 
   SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
 Return
 
+
 .draw_bevel:
+  If *fileEntry = ped\currentSourceEntry
+    stylestate.w = #FSF_BOLD
+    fcol.w = AB3Pen(#AB3_screenshine)    ; selected
+    bcol.w = AB3Pen(#AB3_screenback)
+    bevel_recessed.b = True
+  Else
+    stylestate.w = #FS_NORMAL
+    fcol.w = AB3Pen(#AB3_screenshine)    ; unselected
+    bcol.w = AB3Pen(#AB3_screenback)
+    bevel_recessed.b = False
+  EndIf
+
+
   xsa.l = \font\tf_XSize / 2
   xsb.l = \font\tf_XSize - xsa
+
   bx1.l = xpos_text - xsa
-  by1.l = ypos_sa +1;+ 3
-  bx2.l = \font\tf_XSize * 10 + \font\tf_XSize + bx1
-  by2.l = \font\tf_YSize + 1  + by1
+  by1.l = \statusAreaY + 2
+  bx2.l = \font\tf_XSize * #bevelsize + bx1 - 1
+  by2.l = \font\tf_YSize + 2 + by1
+
   cp_x.l = \win\RPort\cp_x
   cp_y.l = \win\RPort\cp_y
 
   If bevel_recessed = False
     SetAPen_ \win\RPort,AB3Pen(#AB3_screenback)
-    RectFill_ \win\RPort,bx1+1,by1+1,bx2-1+1,by2
+    RectFill_ \win\RPort,bx1 + 1,by1 + 1, bx2, by2
     SetAPen_ \win\RPort,AB3Pen(#AB3_screentext)
     Move_ \win\RPort,bx1,by1
     Draw_ \win\RPort,bx1,by2
-    Draw_ \win\RPort,bx2+1,by2
-    Draw_ \win\RPort,bx2+1,by1
+    Draw_ \win\RPort,bx2,by2
+    Draw_ \win\RPort,bx2,by1
   Else
-    SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
-    RectFill_ \win\RPort,bx1+1,by1-1,bx2-1+1,by2
-    SetAPen_ \win\RPort,AB3Pen(#AB3_cother)
+    SetAPen_ \win\RPort,AB3Pen(#AB3_screenback)
+    RectFill_ \win\RPort,bx1 + 1,by1, bx2, by2
+    SetAPen_ \win\RPort,AB3Pen(#AB3_screenshine)
     Move_ \win\RPort,bx1,by1
-    Draw_ \win\RPort,bx1,by2+1
-    Draw_ \win\RPort,bx2+1,by2+1
-    Draw_ \win\RPort,bx2+1,by1
-    cp_y+1
+    Draw_ \win\RPort,bx1,by2 + 1
+    Draw_ \win\RPort,bx2,by2 + 1
+    Draw_ \win\RPort,bx2,by1
+    cp_y + 1
   EndIf
   Move_ \win\RPort,cp_x,cp_y
+
+  ;-- print the bevel caption
+  SetAPen_ \win\RPort, fcol
+  SetBPen_ \win\RPort, bcol
+
+  If stylestate = #FSF_BOLD
+    SetFont_ \win\RPort,\fontB
+  Else
+    SetFont_ \win\RPort,\font
+  EndIf
+  SetSoftStyle_ \win\RPort,stylestate.w,#FSF_BOLD
+
+  modifiedFlag.b = False
+  tmp_string = Peek.s(*fileEntry + 8 + $D4)
+  If *fileEntry = ped\currentSourceEntry
+    modifiedFlag = ped\ptrCurrentSourceData\SourceChanged
+  Else
+    modifiedFlag = Peek.w(*fileEntry + 8 + $14B)  ; $143
+  EndIf
+  If modifiedFlag Then tmp_string = "*" + tmp_string
+  If tmp_string = "" Then tmp_string = "unnamed" 
+
+  ; -- indicator for more chars
+  If FLen(tmp_string) > bevelsize
+    wpx.w = \win\RPort\cp_x + 1
+    wpy.w = \win\RPort\cp_y - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2 - 1
+    For wp.b = -4 To 4 Step 2
+      Move_ \win\RPort, wpx, wpy + wp
+      Draw_ \win\RPort, wpx + 2, wpy  + wp
+    Next wp
+  EndIf 
+
+  tmp_string = StrLeft(tmp_string, bevelsize)
+  Move_ \win\RPort, xpos_text, ypos_text
+  Text_ \win\RPort, &tmp_string, FLen(tmp_string)
 Return
 
 
@@ -19205,7 +19052,7 @@ Return
 
       *fileEntry.sourceEntry = ped\firstSourceEntry
       Repeat
-        xpos_end = xpos_start + #filenameoffs * \font\tf_XSize
+        xpos_end = xpos_start + #bevelsize * \font\tf_XSize
         ;-- check click position
         If (mx > xpos_start) AND (mx < xpos_end) AND (my > ypos_start) AND (my < ypos_end)
           log_Print{"mouse clicked at: " + Peek.s(*fileEntry + 8 + $D4)}
