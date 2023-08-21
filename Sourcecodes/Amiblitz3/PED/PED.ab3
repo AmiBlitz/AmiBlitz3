@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2856
+; NumberOfBuilds  = 2902
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,11 +30,11 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 4372
-; CursorColumn    = 1
-; LabelSearch     = "?textbuffer"
+; CursorLine      = 3066
+; CursorColumn    = 10
+; LabelSearch     = "ped_gotoline"
 ; LabelRemark     = 0
-; LabelAll        = 1
+; LabelAll        = 0
 ; LabelCase       = 0
 ; LabelPosition   = 0
 ; 
@@ -126,6 +126,10 @@ DEBUG
 #AmigaOS4 = 2
 #MorphOS  = 3
 #AROS     = 4
+
+; for gotoline
+#LINE_START = 1
+#LINE_END = 2
 
 ; for slider gadgets
 #GID_XPROP  =900
@@ -527,7 +531,7 @@ NEWTYPE.ped
   convert.b
   DoTokenize.w
   amigaguide.b
-  debugmode.b
+  debugMode.b                                                                                                                                                                                                                                            
 
   caseSensitive.b
 
@@ -583,6 +587,8 @@ NEWTYPE.sourceWindow
   *drawinfo.DrawInfo
   *win.Window
   *rp.RastPort
+  *vertiprop.Gadget                                                                                                                                                                                                                                      
+  *horizprop.Gadget                                                                                                                                                                                                                                      
 
   *font.TextFont
   *fontI.TextFont
@@ -888,6 +894,51 @@ Macro stack2regs
   MOVEM.l (a7)+,d0-d7/a0-a6
 End Macro
 
+Macro newfree      ; A1: memoryentry in Pool
+  MOVE.l _execbase,a6
+  MOVE.l comPtr_MemPool,a0
+  MOVE.l -(a1),d0
+  JSR _FreePooled(a6)                                      ; a0: poolHeader, a1: memory, d0: memsize
+End Macro
+
+
+Macro checkOption ; 1:variable, 2:optionValue
+  (`1 AND `2)
+End Macro
+
+
+Macro PED_UpdateTextBufferOffset
+  ped\ptrCurrentSourceData\TextBufferOffset = ped\ptrCurrentSourceData\DisplayLine * #MAX_Columns
+End Macro
+
+
+Macro PED_storeCursorPosition
+  USEPATH ped\ptrCurrentSourceData
+  \StoreColumn = \Column
+  \StoreDisplayLine = \DisplayLine
+  \StoreTextBufferOffset = \TextBufferOffset
+End Macro
+
+Macro PED_RestoreCursorPosition                                                                                                                                                                                                                          
+  USEPATH ped\ptrCurrentSourceData
+  \Column = \StoreColumn
+  \DisplayLine = \StoreDisplayLine
+  \TextBufferOffset = \StoreTextBufferOffset
+End Macro
+
+Macro PED_IncreaseDisplayLine
+  ped\ptrCurrentSourceData\DisplayLine + 1
+  ped\ptrCurrentSourceData\TextBufferOffset + #MAX_Columns
+End Macro
+
+Macro PED_DecreaseDisplayLine
+  ped\ptrCurrentSourceData\DisplayLine - 1
+  ped\ptrCurrentSourceData\TextBufferOffset - #MAX_Columns
+End Macro
+
+
+
+
 Macro updateBlockMark ;{d1 = currentLine, d0 = currentColumn}
   ped\ptrCurrentSourceData\StateBlockMark = False
 
@@ -900,7 +951,19 @@ Macro updateBlockMark ;{d1 = currentLine, d0 = currentColumn}
   EndIf
 End Macro
 
+Macro PED_CursorOn
+  If sourceWindow\cursorState = False Then PED_SwitchCursor{}
+End Macro
 
+Macro PED_CursorOff
+  If sourceWindow\cursorState = True Then PED_SwitchCursor{}
+End Macro
+
+
+; ------------------------------------------------------
+; FUNCTIONDEFINITIONS
+; ------------------------------------------------------
+.FUNCTIONS
 Function.l PED_AllocMem{memsize.l}
 SHARED ped
   memptr.l = AllocPooled_(ped\mempool, memsize + 4)
@@ -909,7 +972,7 @@ SHARED ped
     Function Return memptr + 4
   Else
     Function Return False
-  EndIf
+  EndIf 
 End Function
 
 Statement PED_FreeMem{memptr.l}
@@ -917,18 +980,323 @@ SHARED ped
   FreePooled_ ped\mempool,memptr-4,Peek.l(memptr-4)
 End Statement
 
-Macro newfree      ; A1: memoryentry in Pool
-  MOVE.l _execbase,a6
-  MOVE.l comPtr_MemPool,a0
-  MOVE.l -(a1),d0
-  JSR _FreePooled(a6)                                      ; a0: poolHeader, a1: memory, d0: memsize
-End Macro
+Statement PED_ClearSourceTextbuffer{}
+  ; -- clear current text memoryarea
+  MOVEA.l textbufferaddr,A0
+  MOVE.w #MAX_Columns,D0 : LSR.w #1,D0
+  MOVE.l viewablelines,D1 : MULS d0,d1 : SUBQ.w #1,D1
+
+  JL_0_76A6:
+    MOVE.w #$2020,(A0)+
+  DBF D1,JL_0_76A6
+End Statement
 
 
-; ------------------------------------------------------
-; FUNCTIONDEFINITIONS
-; ------------------------------------------------------
-.FUNCTIONS
+Function PED_PrintStatus{txt$,xpos.w,@ypos.w}
+  SHARED sourceWindow,AB3Pen()
+
+  USEPATH sourceWindow
+  If \win
+    If FLen(txt$) > 0
+      xpos_text.l = \win\GZZWidth - (\font\tf_XSize) * xpos - 4
+      If ypos <> -1
+        ypos_text.w = \statusAreaY + (\font\tf_YSize) * ypos
+      Else
+        ypos_text.w = \statusAreaY + (\font\tf_YSize)
+      EndIf
+
+      SetAPen_ \win\RPort, AB3Pen(#AB3_screenshine)
+      SetBPen_ \win\RPort, AB3Pen(#AB3_screenfill)
+      Move_ \win\RPort, xpos_text, ypos_text
+
+      If Vallong(txt$) > 0                                   ; boldtext for numbers
+        SetFont_ \win\RPort,\fontB
+        SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
+      EndIf
+      Text_ \win\RPort,&txt$,FLen(txt$)
+
+      SetFont_ \win\RPort,\font
+      SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
+      SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+    EndIf
+  Else
+    log_Print{"PrintStatus(): window pointer empty!"}
+  EndIf
+End Function
+
+Statement PED_DrawStatusArea{}
+SHARED sourceWindow, ped, AB3Pen()                                                                                                                                                                                                                       
+USEPATH sourceWindow                                                                                                                                                                                                                                     
+
+  log_Print{"draw statusarea"}
+
+  ;-- clear areas
+  SetAPen_  \win\RPort, AB3Pen(#AB3_screenfill)
+  If \statusAreaY <= \win\GZZHeight
+    RectFill_ \win\RPort, 0,\statusAreaY,\win\GZZWidth,\win\GZZHeight
+    RectFill_ \win\RPort, 0,0, \win\GZZWidth,\font\tf_YSize
+  Else
+    log_Print{"illegal area for draw statusara"}
+  EndIf
+
+  ;-- Draw separation lines
+  SetAPen_ \win\RPort, AB3Pen(#AB3_screenshine)
+  Move_ \win\RPort,0,\statusAreaY : Draw_ \win\RPort,\win\GZZWidth,\statusAreaY
+
+  SetAPen_ \win\RPort, AB3Pen(#AB3_screentext)
+  Move_ \win\RPort,0,\statusAreaY + 1 : Draw_ \win\RPort,\win\GZZWidth,\statusAreaY + 1
+  Move_ \win\RPort,0,\BoxTop-1 : Draw_ \win\RPort,\win\GZZWidth,\BoxTop-1
+
+  ;-- Draw the tabs for each source file
+  xpos_text.w = #filenamepos * \font\tf_XSize
+  ypos_text.w = \statusAreaY + 4 + \font\tf_Baseline
+
+  ;-- clear statusarea
+  ;-- statusarea has to seperator lines, a white and a black one
+  SetAPen_ \win\RPort, AB3Pen(#AB3_screenfill)
+  RectFill_ \win\RPort, xpos_text - 4, \statusAreaY + 2, \win\Width - \win\BorderRight,\statusAreaY + 2 + \font\tf_YSize + 1
+
+  ; -- draw all sourcefilename tabs
+  If ped\firstSourceEntry
+    *fileEntry.sourceEntry = ped\firstSourceEntry
+
+    Repeat
+      bevelsize.w = #bevelsize - 1
+            
+      If *fileEntry = ped\currentSourceEntry
+        stylestate.w = #FSF_BOLD
+        fcol.w = AB3Pen(#AB3_screenshine)    ; selected
+        bcol.w = AB3Pen(#AB3_screenback)
+        bevel_recessed.b = True
+      Else
+        stylestate.w = #FS_NORMAL
+        fcol.w = AB3Pen(#AB3_screenshine)    ; unselected
+        bcol.w = AB3Pen(#AB3_screenback)
+        bevel_recessed.b = False
+      EndIf
+
+
+      xsa.l = \font\tf_XSize / 2
+      xsb.l = \font\tf_XSize - xsa
+
+      bx1.l = xpos_text - xsa
+      by1.l = \statusAreaY + 2
+      bx2.l = \font\tf_XSize * #bevelsize + bx1 - 1
+      by2.l = \font\tf_YSize + 2 + by1
+
+      cp_x.l = \win\RPort\cp_x
+      cp_y.l = \win\RPort\cp_y
+
+      If bevel_recessed = False
+        SetAPen_ \win\RPort,AB3Pen(#AB3_screenback)
+        RectFill_ \win\RPort,bx1 + 1,by1 + 1, bx2, by2
+        SetAPen_ \win\RPort,AB3Pen(#AB3_screentext)
+        Move_ \win\RPort,bx1,by1
+        Draw_ \win\RPort,bx1,by2
+        Draw_ \win\RPort,bx2,by2
+        Draw_ \win\RPort,bx2,by1
+      Else
+        SetAPen_ \win\RPort,AB3Pen(#AB3_screenback)
+        RectFill_ \win\RPort,bx1 + 1,by1, bx2, by2
+        SetAPen_ \win\RPort,AB3Pen(#AB3_screenshine)
+        Move_ \win\RPort,bx1,by1
+        Draw_ \win\RPort,bx1,by2 + 1
+        Draw_ \win\RPort,bx2,by2 + 1
+        Draw_ \win\RPort,bx2,by1
+        cp_y + 1
+      EndIf
+      Move_ \win\RPort,cp_x,cp_y
+
+      ;-- print the bevel caption
+      SetAPen_ \win\RPort, fcol
+      SetBPen_ \win\RPort, bcol
+
+      If stylestate = #FSF_BOLD
+        SetFont_ \win\RPort,\fontB
+      Else
+        SetFont_ \win\RPort,\font
+      EndIf
+      SetSoftStyle_ \win\RPort,stylestate.w,#FSF_BOLD
+
+      modifiedFlag.b = False
+      tmp_string.s = Peek.s(*fileEntry + 8 + $D4)                                                                                                                                                                                                        
+      If tmp_string = "" Then tmp_string = "unnamed" 
+      If *fileEntry = ped\currentSourceEntry
+        modifiedFlag = ped\ptrCurrentSourceData\SourceChanged
+      Else
+        modifiedFlag = Peek.w(*fileEntry + 8 + $14B)  ; $143
+      EndIf
+      If modifiedFlag Then tmp_string = "*" + tmp_string
+
+      ; -- indicator for more chars
+      If FLen(tmp_string) > bevelsize
+        wpx.w = \win\RPort\cp_x + 1
+        wpy.w = \win\RPort\cp_y - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2 - 1
+        For wp.b = -4 To 4 Step 2
+          Move_ \win\RPort, wpx, wpy + wp
+          Draw_ \win\RPort, wpx + 2, wpy  + wp
+        Next wp
+      EndIf 
+
+      tmp_string = StrLeft(tmp_string, bevelsize)
+      Move_ \win\RPort, xpos_text, ypos_text
+      Text_ \win\RPort, &tmp_string, FLen(tmp_string)
+
+      xpos_text = xpos_text + #bevelsize * \font\tf_XSize
+
+      *fileEntry = *fileEntry\nextEntry
+    Until *fileEntry = 0
+  EndIf
+
+  SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+  SetFont_ \win\RPort,\font
+  SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
+
+  ;----------------------------------------------------------------------------
+  PED_PrintStatus{"Line:        ", 24}
+  PED_PrintStatus{"Column:    ", 11}
+End Statement
+
+
+#STATUS_REDRAW     = -1
+#STATUS_SCROLLERS  = 1
+#STATUS_MEMORY     = 2
+#STATUS_CURSOR     = 4                                                                                                                                                                                                                                   
+#STATUS_ADDITIONAL = 8
+#STATUS_MODIFIER   = 16
+
+Statement PED_UpdateStatusArea{@statusmode.w}
+SHARED sourceWindow, ped
+SHARED oldSourceChanged.w                                                                                                                                                                                                                                
+
+  ;log_Print{"UpdateStatusArea: " + Binw$(statusmode)}
+
+  If !checkOption{statusmode,#STATUS_MODIFIER}
+    If ped\ptrCurrentSourceData\SourceChanged  <> oldSourceChanged
+        oldSourceChanged = ped\ptrCurrentSourceData\SourceChanged
+   ;     log_Print{"updating modifier mark"}                                                                                                                                                                                                             
+        PED_DrawStatusArea{}
+    EndIf
+  EndIf
+
+  ;-- redraw everything   
+  If statusmode = #STATUS_REDRAW
+    ;log_Print{"drawing status area"}                                                                                                                                                                                                                    
+    PED_DrawStatusArea{}                                                                                                                                                                                                                                 
+  EndIf                                                                                                                                                                                                                                                  
+
+  ;-- update Scrollers
+  If !checkOption{statusmode,#STATUS_CURSOR|#STATUS_SCROLLERS}
+    ;log_Print{"updating scrollers"}
+    slider_top.l     = ped\ptrCurrentSourceData\DisplayLineOffset
+    slider_total.l   = ped\ptrCurrentSourceData\TotalLines
+    slider_visible.l = Peek.l(?viewablelines)
+    ;/ scale
+    If slider_total > 0
+      If slider_total >= #max_slider_res
+        !mul48f{slider_visible,#max_slider_res,slider_total,slider_visible}  : If slider_visible<1 Then slider_visible=1
+        !mul48f{slider_top    ,#max_slider_res,slider_total,slider_top}
+        slider_total   = #max_slider_res
+      EndIf
+      SetGadgetAttrsA_ sourceWindow\vertiprop,sourceWindow\win,0,Tags(@@                                                                                                                                                                                 
+                                              #PGA_Total  ,slider_total,@@
+                                              #PGA_Top    ,slider_top,@@
+                                              #PGA_Visible,slider_visible)
+    EndIf                                                                                                                                                                                                                                                
+    xpot.l = ped\ptrCurrentSourceData\Column
+    xact.l = ped\ptrCurrentSourceData\ColumnsOffset + ped\ptrCurrentSourceData\Column + 1
+    xvis.w = \visibleColumns / #MAX_Columns
+    SetGadgetAttrsA_ sourceWindow\horizprop,sourceWindow\win,0,Tags(#PGA_VertPot,-1,@@                                                                                                                                                                   
+                                              #PGA_VertBody,1,@@
+                                              #PGA_HorizPot,xpot,@@
+                                              #PGA_HorizBody,xvis,@@
+                                              #PGA_Top,xact,@@
+                                              #PGA_Total,#MAX_Columns,@@
+                                              #TAG_END,0)
+  EndIf
+
+
+  ;-- print current cursorposition
+  If !checkOption{statusmode,#STATUS_CURSOR|#STATUS_SCROLLERS}
+    ;log_Print{"printing cursor data"}
+    sourceWindow\currentLine = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine + 1
+    sourceWindow\currentColumn = ped\ptrCurrentSourceData\ColumnsOffset + ped\ptrCurrentSourceData\Column + 1
+    formatstr$ = "      "
+    formatstr$ = StrRight(Str$(sourceWindow\currentLine), FLen(formatstr$), 48)  ; mit nullen auffuellen
+    PED_PrintStatus{formatstr$,18}
+    formatstr$ = "   " 
+    formatstr$ = StrRight(Str$(sourceWindow\currentColumn), FLen(formatstr$), 48)  ; mit nullen auffuellen
+    PED_PrintStatus{formatstr$,3}
+  EndIf
+  
+  ;-- print memory data
+  If !checkOption{statusmode,#STATUS_MEMORY}
+    ;log_Print{"printing memory data"}
+    availchip.l = AvailMem_(#MEMF_CHIP) / 1024
+    availfast.l = AvailMem_(#MEMF_FAST) / 1024
+    Format "###0,000"
+    availmem$ = "CHIP " + StrPack(Str$(availchip)) + "kb"
+    availmem$ + " | FAST " + StrPack(Str$(availfast)) + "kb"
+    Format ""
+    PED_PrintStatus{availmem$,Len(availmem$),2}
+  EndIf
+
+  ;-- print additional datas
+  If !checkOption{statusmode,#STATUS_ADDITIONAL}
+    ;log_Print{"printing additional data"}
+    If ped\debugMode Then info$ = "  Debug: On " Else info$ = "  Debug: Off"                                                                                                                                                                             
+    If ped\DoTokenize Then info$ + "  Tokenize: On " Else info$+ "  Tokenize: Off"
+    info$ = "Total: " + Str$(ped\ptrCurrentSourceData\TotalLines) + info$
+    PED_PrintStatus{info$,74,2}
+  EndIf
+End Statement
+
+
+
+Statement PED_SwitchCursor{}
+SHARED sourceWindow, ped, pedconfig
+USEPATH sourceWindow                                                                                                                                                                                                                                     
+                                                                                                                                                                                                                                                         
+  \cursorState = NOT \cursorState                                                                                                                                                                                                                        
+
+  If ped\ptrCurrentSourceData\DisplayLine > Peek.l(?viewablelines)-1
+    ped\ptrCurrentSourceData\DisplayLine = Peek.l(?viewablelines)-1
+  EndIf
+
+  Select pedconfig\cursorStyle
+  Case #AB3_cursorStyle_line
+    xmin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
+    ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine
+    xmax.w = xmin + 1
+    ymax.w = ymin + \font\tf_YSize - 1
+
+  Case #AB3_cursorStyle_underline
+    xmin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
+    ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine  + \font\tf_YSize - 1  - 1
+    xmax.w = xmin + \font\tf_XSize - 1
+    ymax.w = ymin + 1
+
+  Default
+    xmin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
+    ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine
+    xmax.w = xmin + \font\tf_XSize - 1
+    ymax.w = ymin + \font\tf_YSize - 1
+  End Select
+
+  If (xmax => xmin) AND (ymax => ymin)
+    ;SetAPen_ \win\RPort, AB3Pen(#AB3_screenfill)
+    ;SetBPen_ \win\RPort, AB3Pen(#AB3_cbackground)
+    ;SetAPen_ *sourcerp, AB3Pen(#AB3_screenfill)
+    ;SetBPen_ *sourcerp, AB3Pen(#AB3_cbackground)
+    ;SetDrMd_ *sourcerp,#COMPLEMENT
+    \rp\Mask = %11                                                                                                                                                                                                                                       
+    RectFill_ \rp, xmin, ymin, xmax, ymax                                                                                                                                                                                                                
+    ;log_Print{"update cursor " + Str$(sourceWindow\cursorState)}
+  Else
+    log_Print{"illegal area for draw cursor",#log_error}
+  EndIf
+End Statement
+
 Function.b PED_CheckLabelRelevance{testString.s}
 SHARED ped
 
@@ -2103,8 +2471,6 @@ USEPATH ped\ptrCurrentSourceData
 End Function
 
 
-
-
 Statement PED_PrintHighlight{lineaddr.l, xPos.w, textlen.w, textcolor.w, textstyle.w}
   SHARED ped, sourceWindow
   If textlen > 0
@@ -2300,23 +2666,23 @@ USEPATH sourceWindow
   dl.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine + 1
   linenum$ = Str$(dl)
 
-  lx.w = \BoxLeft - 3 - (FLen(linenum$) * \font\tf_XSize)
+  lx.w = \BoxLeft - (FLen(linenum$) * \font\tf_XSize) - 2                                                                                                                                                                                               
   ly.w = \BoxTop + ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize
 
   SetAPen_ \win\RPort,AB3Pen(#AB3_screenfill)
-  RectFill_ \win\RPort,0,ly,\BoxLeft,ly + \font\tf_YSize - 1
+  RectFill_ \win\RPort,0,ly,\BoxLeft-1,ly + \font\tf_YSize - 1                                                                                                                                                                                           
 
   SetAPen_ \win\RPort,AB3Pen(#AB3_screenshine)
-  SetBPen_ \win\RPort,AB3Pen(#AB3_screenfill)
+  SetBPen_ \win\RPort,AB3Pen(#AB3_screenfill)+1                                                                                                                                                                                                          
   Move_ \win\RPort,lx,ly + \font\tf_Baseline
   Text_ \win\RPort,&linenum$,FLen(linenum$)
 
   ;Move_ \win\RPort,0,ly; + \font\tf_Baseline
   ;Draw_ \win\RPort,\BoxLeft,ly
 
-  SetAPen_ \win\RPort,AB3Pen(#AB3_screenback)
-  Move_ \win\RPort,\BoxLeft-2,ly
-  Draw_ \win\RPort,\BoxLeft-2,ly + \font\tf_YSize
+  SetAPen_ \win\RPort,AB3Pen(#AB3_screenshine)
+  Move_ \win\RPort,\BoxLeft-1,ly                                                                                                                                                                                                                         
+  Draw_ \win\RPort,\BoxLeft-1,ly + \font\tf_YSize                                                                                                                                                                                                        
 End Statement
 
 Statement PED_PrintCurrentSourceLine{@clearEndOfLine.b}
@@ -2405,40 +2771,379 @@ Return
 
 End Statement
 
+Statement PED_DrawBlock{*bmark.bmark} ;xMin.w,yMin.w, xMax.w, yMax.w, absolute.b}
+SHARED ped, sourceWindow
+
+  CopyType *bmark,bm.bmark
+  ;msg$ = "PED_DrawBlock() 1 called: "
+  ;msg$ + Str$(bmark\xMin) + ", " + Str$(bmark\yMin) + " - "
+  ;msg$ + Str$(bmark\xMax) + ", " + Str$(bmark\yMax)
+  ;log_Print{msg$}
+
+  If bm\xMin < 0 Then bm\xMin = 0
+  If bm\xMax < 0 Then bm\xMax = 0 : Else : bm\xMax + 1
+  If bm\yMin < 0 Then bm\yMin = 0
+  If bm\yMax < 0 Then bm\yMax = 0
+
+  bm\xMax - ped\ptrCurrentSourceData\ColumnsOffset
+  bm\xMin - ped\ptrCurrentSourceData\ColumnsOffset
+
+  If bm\xMax > \visibleColumns Then bm\xMax = \visibleColumns
+  If bm\yMax > \visibleLines - 1 Then bm\yMax = \visibleLines - 1
+  If bm\yMin > \visibleLines - 1 Then bm\yMin = \visibleLines - 1
+
+  bm\xMin * \font\tf_XSize
+  bm\yMin * \font\tf_YSize
+  bm\xMax * \font\tf_XSize
+  bm\yMax * \font\tf_YSize
+
+  If bm\yMin > bm\yMax Then Exchange bm\yMax,bm\yMin
+  If bm\xMin > bm\xMax Then Exchange bm\xMax,bm\xMin
+
+  If bm\yMin = bm\yMax
+    bm\yMax = bm\yMax + \font\tf_YSize - 1
+    Gosub rectfill2
+  Else
+    ; draw three parts of the block: first line, block of full marked lines, last line
+    DEFTYPE.bmark bmOld
+    CopyType bm, bmOld
+
+    bm\yMax = bm\yMin + \font\tf_YSize - 1
+    bm\xMax = \visibleColumns * \font\tf_XSize
+    Gosub rectfill2
+
+    CopyType bmOld, bm
+
+    bm\yMin = bm\yMin + \font\tf_YSize
+    If bm\yMin < bm\yMax
+        CopyType bm, bmOld
+        bm\xMin = 0
+        bm\xMax = \visibleColumns * \font\tf_XSize
+        bm\yMax - 1
+        Gosub rectfill2
+
+        CopyType bmOld,bm
+        bm\xMin = 0
+        bm\yMin = bm\yMax
+    EndIf
+
+    bm\xMin = 0
+    bm\yMax + \font\tf_YSize - 1
+    Gosub rectfill2
+  EndIf
+
+  ;msg$ = "PED_DrawBlock() 2 called: "
+  ;msg$ + Str$(bm\xMin) + ", " + Str$(bm\yMin) + " - "
+  ;msg$ + Str$(bm\xMax) + ", " + Str$(bm\yMax)
+  ;log_Print{msg$}
+
+  Statement Return
+
+  rectfill2:
+  If (bm\xMax >= bm\xMin) AND (bm\yMax >= bm\yMin)
+    sourceWindow\rp\Mask = %1111
+    RectFill_ sourceWindow\rp, sourceWindow\BoxLeft + bm\xMin, sourceWindow\BoxTop + bm\yMin, sourceWindow\BoxLeft + bm\xMax - 1, sourceWindow\BoxTop + bm\yMax
+  EndIf
+  Return
+End Statement
+
+Statement PED_UpdateBlockPosY{y.l}
+SHARED ped
+  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
+    If y <= ped\ptrCurrentSourceData\BlockEndY
+      ped\ptrCurrentSourceData\BlockEndY + 1
+      If y <= ped\ptrCurrentSourceData\BlockStartY
+        ped\ptrCurrentSourceData\BlockStartY + 1
+      EndIf
+    EndIf
+  EndIf
+End Statement
 
 
 
 
-Function PED_PrintStatus{txt$,xpos.w,@ypos.w}
-  SHARED sourceWindow,AB3Pen()
+Statement PED_RedrawSource{@onlyBlock.b}                                                                                                                                                                                                                 
+SHARED pedconfig, ped, sourceWindow, AB3Pen()                                                                                                                                                                                                            
+  ;log_Print{"redraw, displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine)  
 
+  If onlyBlock = 0 then Goto draw_block_after_refresh
+
+  *tmpcsl.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+  If *tmpcsl = 0 Then Statement Return
+
+  *storeCurrentSourceLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+  storeBlockEndY.l = ped\ptrCurrentSourceData\BlockEndY
+  ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
+  !PED_storeCursorPosition
+  PED_ClearSourceTextbuffer{}
+
+  CNIF #hardfold = 1
+    ped\foldNumber = PED_CheckFoldingState{}
+  CEND
+
+  *tmpcsl.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+
+  tmpdl.l = ped\ptrCurrentSourceData\DisplayLine
+  While (tmpdl > 0) AND (*tmpcsl <> 0)
+    *tmpcsl = *tmpcsl\previousLine
+
+    If *tmpcsl
+
+      CNIF #hardfold = 1
+      If Peek.w(*tmpcsl + 9) = @";@"
+        PED_CheckFoldingReverse{*tmpcsl}
+        If Peek.w(*tmpcsl + 11) = @"@0"
+          If ped\foldNumber <> 0
+            Pop If : Pop If : Pop If : Goto cont_redraw
+          EndIf
+        EndIf
+      EndIf
+      If ped\foldNumber <> 0
+        ; jump to beginning of loop without reducing tmpdl
+      EndIf
+      cont_redraw:
+      CEND
+
+      tmpdl - 1
+    EndIf
+   
+  Wend
+  ped\ptrCurrentSourceData\DisplayLine = tmpdl
+  ped\ptrCurrentSourceData\TextBufferOffset = 0
+  ped\ptrCurrentSourceData\ColumnsOffsetTmp = ped\ptrCurrentSourceData\ColumnsOffset
+
+  !PED_CursorOff
+
+  ;-- draw all the lines
+
+  For cl.l = 1 To Peek.l(?viewablelines)
+    ped\ptrCurrentSourceData\CurrentSourceLine = *tmpcsl
+
+;    CNIF #hardfold = 1
+;   'nr
+;      CMP.l #";@@1",9(a2)
+;      BNE 'l1
+;        MOVE.l #1,foldnum
+;        BRA 'do
+;     'l1
+;      CMP.l #";@@0",9(a2)
+;      BNE 'l2
+;      MOVE.l #0,foldnum
+;     'l2
+;      MOVE.l comLong_DisplayLine,d0
+;      CMP.l store_comLong_DisplayLine,d0
+;      BNE 'l3b
+;      ;MOVE.l a2,comPtr_CurrentSourceLine
+;     'l3b
+;      TST.l foldnum
+;      BEQ 'do
+;        MOVE.l (a2),d0
+;        BEQ JL_0_5902
+;          MOVE.l d0,a2
+;    BRA 'nr 
+;   'do
+;    CEND
+
+    If ped\ptrCurrentSourceData\CurrentSourceLine
+      PED_PrintCurrentSourceLine{True}
+      *tmpcsl = *tmpcsl\nextLine
+      !PED_IncreaseDisplayLine
+      ;log_Print{"redraw: next line at displayline " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
+    ;Else
+      ;log_Print{"redraw: no next line at displayline " + Str$(cl)}
+    EndIf
+  Next cl 
+
+  ; -- better refresh: clear bottom
   USEPATH sourceWindow
-  If \win
-    If FLen(txt$) > 0
-      xpos_text.l = \win\GZZWidth - (\font\tf_XSize) * xpos - 4
-      If ypos <> -1
-        ypos_text.w = \statusAreaY + (\font\tf_YSize) * ypos
+  If ped\ptrCurrentSourceData\DisplayLine < Peek.l(?viewablelines)
+    log_Print{"redraw: clear rest of window at displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine+1)}
+    SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
+    rectx.w = \BoxLeft
+    recty.w = \BoxTop + (ped\ptrCurrentSourceData\DisplayLine) * \font\tf_YSize
+    rectw.w = \BoxWidth
+    recth.w = \statusAreaY-1
+    If (rectw => rectx) AND (recth => recty)
+      RectFill_ \win\RPort, rectx, recty, rectw, recth
+      If pedconfig\linenumbers 
+        SetAPen_  \win\RPort, AB3Pen(#AB3_screenfill)
+        RectFill_ \win\RPort, 0, recty, rectx-3,recth
+      EndIf
+    Else
+      log_Print{"illegal area for clear bottom:",#log_error}
+      log_Print{"displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine+1) + "   viewablelines: " + Str$(Peek.l(?viewablelines)-1)}
+      log_Print{Str$(rectx) + ", " + Str$(rectw),#log_error}
+      log_Print{Str$(recty) + ", " + Str$(recth),#log_error}
+    EndIf
+  EndIf
+
+  ; -- restore saved values
+  ped\ptrCurrentSourceData\CurrentSourceLine = *storeCurrentSourceLine
+  ped\ptrCurrentSourceData\BlockEndY = storeBlockEndY
+  !PED_RestoreCursorPosition
+
+  draw_block_after_refresh:
+  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF                                                                                                                                                                                                     
+                                                                                                                                                                                                        
+    ;log_Print{"draw block (after refresh.)"}                                                                                                                                                                                                            
+    DEFTYPE.bmark bmark                                                                                                                                                                                                                                  
+    bmark\xMin = ped\ptrCurrentSourceData\BlockStartX
+    bmark\yMin = ped\ptrCurrentSourceData\BlockStartY
+    bmark\xMax = ped\ptrCurrentSourceData\BlockEndX
+    bmark\yMax = ped\ptrCurrentSourceData\BlockEndY
+
+    If bmark\xMin - ped\ptrCurrentSourceData\ColumnsOffset < 0
+      bmark\xMin = 0
+    End If
+
+    If bmark\yMax >= ped\ptrCurrentSourceData\DisplayLineOffset
+      bmark\yMin - ped\ptrCurrentSourceData\DisplayLineOffset
+      If bmark\yMin < 0
+        bmark\xMin = 0
+        bmark\yMin = 0
+      EndIf
+
+      bmark\xMax - ped\ptrCurrentSourceData\ColumnsOffset
+      If bmark\xMax < 0 Then bmark\xMax = 0
+
+      bmark\yMax - ped\ptrCurrentSourceData\DisplayLineOffset
+      If bmark\yMax < 0 Then bmark\yMax = 0
+
+      If bmark\yMin < Peek.l(?viewablelines)
+        If bmark\yMax > Peek.l(?viewablelines)
+          bmark\yMax = Peek.l(?viewablelines) - 1
+        EndIf
+
+        If bmark\xMax > Peek.w(?visiblecolumns)
+          bmark\xMax = Peek.w(?visiblecolumns) - 1
+        EndIf
+
+        bmark\xMin + ped\ptrCurrentSourceData\ColumnsOffset
+        bmark\xMax + ped\ptrCurrentSourceData\ColumnsOffset
+
+        ;msg$ = Str$(bmark\xMin) + ", "
+        ;msg$ + Str$(bmark\yMin) + " - "
+        ;msg$ + Str$(bmark\xMax) + ", "
+        ;msg$ + Str$(bmark\yMax)
+        ;log_Print{msg$}
+
+        PED_DrawBlock{bmark}
+      EndIf
+    EndIf
+  EndIf
+  !PED_CursorOn
+End Statement
+
+
+Function.w getLineLength{lineaddr.l}
+  _length.w = #MAX_Columns - 1
+  exit_loop.b = False
+
+  Repeat
+    char.b = Peek.b(lineaddr + _length)
+    If char <> $20
+      exit_loop = True
+    Else
+      _length - 1
+    EndIf
+  Until exit_loop OR _length < 1
+  _length + 1
+  Function Return _length
+End Function
+
+Statement PED_GotoLine{lineNum.l, @columnMode.b}                                                                                                                                                                                                         
+SHARED ped, sourceWindow                                                                                                                                                                                                                                 
+  log_Print{"Gotoline: " + Str$(lineNum)}
+  If lineNum.l < 0 Then lineNum = 0
+  If lineNum > ped\ptrCurrentSourceData\TotalLines Then lineNum = ped\ptrCurrentSourceData\TotalLines - 1
+
+  !PED_CursorOff
+
+  ; same code as in routine mouseclick_in_source
+  *tempLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+  tempY.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
+
+  While lineNum <> tempY
+    If lineNum > tempY
+      If *tempLine\nextLine
+        *tempLine = *tempLine\nextLine
+        tempY + 1
       Else
-        ypos_text.w = \statusAreaY + (\font\tf_YSize)
+        log_Print{"GotoLine: no next line!",#log_error}
+        lineNum = ped\ptrCurrentSourceData\TotalLines - 1
+        tempY = lineNum
       EndIf
+    Else
+      *tempLine = *tempLine\previousLine
+      tempY - 1
+    EndIf
+  Wend
+  ped\ptrCurrentSourceData\CurrentSourceLine = *tempLine
+  strline$ = PED_Detoke{*tempLine}
+  
+  ;-- adjust the display and offset to match the new current line
+  tmpDisplayLineOffset.l = ped\ptrCurrentSourceData\DisplayLineOffset
 
-      SetAPen_ \win\RPort, AB3Pen(#AB3_screenshine)
-      SetBPen_ \win\RPort, AB3Pen(#AB3_screenfill)
-      Move_ \win\RPort, xpos_text, ypos_text
-
-      If Vallong(txt$) > 0                                   ; boldtext for numbers
-        SetFont_ \win\RPort,\fontB
-        SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
+  tempY - Peek.w(?comWord_BoundLinesY)
+  If tempY > 0
+    If ped\ptrCurrentSourceData\TotalLines > Peek.l(?viewablelines)
+      temp.l = ped\ptrCurrentSourceData\TotalLines - Peek.l(?viewablelines) + Peek.w(?comWord_BoundLinesY)
+      If lineNum > temp
+        temp - Peek.w(?comWord_BoundLinesY)
+        newDLO.l = temp
+        newDL.l = tempY - temp
+      Else
+        newDLO.l = tempY
+        newDL.l = Peek.w(?comWord_BoundLinesY)
       EndIf
-      Text_ \win\RPort,&txt$,FLen(txt$)
-
-      SetFont_ \win\RPort,\font
-      SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
-      SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+    Else
+      newDLO.l = 0
+      newDL.l = lineNum
     EndIf
   Else
-    log_Print{"PrintStatus(): window pointer empty!"}
+    newDLO.l = 0
+    newDL.l = lineNum
   EndIf
+  ped\ptrCurrentSourceData\DisplayLineOffset = newDLO
+  ped\ptrCurrentSourceData\DisplayLine = newDL
+  !PED_UpdateTextBufferOffset
+
+  If tmpDisplayLineOffset <> ped\ptrCurrentSourceData\DisplayLineOffset
+    PED_RedrawSource{}
+  EndIf
+
+  Select columnMode
+  Case #LINE_START
+    ped\ptrCurrentSourceData\ColumnsOffset = 0
+    ped\ptrCurrentSourceData\Column = 0
+    PED_UpdateStatusArea{#STATUS_SCROLLERS}                                                                                                                                                                                                              
+  Case #LINE_END
+    lineaddr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset                                                                                                                                                                     
+    ped\ptrCurrentSourceData\Column = getLineLength{lineaddr}
+  End Select 
+End Statement
+
+Function.b PED_GotoLineAddress{ptrSourceLine.l}                                                                                                                                                                                                          
+SHARED ped, sourceWindow                                                                                                                                                                                                                                 
+  found.b = False
+  If ped\ptrCurrentSourceData\TotalLines > 1
+    *nextline.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
+    lineNum.l = 0
+    While *nextline AND (found = False)
+      If ptrSourceLine = *nextline Then found = True                                                                                                                                                                                                     
+      If found = False 
+        *nextline = *nextline\nextLine
+        lineNum + 1
+      EndIf
+    Wend
+    If found 
+      !PED_CursorOff
+      PED_GotoLine{lineNum, #LINE_START}
+      PED_UpdateStatusArea{#STATUS_SCROLLERS}
+      !PED_CursorOn                                                                                                                                                                                                                                      
+    EndIf                                                                                                                                                                                                                                                
+  EndIf
+  Function Return found
 End Function
 
 
@@ -2575,94 +3280,6 @@ Statement AbsDimensions{*bm.bmark}
 
 End Statement
 
-Statement PED_DrawBlock{*bmark.bmark} ;xMin.w,yMin.w, xMax.w, yMax.w, absolute.b}
-SHARED ped, sourceWindow
-
-  CopyType *bmark,bm.bmark
-  ;msg$ = "PED_DrawBlock() 1 called: "
-  ;msg$ + Str$(bmark\xMin) + ", " + Str$(bmark\yMin) + " - "
-  ;msg$ + Str$(bmark\xMax) + ", " + Str$(bmark\yMax)
-  ;log_Print{msg$}
-
-  If bm\xMin < 0 Then bm\xMin = 0
-  If bm\xMax < 0 Then bm\xMax = 0 : Else : bm\xMax + 1
-  If bm\yMin < 0 Then bm\yMin = 0
-  If bm\yMax < 0 Then bm\yMax = 0
-
-  bm\xMax - ped\ptrCurrentSourceData\ColumnsOffset
-  bm\xMin - ped\ptrCurrentSourceData\ColumnsOffset
-
-  If bm\xMax > \visibleColumns Then bm\xMax = \visibleColumns
-  If bm\yMax > \visibleLines - 1 Then bm\yMax = \visibleLines - 1
-  If bm\yMin > \visibleLines - 1 Then bm\yMin = \visibleLines - 1
-
-  bm\xMin * \font\tf_XSize
-  bm\yMin * \font\tf_YSize
-  bm\xMax * \font\tf_XSize
-  bm\yMax * \font\tf_YSize
-
-  If bm\yMin > bm\yMax Then Exchange bm\yMax,bm\yMin
-  If bm\xMin > bm\xMax Then Exchange bm\xMax,bm\xMin
-
-  If bm\yMin = bm\yMax
-    bm\yMax = bm\yMax + \font\tf_YSize - 1
-    Gosub rectfill2
-  Else
-    ; draw three parts of the block: first line, block of full marked lines, last line
-    DEFTYPE.bmark bmOld
-    CopyType bm, bmOld
-
-    bm\yMax = bm\yMin + \font\tf_YSize - 1
-    bm\xMax = \visibleColumns * \font\tf_XSize
-    Gosub rectfill2
-
-    CopyType bmOld, bm
-
-    bm\yMin = bm\yMin + \font\tf_YSize
-    If bm\yMin < bm\yMax
-        CopyType bm, bmOld
-        bm\xMin = 0
-        bm\xMax = \visibleColumns * \font\tf_XSize
-        bm\yMax - 1
-        Gosub rectfill2
-
-        CopyType bmOld,bm
-        bm\xMin = 0
-        bm\yMin = bm\yMax
-    EndIf
-
-    bm\xMin = 0
-    bm\yMax + \font\tf_YSize - 1
-    Gosub rectfill2
-  EndIf
-
-  ;msg$ = "PED_DrawBlock() 2 called: "
-  ;msg$ + Str$(bm\xMin) + ", " + Str$(bm\yMin) + " - "
-  ;msg$ + Str$(bm\xMax) + ", " + Str$(bm\yMax)
-  ;log_Print{msg$}
-
-  Statement Return
-
-  rectfill2:
-  If (bm\xMax >= bm\xMin) AND (bm\yMax >= bm\yMin)
-    sourceWindow\rp\Mask = %1111
-    RectFill_ sourceWindow\rp, sourceWindow\BoxLeft + bm\xMin, sourceWindow\BoxTop + bm\yMin, sourceWindow\BoxLeft + bm\xMax - 1, sourceWindow\BoxTop + bm\yMax
-  EndIf
-  Return
-End Statement
-
-Statement PED_UpdateBlockPosY{y.l}
-SHARED ped
-  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-    If y <= ped\ptrCurrentSourceData\BlockEndY
-      ped\ptrCurrentSourceData\BlockEndY + 1
-      If y <= ped\ptrCurrentSourceData\BlockStartY
-        ped\ptrCurrentSourceData\BlockStartY + 1
-      EndIf
-    EndIf
-  EndIf
-End Statement
-
 
 
 Statement window_welcome{txt0.s,@txt1.s,@txt2.s,@txt3.s,@txt4.s,@txt5.s,@txt6.s}
@@ -2723,25 +3340,6 @@ Statement window_welcome{txt0.s,@txt1.s,@txt2.s,@txt3.s,@txt4.s,@txt5.s,@txt6.s}
   WZ_UnlockAllOpenWindows{}
   Gosub set_pointer_normal_bas
 End Statement
-
-
-Function.w getLineLength{lineaddr.l}
-  _length.w = #MAX_Columns - 1
-  exit_loop.b = False
-  ;log_Print{"**" + Peeks$(lineaddr,_length) + "**"}
-  Repeat
-    char.b = Peek.b(lineaddr + _length)
-    If char <> $20
-      exit_loop = True
-    Else
-      _length - 1
-    EndIf
-  Until exit_loop OR _length < 1
-  _length + 1
-  ;log_Print{Str$(_length)}
-  ;!log_AvailMemhex{lineaddr,255}
-  Function Return _length
-End Function
 
 Function.b cutLine{*sl.sourceLine}                              ; remove the current line out of linked list
 SHARED ped
@@ -4321,14 +4919,14 @@ EndIf
   ; -- load last Source
 .AUTOLOAD_SOURCE
 If ped\currentFile <> ""
-  Gosub cursor_off
+  !PED_CursorOff
   loadsourcefilename.s = ped\sourceFileComplete
   Gosub load_source
-  Gosub cursor_on
+  !PED_CursorOn
 Else
   log_Print{"no file to autoload."}
-  Gosub draw_statusarea
-  Gosub _redraw
+  PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
+  PED_RedrawSource{}
 EndIf
 
 ; -- show welcome requester if option selected
@@ -4336,7 +4934,7 @@ If NOT pedconfig\no_welcome Then Gosub menu_about
 
 ; ----------------------------------------------------------------------------
 ; -- jump to main loop
-Gosub cursor_on
+!PED_CursorOn
 Gosub main_loop
 ; --
 ; ----------------------------------------------------------------------------
@@ -4423,7 +5021,7 @@ End
     If Peek.b(?comByte_RunningFlag)
       If ped\ptrCurrentSourceData\KeyBeforeReturn
         log_Print{"as an exe is running, revert the entered key"}
-        Gosub _redraw
+        PED_RedrawSource{}
         ped\ptrCurrentSourceData\KeyBeforeReturn = 0
       EndIf
     EndIf
@@ -4447,7 +5045,7 @@ End
       PED_ReplaceCurrentSourceLine{*newLine}
 
       ; --- draw block mark if existing
-      Gosub cursor_off      
+      !PED_CursorOff      
   ;    SF comByte_StateBlockMark
   ;    TST.l comLong_BlockEndY
   ;    BMI.w exit_updateblock
@@ -4537,6 +5135,7 @@ End
           Gosub event_menu
         EndIf
 
+        PED_UpdateStatusArea{#STATUS_SCROLLERS}                                                                                                                                                                                                          
  ;       log_Print{"actions end"}
       EndIf
 
@@ -4565,7 +5164,7 @@ End
     bottom_of_mainloop:
     If NOT exit_mainloop
       If ped\LabelListChanged Then Gosub reset_labellist
-      Gosub update_vertscroller
+      PED_UpdateStatusArea{#STATUS_SCROLLERS}                                                                                                                                                                                                            
     EndIf
   Wend
   ;log_Print{"exiting loop..."}
@@ -5311,7 +5910,7 @@ Return
      WindowToFront_ Peek.l(Addr Window(WZID("WIN_SETTINGS")))
    Else
      log_Print{"just redraw source"}
-     Gosub _redraw
+     PED_RedrawSource{}
    EndIf
 
    WZ_UnlockWindow{"WIN_SETTINGS"}
@@ -5750,15 +6349,14 @@ Return
     Gosub analyze_loadedsource
     Gosub calc_SourceWindowDimensions
 
-    lineNum.l = ped\ptrCurrentSourceData\CursorPosStore
-    log_Print{"goto last line: " + Str$(lineNum)}
-    clearColumn.b = False : Gosub gotoline
+    log_Print{"goto stored cursor line: " + Str$(ped\ptrCurrentSourceData\CursorPosStore)}
+    PED_GotoLine{ped\ptrCurrentSourceData\CursorPosStore+1,#LINE_START}
 
     log_Print{"deleting and restoring prefs..."}
     Gosub delete_tempprefs
     Gosub save_tempprefs
 
-  Else
+  Else 
     Gosub other_loading_routine
     Gosub storeCurrentSourceData
     Gosub analyze_loadedsource
@@ -5767,10 +6365,9 @@ Return
 
 
   log_Print{"updating sourcewindow..."}
-  Gosub draw_statusarea
+  PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
   Gosub reset_labellist
-  Gosub update_scrollers
-  Gosub _redraw
+  PED_RedrawSource{}
 
   log_Print{"unlock wizard windows."}
   PED_ShowMessage{""}
@@ -5923,7 +6520,7 @@ Return
   Close_ *xtra_fh
 
   ; update Sourcewindow
-  lineNum.l = ped\ptrCurrentSourceData\CursorPosStore : clearColumn.b = False : Gosub gotoline
+  PED_GotoLine{ped\ptrCurrentSourceData\CursorPosStore+1, #LINE_START}                                                                                                                                                                                   
 
   !asm
   !regs2stack
@@ -6075,7 +6672,7 @@ Return
     Gosub menu_save
     ped\check_existsfile = False
 
-    Gosub draw_statusarea
+    PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                 
  EndIf
 Return
 
@@ -6297,7 +6894,7 @@ Return
   !basic
   If pedconfig\use_source_icon Then Gosub write_infofile
   Gosub analyze_loadedsource
-  Gosub update_modifiermark
+  PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
   WZ_UnlockAllOpenWindows{}                                                                                                                                                                                                                              
   Gosub set_pointer_normal_bas
   !asm
@@ -6484,9 +7081,9 @@ nextOccurence:
 
     If tmpX > 0
       log_Print{"found [" + search + "] in Line " + Str$(curLine) + ", Column " + Str$(tmpX)}
-      lineNum.l = curLine : Gosub gotoline
+      PED_GotoLine{curLine}
       newColumn.w = tmpX - 1 : Gosub moveCursorToX
-      Gosub update_horizscroller
+      PED_UpdateStatusArea{#STATUS_SCROLLERS}
     EndIf
 
     Gosub set_pointer_normal_bas
@@ -6507,7 +7104,7 @@ Goto nextOccurence
     If PED_ReplaceString{Peek.s(?str_searchstring),Peek.s(?str_replacestring),*currentLine}
       log_Print{"replace done."}
       Gosub menu_findnext
-      Gosub _redraw
+      PED_RedrawSource{}
     EndIf
   Else
     log_Print{"no searchstring set."}
@@ -6547,7 +7144,7 @@ Return
 
     Gosub free_actualsource
     Gosub close_actualsource
-    Gosub draw_tabs
+    PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                 
   Wend
 
   exit_eventloop = True : exit_mainloop = True
@@ -6583,7 +7180,7 @@ Return
     EndIf
   EndIf
 
-  Gosub draw_statusarea
+  PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
 Return
 
 
@@ -6602,7 +7199,8 @@ Return
  
   \CurrentSourceLine = PED_GetBlockStartSourceLine{}
   startY.l = \BlockStartY
-  log_Print{"startY: "  +Str$(startY)}
+  log_Print{"startY: " + Str$(startY)}
+  log_Print{"endY: "  + Str$(\BlockEndY)}
 
   Repeat
     If ped\DoTokenize
@@ -6624,7 +7222,7 @@ Return
   Until startY = \BlockEndY + 1
   
   Gosub update_currsourceline
-  Gosub _redraw
+  PED_RedrawSource{}
 Return
 
 
@@ -6690,7 +7288,7 @@ Return
 
   !basic
   Gosub  update_currsourceline
-  Gosub _redraw
+  PED_RedrawSource{}
 Return
 
 .menu_blocktab:
@@ -6745,7 +7343,7 @@ Return
 
   !basic
   Gosub  update_currsourceline
-  Gosub _redraw
+  PED_RedrawSource{}
 Return
 
 .menu_blockuntab:
@@ -6805,7 +7403,7 @@ Return
 
   !basic
   Gosub  update_currsourceline  
-  Gosub _redraw
+  PED_RedrawSource{}
 Return
 
 .close_actualsource:
@@ -6896,17 +7494,17 @@ RTS
       tmpViewableLines.l = Peek.l(?viewablelines)
       If tmpDisplayLineOffset + tmpViewableLines > tmpTotalLines
         log_Print{"increase displayline, current: " + Str$(tmpDisplayLine)}
-        Gosub increase_DisplayLine
-        Gosub _redraw
+        !PED_IncreaseDisplayLine
+        PED_RedrawSource{}
       Else
         If tmpViewableLines > (tmpDisplayLine + 1 + Peek.w(?comWord_BoundLinesY))
-          Gosub increase_DisplayLine
-          Gosub _redraw
+          !PED_IncreaseDisplayLine
+          PED_RedrawSource{}
         Else
           ped\ptrCurrentSourceData\DisplayLineOffset + 1
           PED_ScrollVertical{#SCROLL_UP}
           Gosub draw_new_sourceline_bottom
-          Gosub _redraw
+          PED_RedrawSource{}
         EndIf
       EndIf
     Else
@@ -6919,7 +7517,7 @@ Return
 
 
 .movecursorlinedown:
-  Gosub cursor_off
+  !PED_CursorOff
   Gosub handle_blockmark
 
   *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
@@ -6933,7 +7531,7 @@ Return
       If Peeks$(*_next + 9,4) <> ";@@1"
         If Peeks$(*_next + 9,4) = ";@@0"
           ped\ptrCurrentSourceData\CurrentSourceLine = *_next
-          Gosub _redraw
+          PED_RedrawSource{}
           Return
         EndIf
       EndIf
@@ -6943,7 +7541,7 @@ Return
   EndIf
 
   If *nextLine = 0
-    Gosub cursor_on
+    !PED_CursorOn
     Gosub set_pointer_normal_bas
   Else
     ped\ptrCurrentSourceData\CurrentSourceLine = *nextLine
@@ -6978,12 +7576,12 @@ Return
     EndIf
   EndIf
 
-  Gosub increase_DisplayLine
+  !PED_IncreaseDisplayLine
 
   ;-- update linenumbers from here
   Gosub update_linenumbers
 
-  Gosub cursor_on
+  !PED_CursorOn
 Return
 
 
@@ -7049,7 +7647,7 @@ JMP set_blockend
 ;  log_Print{Hex$(*prevLine) + Peeks$(*prevLine+9,32)}
 ;  log_Print{Hex$(*currentLine) + Peeks$(*currentLine+9,32)}
 ;  log_Print{Hex$(*nextLine) + Peeks$(*nextLine+9,32)}
-
+ 
   If (tmpCurrentLine > 0) AND (*prevLine <> 0) ; if no previousline, we cannot move up
     If cutLine{*currentLine}
       ;log_Print{"cutted out  " + Hex$(*currentLine) + " " + Peeks$(*currentLine+9,32) }
@@ -7070,14 +7668,14 @@ JMP set_blockend
       ; check if text is scrolled
       If ped\ptrCurrentSourceData\DisplayLineOffset = 0 OR (ped\ptrCurrentSourceData\DisplayLine > Peek.w(?comWord_BoundLinesY))
         log_Print{"decrease displayline, current: " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
-        Gosub decrease_DisplayLine
-        Gosub _redraw
+        !PED_DecreaseDisplayLine
+        PED_RedrawSource{}
       Else
         ped\ptrCurrentSourceData\DisplayLineOffset - 1
         log_Print{"fullscrollup"}
         PED_ScrollVertical{#SCROLL_DOWN}
         Gosub draw_new_sourceline_top
-        Gosub _redraw
+        PED_RedrawSource{}
       EndIf
     Else
       log_Print{"*** cut not successfull ***"}
@@ -7144,7 +7742,7 @@ End Function
 
 
 .movecursorlineup:
-  Gosub cursor_off
+  !PED_CursorOff
   Gosub handle_blockmark
 
   *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
@@ -7161,14 +7759,14 @@ End Function
         ped\ptrCurrentSourceData\DisplayLineOffset - 1
       Until *_prev = linePtr
       ped\ptrCurrentSourceData\CurrentSourceLine = *_prev
-      Gosub _redraw
+      PED_RedrawSource{}
       Return
     EndIf
 
   EndIf
 
   If *prevLine = 0
-    Gosub cursor_on
+    !PED_CursorOn
     Gosub set_pointer_normal_bas
   Else
     ped\ptrCurrentSourceData\CurrentSourceLine = *prevLine
@@ -7181,8 +7779,8 @@ End Function
         Return
       EndIf
     EndIf
-    Gosub decrease_DisplayLine
-    Gosub cursor_on
+    !PED_DecreaseDisplayLine
+    !PED_CursorOn
   EndIf
 Return
 
@@ -7237,7 +7835,7 @@ Return
     Poke.w ?comWord_BlockStartX, 0
     Poke.l ?comLong_BlockEndY, indentEnd
     Poke.w ?comWord_BlockEndX, #MAX_Columns - 1
-    Gosub _redraw
+    PED_RedrawSource{}
   EndIf
   Gosub set_pointer_normal_bas
 Return
@@ -7256,7 +7854,7 @@ Return
         ; for blockmarkRemovalMode = 1 only remove blockmark
         Poke.l ?comLong_BlockEndY,$ffffFFFF
         sourceWindow\deleteMode = True
-        Gosub _redraw
+        PED_RedrawSource{}
       EndIf
     EndIf
     ped\blockmarkRemovalMode = 0
@@ -7273,7 +7871,7 @@ Return
     If PED_InsertSourceLine{*newLine}
       PED_ScrollVertical{#SCROLL_DOWN, ped\ptrCurrentSourceData\DisplayLine}
       PED_PrintCurrentSourceLine{False}
-      ;Gosub _redraw
+      ;PED_RedrawSource{}
       Gosub update_linenumbers
     Else
       error{"Couldn't insert sourceline!"}
@@ -7345,7 +7943,7 @@ Return
           Gosub draw_new_sourceline_top
         Else
           PED_ScrollVertical{#SCROLL_UP, ped\ptrCurrentSourceData\DisplayLine}
-          Gosub decrease_DisplayLine
+          !PED_DecreaseDisplayLine
         EndIf
       EndIf
     Else
@@ -7498,7 +8096,7 @@ Return
 
   SUBQ.l #1,comLong_TotalLines
   !basic
-  Gosub _redraw
+  PED_RedrawSource{}
 Return
 
 .splitlines:
@@ -7552,9 +8150,8 @@ Return
   appendLine{\CurrentSourceLine,*newLine} : \TotalLines + 1
 
   Gosub movecursorlinedown
-  Gosub _redraw
+  PED_RedrawSource{}
 Return
-
 
 .insertreturn: 
   USEPATH ped\ptrCurrentSourceData
@@ -7564,12 +8161,14 @@ Return
   EndIf
 
   sourceWindow\redrawFlag = True
-  Gosub cursor_off
+  !PED_CursorOff
 
-  log_Print{Hexw$(\QualifierStore) + "  AND 3 " + Hexw$(\QualifierStore AND $3)}     ; ToDo
-  If \QualifierStore AND $3 <> 0         ; SHIFT pressed as well ?
+  ; SHIFT pressed as well ?
+  ; if pressed, do notsplit current line at cursor pos!
+
+  If NOT !checkOption{\QualifierStore, 3}
     log_Print{"split current line, BlockEndY = " + Hex$(\BlockEndY)}
-    Goto splitlines                      ; if pressed, do notsplit current line at cursor pos!
+    Goto splitlines                      
   EndIf
 
   ;-- if autoindent, align cursor for line
@@ -7600,7 +8199,7 @@ Return
     Gosub redrawWithOffset
   EndIf
 
-  Gosub update_horizscroller
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}                                                                                                                                                                                                                
 
   If Peek.l(?viewablelines) <= \DisplayLine + 1 + Peek.w(?comWord_BoundLinesY)
     log_Print{"scroll up"}
@@ -7615,7 +8214,7 @@ Return
     tmpCurrentColumn.w = 0
     tmpCurrentLine.l = \DisplayLine + \DisplayLineOffset
     !updateBlockMark{tmpCurrentLine, tmpCurrentColumn}
-    If \StateBlockMark Then Gosub _redraw
+    If \StateBlockMark Then PED_RedrawSource{}
   Else
     log_Print{"scroll down"}
     ;-- scroll rest of source downwarts
@@ -7633,98 +8232,17 @@ Return
   !asm
   JSR jump_addhistory
   !basic
-  Gosub cursor_off
-  lineNum.l = 0 : clearColumn.b = True : Gosub gotoline
+  !PED_CursorOff
+  PED_GotoLine{0,#LINE_START}
 Return
 
 .menu_bottom:
   !asm
   JSR jump_addhistory
   !basic
-  Gosub cursor_off
-  lineNum.l = ped\ptrCurrentSourceData\TotalLines-1 : clearColumn.b = True : Gosub gotoline
+  !PED_CursorOff
+  PED_GotoLine{ped\ptrCurrentSourceData\TotalLines-1, #LINE_START}
 Return
-
-
-
-.gotoline: ;input: lineNum.l, clearColumn.b
-  If lineNum.l < 0 Then lineNum = 0
-  If lineNum > ped\ptrCurrentSourceData\TotalLines Then lineNum = ped\ptrCurrentSourceData\TotalLines - 1
-
-  Gosub cursor_off
-
-  ; same code as in routine mouseclick_in_source
-  *tempLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  tempY.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
-
-  While lineNum <> tempY
-    If lineNum > tempY
-      If *tempLine\nextLine
-        *tempLine = *tempLine\nextLine
-        tempY + 1
-      Else
-        log_Print{"GotoLine: no next line!",#log_error}
-        lineNum = ped\ptrCurrentSourceData\TotalLines - 1
-        tempY = lineNum
-      EndIf
-    Else
-      *tempLine = *tempLine\previousLine
-      tempY - 1
-    EndIf
-  Wend
-  ped\ptrCurrentSourceData\CurrentSourceLine = *tempLine
-
-  strline$ = PED_Detoke{*tempLine}
-  
-  ; TODO: move cursor to end of line
-  ;TST.b newsyntax
-  ;BEQ 'l10
-  ;  JSR syntax_new1
-  ;'l10
-  ;CLR.b newsyntax
-
-
-  ; adjust the display and offset to match the new current line
-  tmpDisplayLineOffset.l = ped\ptrCurrentSourceData\DisplayLineOffset
-
-  tempY - Peek.w(?comWord_BoundLinesY)
-  If tempY > 0
-    If ped\ptrCurrentSourceData\TotalLines > Peek.l(?viewablelines)
-      temp.l = ped\ptrCurrentSourceData\TotalLines - Peek.l(?viewablelines) + Peek.w(?comWord_BoundLinesY)
-      If lineNum > temp
-        temp - Peek.w(?comWord_BoundLinesY)
-        newDLO.l = temp
-        newDL.l = tempY - temp
-      Else
-        newDLO.l = tempY
-        newDL.l = Peek.w(?comWord_BoundLinesY)
-      EndIf
-    Else
-      newDLO.l = 0
-      newDL.l = lineNum
-    EndIf
-  Else
-    newDLO.l = 0
-    newDL.l = lineNum
-  EndIf
-  ped\ptrCurrentSourceData\DisplayLineOffset = newDLO
-  ped\ptrCurrentSourceData\DisplayLine = newDL
-  Gosub update_TextBufferOffset
-
-  If tmpDisplayLineOffset <> ped\ptrCurrentSourceData\DisplayLineOffset
-    Gosub _redraw
-  EndIf
-
-  If clearColumn
-    ped\ptrCurrentSourceData\ColumnsOffset = 0
-    ped\ptrCurrentSourceData\Column = 0
-    Gosub update_horizscroller
-    clearColumn = False
-  EndIf
-Return
-
-
-
 
 
 ; -- handle compilermenu
@@ -7823,22 +8341,19 @@ Return
     Gosub call_compiler
   End Select
 
-  log_Print{"doing stuff after compiler as finished."}
+  log_Print{"doing stuff after compiler has finished."}                                                                                                                                                                                                  
   Gosub update_title_sourcewindow
-  Gosub update_statusarea
+  PED_UpdateStatusArea{}                                                                                                                                                                                                                                 
   log_Print{"checking compiler return state " + Str$(compile_state) }
 
   ;-- handle compile error??
   Select compile_state.l
-  Case -1 : ; everything went ok, nothing to do
-  Case -2 
-    ;!asm
-    ;MOVEA.l comPtr_CurrentSourceLine,A4
-    ;JSR _redraw
-    ;!basic
-    Gosub _redraw
+  Case -1 : 
+    ; everything went ok, nothing to do
+  Case -2
+    PED_RedrawSource{}
   Default ; we have got an error line, jump to that pos
-    lineNum.l = compile_state : Gosub gotoline ; hier newsyntax = 1 f|r ans ende der Zeile springen setzen!
+    PED_GotoLine{compile_state, #LINE_END}
   End Select
 
   log_Print{"all done with compiler, returning to IDE..."}
@@ -7900,7 +8415,7 @@ Return
   ;-- handle dynamic menuentries, ( last filenames )
   If _menuitem >= #MENU_TEMPLATE AND _menuitem<#MENU_TEMPLATE+#MAX_MENUTEMPLATES
     Gosub load_template
-    Gosub update_vertscroller
+    PED_UpdateStatusArea{#STATUS_SCROLLERS}
     Return
   EndIf
 
@@ -7971,7 +8486,7 @@ Return
         GetD0 _menuitem : MOVE.l d0,D6 : Call menu_ptr
         log_Print{"menu call ended."}
         If menu_refresh
-          Gosub update_vertscroller
+          PED_UpdateStatusArea{#STATUS_SCROLLERS}
         EndIf
       EndIf
   End Select
@@ -7985,14 +8500,14 @@ Return
   Gosub calc_SourceWindowDimensions
   Gosub clear_sourcewindow
   Gosub reset_labellist
-  Gosub update_scrollers
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}
 
   Gosub analyze_loadedsource
   Gosub set_CurrentDir
 
   log_Print{"redraw of sourcewindow"}
-  Gosub draw_statusarea
-  Gosub _redraw
+  PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
+  PED_RedrawSource{}
   !asm
   ;JSR _redraw
   MOVEA.l comPtr_CurrentSourceLine,A4
@@ -8093,7 +8608,7 @@ Return
   If Peek.w(?loadAsNew)
     Gosub menu_load
     Gosub storeCurrentSourceData
-    Gosub update_vertscroller
+    PED_UpdateStatusArea{#STATUS_SCROLLERS}
   EndIf
 Return
 
@@ -8140,8 +8655,7 @@ Return
 
   Gosub read_tempprefs
 
-  Gosub draw_statusarea              ;JSR linetext
-  Gosub update_horizscroller
+  PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
 Return
 
 
@@ -8165,8 +8679,7 @@ Return
   !basic
 
   Gosub read_tempprefs
-  Gosub draw_statusarea              ;JSR linetext
-  Gosub update_horizscroller
+  PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
 Return
 
 
@@ -8190,8 +8703,7 @@ Return
   !basic
 
   Gosub read_tempprefs
-  Gosub draw_statusarea
-  Gosub update_horizscroller
+  PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
 Return
 
 .menu_copy:
@@ -8294,9 +8806,9 @@ Return
   EndIf
 
   If ped\cutMode = 0
-    Gosub cursor_off
+    !PED_CursorOff
     ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
-    Gosub _redraw                                    ; clear block mark
+    PED_RedrawSource{}                                    ; clear block mark
     ped\cutMode = 0
   EndIf
 exit_copy:
@@ -8384,12 +8896,12 @@ Return
 
     ped\ptrCurrentSourceData\Column = ped\ptrCurrentSourceData\BlockStartX
     Gosub update_currsourceline
-    Gosub _redraw
-    lineNum.l = ped\ptrCurrentSourceData\DisplayLineOffset : Gosub gotoline
+    PED_RedrawSource{}
+    PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset}
   Else
     ped\ptrCurrentSourceData\Column = ped\ptrCurrentSourceData\BlockStartX
     Gosub update_currsourceline
-    Gosub _redraw
+    PED_RedrawSource{}
   EndIf
 Return
 
@@ -8473,11 +8985,11 @@ Return
     ped\ptrCurrentSourceData\DisplayLine = 0
 
     Gosub update_currsourceline
-    Gosub _redraw
-    lineNum.l = ped\ptrCurrentSourceData\DisplayLineOffset : Gosub gotoline
+    PED_RedrawSource{}
+    PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset}
   Else
     Gosub update_currsourceline
-    Gosub _redraw
+    PED_RedrawSource{}
   EndIf
 Return
 
@@ -8728,10 +9240,9 @@ Return
   If ped\pasteMode = 0 Then PED_CloseFile{ped\sourceFileHandle}
   Poke.b ?instring,0
 
-  Gosub update_currsourceline
-  Gosub update_statusarea
+  PED_UpdateStatusArea{}                                                                                                                                                                                                                                 
   Gosub reset_Blockflag
-  Gosub _redraw
+  PED_RedrawSource{}
 Return
 
 
@@ -8927,7 +9438,7 @@ JL_0_3A1C:
   
   !basic
   Gosub  update_currsourceline
-  Gosub _redraw
+  PED_RedrawSource{}
   log_Print{"menu dublicate finished."}
 Return
 
@@ -8940,11 +9451,7 @@ Return
     Pop If : Return
   EndIf
   Gosub reset_Blockflag
-  Gosub _redraw
-Return
-
-
-.jump_to_keyword_bas:
+  PED_RedrawSource{}
 Return
 
 .jump_to_keyword:                    ; A0 = pointer zieltextzeile
@@ -8979,14 +9486,14 @@ RTS
 
   If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF     ; if blockmark is set, clear the block
     Gosub reset_Blockflag
-    Gosub _redraw
+    PED_RedrawSource{}
   EndIf
   oldBlockDims\xMin = ped\ptrCurrentSourceData\BlockStartX ; why store the old block ?? it has been killed with the clause above
   oldBlockDims\yMin = ped\ptrCurrentSourceData\BlockStartY
   oldBlockDims\xMax = ped\ptrCurrentSourceData\BlockEndX
   oldBlockDims\yMax = ped\ptrCurrentSourceData\BlockEndY
 
-  Gosub cursor_off
+  !PED_CursorOff
 
   ped\ptrCurrentSourceData\LinePosStartX = mousePos\textX + ped\ptrCurrentSourceData\ColumnsOffset
   If mousePos\textY + ped\ptrCurrentSourceData\DisplayLineOffset < ped\ptrCurrentSourceData\TotalLines
@@ -8997,7 +9504,7 @@ RTS
   ped\ptrCurrentSourceData\LinePosEndX = ped\ptrCurrentSourceData\LinePosStartX
   ped\ptrCurrentSourceData\LinePosEndY = ped\ptrCurrentSourceData\LinePosStartY
 
-  Gosub update_scrollers
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}
 
   storeDisplayLineOffset.l = ped\ptrCurrentSourceData\DisplayLineOffset
   storeColumnsOffset.w = ped\ptrCurrentSourceData\ColumnsOffset
@@ -9175,7 +9682,7 @@ Return
       EndIf
       ;log_Print{"update block ..."}
 
-      Gosub update_scrollers
+      PED_UpdateStatusArea{#STATUS_SCROLLERS}
 
       ;msg$ = "tmpX: " + Str$(tmpX) + ", tmpY: " + Str$(tmpY)
       ;log_Print{msg$}
@@ -9301,7 +9808,7 @@ Return
   tempY = tempY - ped\ptrCurrentSourceData\DisplayLineOffset
   ped\ptrCurrentSourceData\DisplayLine = tempY
   ped\ptrCurrentSourceData\CurrentSourceLine = *tempLine
-  Gosub update_TextBufferOffset
+  !PED_UpdateTextBufferOffset
 
 
   ; if a block is marked, then quit routine
@@ -9313,8 +9820,8 @@ Return
       ped\ptrCurrentSourceData\BlockEndX = ped\ptrCurrentSourceData\LinePosEndX
       ped\ptrCurrentSourceData\BlockEndY = ped\ptrCurrentSourceData\LinePosEndY
       Gosub AbsBlockDimensions_bas
-      Gosub update_horizscroller
-      Gosub _redraw
+      PED_UpdateStatusArea{#STATUS_SCROLLERS}
+      PED_RedrawSource{}
       Return
   EndIf
 
@@ -9357,19 +9864,19 @@ Return
  ;     log_Print{">> ALT pressed aswell!"}
       Gosub jump_onclick
     Else
-      Gosub _redraw
+      PED_RedrawSource{}
     EndIf
   Else
     If ped\ptrCurrentSourceData\DisplayLineOffset <> ped\ptrCurrentSourceData\DisplayLineOffsetStore
-      Gosub _redraw
+      PED_RedrawSource{}
     Else
       If ped\ptrCurrentSourceData\ColumnsOffset <> sourceWindow\ColumnsOffsetStore
-        Gosub _redraw      
+        PED_RedrawSource{}      
       Else
         If mqualifier AND #IEQUALIFIER_LALT ;$30
           Gosub jump_onclick
         Else
-          Gosub _redraw
+          PED_RedrawSource{}
         EndIf
       EndIf
     EndIf
@@ -9392,7 +9899,7 @@ Return
         If WZGadName = "GOTO_LINE"
           _line.l = Abs(WZInput("GOTO_LINE")) - 1
            If _line >= 0                                   ; fixed so we can jump to line 1  tomsmart1
-             lineNum.l = _line : clearColumn.b = True : Gosub gotoline
+             PED_GotoLine{_line, #LINE_START}
            EndIf
           exit_goto = True
         EndIf
@@ -9438,7 +9945,7 @@ RTS
     BNE.w JL_0_42D8
       !basic
       Gosub reset_Blockflag
-      Gosub _redraw
+      PED_RedrawSource{}
       !asm
       RTS
   JL_0_42D8:
@@ -9465,7 +9972,7 @@ RTS
   ;  JSR AbsBlockDimensions
   !basic
   Gosub AbsBlockDimensions_bas
-  Gosub _redraw  
+  PED_RedrawSource{}  
   !asm
 RTS
 
@@ -9762,7 +10269,7 @@ Return
 .LabelStandard:
   log_Print{"LabelStandard"}
 
-  While *nextline AND NOT labelBreak.b = False
+  While *nextline AND NOT labelBreak
     tmpStr.s = Trim$(Peek.s(*nextline + 9))
     found.b = False
 
@@ -9905,7 +10412,7 @@ Return
       addok = True
     EndIf
   EndIf
- 
+  
   If addok
     ;log_Print{"adding <" + tmpStr + "> <" + labelCaption + "> data " + Hex$(*nextline)}
   
@@ -9979,7 +10486,7 @@ RTS
   ped\ptrCurrentSourceData\DisplayLineOffset = 0
   ped\ptrCurrentSourceData\DisplayLine = 0
   ped\ptrCurrentSourceData\CurrentSourceLine = ped\ptrCurrentSourceData\FirstSourceLine
-  Gosub _redraw
+  PED_RedrawSource{}
 Goto bottom_of_mainloop
 
 
@@ -10013,7 +10520,6 @@ Return
   fontsettings\ta_Style = sourcefont_style
 
   \font = OpenDiskFont_ (fontsettings)
-  log_Print{"Font Baseline: "  +Str$(\font\tf_Baseline)}
   If \font = 0                                                  ; open standard font if config not font
     InitRastPort_ defaultrp.RastPort
     AskFont_ defaultrp,ta.TextAttr                                     ; might be better
@@ -10602,9 +11108,8 @@ RTS
         !asm
         JSR loadfile
         !basic
-        lineNum.l = Val(error_incline)-1 : Gosub gotoline
-        Gosub draw_statusarea
-        Gosub update_vertscroller
+        PED_GotoLine{Val(error_incline)-1,#LINE_END}
+        PED_UpdateStatusArea{#STATUS_REDRAW}
       End If
     End If
   Else
@@ -10878,8 +11383,8 @@ RTS
 ;RTS
 
 .update_scrollers:
-  Gosub update_horizscroller
-  Gosub update_vertscroller
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}
 Return
 
 .AbsBlockDimensions_bas:
@@ -10918,173 +11423,7 @@ Return
 RTS
 
 
-._redraw:
-  ;log_Print{"redraw, displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine)  
-  *tmpcsl.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  If *tmpcsl = 0 Then Return
 
-  *storeCurrentSourceLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  storeBlockEndY.l = ped\ptrCurrentSourceData\BlockEndY
-  ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
-  Gosub store_cursorposition
-  Gosub clear_sourcetextbuffer
-
-  CNIF #hardfold = 1
-    ped\foldNumber = PED_CheckFoldingState{}
-  CEND
-
-  *tmpcsl.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-
-  tmpdl.l = ped\ptrCurrentSourceData\DisplayLine
-  While (tmpdl > 0) AND (*tmpcsl <> 0)
-    *tmpcsl = *tmpcsl\previousLine
-
-    If *tmpcsl
-
-      CNIF #hardfold = 1
-      If Peek.w(*tmpcsl + 9) = @";@"
-        PED_CheckFoldingReverse{*tmpcsl}
-        If Peek.w(*tmpcsl + 11) = @"@0"
-          If ped\foldNumber <> 0
-            Pop If : Pop If : Pop If : Goto cont_redraw
-          EndIf
-        EndIf
-      EndIf
-      If ped\foldNumber <> 0
-        ; jump to beginning of loop without reducing tmpdl
-      EndIf
-      cont_redraw:
-      CEND
-
-      tmpdl - 1
-    EndIf
-   
-  Wend
-  ped\ptrCurrentSourceData\DisplayLine = tmpdl
-  ped\ptrCurrentSourceData\TextBufferOffset = 0
-  ped\ptrCurrentSourceData\ColumnsOffsetTmp = ped\ptrCurrentSourceData\ColumnsOffset
-
-  Gosub cursor_off
-
-  ;-- draw all the lines
-
-  For cl.l = 1 To Peek.l(?viewablelines)
-    ped\ptrCurrentSourceData\CurrentSourceLine = *tmpcsl
-
-;    CNIF #hardfold = 1
-;   'nr
-;      CMP.l #";@@1",9(a2)
-;      BNE 'l1
-;        MOVE.l #1,foldnum
-;        BRA 'do
-;     'l1
-;      CMP.l #";@@0",9(a2)
-;      BNE 'l2
-;      MOVE.l #0,foldnum
-;     'l2
-;      MOVE.l comLong_DisplayLine,d0
-;      CMP.l store_comLong_DisplayLine,d0
-;      BNE 'l3b
-;      ;MOVE.l a2,comPtr_CurrentSourceLine
-;     'l3b
-;      TST.l foldnum
-;      BEQ 'do
-;        MOVE.l (a2),d0
-;        BEQ JL_0_5902
-;          MOVE.l d0,a2
-;    BRA 'nr 
-;   'do
-;    CEND
-
-    If ped\ptrCurrentSourceData\CurrentSourceLine
-      PED_PrintCurrentSourceLine{True}
-      *tmpcsl = *tmpcsl\nextLine
-      Gosub increase_DisplayLine
-      ;log_Print{"redraw: next line at displayline " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
-    ;Else
-      ;log_Print{"redraw: no next line at displayline " + Str$(cl)}
-    EndIf
-  Next cl 
-
-  ; -- better refresh: clear bottom
-  USEPATH sourceWindow
-  If ped\ptrCurrentSourceData\DisplayLine < Peek.l(?viewablelines)
-    log_Print{"redraw: clear rest of window at displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine+1)}
-    SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
-    rectx.w = \BoxLeft
-    recty.w = \BoxTop + (ped\ptrCurrentSourceData\DisplayLine) * \font\tf_YSize
-    rectw.w = \BoxWidth
-    recth.w = \statusAreaY-1
-    If (rectw => rectx) AND (recth => recty)
-      RectFill_ \win\RPort, rectx, recty, rectw, recth
-      If pedconfig\linenumbers 
-        SetAPen_  \win\RPort, AB3Pen(#AB3_screenfill)
-        RectFill_ \win\RPort, 0, recty, rectx-3,recth
-      EndIf
-    Else
-      log_Print{"illegal area for clear bottom:",#log_error}
-      log_Print{"displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine+1) + "   viewablelines: " + Str$(Peek.l(?viewablelines)-1)}
-      log_Print{Str$(rectx) + ", " + Str$(rectw),#log_error}
-      log_Print{Str$(recty) + ", " + Str$(recth),#log_error}
-    EndIf
-  EndIf
-
-  ; -- restore saved values
-  ped\ptrCurrentSourceData\CurrentSourceLine = *storeCurrentSourceLine
-  ped\ptrCurrentSourceData\BlockEndY = storeBlockEndY
-  Gosub restore_cursorposition
-
-  draw_block_after_refresh::
-  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-    ;log_Print{"draw block (after refresh.)"}
-    bmark\xMin = ped\ptrCurrentSourceData\BlockStartX
-    bmark\yMin = ped\ptrCurrentSourceData\BlockStartY
-    bmark\xMax = ped\ptrCurrentSourceData\BlockEndX
-    bmark\yMax = ped\ptrCurrentSourceData\BlockEndY
-
-    If bmark\xMin - ped\ptrCurrentSourceData\ColumnsOffset < 0
-      bmark\xMin = 0
-    End If
-
-    If bmark\yMax >= ped\ptrCurrentSourceData\DisplayLineOffset
-      bmark\yMin - ped\ptrCurrentSourceData\DisplayLineOffset
-      If bmark\yMin < 0
-        bmark\xMin = 0
-        bmark\yMin = 0
-      EndIf
-
-      bmark\xMax - ped\ptrCurrentSourceData\ColumnsOffset
-      If bmark\xMax < 0 Then bmark\xMax = 0
-
-      bmark\yMax - ped\ptrCurrentSourceData\DisplayLineOffset
-      If bmark\yMax < 0 Then bmark\yMax = 0
-
-      If bmark\yMin < Peek.l(?viewablelines)
-        If bmark\yMax > Peek.l(?viewablelines)
-          bmark\yMax = Peek.l(?viewablelines) - 1
-        EndIf
-
-        If bmark\xMax > Peek.w(?visiblecolumns)
-          bmark\xMax = Peek.w(?visiblecolumns) - 1
-        EndIf
-
-        bmark\xMin + ped\ptrCurrentSourceData\ColumnsOffset
-        bmark\xMax + ped\ptrCurrentSourceData\ColumnsOffset
-
-        ;msg$ = Str$(bmark\xMin) + ", "
-        ;msg$ + Str$(bmark\yMin) + " - "
-        ;msg$ + Str$(bmark\xMax) + ", "
-        ;msg$ + Str$(bmark\yMax)
-        ;log_Print{msg$}
-
-        PED_DrawBlock{bmark}
-      EndIf
-    EndIf
-  EndIf
-
-  Gosub update_modifiermark
-  Gosub cursor_on
-Return
 
 ._redrawBlock:                           ;redraw blockmark
   JSR AbsDimensions
@@ -11170,7 +11509,7 @@ Return
 .draw_new_sourceline_top:
   log_Print{"print 1 line up from line " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
 
-  Gosub store_cursorposition
+  !PED_storeCursorPosition
 
   *currentline.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
   ped\ptrCurrentSourceData\TextBufferOffset = 0
@@ -11186,7 +11525,7 @@ Return
   PED_PrintCurrentSourceLine{False}
   no_prev_line:
 
-  Gosub restore_cursorposition
+  !PED_RestoreCursorPosition
 
   ; what for ? the result is returned in registers D0, D1, D6 ??
   ;TST.l comLong_BlockEndY
@@ -11200,7 +11539,7 @@ Return
 .draw_new_sourceline_bottom:
   log_Print{"print 1 line down from line " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
 
-  Gosub store_cursorposition
+  !PED_storeCursorPosition
 
   *currentline.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
   While Peek.l(?viewablelines) > (ped\ptrCurrentSourceData\DisplayLine + 1)
@@ -11208,12 +11547,12 @@ Return
     If *currentline = 0
       Pop If : Pop While : Goto no_next_line
     EndIf
-    Gosub increase_DisplayLine
+    !PED_IncreaseDisplayLine
   Wend
   PED_PrintCurrentSourceLine{False}
   no_next_line:
 
-  Gosub restore_cursorposition
+  !PED_RestoreCursorPosition
 Return
 
 
@@ -11473,21 +11812,6 @@ BRA.w JL_0_5F5A
   JL_0_60E8:
 RTS
 
-
-.increase_DisplayLine:
-  ;ADDQ.l #1,comLong_DisplayLine
-  ;MOVEQ.l #$00,D0 : MOVE.w #MAX_Columns,D0 : ADD.w D0,comWord_TextBufferOffset
-  ped\ptrCurrentSourceData\DisplayLine + 1
-  ped\ptrCurrentSourceData\TextBufferOffset + #MAX_Columns
-Return
-
-.decrease_DisplayLine:
-  ;SUBQ.l #1,comLong_DisplayLine
-  ;MOVEQ.l #$00,D0 : MOVE.w #MAX_Columns,D0 : SUB.w D0,comWord_TextBufferOffset
-  ped\ptrCurrentSourceData\DisplayLine - 1
-  ped\ptrCurrentSourceData\TextBufferOffset - #MAX_Columns
-Return
-
 .scroll_rest_of_line_left:
   USEPATH ped\ptrCurrentSourceData
   xPos.w = \Column + \ColumnsOffset
@@ -11629,7 +11953,7 @@ Return
 
 .draw_new_columns_left:
   !basic
-  Gosub store_cursorposition
+  !PED_storeCursorPosition
   !asm
 
   CLR.w comWord_ColumnsOffsetTmp
@@ -11694,12 +12018,12 @@ Return
     ADDQ.l #1,comLong_DisplayLine
   DBF D2,JL_0_67AA
   !basic
-  Gosub restore_cursorposition
+  !PED_RestoreCursorPosition
   !asm
 RTS
 
 .scroll_right:
-  Gosub cursor_off
+  !PED_CursorOff
   USEPATH sourceWindow
   dx.w = -(\font\tf_XSize * \scrollSize)
   dy.w = 0
@@ -11714,11 +12038,11 @@ RTS
   JSR draw_new_columns_left        ; draw text after scroll
   !basic
   Gosub update_blockmark_left          ; blockmark selected text after scrolling
-  Gosub cursor_on
+  !PED_CursorOn
 Return
 
 .scroll_left:
-  ;Gosub cursor_off
+  ;!PED_CursorOff
   USEPATH sourceWindow
   dx.w = \font\tf_XSize * \scrollSize
   dy.w = 0
@@ -11733,7 +12057,7 @@ Return
   JSR draw_new_columns_right
   !basic
   Gosub update_blockmark_right
-  ;Gosub cursor_on
+  ;!PED_CursorOn
 Return
 
 
@@ -11851,7 +12175,7 @@ Return
 
 .draw_new_columns_right:
   !basic
-  Gosub store_cursorposition
+  !PED_storeCursorPosition
   !asm
 
   CLR.w comWord_ColumnsOffsetTmp
@@ -11911,7 +12235,7 @@ Return
     ADDQ.l #1,comLong_DisplayLine
   DBF D2,JL_0_6AFA
   !basic
-  Gosub restore_cursorposition
+  !PED_RestoreCursorPosition
   !asm
 RTS
 
@@ -11934,7 +12258,7 @@ RTS
   ; create a first sourceline
   Gosub alloc_firstsourceline
 
-  Gosub update_scrollers
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}
 Return
 
 .free_actualsource:
@@ -11952,8 +12276,8 @@ Return
 
 .create_whole_gui:
   Gosub open_gui
-  Gosub update_scrollers
-  Gosub _redraw
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}
+  PED_RedrawSource{}
 Return
 
 .SetGuiFontToWBScreenFont:                            ;Subroutine to get the used Screenfont of the WB an set it as guifont  tomsmart1
@@ -12121,9 +12445,9 @@ Return
   If sourceWindow\WinLeft + sourceWindow\WinWidth > ped\screen\Width  Then sourceWindow\WinWidth = ped\screen\Width - sourceWindow\WinLeft
   If sourceWindow\WinTop + sourceWindow\WinHeight > ped\screen\Height Then sourceWindow\WinHeight = ped\screen\Height - sourceWindow\WinTop
 
-  DEFTYPE.Image       *img             ; An image which represents the size gadget
-  DEFTYPE.Image       *sizeimage,*rarrowimage,*larrowimage,*darrowimage,*uarrowimage
-  DEFTYPE.Gadget      *vertiprop,*horizprop,*rarrowbutton,*larrowbutton,*darrowbutton,*uarrowbutton
+  DEFTYPE.Image  *img             ; An image which represents the size gadget                                                                                                                                                                            
+  DEFTYPE.Image  *sizeimage,*rarrowimage,*larrowimage,*darrowimage,*uarrowimage                                                                                                                                                                          
+  DEFTYPE.Gadget *rarrowbutton,*larrowbutton,*darrowbutton,*uarrowbutton
   DEFTYPE.l sizew,sizeh,w,h,barh,exit
   Dim GTags.TagItem(4) ; -- Tags for getting the size gadget image
 
@@ -12211,7 +12535,7 @@ Return
 
   barh = ped\screen\WBorTop+ped\screen\RastPort\TxHeight+2
 
-  *vertiprop = NewObjectA_(0,"propgclass",Tags(@@
+  sourceWindow\vertiprop = NewObjectA_(0,"propgclass",Tags(@@                                                                                                                                                                                            
     #GA_Previous    ,*uarrowbutton,@@
     #GA_ID          ,#GID_YPROP,@@
     #GA_RelRight    ,-sizew+4,@@
@@ -12242,7 +12566,7 @@ Return
   EndIf
 
   *rarrowbutton = NewObjectA_(0,"buttongclass",Tags(@@
-    #GA_Previous     ,*vertiprop,@@
+    #GA_Previous     ,sourceWindow\vertiprop,@@                                                                                                                                                                                                          
     #GA_ID           ,#GID_RARROW,@@
     #GA_RelRight     ,-sizew-w+1,@@
     #GA_RelBottom    ,-h+1,@@
@@ -12282,7 +12606,7 @@ Return
     #GA_Image        ,*larrowimage,@@
     #TAG_END         ,0))
 
-  *horizprop = NewObjectA_(0,"propgclass",Tags(@@
+  sourceWindow\horizprop = NewObjectA_(0,"propgclass",Tags(@@                                                                                                                                                                                            
     #GA_Previous     ,*larrowbutton,@@
     #GA_ID           ,#GID_XPROP,@@
     #GA_Left         ,ped\screen\WBorLeft,@@
@@ -12302,8 +12626,7 @@ Return
     #TAG_END         ,0))
 
 
-  If (*vertiprop=0) OR( *horizprop=0)
-    dummy.l = ask{Hex$(*vertiprop),Hex$(*horizprop),!TRANS{"Info"}}
+  If (sourceWindow\vertiprop=0) OR (sourceWindow\horizprop=0)                                                                                                                                                                                            
     sourceWindow\win = 0
     Goto error_opensourcewindow                   ; bei Fehler ...
   EndIf
@@ -12367,7 +12690,7 @@ Return
   If Peek.l(?addr_menustrip) Then SetMenuStrip_ sourceWindow\win,Peek.l(?addr_menustrip)
 
   log_Print{"setting sourcefont"}
-  SetFont_ sourceWindow\win\RPort,\font
+  SetFont_ sourceWindow\win\RPort,sourceWindow\font                                                                                                                                                                                                      
 
   ; attach sourcewindow to peds process
   log_Print{"find current task to attach window to it"}
@@ -12412,7 +12735,7 @@ Return
   ; -- allocate memory for temp rastport
   *sourcerp.RastPort = PED_AllocMem{$64}
   sourceWindow\rp = *sourcerp
-  CopyMem_ \win\RPort,*sourcerp,$64
+  CopyMem_ sourceWindow\win\RPort,*sourcerp,$64                                                                                                                                                                                                          
   SetDrMd_ *sourcerp, #COMPLEMENT
 
   ;*mask.l = AllocMem(4,0)
@@ -12422,12 +12745,11 @@ Return
   ;  *sourcerp\AreaPtrn = *mask
   ;  *sourcerp\AreaPtSz = 1
   ;EndIf
-
+ 
   SetWindowTitles_ sourceWindow\win,&ped\defaultScreenTitle,-1
   Gosub clear_sourcewindow
   Gosub set_pointer_normal_bas
-  Gosub _redraw  
-  Gosub update_scrollers
+  PED_RedrawSource{}
 Return
 
 .calc_SourceWindowDimensions:
@@ -12449,7 +12771,6 @@ Return
     EndIf
     linenumberWidth.w = digits * \font\tf_XSize
     \BoxLeft = linenumberWidth + 3
-    log_Print{"boxleft: " + Str$(\BoxLeft)}
   Else
     \BoxLeft = 0
   EndIf
@@ -12486,74 +12807,6 @@ Return
 
   screen_Close{} ;/* screen close knows if it is on wb! */
 Goto exit_PED_closeall
-
-.print_actualsourceline:
-  sourceWindow\currentLine = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine + 1
-  formatstr$ = "      " : len_fmtstr.b = FLen(formatstr$)
-  formatstr$ = StrRight(Str$(sourceWindow\currentLine),len_fmtstr,48)  ; mit nullen auffuellen
-  PED_PrintStatus{formatstr$,18}
-Return
-
-.print_actualsourcecolumn:
-  sourceWindow\currentColumn = ped\ptrCurrentSourceData\ColumnsOffset + ped\ptrCurrentSourceData\Column + 1
-  formatstr$ = "   " : len_fmtstr.b = FLen(formatstr$)
-  formatstr$ = StrRight(Str$(sourceWindow\currentColumn),len_fmtstr,48)  ; mit nullen auffuellen
-  PED_PrintStatus{formatstr$,3}
-Return
-
-.print_availmem:
-  availchip.l = AvailMem_(#MEMF_CHIP) / 1024
-  availfast.l = AvailMem_(#MEMF_FAST) / 1024
-  Format "###0,000"
-  availmem$ = "CHIP " + StrPack(Str$(availchip)) + "kb"
-  availmem$ + " | FAST " + StrPack(Str$(availfast)) + "kb"
-  Format ""
-
-  PED_PrintStatus{availmem$,Len(availmem$),2}
-RTS
-
-
-.update_statusarea:
-  Gosub print_availmem
-  Gosub print_actualsourceline
-  Gosub print_actualsourcecolumn
-
-  If Peek.b(?comByte_DebugMode) Then info$ = "  Debug: On " Else info$ = "  Debug: Off"
-  If ped\DoTokenize Then info$ + "  Tokenize: On " Else info$+ "  Tokenize: Off"
-  info$ = "Total: " + Str$(ped\ptrCurrentSourceData\TotalLines) + info$
-  PED_PrintStatus{info$,74,2}
-Return
-
-.draw_statusarea:
-  log_Print{"draw statusarea"}
-  USEPATH sourceWindow
-
-  ;-- clear areas
-  SetAPen_  \win\RPort, AB3Pen(#AB3_screenfill)
-  If \statusAreaY <= \win\GZZHeight
-    RectFill_ \win\RPort, 0,\statusAreaY,\win\GZZWidth,\win\GZZHeight
-    RectFill_ \win\RPort, 0,0, \win\GZZWidth,\font\tf_YSize
-  Else
-    log_Print{"illegal area for draw statusara"}
-  EndIf
-
-  ;-- Draw separation lines
-  SetAPen_ \win\RPort, AB3Pen(#AB3_screenshine)
-  Move_ \win\RPort,0,\statusAreaY : Draw_ \win\RPort,\win\GZZWidth,\statusAreaY
-
-  SetAPen_ \win\RPort, AB3Pen(#AB3_screentext)
-  Move_ \win\RPort,0,\statusAreaY + 1 : Draw_ \win\RPort,\win\GZZWidth,\statusAreaY + 1
-  Move_ \win\RPort,0,\BoxTop-1 : Draw_ \win\RPort,\win\GZZWidth,\BoxTop-1
-
-  ; for updating the modifier flag "*"
-  Gosub draw_tabs
-
-  PED_PrintStatus{"Line:        ", 24}
-  PED_PrintStatus{"Column:    ", 11}
-
-  Gosub update_statusarea
-  ;Gosub update_debuggertoggle
-Return
 
 .free_textbuffer:
   If Peek.l(?textbufferaddr)
@@ -12607,12 +12860,12 @@ Return
     DisposeObject_ *larrowimage
     DisposeObject_ *rarrowbutton
     DisposeObject_ *rarrowimage
-    DisposeObject_ *horizprop
+    DisposeObject_ sourceWindow\horizprop                                                                                                                                                                                                                
     DisposeObject_ *darrowbutton
     DisposeObject_ *darrowimage
     DisposeObject_ *uarrowbutton
     DisposeObject_ *uarrowimage
-    DisposeObject_ *vertiprop
+    DisposeObject_ sourceWindow\vertiprop                                                                                                                                                                                                                
     FreeScreenDrawInfo_ ped\screen,sourceWindow\drawinfo
 
     ; -- clear rastport for source area
@@ -12677,61 +12930,29 @@ Return
 RTS
 
 
- 
-.store_cursorposition:
-  ;MOVE.w comWord_Column,comWord_StoreColumn
-  ;MOVE.l comLong_DisplayLine,comLong_StoreDisplayLine
-  ;MOVE.w comWord_TextBufferOffset,comWord_StoreTextBufferOffset
-  USEPATH ped\ptrCurrentSourceData
-  \StoreColumn = \Column
-  \StoreDisplayLine = \DisplayLine
-  \StoreTextBufferOffset = \TextBufferOffset
-Return
-
-.restore_cursorposition:
-  ;MOVE.w comWord_StoreColumn,comWord_Column
-  ;MOVE.l comLong_StoreDisplayLine,comLong_DisplayLine
-  ;MOVE.w comWord_StoreTextBufferOffset, comWord_TextBufferOffset
-  USEPATH ped\ptrCurrentSourceData
-  \Column = \StoreColumn
-  \DisplayLine = \StoreDisplayLine
-  \TextBufferOffset = \StoreTextBufferOffset
-Return
 
 .clear_sourcewindow:
   ; -- clear the codelines in window
   USEPATH sourceWindow
-  SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+  SetAPen_ \win\RPort,AB3Pen(#AB3_screenfill)                                                                                                                                                                                                            
   RectFill_ \win\RPort,\BoxLeft,\BoxTop,\BoxWidth,\statusAreaY-1
 
   ; draw vertical line to seperate numbers and source code
   If pedconfig\linenumbers
     lx.w = \BoxLeft - 1
-    SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
+    SetAPen_ \win\RPort,AB3Pen(#AB3_screenfill)                                                                                                                                                                                                          
     RectFill_ \win\RPort,0,\BoxTop,lx,\statusAreaY-1
 
     lx - 1
-    SetAPen_ \win\RPort,AB3Pen(#AB3_screentext)
+    SetAPen_ \win\RPort,AB3Pen(#AB3_screenshine)                                                                                                                                                                                                         
     Move_ \win\RPort,lx, \BoxTop
     Draw_ \win\RPort,lx, \statusAreaY-1
   EndIf
 
-  Gosub draw_statusarea
-  !asm
-  JSR clear_sourcetextbuffer
-  !basic
+  PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
+  PED_ShowMessage{""}                                                                                                                                                                                                                                    
+  PED_ClearSourceTextbuffer{}
 Return
-
-.clear_sourcetextbuffer:
-  ; -- clear current text memoryarea
-  MOVEA.l textbufferaddr,A0
-  MOVE.w #MAX_Columns,D0 : LSR.w #1,D0
-  MOVE.l viewablelines,D1 : MULS d0,d1 : SUBQ.w #1,D1
-
-  JL_0_76A6:
-    MOVE.w #$2020,(A0)+
-  DBF D1,JL_0_76A6
-RTS
 
 .ScrollDelay:
   CNIF #slowdown <> 0
@@ -12745,114 +12966,9 @@ RTS
   CEND
 Return
 
-.update_TextBufferOffset:                                    ; calculate Textbufferoffset
-  ;MOVE.l comLong_DisplayLine,D1 : MULU #MAX_Columns,D1 : MOVE.w D1,comWord_TextBufferOffset
-  ped\ptrCurrentSourceData\TextBufferOffset = ped\ptrCurrentSourceData\DisplayLine * #MAX_Columns
-Return
-
-.cursor_on:
-  If sourceWindow\cursorState = False Then Gosub switch_cursordisplay
-Return
-
-.cursor_off:
-  If sourceWindow\cursorState = True Then Gosub switch_cursordisplay
-Return
-
-.switch_cursordisplay:
-  sourceWindow\cursorState = NOT sourceWindow\cursorState
-  Gosub draw_cursor
-Return
-
-
-.draw_cursor:
-  If ped\ptrCurrentSourceData\DisplayLine > Peek.l(?viewablelines)-1
-    ped\ptrCurrentSourceData\DisplayLine = Peek.l(?viewablelines)-1
-  EndIf
-
-  Select pedconfig\cursorStyle
-  Case #AB3_cursorStyle_line
-    xmin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
-    ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine
-    xmax.w = xmin + 1
-    ymax.w = ymin + \font\tf_YSize - 1
-
-  Case #AB3_cursorStyle_underline
-    xmin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
-    ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine  + \font\tf_YSize - 1  - 1
-    xmax.w = xmin + \font\tf_XSize - 1
-    ymax.w = ymin + 1
-
-  Default
-    xmin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
-    ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine
-    xmax.w = xmin + \font\tf_XSize - 1
-    ymax.w = ymin + \font\tf_YSize - 1
-  End Select
-
-  If (xMax => xMin) AND (yMax => yMin)
-    ;SetAPen_ \win\RPort, AB3Pen(#AB3_screenfill)
-    ;SetBPen_ \win\RPort, AB3Pen(#AB3_cbackground)
-    ;SetAPen_ *sourcerp, AB3Pen(#AB3_screenfill)
-    ;SetBPen_ *sourcerp, AB3Pen(#AB3_cbackground)
-    ;SetDrMd_ *sourcerp,#COMPLEMENT
-    *sourcerp\Mask = %11
-    RectFill_ *sourcerp,xmin,ymin,xmax,ymax
-    ;log_Print{"update cursor " + Str$(sourceWindow\cursorState)}
-  Else
-    log_Print{"illegal area for draw cursor",#log_error}
-  EndIf
-Return
-
-
-
-.update_vertscroller:
-  Gosub print_actualsourceline
-  slider_top.l     = ped\ptrCurrentSourceData\DisplayLineOffset
-  slider_total.l   = ped\ptrCurrentSourceData\TotalLines
-  slider_visible.l = Peek.l(?viewablelines)
-
-  ;log_Print{"update vertprop"}
-  ;/ scale
-  If slider_total > 0
-    If slider_total >= #max_slider_res
-      !mul48f{slider_visible,#max_slider_res,slider_total,slider_visible}  : If slider_visible<1 Then slider_visible=1
-      !mul48f{slider_top    ,#max_slider_res,slider_total,slider_top}
-      slider_total   = #max_slider_res
-    EndIf
-    SetGadgetAttrsA_ *vertiprop,sourceWindow\win,0,Tags(@@
-                                            #PGA_Total  ,slider_total,@@
-                                            #PGA_Top    ,slider_top,@@
-                                            #PGA_Visible,slider_visible)
-  End If
-Return
-
-.update_modifiermark:
-
-  If ped\ptrCurrentSourceData\SourceChanged  <> oldSourceChanged.w
-      Gosub draw_statusarea
-      oldSourceChanged = ped\ptrCurrentSourceData\SourceChanged
-  EndIf
-Return
-
-.update_horizscroller:
-  xpot.l = ped\ptrCurrentSourceData\Column
-  xact.l = ped\ptrCurrentSourceData\ColumnsOffset + ped\ptrCurrentSourceData\Column + 1
-  xvis.w = \visibleColumns / #MAX_Columns
-  SetGadgetAttrsA_ *horizprop,sourceWindow\win,0,Tags(#PGA_VertPot,-1,@@
-                                            #PGA_VertBody,1,@@
-                                            #PGA_HorizPot,xpot,@@
-                                            #PGA_HorizBody,xvis,@@
-                                            #PGA_Top,xact,@@
-                                            #PGA_Total,#MAX_Columns,@@
-                                            #TAG_END,0)
-
-  Gosub print_actualsourcecolumn
-  Gosub update_modifiermark
-Return
-
 .redrawWithOffset:
   log_Print{"redrawWithOffset"}
-  Gosub store_cursorposition
+  !PED_storeCursorPosition
   ped\ptrCurrentSourceData\TextBufferOffset = 0
   ped\ptrCurrentSourceData\DisplayLine = 0
   ped\ptrCurrentSourceData\Column = 0
@@ -12887,8 +13003,8 @@ Return
 
   SF noDetokenizing
    
-  Gosub restore_cursorposition
-  Gosub draw_block_after_refresh
+  !PED_RestoreCursorPosition
+  PED_RedrawSource{0}
 Return
 
 
@@ -13024,14 +13140,11 @@ RTS
   exit_eventloop.b = False
 
   While exit_eventloop = False
-    ;Gosub handle_blockmark      ; if new editmode, delete a marked block if insertchar or deletechar happens                                                                                                                                            
-    ;CLR.b blockmark_removal
-    Gosub update_horizscroller
-;    Gosub print_actualsourceline
+    ;Gosub handle_blockmark      ; if new editmode, delete a marked block if insertchar or deletechar happens
 
     ;-- handle Window events
     If sourceWindow\win <> 0
-      Gosub eventHandler
+      Gosub eventHandler 
     EndIf
 
     ; -- update functioncompletion and close any subwindows on key-press
@@ -13078,7 +13191,7 @@ Return
     Poke.b lineaddr + tempColumn, Peek.b(lineaddr + tempColumn - 1)
   Wend
 
-  Gosub cursor_off
+  !PED_CursorOff
 
   PED_ScrollHorizontal{#SCROLL_RIGHT, #SCROLL_CURRENT_LINE}
 
@@ -13201,7 +13314,6 @@ Return
 
 
 .startguide:
-  !basic
   log_Print{"startguide"}
   strline$ = PED_Detoke{ped\ptrCurrentSourceData\CurrentSourceLine}
   actualword$ = PED_GetWordAtPos{strline$, ped\ptrCurrentSourceData\Column,True}
@@ -13212,8 +13324,7 @@ Return
   EndIf
 
   PED_ShowMessage{""}
-  !asm
-RTS
+Return                                                                                                                                                                                                                                                   
 
 
 .immediate_syntaxhelp:
@@ -13633,7 +13744,7 @@ Return
 
 .updateSourceLine:        ; CursorXTarget: new Cursorposition
   log_Print{"update sourceline and moving cursor to x:" + Str$(CursorXTarget)}
-  Gosub cursor_off
+  !PED_CursorOff
 
   lineaddr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
   storcol.w = ped\ptrCurrentSourceData\Column
@@ -13647,7 +13758,7 @@ Return
 
   newColumn.w = CursorXTarget : Gosub moveCursorToX
 
-  Gosub cursor_on
+  !PED_CursorOn
 Return
 
 
@@ -13661,7 +13772,7 @@ Return
   ;If Peek.b(?nodelete) = 0
   If sourceWindow\deleteMode = False
     ; -- scroll to left by 1
-    Gosub cursor_off
+    !PED_CursorOff
     Gosub scroll_rest_of_line_left
 
     ; -- move textbuffer left by 1 and append a space
@@ -13713,7 +13824,7 @@ Return
 Return
 
 .moveCursorToX:     ; newColumn: new X-Position
-  Gosub cursor_off
+  !PED_CursorOff
   log_Print{"move cursor to column: "  + Str$(newColumn.w)}
   oldColumnsOffset.w = ped\ptrCurrentSourceData\ColumnsOffset
 
@@ -13741,11 +13852,11 @@ Return
     Gosub redrawWithOffset
   EndIf
 
-  Gosub cursor_on
+  !PED_CursorOn
 Return
 
 .moveCursorLeft:
-  Gosub cursor_off
+  !PED_CursorOff
   If ped\ptrCurrentSourceData\Column > \boundLinesX
     ped\ptrCurrentSourceData\Column - 1
     Goto exit_cursorleft
@@ -13759,7 +13870,7 @@ Return
     If ped\ptrCurrentSourceData\ColumnsOffset = 1
       ped\ptrCurrentSourceData\ColumnsOffset = 0
       Gosub scroll_right
-      Gosub _redraw
+      PED_RedrawSource{}
     Else
       If ped\ptrCurrentSourceData\Column > 0
         ped\ptrCurrentSourceData\Column - 1
@@ -13768,11 +13879,11 @@ Return
   EndIf
 
   exit_cursorleft:
-  Gosub cursor_on
+  !PED_CursorOn
 Return
 
 .moveCursorRight:
-  Gosub cursor_off
+  !PED_CursorOff
   If ped\ptrCurrentSourceData\ColumnsOffset + \visibleColumns => #MAX_Columns
     If ped\ptrCurrentSourceData\Column < \visibleColumns-1
       ped\ptrCurrentSourceData\Column + 1
@@ -13790,7 +13901,7 @@ Return
   EndIf
 
   exit_cursorright:
-  Gosub cursor_on
+  !PED_CursorOn
 Return
 
 ;.AJL_0_7FCC:
@@ -13898,20 +14009,18 @@ Return
 Return
 
 .resize_sourcewindow:
-  Gosub cursor_off
+  !PED_CursorOff
   Gosub free_textbuffer
   Gosub calc_SourceWindowDimensions
   Gosub allocate_textbuffer
   Gosub clear_sourcewindow
-  Gosub _redraw
-  Gosub cursor_on
+  PED_RedrawSource{}
+  !PED_CursorOn
 Return
 
 
 .eventHandler:
-;  log_Print{"check message"}
   pedEventClass.l = PED_GetMessage{True}
-;  log_Print{"check message end"}
 
 ;  While pedEventClass <> 0
 
@@ -13989,9 +14098,9 @@ CEND
 
 
 .update_debuggertoggle:
-  ped\debugmode = Peek.b(?comByte_DebugMode)
-  GTSetMenuChecked 0,4,12,ped\debugmode
-  ;log_Print{"updated Debugstatus: " + Str$(ped\debugmode)}
+  ped\debugMode = Peek.b(?comByte_DebugMode)
+  GTSetMenuChecked 0,4,12,ped\debugMode                                                                                                                                                                                                                  
+  ;log_Print{"updated Debugstatus: " + Str$(ped\debugMode)}                                                                                                                                                                                              
 Return
 
 
@@ -14027,10 +14136,10 @@ Return
 
   Case #IDCMP_ACTIVEWINDOW
     Use Window 0
-    Gosub cursor_on
+    !PED_CursorOn
 
   Case #IDCMP_INACTIVEWINDOW
-    Gosub cursor_off
+    !PED_CursorOff
 
   Case #IDCMP_GADGETDOWN
     Gosub handle_event_gadget
@@ -14082,7 +14191,7 @@ Return
     If blinkcount >= pedconfig\blinkrate
       blinkcount = 0
       ;log_Print{"blink " + Str$(Peek.b(?state_of_cursor))}
-      Gosub switch_cursordisplay
+      PED_SwitchCursor{}
     EndIf
   EndIf
 
@@ -14196,15 +14305,10 @@ Return
       Repeat
         If pedMessage\_Class <> 0
           If pedMessage\_Class <> #IDCMP_GADGETUP
-            GetAttr_ #PGA_Top,*horizprop, &pos_hprop
-            ;GetD0 pos_hprop : MOVE.l d0,-(a7)
-            ;!asm
-            ;MOVE.l (a7)+,D1
-            ;JSR moveCursorToX
-            ;!basic
+            GetAttr_ #PGA_Top, sourceWindow\horizprop, &pos_hprop                                                                                                                                                                                        
             newColumn.w = pos_hprop : Gosub moveCursorToX
-            ;Gosub cursor_on
-            Gosub update_statusarea
+            ;!PED_CursorOn
+            PED_UpdateStatusArea{#STATUS_CURSOR|#STATUS_SCROLLERS}                                                                                                                                                                                       
           Else
             *g.Gadget = pedMessage\_IAddress
             ;If pedMessage\_Class = #IDCMP_GADGETUP AND pedMessage\_Code <> 0 OR pedMessage\_Window<>0
@@ -14213,7 +14317,7 @@ Return
         EndIf
         PED_GetMessage{False}
       Until exit_gadgetloop = True
-      Gosub cursor_on
+      !PED_CursorOn
 
     Case #GID_YPROP
       If ped\ptrCurrentSourceData\DisplayLineOffset < ped\ptrCurrentSourceData\TotalLines
@@ -14224,7 +14328,7 @@ Return
             *g.Gadget = pedMessage\_IAddress
 
             If pedMessage\_Class <> #IDCMP_GADGETUP
-              GetAttr_ #PGA_Top,*vertiprop,&slider_top.l
+              GetAttr_ #PGA_Top,sourceWindow\vertiprop,&slider_top.l                                                                                                                                                                                     
               totallines.l = ped\ptrCurrentSourceData\TotalLines
               If totallines >= #max_slider_res
                 !mul48f{slider_top,totallines,#max_slider_res,realline.l}
@@ -14235,9 +14339,9 @@ Return
 
               If Peek.l(?comWord_LinePosStartX) <> realline
                 Poke.l ?comWord_LinePosStartX, realline
-                lineNum.l = realline : Gosub gotoline
-                Gosub cursor_on
-                Gosub update_statusarea
+                PED_GotoLine{realline}
+                !PED_CursorOn
+                PED_UpdateStatusArea{#STATUS_CURSOR|#STATUS_SCROLLERS}
               EndIf
 
               ;If pedMessage\_Class = #IDCMP_RAWKEY Then exit_gadgetloop = True
@@ -14252,7 +14356,7 @@ Return
           PED_GetMessage{False}
         Until exit_gadgetloop = True
         ;log_Print{"exit proploop"}
-        Gosub cursor_on
+        !PED_CursorOn
       EndIf
     End Select
 Return
@@ -14447,7 +14551,7 @@ Return
     Case #IEQUALIFIER_CONTROL                   ; ctrl
       log_Print{"control"}
       If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-        Gosub cursor_off
+        !PED_CursorOff
         Gosub menu_blockuntab
       Else
         Gosub moveCursorToBeginOfWord
@@ -14459,6 +14563,7 @@ Return
       ped\blockmarkRemovalMode = 1
       Gosub moveCursorLeft
     End Select
+    PED_UpdateStatusArea{#STATUS_SCROLLERS}                                                                                                                                                                                                              
 
     Pop Select: Return
 
@@ -14493,7 +14598,7 @@ Return
     Case #IEQUALIFIER_CONTROL        ; $8 tab the marked block
       log_Print{"control"}
       If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-        Gosub cursor_off
+        !PED_CursorOff
         Gosub menu_blocktab
       Else
         Gosub moveCursorToEndOfWord
@@ -14505,6 +14610,7 @@ Return
 
     End Select
 
+    PED_UpdateStatusArea{#STATUS_SCROLLERS}                                                                                                                                                                                                              
     Pop Select : Return
 
   End Select
@@ -14520,7 +14626,7 @@ Return
     log_Print{"CONTROL ..."}
     Select last_vankey
     Case $15                        ; ctrl-u
-      Gosub _redraw
+      PED_RedrawSource{}
 
     Case $0e                        ; ctrl-n
       a$ = "newtype ." : Gosub insertstring
@@ -14544,7 +14650,7 @@ Return
 
     Case $05                        ; ctrl-e
       a$ = "end if "
-      Gosub cursor_off
+      !PED_CursorOff
       Gosub insertstring
 
     Case $03                        ; ctrl-c
@@ -14617,9 +14723,9 @@ Return
     End Select
 
     If goto_line
-      Gosub cursor_off
-      lineNum.l = goto_line : Gosub gotoline
-      Gosub cursor_on
+      !PED_CursorOff
+      PED_GotoLine{goto_line}
+      !PED_CursorOn
     EndIf
     Pop Select : Return
   End Select
@@ -14842,7 +14948,7 @@ Return
         tmpvalue = tmpvalue - Peek.l(?viewablelines)
       EndIf
       log_Print{"going to line: " + Str$(tmpvalue)}
-      lineNum.l = tmpvalue : Gosub gotoline
+      PED_GotoLine{tmpvalue}
 
     Case #IEQUALIFIER_CONTROL  ; $8008
       log_Print{"control"}
@@ -14898,7 +15004,7 @@ Return
       log_Print{"current line: " + Str$(lineNum)}
       lineNum + Peek.l(?viewablelines)
       If lineNum > ped\ptrCurrentSourceData\TotalLines Then lineNum = ped\ptrCurrentSourceData\TotalLines - 1
-      Gosub gotoline
+      PED_GotoLine{lineNum}
 
     Case #IEQUALIFIER_CONTROL  ; $8008: jump to bottomline
       log_Print{"control"}
@@ -14932,25 +15038,19 @@ Return
 ;Scroll Sourcetext at MouseWheelY events  tomsmart1
 .wheel_down:
   Gosub storeline_bas
-  Gosub cursor_off
-
-  lineNum.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine + pedconfig\wheelStep
-  Gosub gotoline
-
-  Gosub update_vertscroller
-  Gosub cursor_on
+  !PED_CursorOff
+  PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine + pedconfig\wheelStep}
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}
+  !PED_CursorOn
 Return
 
 
 .wheel_up:
   Gosub storeline_bas                                            ; added to save the changes of the corrent line
-  Gosub cursor_off
-
-  lineNum.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine - pedconfig\wheelStep
-  Gosub gotoline
-
-  Gosub update_vertscroller                                  ; update position of the vertical scroller
-  Gosub cursor_on
+  !PED_CursorOff
+  PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine - pedconfig\wheelStep}
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}                                  ; update position of the vertical scroller
+  !PED_CursorOn
 Return
 
 .handle_event_mousemove:
@@ -15154,8 +15254,7 @@ Return
     If tedfile >= 0
 
       If file_GetLength{tedfile} = 1280 ; old format since ab2
-        log_Print{"read old rememberfiles"}
-        ;file_ReadMem{tedfile,Peek.l(?AL_0_BFE6),$500}
+        log_Print{"reading old rememberfiles format and converting it."}                                                                                                                                                                                 
         tmpfile$ = SPACE$($40)
         tmppath$ = SPACE$($60)
         For h = 0 To 4
@@ -15166,7 +15265,6 @@ Return
           ;log_Print{"["+rememberfiles$(h)+"]"}
         Next h
       Else
-        log_Print{"loading new remember format."}
         For h = 0 To 4
           rememberfiles$(h) = file_ReadString{tedfile}
         Next h
@@ -15234,7 +15332,7 @@ Return
   loadsourcefilename.s = rememberfiles$(_rememberitem)
   Gosub load_source
   Gosub analyze_loadedsource
-  Gosub draw_statusarea
+  PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
 Return
 
 .set_remembered_filename:
@@ -16607,8 +16705,7 @@ RTS
         !asm
         JSR loadfile
         !basic
-        Gosub update_vertscroller
-        Gosub update_statusarea
+        PED_UpdateStatusArea{}                                                                                                                                                                                                                           
         Gosub set_pointer_normal_bas
         *currLine = ped\ptrCurrentSourceData\CurrentSourceLine
         ;-- jump upwards and search again in file ...
@@ -16626,10 +16723,10 @@ Return
   !basic
   lineNum.l = PutRegD0
   If lineNum < ped\ptrCurrentSourceData\TotalLines
-    Gosub cursor_off
-    clearColumn.b = True: Gosub gotoline
-    Gosub update_vertscroller
-    Gosub cursor_on
+    !PED_CursorOff
+    PED_GotoLine{lineNum, #LINE_START}
+    PED_UpdateStatusArea{#STATUS_SCROLLERS}
+    !PED_CursorOn
   EndIf
   !asm
 RTS
@@ -17444,7 +17541,7 @@ RTS
                 tempph + 1
               Wend
               log_Print{Str$(tempph) + " spaces after last char"}
-              Gosub cursor_off
+              !PED_CursorOff
               For i = 1 To tempph
                 Gosub deletechar
               Next i
@@ -18451,7 +18548,7 @@ Return
             Next
             Gosub diag_close
             Gosub activatesourcewindow
-            Gosub cursor_off
+            !PED_CursorOff
 
             For i = 1 To 12
               a$ = a$ + diag_val$(i)
@@ -18482,7 +18579,7 @@ Return
 
             ped\ptrCurrentSourceData\ColumnsOffset = tmpColumnsOffset
             ped\ptrCurrentSourceData\Column = tmpColumn
-            Gosub cursor_on
+            !PED_CursorOn
 
         Case "diagclear"
           For i = 1 To 12
@@ -18611,7 +18708,7 @@ Return
       Pop If
       Goto exit_PED_closeall
     EndIf
-    Gosub cursor_on
+    !PED_CursorOn
   EndIf
  
   FlushEvents
@@ -18751,10 +18848,10 @@ Return
               !basic
             EndIf
             Gosub storeline_bas
-            Gosub cursor_off
+            !PED_CursorOff
             Gosub menu_findnext
-            Gosub update_vertscroller
-            Gosub cursor_on
+            PED_UpdateStatusArea{#STATUS_SCROLLERS}
+            !PED_CursorOn
 
             ped\caseSensitive = casesens_backup          ; restore searchmode
 
@@ -18784,16 +18881,9 @@ Return
     Use Window WZID("WIN_LABELS")
     WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_labels
     Gosub storeline_bas
-    i = WZListData (list_labels,LabelList_NewSelectItemNumber)
-    !asm
-    MOVEM.l a0-a6/d1-d7,-(a7)
-    MOVEA.l comPtr_CurrentSourceLine,A4
-    MOVE.l d0,a0
-    ;JSR storeline
-    JSR jump_to_keyword
-    MOVEM.l (a7)+,a0-a6/d1-d7
-    !basic
-    Gosub cursor_on
+    lineAddress.l = WZListData (list_labels,LabelList_NewSelectItemNumber)
+    PED_GotoLineAddress{lineAddress}
+    !PED_CursorOn
   End If
 Return
 
@@ -18805,25 +18895,17 @@ Return
     Use Window WZID("WIN_LABELS")
     WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_labels
     Gosub storeline_bas
-    i = WZListData (list_labels,LabelList_NewSelectItemNumber)
-    !asm
-    MOVEM.l a0-a6/d1-d7,-(a7)
-    MOVEA.l comPtr_CurrentSourceLine,A4
-    MOVE.l d0,a0
-    ;JSR storeline
-    JSR jump_to_keyword
-    MOVEM.l (a7)+,a0-a6/d1-d7
-    !basic
-    Gosub cursor_on
+    lineAddress.l = WZListData (list_labels,LabelList_NewSelectItemNumber)
+    PED_GotoLineAddress{lineAddress}    
+    !PED_CursorOn
   End If
 Return
 
 .storeline_bas:
-  log_Print{"storeline"}
   If ped\ptrCurrentSourceData\KeyBeforeReturn = 0 Then Return
   ped\ptrCurrentSourceData\SourceChanged = $FFFF
 
-  Gosub cursor_off
+  !PED_CursorOff
 
   ; -- draw selecting block if existing
   SF comByte_StateBlockMark
@@ -18865,7 +18947,6 @@ Return
   EndIf
 
   ped\ptrCurrentSourceData\KeyBeforeReturn = 0
-  MOVE.l comPtr_CurrentSourceLine,a4
 Return
 
 
@@ -18923,123 +19004,10 @@ Return
   EndIf
 Return                                                                        ; replaced RTS with Return  tomsmart1
 
-
-.draw_tabs:
-  USEPATH sourceWindow
-
-  xpos_text.w = #filenamepos * \font\tf_XSize
-  ypos_text.w = \statusAreaY + 4 + \font\tf_Baseline
-
-  ;-- clear statusarea
-  ;-- statusarea has to seperator lines, a white and a black one
-  SetAPen_ \win\RPort, AB3Pen(#AB3_screenfill)
-  RectFill_ \win\RPort, xpos_text - 4, \statusAreaY + 2, \win\Width - \win\BorderRight,\statusAreaY + 2 + \font\tf_YSize + 1
-
-  ; -- draw all sourcefilename tabs
-  If ped\firstSourceEntry
-    *fileEntry.sourceEntry = ped\firstSourceEntry
-
-    Repeat
-      bevelsize.w = #bevelsize - 1
-      Gosub draw_bevel
-
-      xpos_text = xpos_text + #bevelsize * \font\tf_XSize
-
-      *fileEntry = *fileEntry\nextEntry
-    Until *fileEntry = 0
-  EndIf
-
-  SetBPen_ \win\RPort,AB3Pen(#AB3_cbackground)
-  SetFont_ \win\RPort,\font
-  SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
-Return
-
-
-.draw_bevel:
-  If *fileEntry = ped\currentSourceEntry
-    stylestate.w = #FSF_BOLD
-    fcol.w = AB3Pen(#AB3_screenshine)    ; selected
-    bcol.w = AB3Pen(#AB3_screenback)
-    bevel_recessed.b = True
-  Else
-    stylestate.w = #FS_NORMAL
-    fcol.w = AB3Pen(#AB3_screenshine)    ; unselected
-    bcol.w = AB3Pen(#AB3_screenback)
-    bevel_recessed.b = False
-  EndIf
-
-
-  xsa.l = \font\tf_XSize / 2
-  xsb.l = \font\tf_XSize - xsa
-
-  bx1.l = xpos_text - xsa
-  by1.l = \statusAreaY + 2
-  bx2.l = \font\tf_XSize * #bevelsize + bx1 - 1
-  by2.l = \font\tf_YSize + 2 + by1
-
-  cp_x.l = \win\RPort\cp_x
-  cp_y.l = \win\RPort\cp_y
-
-  If bevel_recessed = False
-    SetAPen_ \win\RPort,AB3Pen(#AB3_screenback)
-    RectFill_ \win\RPort,bx1 + 1,by1 + 1, bx2, by2
-    SetAPen_ \win\RPort,AB3Pen(#AB3_screentext)
-    Move_ \win\RPort,bx1,by1
-    Draw_ \win\RPort,bx1,by2
-    Draw_ \win\RPort,bx2,by2
-    Draw_ \win\RPort,bx2,by1
-  Else
-    SetAPen_ \win\RPort,AB3Pen(#AB3_screenback)
-    RectFill_ \win\RPort,bx1 + 1,by1, bx2, by2
-    SetAPen_ \win\RPort,AB3Pen(#AB3_screenshine)
-    Move_ \win\RPort,bx1,by1
-    Draw_ \win\RPort,bx1,by2 + 1
-    Draw_ \win\RPort,bx2,by2 + 1
-    Draw_ \win\RPort,bx2,by1
-    cp_y + 1
-  EndIf
-  Move_ \win\RPort,cp_x,cp_y
-
-  ;-- print the bevel caption
-  SetAPen_ \win\RPort, fcol
-  SetBPen_ \win\RPort, bcol
-
-  If stylestate = #FSF_BOLD
-    SetFont_ \win\RPort,\fontB
-  Else
-    SetFont_ \win\RPort,\font
-  EndIf
-  SetSoftStyle_ \win\RPort,stylestate.w,#FSF_BOLD
-
-  modifiedFlag.b = False
-  tmp_string = Peek.s(*fileEntry + 8 + $D4)
-  If *fileEntry = ped\currentSourceEntry
-    modifiedFlag = ped\ptrCurrentSourceData\SourceChanged
-  Else
-    modifiedFlag = Peek.w(*fileEntry + 8 + $14B)  ; $143
-  EndIf
-  If modifiedFlag Then tmp_string = "*" + tmp_string
-  If tmp_string = "" Then tmp_string = "unnamed" 
-
-  ; -- indicator for more chars
-  If FLen(tmp_string) > bevelsize
-    wpx.w = \win\RPort\cp_x + 1
-    wpy.w = \win\RPort\cp_y - \win\RPort\TxBaseline + \win\RPort\TxHeight / 2 - 1
-    For wp.b = -4 To 4 Step 2
-      Move_ \win\RPort, wpx, wpy + wp
-      Draw_ \win\RPort, wpx + 2, wpy  + wp
-    Next wp
-  EndIf 
-
-  tmp_string = StrLeft(tmp_string, bevelsize)
-  Move_ \win\RPort, xpos_text, ypos_text
-  Text_ \win\RPort, &tmp_string, FLen(tmp_string)
-Return
-
-
 .check_mouse_in_statusarea:
   If pedMessage\_Code = #SELECTDOWN
 
+    USEPATH sourceWindow                                                                                                                                                                                                                                 
     If ped\firstSourceEntry
       mx.w = pedMessage\_MouseX - \win\BorderLeft
       my.w = pedMessage\_MouseY - \win\BorderTop
@@ -19067,7 +19035,7 @@ Return
               ;Gosub set_tedlibbase_bas
               If pedMessage\_Qualifier AND #IEQUALIFIER_CONTROL
                 log_Print{"control: create exe"}
-                Gosub cursor_off
+                !PED_CursorOff
                 !asm
                 MOVEM.l    D2-D7/A1-A6,-(A7)
                 MOVEQ.l    ##MENU_SAVECREATEEXE,D6
@@ -19077,7 +19045,7 @@ Return
               EndIf
               If pedMessage\_Qualifier AND (#IEQUALIFIER_LALT|#IEQUALIFIER_RALT)
                 log_Print{"alt: compile & run"}
-                Gosub cursor_off
+                !PED_CursorOff
                 !asm
                 MOVEM.l    D2-D7/A1-A6,-(A7)
                 MOVEQ.l    ##MENU_COMPILERUN,D6
@@ -19477,45 +19445,45 @@ RTS
             If StrUpper(findStrStore.s) <> StrUpper(find_findStr)
               findStrStore = find_findStr
               Gosub storeline_bas
-              Gosub cursor_off
+              !PED_CursorOff
               Gosub menu_findnext
-              Gosub update_vertscroller
-              Gosub cursor_on
+              PED_UpdateStatusArea{#STATUS_SCROLLERS}
+              !PED_CursorOn
               FlushEvents : Delay_ 1
             End If
 
           Case "FIND_NEXT"
             Gosub storeline_bas
-            Gosub cursor_off
+            !PED_CursorOff
             Gosub menu_findnext
-            Gosub update_vertscroller
-            Gosub cursor_on
+            PED_UpdateStatusArea{#STATUS_SCROLLERS}
+            !PED_CursorOn
             Gosub activatesourcewindow                ; added to make source win active that edit is possible  tomsmart1
 
           Case "FIND_PREVIOUS"
             Gosub storeline_bas
-            Gosub cursor_off
+            !PED_CursorOff
             Gosub menu_findprevious
-            Gosub update_vertscroller
-            Gosub cursor_on
+            PED_UpdateStatusArea{#STATUS_SCROLLERS}
+            !PED_CursorOn
             Gosub activatesourcewindow
 
           Case "FIND_REPLACE"
             Gosub storeline_bas
-            Gosub cursor_off
+            !PED_CursorOff
             Gosub menu_replace
-            Gosub cursor_on
+            !PED_CursorOn
             Gosub activatesourcewindow                ; added to make source win active that edit is possible  tomsmart1
 
           Case "FIND_REPLACE_ALL"
             If find_findStr <> "" AND find_replaceStr <> ""
               Gosub storeline_bas
-              Gosub cursor_off
+              !PED_CursorOff
               Gosub set_pointer_busy_bas
               Gosub menu_replaceall
               Gosub update_currsourceline
-              Gosub _redraw
-              Gosub cursor_on
+              PED_RedrawSource{}
+              !PED_CursorOn
               Gosub set_pointer_normal_bas
             EndIf
             Gosub activatesourcewindow                ; added to make source win active that edit is possible  tomsmart1
@@ -19975,7 +19943,7 @@ Return
     FlushEvents
   EndIf
 
-  Gosub print_availmem
+  PED_UpdateStatusArea{#STATUS_MEMORY}                                                                                                                                                                                                                   
 
   !asm
   !stack2regs
@@ -20061,7 +20029,6 @@ typestr               Ds.b 80
 keepstring            Ds.b 1
 constantbase          Dc.l 0
 newtypebase           Dc.l 0
-newsyntax             Dc.l 0
 tokenCache            Ds.l 32769
 newted                Dc.l 0
 history               Ds.l 10
