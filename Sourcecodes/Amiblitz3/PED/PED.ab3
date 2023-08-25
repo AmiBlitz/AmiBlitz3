@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2903
+; NumberOfBuilds  = 2919
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 4315
+; CursorLine      = 4104
 ; CursorColumn    = 1
-; LabelSearch     = "ped_gotoline"
+; LabelSearch     = "ped_check"
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelCase       = 0
@@ -333,6 +333,8 @@ XINCLUDE "/Shared/common.ab3"
 XINCLUDE "/Shared/preprocessor.include.ab3"
 XINCLUDE "/Shared/ted.include.ab3"
 DEFTYPE.tokendata *tokenbase
+DEFTYPE.l *newtypebase                                                                                                                                                                                                                                   
+DEFTYPE.l *constantbase
 
 ;XINCLUDE "eclock.include.ab3"
 XINCLUDE "v43+.definitions.ab3"                       ; for MouseWheel support  tomsmart1
@@ -1029,7 +1031,7 @@ Statement PED_DrawStatusArea{}
 SHARED sourceWindow, ped, AB3Pen()                                                                                                                                                                                                                       
 USEPATH sourceWindow                                                                                                                                                                                                                                     
 
-  log_Print{"draw statusarea"}
+  ;log_Print{"draw statusarea"}
 
   ;-- clear areas
   SetAPen_  \win\RPort, AB3Pen(#AB3_screenfill)
@@ -1120,12 +1122,12 @@ USEPATH sourceWindow
       SetSoftStyle_ \win\RPort,stylestate.w,#FSF_BOLD
 
       modifiedFlag.b = False
-      tmp_string.s = Peek.s(*fileEntry + 8 + $D4)                                                                                                                                                                                                        
+      tmp_string.s = Peek.s(&*fileEntry\SourceName)                                                                                                                                                                                                        
       If tmp_string = "" Then tmp_string = "unnamed" 
       If *fileEntry = ped\currentSourceEntry
         modifiedFlag = ped\ptrCurrentSourceData\SourceChanged
       Else
-        modifiedFlag = Peek.w(*fileEntry + 8 + $14B)  ; $143
+        modifiedFlag = Peek.w(*fileEntry\SourceChanged)
       EndIf
       If modifiedFlag Then tmp_string = "*" + tmp_string
 
@@ -1172,12 +1174,9 @@ SHARED oldSourceChanged.w
 
   ;log_Print{"UpdateStatusArea: " + Binw$(statusmode)}
 
-  If !checkOption{statusmode,#STATUS_MODIFIER}
-    If ped\ptrCurrentSourceData\SourceChanged  <> oldSourceChanged
-        oldSourceChanged = ped\ptrCurrentSourceData\SourceChanged
-   ;     log_Print{"updating modifier mark"}                                                                                                                                                                                                             
-        PED_DrawStatusArea{}
-    EndIf
+  If ped\ptrCurrentSourceData\SourceChanged  <> oldSourceChanged
+      oldSourceChanged = ped\ptrCurrentSourceData\SourceChanged
+      statusmode = #STATUS_REDRAW
   EndIf
 
   ;-- redraw everything   
@@ -1255,7 +1254,7 @@ End Statement
 
 
 Statement PED_SwitchCursor{}
-SHARED sourceWindow, ped, pedconfig
+SHARED sourceWindow, ped, pedconfig, AB3Pen()                                                                                                                                                                                                            
 USEPATH sourceWindow                                                                                                                                                                                                                                     
                                                                                                                                                                                                                                                          
   \cursorState = NOT \cursorState                                                                                                                                                                                                                        
@@ -1285,7 +1284,7 @@ USEPATH sourceWindow
   End Select
 
   If (xmax => xmin) AND (ymax => ymin)
-    ;SetAPen_ \win\RPort, AB3Pen(#AB3_screenfill)
+    SetAPen_ \win\RPort, AB3Pen(#AB3_screenshine)
     ;SetBPen_ \win\RPort, AB3Pen(#AB3_cbackground)
     ;SetAPen_ *sourcerp, AB3Pen(#AB3_screenfill)
     ;SetBPen_ *sourcerp, AB3Pen(#AB3_cbackground)
@@ -1556,8 +1555,6 @@ End Function
 Function.b PED_ReplaceCurrentSourceLine{*newLine.sourceLine}
 SHARED ped
   *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  If *currentLine = ped\ptrCurrentSourceData\FirstSourceLine Then ped\ptrCurrentSourceData\FirstSourceLine = *newLine
-  If *currentLine = ped\ptrCurrentSourceData\LastSourceLine Then ped\ptrCurrentSourceData\LastSourceLine = *newLine
 
   *previousLine.sourceLine = *currentLine\previousLine
   If *previousLine
@@ -1570,7 +1567,9 @@ SHARED ped
   EndIf
   *newLine\nextLine = *nextLine
 
-  PED_DeleteSourceLine{*currentLine}
+  PED_DeleteSourceLine{*currentLine}                                                                                                                                                                                                                     
+  If *currentLine = ped\ptrCurrentSourceData\FirstSourceLine Then ped\ptrCurrentSourceData\FirstSourceLine = *newLine
+  If *currentLine = ped\ptrCurrentSourceData\LastSourceLine Then ped\ptrCurrentSourceData\LastSourceLine = *newLine
   ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
 End Function
 
@@ -1634,20 +1633,20 @@ End Function
 
 
 
-Function PED_GetConstantValue{ptr_constantbase.l,cname$}
-  *cb.l = ptr_constantbase
+Function PED_GetConstantValue{constantName.s}
+SHARED *constantbase                                                                                                                                                                                                                                     
+  *cb.l = *constantbase
   If *cb
     cfound.b = False
-    ;*cb = Peek.l(*cb)
     While *cb AND NOT cfound
-      a$ = Peek$(*cb + $13)
-      If a$ = cname$
+      cname.s = Peek$(*cb + $13)
+      If cname = constantName
         cfound = True
       Else
         *cb = Peek.l(*cb)
       EndIf
     Wend
-    If cfound Then Function Return Peek.l(*cb+8)
+    If cfound Then Function Return Peek.l(*cb + 8)
   EndIf
 End Function
 
@@ -1826,11 +1825,12 @@ Function.s PED_ParseText{strLine.s}
   !asm
   MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
   MOVEA.l comPtr_CurrentSourceLine,A4 : JSR parse_line
-  MOVE.l D5,-(a7)                     ; returns length of string in D5
+  ;MOVE.l D5,-(a7)                     ; returns length of string in D5
   !basic
-  MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
-  MOVE.l comPtr_Temp_TokenString1,D0 : PutReg D0,ptrTokenString1.l
-  result.s = Peeks$(Peek.l(ptrTokenString1),tmpd0)
+  ;MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
+  ;MOVE.l comPtr_Temp_TokenString1,D0 : PutReg D0,ptrTokenString1.l
+  ;result.s = Peeks$(Peek.l(ptrTokenString1),tmpd0)
+  result.s = ""
   Function Return result
 End Function
 
@@ -2674,7 +2674,7 @@ USEPATH sourceWindow
   RectFill_ \win\RPort,0,ly,\BoxLeft-1,ly + \font\tf_YSize - 1                                                                                                                                                                                           
 
   SetAPen_ \win\RPort,AB3Pen(#AB3_screenshine)
-  SetBPen_ \win\RPort,AB3Pen(#AB3_screenfill)+1                                                                                                                                                                                                          
+  SetBPen_ \win\RPort,AB3Pen(#AB3_screenfill)                                                                                                                                                                                                          
   Move_ \win\RPort,lx,ly + \font\tf_Baseline
   Text_ \win\RPort,&linenum$,FLen(linenum$)
 
@@ -2683,7 +2683,7 @@ USEPATH sourceWindow
 
   SetAPen_ \win\RPort,AB3Pen(#AB3_screenshine)
   Move_ \win\RPort,\BoxLeft-1,ly                                                                                                                                                                                                                         
-  Draw_ \win\RPort,\BoxLeft-1,ly + \font\tf_YSize                                                                                                                                                                                                        
+  Draw_ \win\RPort,\BoxLeft-1,ly + \font\tf_YSize - 1
 End Statement
 
 Statement PED_PrintCurrentSourceLine{@clearEndOfLine.b}
@@ -2872,6 +2872,10 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   *tmpcsl.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
   If *tmpcsl = 0 Then Statement Return
 
+  ;log_Print{"displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
+  ;log_Print{"csl : " + Hex$(ped\ptrCurrentSourceData\CurrentSourceLine)}
+  ;log_Print{"fsl : " + Hex$(ped\ptrCurrentSourceData\FirstSourceLine)}
+
   *storeCurrentSourceLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
   storeBlockEndY.l = ped\ptrCurrentSourceData\BlockEndY
   ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
@@ -2913,7 +2917,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   ped\ptrCurrentSourceData\TextBufferOffset = 0
   ped\ptrCurrentSourceData\ColumnsOffsetTmp = ped\ptrCurrentSourceData\ColumnsOffset
 
-  !PED_CursorOff
+  !PED_CursorOff 
 
   ;-- draw all the lines
 
@@ -2949,16 +2953,16 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
       PED_PrintCurrentSourceLine{True}
       *tmpcsl = *tmpcsl\nextLine
       !PED_IncreaseDisplayLine
-      ;log_Print{"redraw: next line at displayline " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
-    ;Else
-      ;log_Print{"redraw: no next line at displayline " + Str$(cl)}
+      ;log_Print{"redraw: next line at displayline " + Str$(ped\ptrCurrentSourceData\DisplayLine)}                                                                                                                                                       
+    ;Else                                                                                                                                                                                                                                                
+     ; log_Print{"redraw: no next line at displayline " + Str$(cl)}                                                                                                                                                                                      
     EndIf
   Next cl 
 
   ; -- better refresh: clear bottom
   USEPATH sourceWindow
   If ped\ptrCurrentSourceData\DisplayLine < Peek.l(?viewablelines)
-    log_Print{"redraw: clear rest of window at displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine+1)}
+    ;log_Print{"redraw: clear rest of window at displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine+1)}
     SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
     rectx.w = \BoxLeft
     recty.w = \BoxTop + (ped\ptrCurrentSourceData\DisplayLine) * \font\tf_YSize
@@ -2968,7 +2972,10 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
       RectFill_ \win\RPort, rectx, recty, rectw, recth
       If pedconfig\linenumbers 
         SetAPen_  \win\RPort, AB3Pen(#AB3_screenfill)
-        RectFill_ \win\RPort, 0, recty, rectx-3,recth
+        RectFill_ \win\RPort, 0, recty, rectx-1,recth
+        SetAPen_ \win\RPort,AB3Pen(#AB3_screenshine)
+        Move_ \win\RPort,rectx - 1, recty                                                                                                                                                                                                                   
+        Draw_ \win\RPort,rectx - 1, recth
       EndIf
     Else
       log_Print{"illegal area for clear bottom:",#log_error}
@@ -3054,7 +3061,7 @@ End Function
 
 Statement PED_GotoLine{lineNum.l, @columnMode.b}                                                                                                                                                                                                         
 SHARED ped, sourceWindow                                                                                                                                                                                                                                 
-  log_Print{"Gotoline: " + Str$(lineNum)}
+  ;log_Print{"Gotoline: " + Str$(lineNum)}
   If lineNum.l < 0 Then lineNum = 0
   If lineNum > ped\ptrCurrentSourceData\TotalLines Then lineNum = ped\ptrCurrentSourceData\TotalLines - 1
 
@@ -4160,6 +4167,24 @@ Statement CloseWZWinWithMenu{wzwinname.s}
 End Statement
 
 
+Function.l PED_CheckSourceAlreadyOpen{fname.s}
+SHARED ped
+
+  log_Print{"check if file [" + fname + "] is already opened."}
+ 
+  found.b = False
+  *fileEntry.sourceEntry = ped\firstSourceEntry
+  While *fileEntry AND (found = False)
+    log_Print{"... checking [" + Peek.s(&*fileEntry\SourceName)+ "]"}
+    If Peek.s(&*fileEntry\SourceName) = fname
+      found = True
+    Else
+      *fileEntry = *fileEntry\nextEntry
+    EndIf
+  Wend
+  Function Return *fileEntry
+End Function
+
 Statement PED_CloseFile{fh.l}
   SHARED ped,readcache
   If fh <> 0
@@ -4300,7 +4325,7 @@ End Function
 
 
 ;@@0
-.STARTUP_PED
+.STARTUP_PED 
 ; -------------------------------------------------------------------------------------
 ; START OF CODE
 ; -------------------------------------------------------------------------------------
@@ -4315,19 +4340,17 @@ BEQ 'no_exit
   Goto abnormal_exit
 'no_exit
 
-MOVE.l A1,comLong_AB3IsAvailable   ; A1 is teddata of compiler
+; -- copy received teddata of compiler in A1 to local data structures
+MOVE.l A1,comLong_AB3IsAvailable   ; only used as indicator if started by compiler
+MOVEA.l #comPtr_TokenBase,A0
+MOVE.l (A1)+,(A0)+                 ; pointer to tokens
+MOVE.l (A1)+,(A0)+                 ; pointer to function read_xtradata
+MOVE.l (A1)+,(A0)+                 ; pointer to function write_xtradata
+MOVE.l (A1)+,(A0)+                 ; pointer to function compiler
+MOVE.l (A1)+,(A0)+                 ; 4 Indicator Characters ;:. etc.
 
-; -- initiation of compiler data-interface
-MOVEA.l #comPtr_TokenBase,A0       ;teddata for compiler
-MOVEQ.l #$11,D0
-JL_0_1E:
-  MOVE.w (A1)+,(A0)+
-DBF D0,JL_0_1E
-
-MOVE.l -8(a1),newted
-MOVE.l (a1),constantbase
-
-MOVE.l -4(a1),d0
+; skip simple types b,w,l,q,s
+MOVE.l (a1)+,d0
 BEQ 'l10
   MOVE.l d0,a0
   MOVEQ #6,d1
@@ -4336,9 +4359,11 @@ BEQ 'l10
   DBF d1,'l11
   MOVE.l a0,newtypebase
 'l10:
+MOVE.l (A1)+,constantbase
+                                                                                                                                                                                                                                                         
 
 ; --
-; -- initiation of some editor datas
+; -- initiation of the disallowed characters table
 MOVEQ #127,d0                      ; clear char-table
 LEA chartab,a0
 'l12
@@ -4406,10 +4431,84 @@ Else
 EndIf
 
 
+; ########################################################################################
+; # memory allocations
+; ########################################################################################
+ped\mempool = CreatePool_(#MEMF_CLEAR,40000,40000)
+If ped\mempool = 0
+  log_Print{"Could not allocate enough memory. PED closes down now.",#log_error}
+  Pop If
+  Goto exit_PED_nomem
+EndIf
+Poke.l ?comPtr_MemPool,ped\mempool
 
+; -- 
+; -- alloc some memory for filereading
+readcache\bufferptr = PED_AllocMem{8192}
+If readcache\bufferptr = 0 Then Goto exit_PED_closelibraries
+readcache\fib = AllocDosObject_ (#DOS_FIB,0)
+*rc_fib.FileInfoBlock = readcache\fib
 
+; --
+; -- alloc some memory for tokenization
+tokenstringptr.l = PED_AllocMem{(#MAX_Columns + 2) * 3}
+If tokenstringptr = 0 Then Goto exit_PED_closelibraries
+Poke.l ?comPtr_Temp_TokenString1, tokenstringptr + (#MAX_Columns + 2) * 0
+Poke.l ?comPtr_Temp_TokenString2, tokenstringptr + (#MAX_Columns + 2) * 1
+Poke.l ?comPtr_Temp_TokenString3, tokenstringptr + (#MAX_Columns + 2) * 2
 
+; --
+; -- alloc memory for textbuffer of source editor
+textbuffers.l = PED_AllocMem{(#MAX_Columns + 4) * 5}
+If textbuffers = 0 Then Goto exit_PED_closelibraries
+Poke.l ?AL_0_5B9E, textbuffers
+Poke.l ?AL_0_5BA6, textbuffers + (#MAX_Columns + 4)
+Poke.l ?textbufferPrint, textbuffers + (#MAX_Columns + 4) * 2
+Poke.l ?expandstore, textbuffers + (#MAX_Columns + 4) * 3
+Poke.l ?lineundeletestore, textbuffers + (#MAX_Columns + 4) * 4
+
+; ########################################################################################
+; # return to compiler and continue after being recalled by compiler
+; ########################################################################################
+!log_AvailMem{"after reserve of buffers for source code, giving control back to compiler..."}
+; --
+; -- return to compiler after initiation
+!asm
+MOVE.l comLong_AB3IsAvailable,D0
+BEQ.w start_up_without_compiler
+  LEA compiler_jumps_here,A0
+  MOVEA.l comdata,A1
+  MOVE.w ##ComDataVersionID,comWord_PEDIsAvailable
+  RTS                              ; <-- return to compiler
+start_up_without_compiler:
+LEA str_tempfilename,A0
+
+compiler_jumps_here:               ; compiler offers str_tempfilename in A0 here
+!basic
+
+PutReg A0,tmpA0.l
+If tmpA0
+  compiler_source$ = Peek$(tmpA0)
+Else
+  error{"NULL Pointer in compiler_source$!"}
+End If
+!log_AvailMem{"after Compiler has given control back"}
+
+; --
+; -- check/set tokenisation mode, If no tokens available, Disable tokenization
+*constantbase = Peek.l(?constantbase)                                                                                                                                                                                                                    
+*newtypebase = Peek.l(?newtypebase)
+*tokenbase = Peek.l(?comPtr_TokenBase)
+If *tokenbase = 0 
+  ped\DoTokenize = 0
+Else
+  ped\DoTokenize = $ffff
+EndIf
+Poke.w ?comWord_DoTokenize, ped\DoTokenize
+
+; ======================================================================================
 .MAINPORGRAM
+; ======================================================================================
 
 FindScreen 0
 
@@ -4781,41 +4880,6 @@ End If
 
 WZ_ShowMessage{!TRANS{"Starting IDE ..."} }
 
-; ########################################################################################
-; # memory allocations
-; ########################################################################################
-ped\mempool = CreatePool_(#MEMF_CLEAR,40000,40000)
-If ped\mempool = 0
-  log_Print{"Could not allocate enough memory. PED closes down now.",#log_error}
-  Pop If
-  Goto exit_PED_nomem
-EndIf
-Poke.l ?comPtr_MemPool,ped\mempool
-
-; -- 
-; -- alloc some memory for filereading
-readcache\bufferptr = PED_AllocMem{8192}
-If readcache\bufferptr = 0 Then Goto exit_PED_closelibraries
-readcache\fib = AllocDosObject_ (#DOS_FIB,0)
-*rc_fib.FileInfoBlock = readcache\fib
-
-; --
-; -- alloc some memory for tokenization
-tokenstringptr.l = PED_AllocMem{(#MAX_Columns + 2) * 3}
-If tokenstringptr = 0 Then Goto exit_PED_closelibraries
-Poke.l ?comPtr_Temp_TokenString1, tokenstringptr + (#MAX_Columns + 2) * 0
-Poke.l ?comPtr_Temp_TokenString2, tokenstringptr + (#MAX_Columns + 2) * 1
-Poke.l ?comPtr_Temp_TokenString3, tokenstringptr + (#MAX_Columns + 2) * 2
-
-; --
-; -- alloc memory for textbuffer of source editor
-textbuffers.l = PED_AllocMem{(#MAX_Columns + 4) * 5}
-If textbuffers = 0 Then Goto exit_PED_closelibraries
-Poke.l ?AL_0_5B9E, textbuffers
-Poke.l ?AL_0_5BA6, textbuffers + (#MAX_Columns + 4)
-Poke.l ?textbufferPrint, textbuffers + (#MAX_Columns + 4) * 2
-Poke.l ?expandstore, textbuffers + (#MAX_Columns + 4) * 3
-Poke.l ?lineundeletestore, textbuffers + (#MAX_Columns + 4) * 4
 
 
 ; ########################################################################################
@@ -4846,48 +4910,6 @@ Else
   Gosub update_remembermenu
 EndIf
 
-; ########################################################################################
-; # return to compiler and continue after being recalled by compiler
-; ########################################################################################
-!log_AvailMem{"after reserve of buffers for source code, giving control back to compiler..."}
-; --
-; -- return to compiler after initiation
-!asm
-MOVE.l comLong_AB3IsAvailable,D0
-BEQ.w start_up_without_compiler
-  LEA compiler_jumps_here,A0
-  MOVEA.l comdata,A1
-  MOVE.w ##ComDataVersionID,comWord_PEDIsAvailable
-  RTS                              ; <-- return to compiler
-start_up_without_compiler:
-LEA str_tempfilename,A0
-
-compiler_jumps_here:               ; compiler offers str_tempfilename in A0 here
-!basic
-
-PutReg A0,tmpA0.l
-If tmpA0
-  compiler_source$ = Peek$(tmpA0)
-  log_Print{"source file given by compiler: [" + compiler_source$ + "]"}
-Else
-  error{"NULL Pointer in compiler_source$!"}
-End If
-!log_AvailMem{"after Compiler has given control back"}
-
-; --
-; -- check/set tokenisation mode, if no tokens available, disable tokenization
-*tokenbase = Peek.l(?comPtr_TokenBase)
-If *tokenbase = 0 
-  ped\DoTokenize = 0
-Else
-  ped\DoTokenize = $ffff
-EndIf
-Poke.w ?comWord_DoTokenize, ped\DoTokenize
-
-
-
-
-
 ; --
 ; -- fill mapping array with libnames from mapping-file
 ; -- and check consistency based on the mapping files and the internal libnums
@@ -4909,12 +4931,13 @@ WZ_HideMessage{}
 
 .START_GUI
 Gosub open_gui
-Gosub menu_opennew
+Gosub menu_new
 Gosub update_debuggertoggle
 
 Gosub set_CurrentDir
 *flock_defaultDir.l = *flock_currentDir.l
 
+log_Print{"source file given by compiler: [" + compiler_source$ + "]"}
 log_Print{"check lastsource option"}
 If pedconfig\load_last_source <> 0 OR compiler_source$<>""
   If compiler_source$<>"" Then pedconfig\lastSourceFile = compiler_source$
@@ -4948,7 +4971,12 @@ EndIf
 If NOT pedconfig\no_welcome Then Gosub menu_about
 
 ; ----------------------------------------------------------------------------
-; -- jump to main loop
+; -- jump to main loop                                                                                                                                                                                                                                   
+log_Print{"Tokenbase   = " + Hex$(*tokenbase)}
+log_Print{"NewTypebase = " + Hex$(*newtypebase)}
+log_Print{"Constantbase= " + Hex$(*constantbase)}
+log_Print{"allocated Buffer for TokenString1 at " + Hex$(?comPtr_Temp_TokenString1)}
+
 !PED_CursorOn
 Gosub main_loop
 ; --
@@ -5030,9 +5058,9 @@ End
     ped\LabelListChanged = False
     sourceWindow\redrawFlag = False
 
-;    log_Print{"handlePedevents"}
+    ;log_Print{"### handlePedevents"}
     Gosub handlePedEvents
-;    log_Print{"handlpepedevents end"}
+    ;log_Print{"### handlpepedevents end"}
 
     ; --- check if an exe is running and revert the entered key ---
     If Peek.b(?comByte_RunningFlag)
@@ -5057,7 +5085,9 @@ End
       ; -- parse the current line
       newline$ = Peeks$(lineaddr,#MAX_Columns-1)
       newline$ = PED_ParseText{newline$}
+
       newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+      newline$ = StripTrail$(newline$,@" ")
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
       PED_ReplaceCurrentSourceLine{*newLine}
 
@@ -6282,36 +6312,6 @@ RTS
   !asm
 RTS
 
-.menu_load:
-  log_Print{"menu Load called."}
-
-  If ped\ptrCurrentSourceData\SourceChanged
-    dummy.l = ask{!TRANS{"You have unsaved changes!"},!TRANS{"Continue|Cancel"},!TRANS{"Load File"}}
-    If dummy = 0
-      Pop If : Pop If
-      Return
-    EndIf
-  EndIf
-
-  aslfr_SetRequesterTitle {1,!TRANS{"Load source file"},!TRANS{"Load"},!TRANS{"Cancel"}}
-
-  If pedconfig\use_filepattern
-    aslfr_SetPath  {1,ped\currentDir,ped\currentFile,ped\filePattern,False}
-  Else
-    aslfr_SetPath  {1,ped\currentDir,ped\currentFile,"",False}
-  EndIf
-  ASL_x = 14
-  ASL_y = 36
-  If aslfr_Request {1,False,False,False,-1,False}
-    loadsourcefilename.s = aslfr_GetNextFile{}
-    If loadsourcefilename.s <> ""
-      Gosub load_source
-    EndIf
-  EndIf
-  log_Print{"menu load finished."}
-Return
-
-
 .set_CurrentDir:
 
   log_Print{"current dir is [" + ped\currentDir + "]"}
@@ -6333,6 +6333,20 @@ Return
 
 
 .load_source:  ;D7: sourcefilename: not used anymore
+  log_Print{"load_source called"}
+
+  *fileEntry.sourceEntry = PED_CheckSourceAlreadyOpen{ dos_FilePart{loadsourcefilename} }
+  If *fileEntry 
+    log_Print{"source already loaded, switching to that tab."}
+    GetD0 *fileEntry : Gosub selectfile
+    dummy.l = ask{!TRANS{"The file is already open. Do you want to reload it?"},!TRANS{"Yes|Cancel"},!TRANS{"Load File"}}
+    If dummy = 0 
+      Pop Repeat : Return
+    Else
+      Pop Repeat : Goto load_selected_file
+    EndIf
+  EndIf
+
   Gosub set_pointer_busy_bas
   WZ_LockAllOpenWindows{}
   PED_ShowMessage{!TRANS{"Loading file"} + " " + loadsourcefilename + "..."}
@@ -6356,7 +6370,7 @@ Return
 
     log_Print{"loaded " + Str$(ped\ptrCurrentSourceData\TotalLines) + " lines of text"}
 
-    Gosub storeCurrentSourceData
+    Gosub storeCurrentSourceData 
 
     ;-- restore windows
     Gosub RestoreLabelAndNewtypeWin
@@ -6367,7 +6381,7 @@ Return
     Gosub calc_SourceWindowDimensions
 
     log_Print{"goto stored cursor line: " + Str$(ped\ptrCurrentSourceData\CursorPosStore)}
-    PED_GotoLine{ped\ptrCurrentSourceData\CursorPosStore+1,#LINE_START}
+    PED_GotoLine{ped\ptrCurrentSourceData\CursorPosStore-1,#LINE_START}                                                                                                                                                                                  
 
     log_Print{"deleting and restoring prefs..."}
     Gosub delete_tempprefs
@@ -6582,14 +6596,8 @@ Return
 .analyze_loadedsource:
   log_Print{"analyze_loadedsource"}
 
-  ;!log_HexDump{?comStr_CurrentDir,64}
-  ;log_Print{"---"}
-  ;!log_HexDump{&ped\currentDir,64}
-
-  ped\currentDir = Peek.s(?comStr_CurrentDir)
-  ;!log_HexDump{&ped\currentDir,64}
-
-  ped\currentFile = Peek.s(?comStr_SourceName)
+  ped\currentDir = Peek.s(&ped\ptrCurrentSourceData\CurrentDir)
+  ped\currentFile = Peek.s(&ped\ptrCurrentSourceData\SourceName)
   ped\sourceFileComplete = dos_AddPart{ped\currentDir,ped\currentFile}
 
   ;sourceWindow\Title = ""
@@ -6647,7 +6655,7 @@ Return
     tmp_string = "T:PED_" + Hex$(ped\currentSourceEntry) + ".xtra"
     tpfhandle.l = Open_(&tmp_string, #HUNK_RELOC_16__MODE_OLDFILE)
     If tpfhandle <> 0
-      log_Print{"reading <" + tmp_string + ">"}
+      log_Print{"reading xtrafile <" + tmp_string + ">"}
       GetD0 Peek.l(?comFunc_ReadXtraFile) : MOVE.l d0,-(a7)
       GetD0 tpfhandle : MOVE.l d0,-(a7)
       !asm
@@ -6662,10 +6670,10 @@ Return
 
 .save_tempprefs:
   If Peek.l(?comFunc_WriteXtraFile) <> 0
-     tmp_string.s = "T:PED_" + Hex$(ped\currentSourceEntry) + ".xtra"
+    tmp_string.s = "T:PED_" + Hex$(ped\currentSourceEntry) + ".xtra"
     tpfhandle.l = Open_(&tmp_string, #HUNK_RELOC_8__MODE_NEWFILE)
     If tpfhandle <> 0
-      log_Print{"writing xtrafile for " + Peek$(ped\ptrCurrentSourceData + 222) + " <" + tmp_string + ">"}
+      log_Print{"writing xtrafile for " + Peek$(&ped\ptrCurrentSourceData\SourceName) + " <" + tmp_string + ">"}
       GetD0 Peek.l(?comFunc_WriteXtraFile) : MOVE.l d0,-(a7)
       GetD0 tpfhandle : MOVE.l d0,-(a7)
       !asm
@@ -6682,7 +6690,7 @@ Return
   log_Print{"menu_saveas called."}
   Gosub storeCurrentSourceData
 
-  tmp_string.s = PED_RequestFile{Peek.s(?comStr_CurrentDir),Peek.s(?comStr_SourceName),"Name of file to open",ped\filePattern}
+  tmp_string.s = PED_RequestFile{Peek.s(&ped\ptrCurrentSourceData\CurrentDir),Peek.s(&ped\ptrCurrentSourceData\SourceName),"Name of file to open",ped\filePattern}
   ;Poke.s ?comStr_SourceFileComplete,BB2Filename$
   If tmp_string <> ""
     ped\check_existsfile = True
@@ -6736,7 +6744,7 @@ Return
     Else
       ; file does not exist, that is ok!
     EndIf
-  EndIf
+  EndIf 
 
   Poke.l ?comPtr_SourceName, &ped\currentFile
   Poke.l ?comPtr_CurrentDir, &ped\currentDir
@@ -6919,29 +6927,32 @@ RTS
 
 
 .sourceicon_datas:
-  Dc.b $E3,$10,$00,$01
-  Dc.b $00,$00,$00,$00
-  Dc.b $00,$63,$00,$11
-  Dc.b $00,$2E,$00,$18
-  Dc.b $00,$05,$00,$03
-  Dc.b $00,$01,$00,$22
-  Dc.b $7B,$20,$00,$00
-  Dc.b $00,$00,$00,$00
-  Dc.b $00,$00,$00,$00
-  Dc.b $00,$00,$00,$00
-  Dc.b $00,$00,$00,$00
-  Dc.b $00,$00,$00,$00
-  Dc.b $04,$22,$00,$22
-  Dc.b $70,$78,$00,$22
-  Dc.b $72,$B8,$00,$00
-  Dc.b $00,$5C,$00,$00
-  Dc.b $00,$0E,$00,$00
-  Dc.b $00,$00,$00,$00
-  Dc.b $00,$00,$00,$00
-  Dc.b $00,$00,$00,$00
-  Dc.b $00,$00,$00,$2E
-  Dc.b $00,$17,$00,$02
-  Dc.b $00,$01,$8F,$98
+ic_Magic:     Dc.w $E310
+ic_Version:   Dc.w $0001
+ic_Gadget:    Dc.b $00,$00,$00,$00
+              Dc.b $00,$63,$00,$11
+              Dc.b $00,$2E,$00,$18
+              Dc.b $00,$05,$00,$03
+              Dc.b $00,$01,$00,$22
+              Dc.b $7B,$20,$00,$00
+              Dc.b $00,$00,$00,$00
+              Dc.b $00,$00,$00,$00
+              Dc.b $00,$00,$00,$00
+              Dc.b $00,$00,$00,$00
+              Dc.b $00,$00,$00,$00
+ic_Type:      Dc.b $04
+ic_Pad:       Dc.b $22
+ic_DefaultT:  Dc.b $00,$22,$70,$78
+             Dc.b $00,$22
+             Dc.b $72,$B8,$00,$00
+             Dc.b $00,$5C,$00,$00
+             Dc.b $00,$0E,$00,$00
+             Dc.b $00,$00,$00,$00
+             Dc.b $00,$00,$00,$00
+             Dc.b $00,$00,$00,$00
+             Dc.b $00,$00,$00,$2E
+             Dc.b $00,$17,$00,$02
+             Dc.b $00,$01,$8F,$98
   Dc.b $03,$00,$00,$00
   Dc.b $00,$00,$FF,$FF
   Dc.b $FF,$FF,$FF,$FC
@@ -7013,11 +7024,8 @@ RTS
   Dc.b $00,$00,$00,$04
   Dc.b $7F,$FF,$FF,$FF
   Dc.b $FF,$FC,$00,$00
-  Dc.b $00,$0E,$42,$6C          ;0,$e4,"Bl"
-  Dc.b $69,$74,$7A,$33          ;"itz3"
-  Dc.b $3A,$41,$6D,$69          ;":Ami"
-  Dc.b $42,$6C,$69,$74          ;"Blit"
-  Dc.b $7A,$33,$00,$00          ;"z3",0,0
+  Dc.b $00,$0E
+  Dc.b "Blitz3:AmiBlitz3",0,0
   Dc.b $00,$00,$04
 Even
 .sourceicondatas_end
@@ -7190,7 +7198,7 @@ Return
       dummy.l = ask{!TRANS{"Closing last source, do you really want to quit?"},!TRANS{"Ok|Cancel"},!TRANS{"Question"}}
     EndIf
     If dummy = 0
-      Gosub menu_opennew
+      Gosub menu_new
     Else
       log_Print{"telling mainloop to stop, no open file left"}
       exit_eventloop = True : exit_mainloop = True
@@ -7456,29 +7464,9 @@ Return
   If ped\currentSourceEntry
     Gosub getCurrentSourceData
     Gosub read_tempprefs
-    !asm
-    JSR JL_0_2Dca8
-    !basic
+    Gosub reset_sourcewindow
   EndIf
 Return
-
-.dummy_compilercall:
-  ; this call to the compiler is useless, as the adress com_calldummy is always zero
-  MOVE.l D0,-(A7)
-  MOVE.l comFunc_CallDummy,D0
-  BEQ.w exit_dummycall
-    MOVEM.l D1-D7/A0-A6,-(A7)
-    MOVEA.l D0,A0
-    L_0_24E4: JSR (A0)
-    MOVEM.l (A7)+,D1-D7/A0-A6
-    !basic
-    dummy.l = ask{!TRANS{"The dummy call has been performed"},!TRANS{"Ok"}}
-    !asm
-  exit_dummycall:
-
-  MOVE.l (A7)+,D0
-RTS
-
 
 .movelinedown:
   *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
@@ -8121,48 +8109,53 @@ Return
   \SourceChanged = True
 
   tmpColumn.w = \ColumnsOffset + \Column
-  
   ;TODO: Blockhandling, if PED supports writing in Blockmarks again, see old asmcode in JL_0_2906
 
   ;-- get the string until cursorposition
   \Column = 0
   lineaddr.l = Peek.l(?textbufferaddr) + \TextBufferOffset
-  While Peek.b(lineaddr + \Column) = $20 AND (\Column <= #MAX_Columns)
+  While Peek.b(lineaddr + \Column) = $20 AND (\Column < #MAX_Columns)
     \Column + 1
   Wend
-  newline$ = SPACE$(\Column)
+  ;log_Print{">>" + Peeks$(lineaddr,#MAX_Columns)}
+  ; add spaces for auto indentation: align to beginning of current line
+  If \Column = #MAX_Columns OR \Column = tmpColumn Then \Column = 0                                                                                                                                                                                      
 
-  If \Column < #MAX_Columns
-    If \ColumnsOffset
-      \ColumnsOffset = 0
+  ;-- calculate ColumnsOffset
+  If \ColumnsOffset
+    \ColumnsOffset = 0
+    If \Column > Peek.l(?visiblecolumns)
+      \Column - Peek.l(?visiblecolumns)
+      \ColumnsOffset = Peek.l(?visiblecolumns)
       If \Column > Peek.l(?visiblecolumns)
         \Column - Peek.l(?visiblecolumns)
-        \ColumnsOffset = Peek.l(?visiblecolumns)
-        If \Column > Peek.l(?visiblecolumns)
-          \Column - Peek.l(?visiblecolumns)
-          \ColumnsOffset + Peek.l(?visiblecolumns)
-        EndIf
+        \ColumnsOffset + Peek.l(?visiblecolumns)
       EndIf
     EndIf 
   EndIf
- 
+  ;log_Print{"columnsoffset: " + Str$(\ColumnsOffset)}
+  ;log_Print{"columns      : " + Str$(\Column)}
+
   ;-- save rest of line and remove from current line
+  restString.s = ""                                                                                                                                                                                                                                      
   For tcol.w = tmpColumn To #MAX_Columns-1
-    newline$ + Chr$(Peek.b(lineaddr + tcol))    ; copy rest of line to parsebuffer
+    restString + Chr$(Peek.b(lineaddr + tcol))    ; copy rest of line to parsebuffer
     Poke.b lineaddr + tcol, $20                 ; remove rest of line from textbuffer
   Next tcol
- 
+  restString = SPACE$(\Column) + Trim$(restString)
+  ;log_Print{"length of restline: " + Str$(Len(restString))}
+
   ;-- update current line
-  strline$ = Peeks$(lineaddr,#MAX_Columns-1)  
+  strline$ = Peeks$(lineaddr,#MAX_Columns-1)
   strline$ = PED_ParseText{strline$}
   strline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
   *newLine.sourceLine = PED_CreateNewSourceLine{strline$}
   PED_ReplaceCurrentSourceLine{*newLine}
 
   ;-- append rest of line as new line
-  newline$ = PED_ParseText{newline$}
+  newline$ = PED_ParseText{restString}
   newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
-  log_Print{"new line *" + newline$ + "*"}
+  ;log_Print{"new line *" + newline$ + "*"}
   *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
   appendLine{\CurrentSourceLine,*newLine} : \TotalLines + 1
 
@@ -8182,8 +8175,8 @@ Return
 
   ; SHIFT pressed as well ?
   ; if pressed, do notsplit current line at cursor pos!
-
-  If NOT !checkOption{\QualifierStore, 3}
+  ;log_Print{"qualifier: " + Hexw$(\QualifierStore AND 3)}                                                                                                                                                                                               
+  If (\QualifierStore AND 3) = 0                                                                                                                                                                                                                         
     log_Print{"split current line, BlockEndY = " + Hex$(\BlockEndY)}
     Goto splitlines                      
   EndIf
@@ -8258,7 +8251,7 @@ Return
   JSR jump_addhistory
   !basic
   !PED_CursorOff
-  PED_GotoLine{ped\ptrCurrentSourceData\TotalLines-1, #LINE_START}
+  PED_GotoLine{ped\ptrCurrentSourceData\TotalLines, #LINE_START}
 Return
 
 
@@ -8458,7 +8451,7 @@ Return
         log_Print{"not found, trying " + a$}
       EndIf
       If NOT dos_Exist{a$}
-        a$ = dos_AddPart{Peek$(?comStr_CurrentDir),_file$}
+        a$ = dos_AddPart{Peek.s(&ped\ptrCurrentSourceData\CurrentDir),_file$}
         log_Print{"not found, trying " + a$}
       EndIf
       If dos_Exist{a$}
@@ -8510,14 +8503,13 @@ Return
 Return
 
 
-.JL_0_2Dca8:
-  !basic
-  log_Print{"*** JL_0_2Dca8 called."}
+.reset_sourcewindow:
+  log_Print{"*** reset_sourcewindow called."}
 
   Gosub calc_SourceWindowDimensions
   Gosub clear_sourcewindow
   Gosub reset_labellist
-  PED_UpdateStatusArea{#STATUS_SCROLLERS}
+  ;PED_UpdateStatusArea{#STATUS_SCROLLERS}
 
   Gosub analyze_loadedsource
   Gosub set_CurrentDir
@@ -8525,11 +8517,7 @@ Return
   log_Print{"redraw of sourcewindow"}
   PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
   PED_RedrawSource{}
-  !asm
-  ;JSR _redraw
-  MOVEA.l comPtr_CurrentSourceLine,A4
-RTS
-
+Return
 
 .load_template:
   mcounter.l = _menuitem-#MENU_TEMPLATE
@@ -8542,7 +8530,7 @@ RTS
   If NextItem(templates())
     log_Print{"opening new source tab."}
 
-    Gosub menu_opennew
+    Gosub menu_new
 
     loadsourcefilename.s = templates()\filename
     log_Print{"selected template: " + loadsourcefilename}
@@ -8554,30 +8542,20 @@ RTS
     ;MOVE.l d0,-(a7)
     ;GetD0 &tmp_string
     ;!asm
-    Gosub menu_opennew
+    Gosub menu_loadAsNew
     ;MOVE.l (a7)+,d0 ; clean stack
     ;!basic
   EndIf
 Return
 
 
-.menu_openload:
-  MOVE.w #0,loadAsNew
-  Goto open_source
 
-.menu_opennew:
-  MOVE.w #1,loadAsNew
-
-  open_source:
-
-  !basic
-  log_Print{"menu opennew: value of ped\firstLoadedEntry: " + Hex$(ped\firstLoadedEntry)}
-
-  ; -- save changes to current source line
-  Gosub storeline_bas
+.menu_new:
+  log_Print{"*** menu new called."}
+  ;log_Print{"value of ped\firstLoadedEntry: " + Hex$(ped\firstLoadedEntry)}
 
   ; -- alloc memory for a new fileentry
-  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin+10,d0 : tmpMemSize.l = PutD0
+  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin,d0 : tmpMemSize.l = PutD0
   *newEntry.sourceEntry = PED_AllocMem{tmpMemSize}
   If *newEntry = 0
     Gosub display_memoryalert
@@ -8585,48 +8563,81 @@ Return
   EndIf
   log_Print{"new fileentry allocated at: " + Hex$(*newEntry) }
   log_Print{"entry size: " + Str$(tmpMemSize)}
+  log_Print{"newtype size: " + Str$(SizeOf.sourceEntry)}
+
+  ; -- adding the new source into the source list
   If ped\firstLoadedEntry = 0
-    log_Print{"no fileentry available, creating an empty file entry..."}
+    log_Print{"no current fileentry available, creating first one ..."}
     ped\firstLoadedEntry = *newEntry
     ped\firstSourceEntry = *newEntry
     ped\currentSourceEntry = *newEntry
     *newEntry\previousEntry = 0
     *newEntry\nextEntry = 0
-    log_Print{"currentEntry at " + Hex$(ped\currentSourceEntry)}
+    ;log_Print{"currentEntry at " + Hex$(ped\currentSourceEntry)}
     Gosub getCurrentSourceData
     Gosub clear_sourcebuffer
-    log_Print{"Totallines = " + Str$(ped\ptrCurrentSourceData\TotalLines)}
-    Return
-  EndIf
-
-  Gosub storeCurrentSourceData
-
-  log_Print{"currentEntry at " + Hex$(ped\currentSourceEntry)}
-  *sourceEntry.sourceEntry = ped\currentSourceEntry
-  *nextEntry.sourceEntry = *sourceEntry\nextEntry
-  If *nextEntry <> 0                         ; insert new source between current source an next source entry ?
-    *sourceEntry\nextEntry = *newEntry       ; nextfile -> newentry
-    *newEntry\previousEntry = *sourceEntry   ; newentry\prev -> currentEntry
-    *newEntry\nextEntry = *nextEntry         ; newentry\next -> nextfile
-    *nextEntry\previousEntry = *newEntry     ; nextfile\prev -> newentry
+    ;log_Print{"Totallines = " + Str$(ped\ptrCurrentSourceData\TotalLines)}
   Else
-    ped\firstLoadedEntry = *newEntry
-    *sourceEntry\nextEntry = *newEntry       ; nextfile -> newentry
-    *newEntry\previousEntry = *sourceEntry
-    *newEntry\nextEntry = 0
-  EndIf
-  ped\currentSourceEntry = *newEntry
-
-  Gosub clear_sourcebuffer
-  !asm
-  JSR JL_0_2Dca8
-  !basic
-
-  If Peek.w(?loadAsNew)
-    Gosub menu_load
+    log_Print{"we already have an opened source file, so adding a new tab..."}
+    ; -- save changes to current source line
+    Gosub storeline_bas
     Gosub storeCurrentSourceData
-    PED_UpdateStatusArea{#STATUS_SCROLLERS}
+
+    log_Print{"currentEntry at " + Hex$(ped\currentSourceEntry)}
+    *sourceEntry.sourceEntry = ped\currentSourceEntry
+    *nextEntry.sourceEntry = *sourceEntry\nextEntry
+    If *nextEntry <> 0                         ; insert new source between current source an next source entry ?
+      *sourceEntry\nextEntry = *newEntry       ; nextfile -> newentry
+      *newEntry\previousEntry = *sourceEntry   ; newentry\prev -> currentEntry
+      *newEntry\nextEntry = *nextEntry         ; newentry\next -> nextfile
+      *nextEntry\previousEntry = *newEntry     ; nextfile\prev -> newentry
+    Else
+      ped\firstLoadedEntry = *newEntry
+      *sourceEntry\nextEntry = *newEntry       ; nextfile -> newentry
+      *newEntry\previousEntry = *sourceEntry
+      *newEntry\nextEntry = 0
+    EndIf
+    ped\currentSourceEntry = *newEntry
+
+    Gosub clear_sourcebuffer
+    Gosub reset_sourcewindow
   EndIf
+Return
+
+.menu_loadAsNew:
+  log_Print{"*** menu opennew called."}
+  Gosub menu_new
+  Gosub menu_load
+  Gosub storeCurrentSourceData
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}
+Return
+
+.menu_load:
+  log_Print{"*** menu load called."}
+
+  If ped\ptrCurrentSourceData\SourceChanged
+    dummy.l = ask{!TRANS{"You have unsaved changes!"},!TRANS{"Continue|Cancel"},!TRANS{"Load File"}}
+    If dummy = 0
+      Pop If : Pop If
+      Return
+    EndIf
+  EndIf
+
+  aslfr_SetRequesterTitle {1,!TRANS{"Load source file"},!TRANS{"Load"},!TRANS{"Cancel"}}
+  If pedconfig\use_filepattern
+    aslfr_SetPath  {1,ped\currentDir,ped\currentFile,ped\filePattern,False}
+  Else
+    aslfr_SetPath  {1,ped\currentDir,ped\currentFile,"",False}
+  EndIf
+  ASL_x = 14
+  ASL_y = 36
+  If aslfr_Request {1,False,False,False,-1,False}
+    loadsourcefilename.s = aslfr_GetNextFile{}
+    If loadsourcefilename.s <> ""
+      Gosub load_source
+    EndIf
+  EndIf
+  log_Print{"menu load finished."}
 Return
 
 .storeCurrentSourceData:                      ;copy view data
@@ -8634,20 +8645,20 @@ Return
   MOVE.l LabelList_FirstVisableItemNumber@(a5),comLong_Label1VisableItem      ; same as Poke
   MOVE.l comLong_Label1VisableItem,comLong_Label1VisableItemStore             ; to update both for a unified LabelList restore routine that work by load and switch of a Sourcecode  tomsmart1
 
-  GetReg A0, ped\currentSourceEntry : ADDQ.l #8,A0
-  LEA comLongLong_XtraBegin,A1
-  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin, D0 : SUBQ.w #1,D0
+  GetReg A0, ped\currentSourceEntry : ADDQ.l #8,A0    ; skip listentries (next/previous sourceentry)
+  LEA comLongLong_XtraBegin + 8,A1                    ; skip "tedsdoc!"
+  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin - 8, D0 : SUBQ.w #1,D0
  'copyloop
     MOVE.b (A1)+,(A0)+
   DBF D0,'copyloop
 Return
 
-
+ 
 .getCurrentSourceData:
   ; zurueckholen der xtra-settings nach sourcewechsel
-  GetReg A0,ped\currentSourceEntry : ADDQ.l #8,A0
-  LEA comLongLong_XtraBegin,A1
-  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin, D0 : SUBQ.w #1,D0
+  GetReg A0,ped\currentSourceEntry : ADDQ.l #8,A0    ; skip listentries (next/previous sourceentry)
+  LEA comLongLong_XtraBegin + 8,A1                   ; skip "tedsdoc!"
+  MOVE.l #comDef_XtraEnd-comLongLong_XtraBegin - 8, D0 : SUBQ.w #1,D0
  'copyloop:
     MOVE.b (A0)+,(A1)+
   DBF D0,'copyloop
@@ -8657,19 +8668,14 @@ Return
   Gosub RestoreLabelAndNewtypeWin
 Return
 
-.selectfile:  ; A0: current entry in opened file table
+.selectfile:  ; D0: current entry in opened file table
   selectedEntry.l = PutD0
 
   Gosub storeCurrentSourceData
   Gosub save_tempprefs
-
   ped\currentSourceEntry = selectedEntry
   Gosub getCurrentSourceData
-
-  !asm
-  JSR JL_0_2Dca8
-  !basic
-
+  Gosub reset_sourcewindow
   Gosub read_tempprefs
 
   PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
@@ -8690,12 +8696,9 @@ Return
     EndIf
   EndIf
   Gosub getCurrentSourceData
-
-  !asm
-  JSR JL_0_2Dca8
-  !basic
-
+  Gosub reset_sourcewindow
   Gosub read_tempprefs
+
   PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
 Return
 
@@ -8714,12 +8717,9 @@ Return
     EndIf
   EndIf
   Gosub getCurrentSourceData
-
-  !asm
-  JSR JL_0_2Dca8
-  !basic
-
+  Gosub reset_sourcewindow
   Gosub read_tempprefs
+
   PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
 Return
 
@@ -9168,8 +9168,12 @@ Return
   log_Print{"pastemode " + Hexw$(ped\pasteMode)}
 
   If ped\pasteMode
-    ; clipboard mode
-    If NOT PED_ReadClipboard{} Then Return
+    ; clipboard mode                                                                                                                                                                                                                                     
+    log_Print{"checking clipboard"}                                                                                                                                                                                                                      
+    If NOT PED_ReadClipboard{}                                                                                                                                                                                                                           
+      log_Print{"clipboard is empty"}                                                                                                                                                                                                                    
+      Return                                                                                                                                                                                                                                             
+    EndIf                                                                                                                                                                                                                                                
   Else
     ; includeblock mode
     ped\sourceFileHandle = PED_OpenFile{includeblockfile$,#HUNK_RELOC_16__MODE_OLDFILE,False}
@@ -9187,7 +9191,8 @@ Return
   lineaddr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
   currentColumn.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
 
-  ; get first part of current line
+  ; -- get first part of current line
+  Poke.b ?instring, 0
   pasteString.s = ""
   For p.w = 0 To currentColumn - 1
     currentbyte.b = Peek.b(lineaddr + p)
@@ -9195,15 +9200,14 @@ Return
     If NOT Peek.b(?instring) Then currentbyte = currentbyte BitClr 7
     pasteString + Chr$(currentbyte)
   Next p
+
   ;-- get rest of current line
   restString.s = ""
   For p.w = currentColumn To #MAX_Columns-1
     currentbyte.b = Peek.b(lineaddr + p)
     restString + Chr$(currentbyte)
   Next p
-  For p = 0 To currentColumn - 1
-    restString + " "
-  Next p
+  restString = Trim$(restString)                                                                                                                                                                                                                         
 
   ;-- get first line and join it with currentline
   pasteString = pasteString + PED_ReadNextLine{}
@@ -9212,11 +9216,14 @@ Return
   If PED_CheckLabelRelevance{pasteString} Then ped\LabelListChanged = True
 
   ;-- replace line with current one
+  
   newline$ = PED_ParseText{pasteString}
   newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
   *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
-  PED_ReplaceCurrentSourceLine{*newLine}
-
+  PED_ReplaceCurrentSourceLine{*newLine}                                                                                                                                                                                                                 
+                                                                                                                                                                                                                    
+  storeCurrentSourceLine.l = *newLine                                                                                                                                                                                                                    
+                                                                                                                                                                                                                       
   ;-- import all further lines
   Repeat
     tmpLine = PED_ReadNextLine{}
@@ -9229,21 +9236,21 @@ Return
       Else
         pasteString = tmpLine
       EndIf
-      newline$ = PED_ParseText{pasteString}
+      newline$ = PED_ParseText{pasteString}      
       newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
       appendLine{ped\ptrCurrentSourceData\CurrentSourceLine, *newLine}
       ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
+      ;ped\ptrCurrentSourceData\DisplayLine + 1                           ;-> increase displayline if cursor should walk with inserted lines
       ped\ptrCurrentSourceData\TotalLines + 1
-      ;PED_InsertSourceLine{*newLine}
     Else
       tmpLen = 0
     EndIf
   Until tmpLen = 0 AND (readcache\moreBytes = False)
-
-
-  ; add the rest to an new line
-  If Len(Trim$(restString)) > 0
+  
+  ;-- add the rest to an new line
+  If Len(Trim$(restString)) > 0                                                                                                                                                                                                                          
+;    log_Print{"handling rest if former line: [" + restString + "]"}                                                                                                                                                                                     
     restString = pasteString + restString
 
     newline$ = PED_ParseText{restString}
@@ -9257,6 +9264,8 @@ Return
   If ped\pasteMode = 0 Then PED_CloseFile{ped\sourceFileHandle}
   Poke.b ?instring,0
 
+  ped\ptrCurrentSourceData\CurrentSourceLine = storeCurrentSourceLine                                                                                                                                                                                    
+  
   PED_UpdateStatusArea{}                                                                                                                                                                                                                                 
   Gosub reset_Blockflag
   PED_RedrawSource{}
@@ -9799,11 +9808,11 @@ Return
   EndIf
   ped\ptrCurrentSourceData\LinePosEndX = tempX
 
-  msg$ = "LinePosStartX " + Str$(ped\ptrCurrentSourceData\LinePosStartX) + ", "
-  msg$ + Str$(ped\ptrCurrentSourceData\LinePosStartY)  + " - "
-  msg$ + Str$(ped\ptrCurrentSourceData\LinePosEndX) + ", "
-  msg$ + Str$(ped\ptrCurrentSourceData\LinePosEndY)
-  log_Print{msg$}
+  ;msg$ = "LinePosStartX " + Str$(ped\ptrCurrentSourceData\LinePosStartX) + ", "
+  ;msg$ + Str$(ped\ptrCurrentSourceData\LinePosStartY)  + " - "
+  ;msg$ + Str$(ped\ptrCurrentSourceData\LinePosEndX) + ", "
+  ;msg$ + Str$(ped\ptrCurrentSourceData\LinePosEndY)
+  ;log_Print{msg$}
 
   ;-- todo: add hardfold support (compare with old asm code at this place!
   ped\foldNumber = 0
@@ -10256,7 +10265,7 @@ JMP setpointer_to_normal
   ;eclock_Open{1000}
   ;eclock_Start{1000}
 
-  log_Print{"updating labellist, search string [" + LabelListSearchString + "]"}
+  ;log_Print{"updating labellist, search string [" + LabelListSearchString + "]"}
 
   ped\labelSearchMode = 0
   If LabelListSearchString <> ""
@@ -10277,14 +10286,14 @@ JMP setpointer_to_normal
     Gosub LabelStandard
   EndIf
   
-  log_Print{"updating labellist done"}
+  ;log_Print{"updating labellist done"}
   ;ttt.l = eclock_Stop{}
   ;log_Print{"time elapsed " + Str$(ttt/1000.0)}
   ;eclock_Close{}
 Return
 
 .LabelStandard:
-  log_Print{"LabelStandard"}
+  ;log_Print{"LabelStandard"}
 
   While *nextline AND NOT labelBreak
     tmpStr.s = Trim$(Peek.s(*nextline + 9))
@@ -10357,9 +10366,9 @@ Return
 Return
 
 .LabelSpecial:
-  If Peek.w(?comWord_LabelAll) Then log_Print{"LabelAll"}
-  If Peek.w(?comWord_LabelRemark) Then log_Print{"LabelRemark"}
-  If Peek.w(?comWord_LabelCase) Then log_Print{"LabelCase"}  
+  ;If Peek.w(?comWord_LabelAll) Then log_Print{"LabelAll"}
+  ;If Peek.w(?comWord_LabelRemark) Then log_Print{"LabelRemark"}
+  ;If Peek.w(?comWord_LabelCase) Then log_Print{"LabelCase"}  
 
   While *nextline AND NOT labelBreak
     tmpStr.s = Trim$(Peek.s(*nextline + 9))
@@ -10440,8 +10449,12 @@ Return
                 WZTags #WENTRYA_TextPen,AB3Pen(#AB3_cmacro)
       Default : WZTags #WENTRYA_TextPen,1
     End Select
-
-    WZListAdd list_labels,labelCaption,pedconfig\sort_labels,*nextline
+                                                                                                                                                                                                                                                         
+    If pedconfig\sort_labels = 0                                                                                                                                                                                                                         
+      WZListAdd list_labels,labelCaption,-2,*nextline                                                                                                                                                                                                    
+    Else                                                                                                                                                                                                                                                 
+      WZListAdd list_labels,labelCaption,-1,*nextline                                                                                                                                                                                                    
+    EndIf                                                                                                                                                                                                                                                
     ADDQ.w #1,comWord_LabelCounter
     ped\LabelListChanged = True
   EndIf
@@ -10462,14 +10475,13 @@ Return
 
 
 .reset_labellist:
-  log_Print{"resetting labellist?"}
+  ;log_Print{"resetting labellist?"}
 
   Gosub free_labellist
   Gosub update_labellist
   ped\LabelListChanged = False
 
-.redraw_labellist:
-  log_Print{"redrawing labellist..."}
+  ;log_Print{"redrawing labellist..."}
   If Peek.w(?comWord_LabelCounter) <= Peek.l(?comLong_Label1VisableItem)
     Poke.l ?comLong_Label1VisableItem,0
   EndIf
@@ -12777,7 +12789,7 @@ Return
 
   If pedconfig\linenumbers
     If ped\ptrCurrentSourceData ; maybe there is no source loaded at begin
-      log_Print{"TotalLines: " + Str$(ped\ptrCurrentSourceData\TotalLines)}
+      ;log_Print{"TotalLines: " + Str$(ped\ptrCurrentSourceData\TotalLines)}
       digits.b = 5
       If ped\ptrCurrentSourceData\TotalLines < 10000 Then digits = 4
       If ped\ptrCurrentSourceData\TotalLines < 1000 Then digits = 3
@@ -12951,7 +12963,7 @@ RTS
 .clear_sourcewindow:
   ; -- clear the codelines in window
   USEPATH sourceWindow
-  SetAPen_ \win\RPort,AB3Pen(#AB3_screenfill)                                                                                                                                                                                                            
+  SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)                                                                                                                                                                                                           
   RectFill_ \win\RPort,\BoxLeft,\BoxTop,\BoxWidth,\statusAreaY-1
 
   ; draw vertical line to seperate numbers and source code
@@ -13184,7 +13196,7 @@ RTS
 
     If last_vankey > 0 Then Gosub immediate_syntaxhelp
   Wend
-  log_Print{"exit pedevents"}
+  ;log_Print{"exit pedevents =================================="}
 Return
 
 
@@ -14131,7 +14143,7 @@ Return
   last_event.l = pedMessage\_Class
 
   ;If pedMessage\_Class<>$400000 AND pedMessage\_Class<>$10
-    ;log_Print{"source window event: " +Hex$(pedMessage\_Class) + ", " + Hex$(pedMessage\_Qualifier)+ ", " + Hex$(pedMessage\_Code)}
+  ;  log_Print{"source window event: " +Hex$(pedMessage\_Class) + ", " + Hex$(pedMessage\_Qualifier)+ ", " + Hex$(pedMessage\_Code)}
   ;EndIf
 
   ;If (pedMessage\_Class <> #IDCMP_INTUITICKS) AND (pedMessage\_Class <> #IDCMP_ACTIVEWINDOW) AND (pedMessage\_Class <> #IDCMP_GADGETHELP) AND (pedMessage\_Class <> #IDCMP_CHANGEWINDOW)
@@ -14211,7 +14223,7 @@ Return
       PED_SwitchCursor{}
     EndIf
   EndIf
-
+ 
   ; ---------------------------------
   If pedconfig\onlinehelp_extended AND pedMessage <> 0
     ; -- wait for at least 1 second before displaying the context
@@ -14259,7 +14271,7 @@ Return
           ;-- check for a constant
           If Left$(helptext$,1) = "#"
             helptext$ = UnRight$(helptext$,1)
-            helpvalue = PED_GetConstantValue{Peek.l(?constantbase),helptext$}
+            helpvalue = PED_GetConstantValue{helptext$}
           Else
             ;-- check for a newtype
           EndIf
@@ -14288,6 +14300,7 @@ Return
       EndIf
     EndIf
     skip_this:
+    ;log_Print{"check context end"}
   EndIf
 Return
 
@@ -14380,11 +14393,10 @@ Return
 
 
 .handle_event_mousebuttons:
-;  log_Print{"handle event mousebuttons..."}
+  ;log_Print{"handle event mousebuttons..."}
   If NOT Peek.b(?comByte_RunningFlag)            ; only available when no exe is running
     Gosub check_mouse_in_statusarea
   EndIf
-
 ; exit_Loop_classes:
 ;                     Dc.b $FF,$01                  ; VERTICAL SCROLLER      ; -1
 ;                     Dc.b $FE,$00                  ; SHORTCUT               ; -2
@@ -14441,7 +14453,7 @@ Return
   ;log_Print{"========= rawkey    code: "+ Hexw$(mcode) + " / quali: "+ Hex$(mqualifier)}
   last_rawkey = pedMessage\_Code       ; rename it to avoid clashes with vanillakey tomsmart1
   last_vankey = 0
-  Poke.w ?comWord_QualifierStore, mqualifier
+  ped\ptrCurrentSourceData\QualifierStore = mqualifier
 
   ; check for Mousewheel Rawkey events from newmouse definition
   Select last_rawkey
@@ -14467,7 +14479,7 @@ Return
   last_rawkey = 0
   mqualifier.w  = pedMessage\_Qualifier AND (NOT #IEQUALIFIER_RELATIVEMOUSE)
   last_mqualifier.w = mqualifier
-  Poke.w ?comWord_QualifierStore, mqualifier
+  ped\ptrCurrentSourceData\QualifierStore = mqualifier
   ;log_Print{"event vanillakey: " + Hexw$(last_vankey) + " qualifier: " + Hexw$(mqualifier)}
 
   ; check key first
@@ -14620,7 +14632,7 @@ Return
       Else
         Gosub moveCursorToEndOfWord
       EndIf
-
+ 
     Default
       ped\blockmarkRemovalMode = 1
       Gosub moveCursorRight
@@ -14640,7 +14652,7 @@ Return
 
   Select mqualifier
   Case #IEQUALIFIER_CONTROL         ; CTRL   ---------------------------------------------------------------------------------------
-    log_Print{"CONTROL ..."}
+    log_Print{"CONTROL + $" + Hexb$(last_vankey)}
     Select last_vankey
     Case $15                        ; ctrl-u
       PED_RedrawSource{}
@@ -14749,13 +14761,13 @@ Return
 
   Select last_vankey
   Case #VANILLAKEY_F1               ; F1
-    JSR menu_helpgeneral
+    Gosub menu_helpgeneral
 
   Case #VANILLAKEY_F2               ; check for "F2"
-    JSR menu_helpincludesguide
+    Gosub menu_helpincludesguide
 
   Case #VANILLAKEY_F3               ; check for "F3"
-    JSR menu_helpblitzlibs
+    Gosub menu_helpblitzlibs
 
   Case #VANILLAKEY_F4               ; check for "F4"
     ped\lastLayout = 0
@@ -14997,7 +15009,7 @@ Return
 Return
 
 .do_VANILLAKEY_DOWN:
-;  log_Print{"cursor down"}
+  ;log_Print{"cursor down"}
     Gosub close_popupwindow
 
     ; convert right qualifiers to left qualifiers to make selectblock smarter
@@ -15225,8 +15237,8 @@ Even                   ; make sure to have enough space reserved
 
 
 .update_rememberlist:
-  tmpfile$ = Peek.s(?comStr_SourceName)
-  tmppath$ = Peek.s(?comStr_CurrentDir)
+  tmpfile$ = Peek.s(&ped\ptrCurrentSourceData\SourceName)
+  tmppath$ = Peek.s(&ped\ptrCurrentSourceData\CurrentDir)
   log_Print{"updating remember menu for " + tmppath$ + "/" + tmpfile$}
   h = 0 : exit_rlupdate.b = False
   Repeat
@@ -15304,34 +15316,33 @@ Return
 
   _rememberitem.w = _menuitem - $78
   log_Print{"load remembered [" + Str$(_rememberitem) + "]"}
-  log_Print{"selected lastsource: " + rememberfiles$(_rememberitem)}
+  log_Print{"selected remembered source: " + rememberfiles$(_rememberitem)}
 
   If rememberfiles$(_rememberitem) = "<unnamed>"
      Gosub menu_load
      Return
-  Else
-    log_Print{"check if file already opened."}
-    If ped\firstSourceEntry
-      *fileEntry.sourceEntry = ped\firstSourceEntry
-      Repeat
-        If Peek.s(*fileEntry + 8 + $D4) = dos_FilePart{rememberfiles$(_rememberitem)}
-          log_Print{"source already loaded, switching to that tab."}
-          GetD0 *fileEntry : Gosub selectfile
-          dummy.l = ask{!TRANS{"The file ist already open. Do you want to reload it?"},!TRANS{"Yes|Cancel"},!TRANS{"Load File"}}
-          If dummy = 0 
-            Pop Repeat : Return
-          Else
-            Pop Repeat : Goto load_selected_file
-          EndIf
-        EndIf
-        *fileEntry = *fileEntry\nextEntry
-      Until *fileEntry = 0
+  EndIf
+
+  *fileEntry.sourceEntry = PED_CheckSourceAlreadyOpen{ dos_FilePart{rememberfiles$(_rememberitem)} }
+  If *fileEntry 
+    log_Print{"source already loaded, switching to that tab."}
+    GetD0 *fileEntry : Gosub selectfile
+    dummy.l = ask{!TRANS{"The file is already open. Do you want to reload it?"},!TRANS{"Yes|Cancel"},!TRANS{"Load File"}}
+    If dummy <> 0 
+      Pop If : Pop If : Return
+    Else
+      Pop If : Pop If : Goto load_selected_file
     EndIf
   EndIf
-  ;
+
   ; -- check if actual source is unnamed to decide to open new or just open
   If ped\ptrCurrentSourceData
-    If Peek$(ped\ptrCurrentSourceData + $DE) <> "" Then Gosub menu_opennew
+    log_Print{"Current sourcename [" + Peek$(&ped\ptrCurrentSourceData\SourceName) + "]"}
+    If Peek$(&ped\ptrCurrentSourceData\SourceName) <> ""
+      log_Print{"opening a new tab"}
+      Gosub menu_new                                                                                                                                                                                                                                 
+    Else
+    EndIf
   Else
     log_Print{"no actual file"}
   End If
@@ -15339,7 +15350,8 @@ Return
   ; -- loading the selected source file
   ;
   .load_selected_file:
-  log_Print{"loading selected sourcefile"}
+  log_Print{"loading remembered sourcefile"}                                                                                                                                                                                                             
+  
   ; TODO: refacoring of following code, is used more than one time (see menu_load)
   If ped\ptrCurrentSourceData\SourceChanged
     dummy.l = ask{!TRANS{"You have unsaved changes!"},!TRANS{"Continue|Cancel"},!TRANS{"Load File"}}
@@ -15353,8 +15365,8 @@ Return
 Return
 
 .set_remembered_filename:
-  tmpfile$ = Peek.s(?comStr_SourceName)
-  tmppath$ = Peek.s(?comStr_CurrentDir)
+  tmpfile$ = Peek.s(&ped\ptrCurrentSourceData\SourceName)
+  tmppath$ = Peek.s(&ped\ptrCurrentSourceData\CurrentDir)
   rememberfiles$(_rememberitem-1) = dos_AddPart{tmppath$,tmpfile$}
   log_Print{"set [" + rememberfiles$(_rememberitem) + "] to item [" +Str$(_rememberitem) + "]"}
 Return
@@ -15577,11 +15589,11 @@ Even
 
   Dc.l #MENU_NEW                      ; menu/shortcut ID            ; replaced hardcode values with constants  tomsmart1
   Dc.l 0                              ; refresh after function call 0= No  1 Yes
-  Dc.l menu_opennew                   ;new      (function call address)
+  Dc.l menu_new                       ;new      (function call address)
 
   Dc.l #MENU_OPENNEW
   Dc.l 0
-  Dc.l menu_openload                  ;open new and load
+  Dc.l menu_loadAsNew                 ;open new and load
 
   Dc.l #MENU_OPEN
   Dc.l 1
@@ -15877,8 +15889,8 @@ RTS
   MaxLen lf$=64
   MaxLen pa$=64
 
-  actual_file$ = Peek.s(ped\ptrCurrentSourceData + $DE)
-  actual_drawer$ = Peek.s(?comStr_CurrentDir)
+  actual_file$ = Peek.s(&ped\ptrCurrentSourceData\SourceName)
+  actual_drawer$ = Peek.s(&ped\ptrCurrentSourceData\CurrentDir)
 
   If project_tab = 1
     WZ_DrawTable{"PROJECTTABLE"}
@@ -16118,9 +16130,6 @@ Return
   Gosub activatesourcewindow
 
   While ped\firstSourceEntry
-    !asm
-    JSR dummy_compilercall
-    !basic
     Gosub free_actualsource
     Gosub close_actualsource
   Wend
@@ -16945,7 +16954,6 @@ RTS
   BEQ typehelp1
     CMP.b #"\",(a0)
     BEQ typehelp2
-      ;BRA notypehelp
       RTS
   typehelp1:
   SUBQ #1,a0
@@ -16980,6 +16988,7 @@ RTS
       CMP.b #"z",(a0)
       BGT 'path
  'ok
+
   MOVEQ #0,d0
   LEA chartab,a1
   ADDQ.l #1,a0
@@ -16994,19 +17003,7 @@ RTS
 
   CMP.b #".",d0
   BNE 't1
-    ;!regs2stack
-    ;!basic
-    ;log_Print{"typehelp"}
-    ;!asm
-    ;!stack2regs
-    ;CNIF #USE_AREXX = 1
-    ;  MOVE.w d1,comWord_Column
-    ;  JSR arexxfunc_getword
-    ;  MOVE.w columnstore,comWord_Column
-      BRA typehelp
-    ;CELSE
-    ;  RTS
-    ;CEND
+    BRA typehelp
  't1
 
   MOVE.l a2,-(a7)
@@ -17052,6 +17049,7 @@ RTS
  'u1
     CMP.b #$20,(a1)+
   BEQ 'u1
+
   MOVE.l a2,-(a7)
   MOVE.l a0,-(a7)
   LEA typestr,a0
@@ -17068,6 +17066,7 @@ RTS
     MOVE.b d0,(a0)+
   BRA 'n2
  'n1
+
   CLR.b (a0)+
   MOVE.l (a7)+,a0
 
@@ -17077,43 +17076,49 @@ RTS
     JSR findvar
  'found2
   MOVE.l (a7)+,a2
+
   LEA typestr,a0
   BRA typehelp
- 'nl
-  BRA 'nl2
-  ;  BRA notypehelp
-  RTS
 
-  gettype:
-  MOVEM.l a0-a1,-(a7)
-  LEA typestr,a2
- 'nl2
-  MOVE.l 4(a0),d0
-  BEQ 'exit
-  CLR.b deftypefound
-  MOVE.l d0,a0
-  LEA 9(a0),a1
- 'l1
-  MOVE.b (a1)+,d0
+ 'nl
+    BRA 'nl2
+    ;BRA notypehelp
+    RTS
+
+    gettype:
+    MOVEM.l a0-a1,-(a7)
+    LEA typestr,a2
+  'nl2
+    MOVE.l 4(a0),d0
+    BEQ 'exit
+    CLR.b deftypefound
+    MOVE.l d0,a0
+    LEA 9(a0),a1
+  'l1
+    MOVE.b (a1)+,d0
   BEQ 'nl
+
   CMP.b #$80,d0
   BNE 'notok
-  MOVE.b (a1)+,d0
-  CMP.b #$33,d0            ;find deftype
-  BNE 'notok
-  MOVE.b #1,deftypefound
+    MOVE.b (a1)+,d0
+    CMP.b #$33,d0            ;find deftype
+    BNE 'notok
+      MOVE.b #1,deftypefound
  'notok
+
   CMP.b (a2),d0
   BNE 'l1
+
   MOVE.l a1,d1
   SUB.l #10,d1
   SUB.l a0,d1
   BEQ 'bg1
-  CMP.b #",",-2(a1)
-  BEQ 'bg1
-  CMP.b #" ",-2(a1)
-  BNE 'l1
+    CMP.b #",",-2(a1)
+    BEQ 'bg1
+      CMP.b #" ",-2(a1)
+      BNE 'l1
  'bg1
+
   ADDQ.l #1,a2
  'l2
   MOVE.b (a2)+,d0
@@ -17283,13 +17288,12 @@ RTS
   Gosub newtype_selecttype
   lev = 1
 
-  MOVE.l newtypebase,d0
-  *nt.l = PutD0
+  *nt.l = *newtypebase
   If *nt
-    *nt = Peek.l(*nt):
+    *nt = Peek.l(*nt)
     While *nt
-      b$ = Peek$(*nt+11)
-      If b$ = a$:
+      b$ = Peek$(*nt + 11)
+      If b$ = a$
         quicktype = 1 : Gosub newtype_listsubtype
         find = 1 : Pop If : Goto f1ab
       End If
@@ -18084,13 +18088,13 @@ Return
           i = SearchEnd(a$,Asc("."),1)
           i2 = SearchEnd(a$,Asc("$"),1)
           a$ = Mid$(a$,i+1,i2-i-3)
-        End If
-        MOVE.l newtypebase,d0
-        *nt.l = PutD0
+        End If                                                                                                                                                                                                                                           
+        
+        *nt.l = *newtypebase
         If *nt
-          *nt = Peek.l(*nt):
+          *nt = Peek.l(*nt)
           While *nt
-            b$ = Peek$(*nt+11)
+            b$ = Peek$(*nt + 11)
             If b$ = a$
               ;*nt2(lev) = Peek.l(*nt+4)
               Gosub newtype_listsubtype
@@ -18340,20 +18344,20 @@ Return
 .newtype_listconsts
   WZ_ClearTable{"TYPETABLE"}
   If FLen(cstr$) => 2
-    ;log_Print{"listconstants:" + cstr$}
+    log_Print{"** listconstants:" + cstr$}
     InitArgParse cstr$
     word1$ = NextArg$
     word2$ = NextArg$
-    MOVE.l constantbase,d0
-    *nt = PutD0
-    If *nt
-      *nt = Peek.l(*nt)
-      While *nt
-        a$ = Peek$(*nt+$13)
+
+    *cb.l = *constantbase
+    If *cb
+      *cb = Peek.l(*cb)
+      While *cb
+        a$ = Peek$(*cb + $13)
         If Instr (a$,word1$) Then If Instr(a$,word2$)
-          WZ_AddRow{"TYPETABLE",a$,"$"+Hex$(Peek.l(*nt+8))}
+          WZ_AddRow{"TYPETABLE",a$,"$" + Hex$(Peek.l(*cb + 8))}
         End If
-        *nt = Peek.l(*nt)
+        *cb = Peek.l(*cb)
       Wend
     Else
       error{"constantbase = NULL => GURU!!!"}
@@ -18374,13 +18378,11 @@ Return
   WZ_SetTableTitle{"TYPETABLE","Identifier"}
   WZ_DrawTable{"TYPETABLE"}
 
-  MOVE.l newtypebase,d0
-  *nt = PutD0
-
+  *nt = *newtypebase
   If *nt
     *nt = Peek.l(*nt)
     While *nt
-      a$ = Peek$(*nt+11)
+      a$ = Peek$(*nt + 11)
       WZ_AddRow{"TYPETABLE",a$}
       *nt = Peek.l(*nt)
     Wend
@@ -18414,8 +18416,7 @@ Return
   word1$ = NextArg$
   word2$ = NextArg$
   If lev
-    MOVE.l newtypebase,d0
-    *nt = PutD0
+    *nt = *newtypebase
     If *nt
 ;       *nt = *nt2(lev)
 ;       While *nt
@@ -18458,8 +18459,7 @@ out2        Wend
         WZ_UpdateTable{"TYPETABLE"}
     End If
   Else
-    MOVE.l newtypebase,d0
-    *nt = PutD0
+    *nt = *newtypebase
     If *nt
       *nt = Peek.l(*nt)
     Else
@@ -18523,8 +18523,7 @@ Return
 ;    *nt = Peek.l(*nt)
 ;    i = i + 1
 ;  Wend
-  MOVE.l newtypebase,d0
-  *nt = PutD0
+  *nt = *newtypebase
   If *nt
     *nt = Peek.l(*nt)
     Format ""
@@ -19040,7 +19039,7 @@ Return                                                                        ; 
         xpos_end = xpos_start + #bevelsize * \font\tf_XSize
         ;-- check click position
         If (mx > xpos_start) AND (mx < xpos_end) AND (my > ypos_start) AND (my < ypos_end)
-          log_Print{"mouse clicked at: " + Peek.s(*fileEntry + 8 + $D4)}
+          log_Print{"mouse clicked at tab: " + Peek.s(&*fileEntry\SourceName)}
           If *fileEntry = ped\currentSourceEntry
             log_Print{"tab is actual file"}
             If pedMessage\_Qualifier AND (#IEQUALIFIER_CONTROL|#IEQUALIFIER_LALT|#IEQUALIFIER_RALT)
@@ -19106,8 +19105,8 @@ Return
     log_Print{"searching if already in open files: "}
     *fileEntry.sourceEntry = ped\firstSourceEntry
     Repeat
-      lpath.s = Peek.s(*fileEntry + 8 + $14)
-      lfile.s = Peek.s(*fileEntry + 8 + $D4)
+      lpath.s = Peek.s(&*fileEntry\CurrentDir)
+      lfile.s = Peek.s(&*fileEntry\SourceName)
       If dos_AddPart{lpath,lfile} = fileToLoad
         log_Print{"source already loaded, switching to that tab."}
         GetD0 *fileEntry : Gosub selectfile
@@ -19120,7 +19119,7 @@ Return
   EndIf
 
   log_Print{"opening a new tab..."}
-  Gosub menu_opennew
+  Gosub menu_new
 
   log_Print{"new tab opened, now loading [" + fileToLoad + "]"}
   loadsourcefilename.s = fileToLoad
@@ -20040,7 +20039,6 @@ comWord_BoundLinesX:  Dc.w 2
 comWord_BoundLinesY:  Dc.w 2
 comLong_Label1VisableItem: Dc.l 0
 noDetokenizing:       Ds.w 1
-loadAsNew             Ds.w 1
 fontWidth             Ds.w 1
 typestr               Ds.b 80
 keepstring            Ds.b 1
