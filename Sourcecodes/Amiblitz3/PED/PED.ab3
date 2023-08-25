@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2919
+; NumberOfBuilds  = 2930
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 4104
-; CursorColumn    = 1
-; LabelSearch     = "ped_check"
+; CursorLine      = 3213
+; CursorColumn    = 119
+; LabelSearch     = "ped_histo"
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelCase       = 0
@@ -111,7 +111,7 @@ DEBUG
 #bevelsize             = 11    ; space betweeen filenames
 
 #maxlabels           = 512
-#maxhistory          = 4*8
+#maxhistory          = 8
 #MAX_SOURCEFILES     = 16
 
 #USE_WIZARD          = 1     ; use wizard library
@@ -573,6 +573,9 @@ NEWTYPE.ped
   undeleteStrLen.w
   no_scrollrate.b
   foldNumber.l
+
+  historyPointer.l
+  historyTable.l[#maxhistory]
 End NEWTYPE
 DEFTYPE.ped ped
 
@@ -603,8 +606,6 @@ NEWTYPE.sourceWindow
   statusAreaY.w
   visibleLines.w
   visibleColumns.w
-  currentLine.l
-  currentColumn.w
 
   boundLinesX.w
   boundLinesY.w
@@ -1062,7 +1063,6 @@ USEPATH sourceWindow
   ; -- draw all sourcefilename tabs
   If ped\firstSourceEntry
     *fileEntry.sourceEntry = ped\firstSourceEntry
-
     Repeat
       bevelsize.w = #bevelsize - 1
             
@@ -1077,7 +1077,6 @@ USEPATH sourceWindow
         bcol.w = AB3Pen(#AB3_screenback)
         bevel_recessed.b = False
       EndIf
-
 
       xsa.l = \font\tf_XSize / 2
       xsb.l = \font\tf_XSize - xsa
@@ -1127,7 +1126,7 @@ USEPATH sourceWindow
       If *fileEntry = ped\currentSourceEntry
         modifiedFlag = ped\ptrCurrentSourceData\SourceChanged
       Else
-        modifiedFlag = Peek.w(*fileEntry\SourceChanged)
+        modifiedFlag = *fileEntry\SourceChanged
       EndIf
       If modifiedFlag Then tmp_string = "*" + tmp_string
 
@@ -1173,23 +1172,30 @@ SHARED sourceWindow, ped
 SHARED oldSourceChanged.w                                                                                                                                                                                                                                
 
   ;log_Print{"UpdateStatusArea: " + Binw$(statusmode)}
+  If ped\ptrCurrentSourceData = 0
+    error{"no sourcecontext available!"}
+  EndIf
 
-  If ped\ptrCurrentSourceData\SourceChanged  <> oldSourceChanged
-      oldSourceChanged = ped\ptrCurrentSourceData\SourceChanged
+  USEPATH ped\ptrCurrentSourceData
+
+  If \SourceChanged  <> oldSourceChanged
+      oldSourceChanged = \SourceChanged
       statusmode = #STATUS_REDRAW
   EndIf
 
   ;-- redraw everything   
   If statusmode = #STATUS_REDRAW
-    ;log_Print{"drawing status area"}                                                                                                                                                                                                                    
     PED_DrawStatusArea{}                                                                                                                                                                                                                                 
   EndIf                                                                                                                                                                                                                                                  
+
+  tmpCurrentLine.l = \DisplayLineOffset + \DisplayLine + 1
+  tmpCurrentColumn.w = \ColumnsOffset + \Column + 1
 
   ;-- update Scrollers
   If !checkOption{statusmode,#STATUS_CURSOR|#STATUS_SCROLLERS}
     ;log_Print{"updating scrollers"}
-    slider_top.l     = ped\ptrCurrentSourceData\DisplayLineOffset
-    slider_total.l   = ped\ptrCurrentSourceData\TotalLines
+    slider_top.l     = \DisplayLineOffset
+    slider_total.l   = \TotalLines
     slider_visible.l = Peek.l(?viewablelines)
     ;/ scale
     If slider_total > 0
@@ -1203,29 +1209,21 @@ SHARED oldSourceChanged.w
                                               #PGA_Top    ,slider_top,@@
                                               #PGA_Visible,slider_visible)
     EndIf                                                                                                                                                                                                                                                
-    xpot.l = ped\ptrCurrentSourceData\Column
-    xact.l = ped\ptrCurrentSourceData\ColumnsOffset + ped\ptrCurrentSourceData\Column + 1
-    xvis.w = \visibleColumns / #MAX_Columns
+
     SetGadgetAttrsA_ sourceWindow\horizprop,sourceWindow\win,0,Tags(#PGA_VertPot,-1,@@                                                                                                                                                                   
                                               #PGA_VertBody,1,@@
-                                              #PGA_HorizPot,xpot,@@
-                                              #PGA_HorizBody,xvis,@@
-                                              #PGA_Top,xact,@@
+                                              #PGA_HorizPot,\Column,@@
+                                              #PGA_HorizBody,sourceWindow\visibleColumns / #MAX_Columns,@@
+                                              #PGA_Top,tmpCurrentColumn,@@
                                               #PGA_Total,#MAX_Columns,@@
                                               #TAG_END,0)
   EndIf
 
-
   ;-- print current cursorposition
   If !checkOption{statusmode,#STATUS_CURSOR|#STATUS_SCROLLERS}
-    ;log_Print{"printing cursor data"}
-    sourceWindow\currentLine = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine + 1
-    sourceWindow\currentColumn = ped\ptrCurrentSourceData\ColumnsOffset + ped\ptrCurrentSourceData\Column + 1
-    formatstr$ = "      "
-    formatstr$ = StrRight(Str$(sourceWindow\currentLine), FLen(formatstr$), 48)  ; mit nullen auffuellen
+    formatstr$ = "      " + StrRight(Str$(tmpCurrentLine), FLen(formatstr$), 48)  ; mit nullen auffuellen
     PED_PrintStatus{formatstr$,18}
-    formatstr$ = "   " 
-    formatstr$ = StrRight(Str$(sourceWindow\currentColumn), FLen(formatstr$), 48)  ; mit nullen auffuellen
+    formatstr$ = "   "    + StrRight(Str$(tmpCurrentColumn), FLen(formatstr$), 48)  ; mit nullen auffuellen                                           kkk
     PED_PrintStatus{formatstr$,3}
   EndIf
   
@@ -1243,10 +1241,8 @@ SHARED oldSourceChanged.w
 
   ;-- print additional datas
   If !checkOption{statusmode,#STATUS_ADDITIONAL}
-    ;log_Print{"printing additional data"}
     If ped\debugMode Then info$ = "  Debug: On " Else info$ = "  Debug: Off"                                                                                                                                                                             
     If ped\DoTokenize Then info$ + "  Tokenize: On " Else info$+ "  Tokenize: Off"
-    info$ = "Total: " + Str$(ped\ptrCurrentSourceData\TotalLines) + info$
     PED_PrintStatus{info$,74,2}
   EndIf
 End Statement
@@ -3065,8 +3061,6 @@ SHARED ped, sourceWindow
   If lineNum.l < 0 Then lineNum = 0
   If lineNum > ped\ptrCurrentSourceData\TotalLines Then lineNum = ped\ptrCurrentSourceData\TotalLines - 1
 
-  !PED_CursorOff
-
   ; same code as in routine mouseclick_in_source
   *tempLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
   tempY.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
@@ -3092,17 +3086,17 @@ SHARED ped, sourceWindow
   ;-- adjust the display and offset to match the new current line
   tmpDisplayLineOffset.l = ped\ptrCurrentSourceData\DisplayLineOffset
 
-  tempY - Peek.w(?comWord_BoundLinesY)
+  tempY - sourceWindow\boundLinesY
   If tempY > 0
     If ped\ptrCurrentSourceData\TotalLines > Peek.l(?viewablelines)
-      temp.l = ped\ptrCurrentSourceData\TotalLines - Peek.l(?viewablelines) + Peek.w(?comWord_BoundLinesY)
+      temp.l = ped\ptrCurrentSourceData\TotalLines - Peek.l(?viewablelines) + sourceWindow\boundLinesY
       If lineNum > temp
-        temp - Peek.w(?comWord_BoundLinesY)
+        temp - sourceWindow\boundLinesY
         newDLO.l = temp
         newDL.l = tempY - temp
       Else
         newDLO.l = tempY
-        newDL.l = Peek.w(?comWord_BoundLinesY)
+        newDL.l = sourceWindow\boundLinesY
       EndIf
     Else
       newDLO.l = 0
@@ -3285,7 +3279,20 @@ Statement AbsDimensions{*bm.bmark}
     Exchange *bm\xMin,*bm\xMax
     Exchange *bm\yMin,*bm\yMax
   EndIf
+End Statement
 
+
+
+
+Statement PED_HistoryAddEntry{}
+SHARED ped
+  ped\historyTable[ped\historyPointer] = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
+  ped\historyPointer + 1
+  If ped\historyPointer >= #maxhistory Then ped\historyPointer = 0                                                                                                                                                                                       
+  log_Print{"adding historypointer " + Str$(ped\historyPointer) + ", line " + Str$(ped\historyTable[ped\historyPointer])}
+End Statement
+
+Statement HistoryUp{}
 End Statement
 
 
@@ -4407,16 +4414,14 @@ MOVE.b #1,$20(a0)
 !ComData_LEA{comFunc_OpenConsole            ,A0}        : MOVE.l #console_open                ,(A0) ;$3C
 !ComData_LEA{comFunc_CloseConsole           ,A0}        : MOVE.l #console_close               ,(A0) ;$40
 !ComData_LEA{comFunc_LogPrint               ,A0}        : MOVE.l #log_print                   ,(A0) ;$44
-!ComData_LEA{comFunc_SetNormalPointer       ,A0}        : MOVE.l #set_pointer_normal           ,(A0) ;$48
-!ComData_LEA{comFunc_SetBusyPointer         ,A0}        : MOVE.l #set_pointer_busy             ,(A0) ;$4C     4c 4d 4e 4f
+!ComData_LEA{comFunc_SetNormalPointer       ,A0}        : MOVE.l #set_pointer_normal          ,(A0) ;$48
+!ComData_LEA{comFunc_SetBusyPointer         ,A0}        : MOVE.l #set_pointer_busy            ,(A0) ;$4C
 !ComData_LEA{comFunc_DetokenizeLine         ,A0}        : MOVE.l #detokenize_line             ,(A0) ;$64
-!ComData_LEA{comPtr_SourceDir              ,A0}        : MOVE.l #comStr_SourceDir           ,(A0) ;$68
+!ComData_LEA{comPtr_SourceDir               ,A0}        : MOVE.l #comStr_SourceDir            ,(A0) ;$68
 !ComData_LEA{comPtr_SourceName              ,A0}        : MOVE.l #comStr_SourceName           ,(A0) ;$6C
-;!ComData_LEA{comFunc_AL_0_852E              ,A0}        : MOVE.l #AL_0_8BD2                   ,(A0) ;$70
-;!ComData_LEA{comFunc_AL_0_8532              ,A0}        : MOVE.l #AL_0_8BD6                   ,(A0)
 !ComData_SetL{comFunc_CloseGUI              ,#close_gui}
 !ComData_SetL{comFunc_CreateGUI             ,#create_whole_gui}
-!ComData_SetL{comData_Magic                 ,##MagicIdentifier_Long}        ;#"~::~"}  ;
+!ComData_SetL{comData_Magic                 ,##MagicIdentifier_Long}
 !ComData_SetL{comFunc_UpdateCompileStatusWin,#Update_CompileStatus_Window}
 
 
@@ -4741,7 +4746,7 @@ If ende Then Goto abnormal_exit
   pedconfig\blitzlibDir = dos_AddPart{pedconfig\mainDir,"Blitzlibs"}
   pedconfig\lastSourceFile     = dos_GetToolString{"last_source",""}
 
-  pedconfig\includeDir      = dos_GetToolString{"INCLUDEDIR" ,dos_AddPart{pedconfig\mainDir,"Sourcecodes/Includes"}} : Poke.l ?ptr_incdirname,&pedconfig\includeDir
+  pedconfig\includeDir      = dos_GetToolString{"INCLUDEDIR" ,dos_AddPart{pedconfig\mainDir,"Sourcecodes/Includes"}}
   pedconfig\helpDir         = dos_GetToolString{"HELPDIR"    ,dos_AddPart{pedconfig\mainDir,"Docs"}}
   pedconfig\autodocDir      = dos_GetToolString{"AUTODOCDIR" ,dos_AddPart{pedconfig\mainDir,"Docs"}}
   pedconfig\sourceDir       = dos_GetToolString{"SOURCEDIR"  ,dos_AddPart{pedconfig\mainDir,"Sourcecodes"}}
@@ -4764,7 +4769,7 @@ If ende Then Goto abnormal_exit
 
   If dos_GetToolState{"UTILLIBS"} <> 0
     If dos_GetToolState{"UTILLIBS"} =-1 Then pedconfig\useUtilLib = True
-    pedconfig\utillibFile = dos_GetToolString{"UTILLIBS",dos_AddPart{pedconfig\blitzlibDir,"DefLibs"}} : Poke.l ?ptr_deflibsfilename,&pedconfig\utillibFile
+    pedconfig\utillibFile = dos_GetToolString{"UTILLIBS",dos_AddPart{pedconfig\blitzlibDir,"DefLibs"}} 
     log_Print{"UTILLIBS = " + pedconfig\utillibFile}
   EndIf
   If pedconfig\utillibFile <> ""
@@ -5884,10 +5889,6 @@ Return
    pedconfig\utillibFile = tutillibfile$
    pedconfig\oslibFile  = toslibfile$
    pedconfig\cslibFile  = tcslibfile$
-
-   Poke.l ?ptr_incdirname      ,&pedconfig\includeDir
-   Poke.l ?ptr_deflibsfilename ,&pedconfig\utillibFile
-
 
    If temp_id <> pedconfig\screen_modeID
      pedconfig\screen_modeID = temp_id
@@ -7502,7 +7503,7 @@ Return
         !PED_IncreaseDisplayLine
         PED_RedrawSource{}
       Else
-        If tmpViewableLines > (tmpDisplayLine + 1 + Peek.w(?comWord_BoundLinesY))
+        If tmpViewableLines > (tmpDisplayLine + 1 + sourceWindow\boundLinesY)
           !PED_IncreaseDisplayLine
           PED_RedrawSource{}
         Else
@@ -7573,7 +7574,7 @@ Return
 
 .update_sourcewindow_bottom:
   If ped\ptrCurrentSourceData\TotalLines >= ped\ptrCurrentSourceData\DisplayLineOffset + Peek.l(?viewablelines)
-    If ped\ptrCurrentSourceData\DisplayLine + 1 + Peek.w(?comWord_BoundLinesY) => Peek.l(?viewablelines)
+    If ped\ptrCurrentSourceData\DisplayLine + 1 + sourceWindow\boundLinesY => Peek.l(?viewablelines)
       ped\ptrCurrentSourceData\DisplayLineOffset + 1
       PED_ScrollVertical{#SCROLL_UP}
       Gosub draw_new_sourceline_bottom
@@ -7671,7 +7672,7 @@ JMP set_blockend
       EndIf
 
       ; check if text is scrolled
-      If ped\ptrCurrentSourceData\DisplayLineOffset = 0 OR (ped\ptrCurrentSourceData\DisplayLine > Peek.w(?comWord_BoundLinesY))
+      If ped\ptrCurrentSourceData\DisplayLineOffset = 0 OR (ped\ptrCurrentSourceData\DisplayLine > sourceWindow\boundLinesY)
         log_Print{"decrease displayline, current: " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
         !PED_DecreaseDisplayLine
         PED_RedrawSource{}
@@ -7777,7 +7778,7 @@ End Function
     ped\ptrCurrentSourceData\CurrentSourceLine = *prevLine
 
     If ped\ptrCurrentSourceData\DisplayLineOffset > 0
-      If ped\ptrCurrentSourceData\DisplayLine <= Peek.w(?comWord_BoundLinesY)
+      If ped\ptrCurrentSourceData\DisplayLine <= sourceWindow\boundLinesY
         ped\ptrCurrentSourceData\DisplayLineOffset - 1        ; otherwise scroll whole text one line up
         PED_ScrollVertical{#SCROLL_DOWN}
         Gosub draw_new_sourceline_top
@@ -8211,7 +8212,7 @@ Return
 
   PED_UpdateStatusArea{#STATUS_SCROLLERS}                                                                                                                                                                                                                
 
-  If Peek.l(?viewablelines) <= \DisplayLine + 1 + Peek.w(?comWord_BoundLinesY)
+  If Peek.l(?viewablelines) <= \DisplayLine + 1 + sourceWindow\boundLinesY
     log_Print{"scroll up"}
         Gosub update_sourcewindow_bottom
     ;\DisplayLineOffset + 1
@@ -8239,17 +8240,13 @@ Return
 Return
 
 .menu_top:
-  !asm
-  JSR jump_addhistory
-  !basic
+  PED_HistoryAddEntry{}
   !PED_CursorOff
   PED_GotoLine{0,#LINE_START}
 Return
 
 .menu_bottom:
-  !asm
-  JSR jump_addhistory
-  !basic
+  PED_HistoryAddEntry{}
   !PED_CursorOff
   PED_GotoLine{ped\ptrCurrentSourceData\TotalLines, #LINE_START}
 Return
@@ -8333,6 +8330,7 @@ Return
 
   Case #MENU_RELOAD_USERLIBS
     log_Print{"reload libs"}
+
     ; clear intructioncache as the tokennumbers may change
     !asm
     LEA tokenCache,a1
@@ -8539,12 +8537,7 @@ Return
   Else
     log_Print{"unknown template, opening a new file instead."}
     tmp_string = !TRANS{"unnamed"}
-    ;MOVE.l d0,-(a7)
-    ;GetD0 &tmp_string
-    ;!asm
     Gosub menu_loadAsNew
-    ;MOVE.l (a7)+,d0 ; clean stack
-    ;!basic
   EndIf
 Return
 
@@ -8580,9 +8573,9 @@ Return
   Else
     log_Print{"we already have an opened source file, so adding a new tab..."}
     ; -- save changes to current source line
-    Gosub storeline_bas
+    Gosub storeline
     Gosub storeCurrentSourceData
-
+    
     log_Print{"currentEntry at " + Hex$(ped\currentSourceEntry)}
     *sourceEntry.sourceEntry = ped\currentSourceEntry
     *nextEntry.sourceEntry = *sourceEntry\nextEntry
@@ -8598,7 +8591,6 @@ Return
       *newEntry\nextEntry = 0
     EndIf
     ped\currentSourceEntry = *newEntry
-
     Gosub clear_sourcebuffer
     Gosub reset_sourcewindow
   EndIf
@@ -12281,14 +12273,12 @@ RTS
   ped\ptrCurrentSourceData\LabelCounter = 0
   ped\ptrCurrentSourceData\SourceName[0] = 0
   ped\ptrCurrentSourceData\TotalLines = 1
-
+  
   Gosub clear_sourcewindow
-
-  ; create a first sourceline
   Gosub alloc_firstsourceline
 
   PED_UpdateStatusArea{#STATUS_SCROLLERS}
-Return
+  Return
 
 .free_actualsource:
   log_Print{"freeing current source..."}
@@ -12811,17 +12801,13 @@ Return
   \statusAreaY = \BoxTop + \visibleLines * \font\tf_YSize + 1
   \visibleColumns = (\BoxWidth - \BoxLeft) / \font\tf_XSize
   ;\visibleColumns = \visibleColumns BitClr 0
-  \boundLinesX = 2
+  \boundLinesX = 2 BitClr 0
   \boundLinesY = 2
   \scrollSize = 1
 
   Poke.l ?viewablelines,\visibleLines
   ;Poke.l ?viewablelines_m1, \visibleLines - 1
   Poke.w ?visiblecolumns,\visibleColumns
-
-  !asm
-  BCLR #0,comWord_BoundLinesX
-  !basic
 Return
 
 
@@ -12979,7 +12965,7 @@ RTS
   EndIf
 
   PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
-  PED_ShowMessage{""}                                                                                                                                                                                                                                    
+  PED_ShowMessage{""}
   PED_ClearSourceTextbuffer{}
 Return
 
@@ -13857,7 +13843,7 @@ Return
   log_Print{"move cursor to column: "  + Str$(newColumn.w)}
   oldColumnsOffset.w = ped\ptrCurrentSourceData\ColumnsOffset
 
-  If newColumn <= Peek.w(?visiblecolumns) - Peek.w(?comWord_BoundLinesX)
+  If newColumn <= Peek.w(?visiblecolumns) - sourceWindow\boundLinesX
     ped\ptrCurrentSourceData\ColumnsOffset = 0
     ped\ptrCurrentSourceData\Column = newColumn
   Else
@@ -14440,9 +14426,7 @@ Return
   Case #MIDDLEDOWN
     log_Print{"Mouse-Event MIDDLEDOWN",#log_debug}
     If NOT (pedMessage\_Qualifier AND (#IEQUALIFIER_LALT | #IEQUALIFIER_RALT))
-      !asm
-      JSR jump_historyup
-      !basic
+      Gosub jump_historyup
     EndIf
   End Select
 Return
@@ -14573,9 +14557,7 @@ Return
 
     Case #IEQUALIFIER_LALT
       log_Print{"alt"}
-      !asm
-      JSR jump_historyup
-      !basic
+      Gosub jump_historyup
 
     Case #IEQUALIFIER_CONTROL                   ; ctrl
       log_Print{"control"}
@@ -14620,9 +14602,7 @@ Return
 
     Case #IEQUALIFIER_LALT           ; move in history
       log_Print{"alt"}
-      !asm
-      JSR jump_historydown
-      !basic
+      Gosub jump_historydown
 
     Case #IEQUALIFIER_CONTROL        ; $8 tab the marked block
       log_Print{"control"}
@@ -14854,7 +14834,7 @@ Return
         actualLine.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
         If actualLine > 0
           log_Print{"join lines!"}
-          Gosub storeline_bas
+          Gosub storeline
           Gosub movecursorlineup
           ; find last character in previous line
           lineaddr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
@@ -15066,7 +15046,7 @@ Return
 
 ;Scroll Sourcetext at MouseWheelY events  tomsmart1
 .wheel_down:
-  Gosub storeline_bas
+  Gosub storeline
   !PED_CursorOff
   PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine + pedconfig\wheelStep}
   PED_UpdateStatusArea{#STATUS_SCROLLERS}
@@ -15075,7 +15055,7 @@ Return
 
 
 .wheel_up:
-  Gosub storeline_bas                                            ; added to save the changes of the corrent line
+  Gosub storeline                                            ; added to save the changes of the corrent line
   !PED_CursorOff
   PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine - pedconfig\wheelStep}
   PED_UpdateStatusArea{#STATUS_SCROLLERS}                                  ; update position of the vertical scroller
@@ -16556,92 +16536,19 @@ Return
   Gosub set_pointer_normal_bas
 Return
 
-
-;init_sourceline:
-;  MOVEA.l D0,A0
-;  CLR.l (A0)
-;  CLR.l $4(A0)
-;  MOVE.b D5,$8(A0)
-;RTS
-
-;.reset_currentLine
-;  MOVEQ #0,d0
-;  TST.l 4(a4)             ; previousline available ?
-;  BEQ 'l20
-; 'l10:
-;    MOVE.l 4(a4),a4
-;    ADDQ.l #1,d0
-;    TST.l 4(a4)
-;  BNE 'l10
-;
-;  'l20:
-;RTS
-;
-;.prev_currsourceline
-;  TST.l 4(a4)
-;  BEQ 'l20
-;  MOVE.l 4(a4),a4
-;  MOVE.l a4,d0
-;  RTS
-;
-; 'l20
-;  MOVEQ #0,d0
-;RTS
-
-
-.jump_addhistory         ;d0 linenum
-  MOVEM.l a0/d0-d1,-(a7)
-  LEA history,a0
-  MOVEQ #0,d1
-  MOVE.w historypointer,d1
-  MOVE.l comLong_DisplayLineOffset,d0
-  ADD.l comLong_DisplayLine,d0
-  MOVE.l d0,0(a0,d1)
-  ADDQ.w #4,d1
-  CMP.w  #maxhistory,d1
-  BLE 'nowrap
-    MOVEQ #0,d1
- 'nowrap:
-  MOVE.w d1,historypointer
-  MOVEM.l (a7)+,a0/d0-d1
-RTS
-
 .jump_historyup:
-  !basic
-  Gosub storeline_bas
-  !asm
-  MOVE.l a1,-(a7)
-  ;JSR storeline
-  LEA history,a0
-  MOVE.w historypointer,d1
-  SUBQ #4,d1
-  BPL 'l10
-  MOVEQ #maxhistory,d1
- 'l10
-  MOVE.w d1,historypointer
-  MOVE.l 0(a0,d1.w),d0
-  JSR jumpline
-  MOVE.l (a7)+,a1
-RTS
+  Gosub storeline
+  ped\historyPointer - 1
+  If ped\historyPointer < 0 Then ped\historyPointer = #maxhistory
+  PED_GotoLine{ped\historyTable[ped\historyPointer], #LINE_START}
+Return
 
-.jump_historydown
-  !basic
-  Gosub storeline_bas
-  !asm
-  MOVE.l a1,-(a7)
-  ;JSR storeline
-  LEA history,a0
-  MOVE.w historypointer,d1
-  ADDQ #4,d1
-  CMP.w #maxhistory,d1
-  BLE 'l10
-  MOVEQ #0,d1
- 'l10
-  MOVE.w d1,historypointer
-  MOVE.l 0(a0,d1.w),d0
-  JSR jumpline
-  MOVE.l (a7)+,a1
-RTS
+.jump_historydown:
+  Gosub storeline
+  ped\historyPointer + 1
+  If ped\historyPointer > #maxhistory Then ped\historyPointer = 0
+  PED_GotoLine{ped\historyTable[ped\historyPointer], #LINE_START}
+Return
 
 .jump_onclick:
   strline$ = PED_Detoke{ped\ptrCurrentSourceData\CurrentSourceLine}
@@ -16699,11 +16606,12 @@ RTS
 
   If found_to_jump
     Pop If
-    GetD0 linecounter-1
-    !asm
-    JSR jump_addhistory
-    JSR jumpline
-    !basic
+    PED_HistoryAddEntry{}
+    PED_GotoLine{linecounter-1,#LINE_START}
+    ;GetD0 linecounter-1
+    ;!asm
+    ;JSR jumpline
+    ;!basic
     Return
   EndIf 
 
@@ -16746,16 +16654,16 @@ RTS
 Return
 
 .jumpline     ; D0: Zielzeile
-  !basic
-  lineNum.l = PutRegD0
-  If lineNum < ped\ptrCurrentSourceData\TotalLines
-    !PED_CursorOff
-    PED_GotoLine{lineNum, #LINE_START}
-    PED_UpdateStatusArea{#STATUS_SCROLLERS}
-    !PED_CursorOn
-  EndIf
-  !asm
-RTS
+;basic
+;ineNum.l = PutRegD0
+;f lineNum < ped\ptrCurrentSourceData\TotalLines
+; !PED_CursorOff
+; PED_GotoLine{lineNum, #LINE_START}
+; PED_UpdateStatusArea{#STATUS_SCROLLERS}
+; !PED_CursorOn
+;ndIf
+;;asm
+;
 
 
 .open_helpdiag
@@ -18796,18 +18704,18 @@ Return
           Poke.l ?comLong_Label1VisableItem,LabelList_FirstVisableItemNumber
           ;WZPrint "LISTVIEW_LABELS",-1,list_labels,LabelList_FirstVisableItemNumber
           Gosub activatesourcewindow
-          Gosub storeline_bas
-          lineaddress.l = WZListData (list_labels, WZInput)
-          log_Print{"jump to corresponding source line, (address: " + Hex$(lineaddress)+ ") itemnumber:"+ Str$(WZInput)}
-
-          GetD0 lineaddress
-          !asm
-          MOVE.l comPtr_CurrentSourceLine,a4
-          MOVE.l d0,a0
-          JSR jump_addhistory
-          JSR jump_to_keyword
-          !basic
-          GetReg d1,jumpresult.b : log_Print{"jump_to_keyword returned: " + Str$(jumpresult)}
+          Gosub storeline
+          lineAddress.l = WZListData (list_labels, WZInput)
+          log_Print{"jump to corresponding source line, (address: " + Hex$(lineAddress)+ ") itemnumber:"+ Str$(WZInput)}
+          PED_HistoryAddEntry{}
+          PED_GotoLineAddress{lineAddress}
+          ;GetD0 lineaddress
+          ;!asm
+          ;MOVE.l comPtr_CurrentSourceLine,a4
+          ;MOVE.l d0,a0
+          ;JSR jump_to_keyword
+          ;!basic
+          ;GetReg d1,jumpresult.b : log_Print{"jump_to_keyword returned: " + Str$(jumpresult)}
 
         Case "case"
           Poke.w ?comWord_LabelCase,WZInput
@@ -18859,11 +18767,12 @@ Return
             Poke.s ?str_searchstring   ,searchcmd
             If searchcmdStore.s <> searchcmd
               searchcmdStore.s = searchcmd
-              !asm
-              MOVEQ #0,d0 : JSR jumpline
-              !basic
+              ;!asm
+              ;MOVEQ #0,d0 : JSR jumpline
+              ;!basic
+              PED_GotoLine{0,#LINE_START}
             EndIf
-            Gosub storeline_bas
+            Gosub storeline
             !PED_CursorOff
             Gosub menu_findnext
             PED_UpdateStatusArea{#STATUS_SCROLLERS}
@@ -18896,7 +18805,7 @@ Return
     LabelList_NewSelectItemNumber = LabelList_PreSelectItemNumber
     Use Window WZID("WIN_LABELS")
     WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_labels
-    Gosub storeline_bas
+    Gosub storeline
     lineAddress.l = WZListData (list_labels,LabelList_NewSelectItemNumber)
     PED_GotoLineAddress{lineAddress}
     !PED_CursorOn
@@ -18910,21 +18819,21 @@ Return
     LabelList_NewSelectItemNumber = LabelList_PreSelectItemNumber
     Use Window WZID("WIN_LABELS")
     WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_labels
-    Gosub storeline_bas
+    Gosub storeline
     lineAddress.l = WZListData (list_labels,LabelList_NewSelectItemNumber)
     PED_GotoLineAddress{lineAddress}    
     !PED_CursorOn
   End If
 Return
 
-.storeline_bas:
+.storeline:
   If ped\ptrCurrentSourceData\KeyBeforeReturn = 0 Then Return
   ped\ptrCurrentSourceData\SourceChanged = $FFFF
 
   !PED_CursorOff
 
   ; -- draw selecting block if existing
-  SF comByte_StateBlockMark
+  ped\ptrCurrentSourceData\StateBlockMark = False
   If ped\ptrCurrentSourceData\BlockEndY >= 0
     log_Print{"storeline, erasing block"}
     displayline.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
@@ -18941,7 +18850,7 @@ Return
           EndIf
           AbsDimensions{bmark}
           PED_DrawBlock{bmark}
-          ST comByte_StateBlockMark
+          ped\ptrCurrentSourceData\StateBlockMark = True
       EndIf
     EndIf
   EndIf
@@ -19045,34 +18954,26 @@ Return                                                                        ; 
             If pedMessage\_Qualifier AND (#IEQUALIFIER_CONTROL|#IEQUALIFIER_LALT|#IEQUALIFIER_RALT)
               log_Print{"control or alt pressed with mouse"}
               If ped\ptrCurrentSourceData\SourceChanged
-                Gosub storeline_bas
+                Gosub storeline
                 Delay_ 2
               EndIf
               ;Gosub set_tedlibbase_bas
               If pedMessage\_Qualifier AND #IEQUALIFIER_CONTROL
                 log_Print{"control: create exe"}
                 !PED_CursorOff
-                !asm
-                MOVEM.l    D2-D7/A1-A6,-(A7)
-                MOVEQ.l    ##MENU_SAVECREATEEXE,D6
-                JSR        call_compilermenuitem
-                MOVEM.l    (A7)+,D2-D7/A1-A6
-                !basic
+                _menuitem = #MENU_SAVECREATEEXE
+                Gosub call_compilermenuitem
               EndIf
               If pedMessage\_Qualifier AND (#IEQUALIFIER_LALT|#IEQUALIFIER_RALT)
                 log_Print{"alt: compile & run"}
                 !PED_CursorOff
-                !asm
-                MOVEM.l    D2-D7/A1-A6,-(A7)
-                MOVEQ.l    ##MENU_COMPILERUN,D6
-                JSR        call_compilermenuitem
-                MOVEM.l    (A7)+,D2-D7/A1-A6
-                !basic
+                _menuitem = #MENU_COMPILERUN
+                Gosub call_compilermenuitem
               EndIf
             EndIf
           Else
             log_Print{"tab is not actual file."}
-            Gosub storeline_bas
+            Gosub storeline
 
             GetD0 *fileEntry : Gosub selectfile
 
@@ -19460,7 +19361,7 @@ RTS
           Case "FIND_FINDSTRING"
             If StrUpper(findStrStore.s) <> StrUpper(find_findStr)
               findStrStore = find_findStr
-              Gosub storeline_bas
+              Gosub storeline
               !PED_CursorOff
               Gosub menu_findnext
               PED_UpdateStatusArea{#STATUS_SCROLLERS}
@@ -19469,7 +19370,7 @@ RTS
             End If
 
           Case "FIND_NEXT"
-            Gosub storeline_bas
+            Gosub storeline
             !PED_CursorOff
             Gosub menu_findnext
             PED_UpdateStatusArea{#STATUS_SCROLLERS}
@@ -19477,7 +19378,7 @@ RTS
             Gosub activatesourcewindow                ; added to make source win active that edit is possible  tomsmart1
 
           Case "FIND_PREVIOUS"
-            Gosub storeline_bas
+            Gosub storeline
             !PED_CursorOff
             Gosub menu_findprevious
             PED_UpdateStatusArea{#STATUS_SCROLLERS}
@@ -19485,7 +19386,7 @@ RTS
             Gosub activatesourcewindow
 
           Case "FIND_REPLACE"
-            Gosub storeline_bas
+            Gosub storeline
             !PED_CursorOff
             Gosub menu_replace
             !PED_CursorOn
@@ -19493,7 +19394,7 @@ RTS
 
           Case "FIND_REPLACE_ALL"
             If find_findStr <> "" AND find_replaceStr <> ""
-              Gosub storeline_bas
+              Gosub storeline
               !PED_CursorOff
               Gosub set_pointer_busy_bas
               Gosub menu_replaceall
@@ -19985,13 +19886,6 @@ Return
 .DECLARATIONS
 wzgui:                IncBin "ped.wizard"
 
-instring              Dc.b 0
-instring2             Dc.b 0
-instring3             Dc.b 0
-historypointer:       Dc.l 0
-ptr_deflibsfilename   Dc.l 0
-ptr_incdirname        Dc.l 0
-
 .classiccommands
                       ; memory reservations for libs that where introduced with old blitz2
                       ; here come whole libs
@@ -20035,21 +19929,19 @@ ptr_incdirname        Dc.l 0
 
 BSS
 Even
-comWord_BoundLinesX:  Dc.w 2
-comWord_BoundLinesY:  Dc.w 2
+instring              Dc.b 0
+instring2             Dc.b 0
+instring3             Dc.b 0
 comLong_Label1VisableItem: Dc.l 0
 noDetokenizing:       Ds.w 1
 fontWidth             Ds.w 1
-typestr               Ds.b 80
 keepstring            Ds.b 1
+deftypefound          Ds.w 1
+convert               Dc.b 0
+instru                Ds.w 1
 constantbase          Dc.l 0
 newtypebase           Dc.l 0
 tokenCache            Ds.l 32769
-newted                Dc.l 0
-history               Ds.l 10
-tempbuf               Ds.b 260
-convert               Dc.b 0
-instru                Ds.w 1
-chartab               Ds.b 260      ;last
-temp                  Ds.w 1
-deftypefound          Ds.w 1
+tempbuf               Ds.b 260      ; used for import_start
+chartab               Ds.b 260 
+typestr               Ds.b 80
