@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2935
+; NumberOfBuilds  = 2937
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,11 +30,11 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 918
+; CursorLine      = 6269
 ; CursorColumn    = 1
-; LabelSearch     = "ped_histo"
+; LabelSearch     = "load_selected_file"
 ; LabelRemark     = 0
-; LabelAll        = 0
+; LabelAll        = 1
 ; LabelCase       = 0
 ; LabelPosition   = 0
 ; 
@@ -604,7 +604,7 @@ NEWTYPE.sourceWindow
   deleteMode.b
 
   statusAreaY.w
-  visibleLines.w
+  visibleLines.l
   visibleColumns.w
 
   boundLinesX.w
@@ -984,22 +984,23 @@ SHARED ped
   FreePooled_ ped\mempool,memptr-4,Peek.l(memptr-4)
 End Statement
 
-Statement PED_ClearSourceTextbuffer{}
+Statement PED_ClearTextbuffer{}
 SHARED sourceWindow
 
   ; -- clear current text memoryarea
-  tba.l = Peek.l(?textbufferaddr)
-  bytes.l = (#MAX_Columns / 2) * sourceWindow\visibleLines - 1
-  For tb.l = 0 To bytes
-    Poke tba + tb, $2020
-  Next tb                                                                                                                                                                                                                                                
-
-  ;MOVEA.l textbufferaddr,A0
-  ;MOVE.w #MAX_Columns,D0 : LSR.w #1,D0
-  ;MOVE.l viewablelines,D1 : MULS d0,d1 : SUBQ.w #1,D1
-  ;JL_0_76A6:
-  ;  MOVE.w #$2020,(A0)+
-  ;DBF D1,JL_0_76A6
+  ;tba.l = Peek.l(?textbufferaddr)
+  ;bytes.l = (#MAX_Columns / 2) * sourceWindow\visibleLines - 1
+  ;For tb.l = 0 To bytes
+  ;  Poke.w tba + tb, $2020
+  ;Next tb                                                                                                                                                                                                                                               
+  GetReg D1,sourceWindow\visibleLines
+  MOVEA.l textbufferaddr,A0
+  MOVE.w #MAX_Columns,D0 : LSR.w #1,D0
+  ;MOVE.l viewablelines,D1 :
+  MULS d0,d1 : SUBQ.w #1,D1
+  JL_0_76A6:
+    MOVE.w #$2020,(A0)+
+  DBF D1,JL_0_76A6
 End Statement
 
 
@@ -2342,6 +2343,7 @@ USEPATH sourceWindow
 
   ;-- detokenized string, tokens are still marked with bit 7 set in each character
   tmpString2.s = Peek.s(Peek.l(?textbufferPrint))
+  ;log_Print{Str$(tposy) + "[" + Left$(tmpString2,32) + "]"}
 
   ;-- check if source left of display start position has an opened string literal
   If Peek.b(?keepstring) = 0
@@ -2379,6 +2381,7 @@ USEPATH sourceWindow
   Until curChar = 0
   exit_printloop:
 
+  ; print all normal characters we found so far...
   If FLen(tmpExpand)
     PED_PrintText{&tmpExpand, tposx, tposy, FLen(tmpExpand), AB3Pen(#AB3_cother)}
     tposx + FLen(tmpExpand)
@@ -2386,6 +2389,7 @@ USEPATH sourceWindow
   If curChar = 0 Then Goto exit_print
   If curChar > 0 Then Goto print_loop
 
+  ; if we have a token, print it ...
   tmpExpand.s = ""
   While curChar < 0
     tmpExpand + Chr$(curChar BitClr 7)
@@ -2474,7 +2478,8 @@ End Function
 
 
 Statement PED_PrintHighlight{lineaddr.l, xPos.w, textlen.w, textcolor.w, textstyle.w}
-  SHARED ped, sourceWindow
+SHARED ped, sourceWindow
+;  If False
   If textlen > 0
     ;log_Print{"macro to print: " + Peeks$(lineaddr,textlen)}
     xPos = xPos - ped\ptrCurrentSourceData\ColumnsOffset
@@ -2881,7 +2886,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   storeBlockEndY.l = ped\ptrCurrentSourceData\BlockEndY
   ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
   !PED_storeCursorPosition
-  PED_ClearSourceTextbuffer{}
+  PED_ClearTextbuffer{}
 
   CNIF #hardfold = 1
     ped\foldNumber = PED_CheckFoldingState{}
@@ -3079,7 +3084,7 @@ SHARED ped, sourceWindow
         log_Print{"GotoLine: no next line!",#log_error}
         lineNum = ped\ptrCurrentSourceData\TotalLines - 1
         tempY = lineNum
-      EndIf
+      EndIf 
     Else
       *tempLine = *tempLine\previousLine
       tempY - 1
@@ -6344,10 +6349,8 @@ Return
     log_Print{"source already loaded, switching to that tab."}
     GetD0 *fileEntry : Gosub selectfile
     dummy.l = ask{!TRANS{"The file is already open. Do you want to reload it?"},!TRANS{"Yes|Cancel"},!TRANS{"Load File"}}
-    If dummy = 0 
-      Pop Repeat : Return
-    Else
-      Pop Repeat : Goto load_selected_file
+    If dummy <> 0 
+      Pop If : Pop If : Return
     EndIf
   EndIf
 
@@ -8309,7 +8312,7 @@ Return
 
   Case #MENU_COMPILERUN
     ;TEDSetLabelList {?comPtr_LabelList}
-    ;TEDSetLabelCount{?comWord_LabelCounter}
+    ;TEDSetLabelCount{ped\ptrCurrentSourceData\LabelCounter}
     Gosub call_compiler
 
   Case #MENU_RUN
@@ -10246,7 +10249,7 @@ JMP setpointer_to_normal
 
 
 .update_labellist:
-  CLR.w comWord_LabelCounter
+  ped\ptrCurrentSourceData\LabelCounter = 0
 
   *nextline.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
   If *nextline = 0 Then Return
@@ -10284,7 +10287,7 @@ Return
 .LabelStandard:
   ;log_Print{"LabelStandard"}
 
-  While *nextline AND NOT labelBreak
+  While *nextline AND (labelBreak = False)
     tmpStr.s = Trim$(Peek.s(*nextline + 9))
     found.b = False
 
@@ -10329,9 +10332,9 @@ Return
       End Select
 
       If found
-        If Peek.w(?comWord_LabelCounter) >= #maxlabels 
+        If ped\ptrCurrentSourceData\LabelCounter >= #maxlabels 
           log_Print{"maximum labels reached: " + Str$(#maxlabels),#log_warning}
-          labelBreak = True
+          labelBreak = True 
         Else
           If Left$(tmpStr,1) = "."            
             If ped\LabelIsFunction = 1    ; skip datatypes
@@ -10359,7 +10362,7 @@ Return
   ;If Peek.w(?comWord_LabelRemark) Then log_Print{"LabelRemark"}
   ;If Peek.w(?comWord_LabelCase) Then log_Print{"LabelCase"}  
 
-  While *nextline AND NOT labelBreak
+  While *nextline AND (labelBreak = False)
     tmpStr.s = Trim$(Peek.s(*nextline + 9))
     found.b = False
 
@@ -10395,7 +10398,7 @@ Return
     EndIf
 
     If found 
-      If Peek.w(?comWord_LabelCounter) >= #maxlabels 
+      If ped\ptrCurrentSourceData\LabelCounter >= #maxlabels 
         log_Print{"maximum labels reached: " + Str$(#maxlabels),#log_warning}
         labelBreak = True
       Else
@@ -10430,7 +10433,10 @@ Return
   
   If addok
     ;log_Print{"adding <" + tmpStr + "> <" + labelCaption + "> data " + Hex$(*nextline)}
-  
+    If labelCaption = ""
+      log_Print{"label is empty!",#log_error}
+    EndIf 
+
     Select ped\LabelIsFunction
       Case 1 : ;labelCaption = UnRight$(labelCaption,2) 
                 WZTags #WENTRYA_TextPen,AB3Pen(#AB3_cfunction)
@@ -10444,7 +10450,7 @@ Return
     Else                                                                                                                                                                                                                                                 
       WZListAdd list_labels,labelCaption,-1,*nextline                                                                                                                                                                                                    
     EndIf                                                                                                                                                                                                                                                
-    ADDQ.w #1,comWord_LabelCounter
+    ped\ptrCurrentSourceData\LabelCounter + 1
     ped\LabelListChanged = True
   EndIf
 
@@ -10456,7 +10462,7 @@ Return
 .free_labellist:
   WZListRemove list_labels
 
-  CLR.w comWord_LabelCounter
+  ped\ptrCurrentSourceData\LabelCounter = 0
   CLR.l comLong_Label1VisableItem                        ; added to clear all old list datas  tomsmart1
   LabelList_FirstVisableItemNumber = 0
   LabelList_PreSelectItemNumber = -1
@@ -10471,7 +10477,7 @@ Return
   ped\LabelListChanged = False
 
   ;log_Print{"redrawing labellist..."}
-  If Peek.w(?comWord_LabelCounter) <= Peek.l(?comLong_Label1VisableItem)
+  If ped\ptrCurrentSourceData\LabelCounter <= Peek.l(?comLong_Label1VisableItem)
     Poke.l ?comLong_Label1VisableItem,0
   EndIf
   LabelList_FirstVisableItemNumber = Peek.l(?comLong_Label1VisableItem)
@@ -12734,8 +12740,8 @@ Return
   \visibleLines - 2                        ; subtract two lines for status area
   \statusAreaY = \BoxTop + \visibleLines * \font\tf_YSize + 1
   \visibleColumns = (\BoxWidth - \BoxLeft) / \font\tf_XSize
-  \boundLinesX = 2 BitClr 0
-  \boundLinesY = 2
+  \boundLinesX = 0 ; does not work atm
+  \boundLinesY = 0 ; does not work atm 
   \scrollSize = 1
 Return
 
@@ -12895,7 +12901,7 @@ RTS
 
   PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
   PED_ShowMessage{""}
-  PED_ClearSourceTextbuffer{}
+  PED_ClearTextbuffer{}
 Return
 
 .ScrollDelay:
@@ -12921,9 +12927,10 @@ Return
   ST noDetokenizing
 
   curline.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset + ped\ptrCurrentSourceData\ColumnsOffset
-  For curY.w = 0 To sourceWindow\visibleLines - 1
+  For curY.w = 0 To sourceWindow\visibleLines - 1    
     lineaddr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
     If Peek.b(lineaddr) <> 0
+      CLR.b instring2
       tmpd2.l = 0
       While ped\ptrCurrentSourceData\ColumnsOffset > tmpd2
         If Peek.b(lineaddr + tmpd2) = $22
@@ -12933,7 +12940,7 @@ Return
       Wend
 
       Poke.b ?keepstring,1
-      PED_PrintSourceText{curline, 0, curY, False}
+      PED_PrintSourceText{curline, 0, curY, True}
       Poke.b ?keepstring,0
 
       PED_ProcessHighlighting{}
@@ -13831,96 +13838,6 @@ Return
   exit_cursorright:
   !PED_CursorOn
 Return
-
-;.AJL_0_7FCC:
-;  !basic
-;  dummy.l = ask{"AJL_07FCC called",!TRANS{"Ok"},!TRANS{"Info"}}
-;  !asm
-;  TST.w comWord_LabelCounter
-;   ;BEQ.w setpointer_to_normal
-;  LEA L_0_808E,A3
-;  CLR.l (A3)+
-;  CLR.l (A3)+
-;  CLR.l (A3)+
-;  CLR.l (A3)+
-;  CLR.l (A3)+
-;  CLR.l (A3)+
-;  CLR.l (A3)+
-;  CLR.l (A3)+
-;  LEA L_0_808E,A3
-;  MOVEQ.l #$00,D6
-;  MOVEA.l ptr_sourcewindow,A0
-;  MOVEA.l $56(A0),A2                                 ; Window\UserPort
-;
-;  JL_0_7FF8:
-;    MOVEA.l A2,A0 : JSR _WaitPort(A6)
-;    MOVEA.l A2,A0 : JSR _ReplyMsg(A6)
-;    MOVEA.l D0,A1
-;    ;MOVE.l d0,messagestore
-;    MOVE.l $14(A1),D1
-;
-;    CMP.l #IDCMP_VANILLAKEY,D1
-;    BNE.w JL_0_8030
-;
-;      MOVE.w $18(A1),D2           ; keycode
-;      CMP.w ##VANILLAKEY_RETURN,D2
-;      BEQ.w JL_0_8036
-;        CMP.w #$10,D6
-;        BEQ.w JL_0_8036
-;          MOVE.b D2,(A3)+
-;          ;JSR JL_0_739E
-;          ADDQ.w #1,D6
-;
-;    JL_0_8030:
-;    ;MOVE.l messagestore,d0
-;    BEQ 'l1
-;      MOVE.l d0,a1
-;      JSR _ReplyMsg(A6)
-;   'l1
-;  BRA.b JL_0_7FF8
-;  JL_0_8036:
-;
-;  ;MOVE.l messagestore,d0
-;  BEQ 'l1
-;    MOVE.l d0,a1
-;    JSR _ReplyMsg(A6)
-; 'l1
-;  MOVEQ.l #$00,D0
-;  MOVEQ.l #$00,D7
-;
-;  LEA L_0_808E,A1
-;  MOVEA.l comPtr_LabelList,A0
-;  MOVEQ.l #$00,D4
-;
-;  JL_0_8048:
-;  MOVEA.l $4(A0),A2
-;  LEA $9(A2),A2
-;  ADDQ.l #1,A2
-;  LEA L_0_80B0,A3
-;
-;  JL_0_8056:
-;  MOVE.b (A2)+,(A3)+
-;  BNE.b JL_0_8056
-;  LEA L_0_80B0,A3
-;  JSR compare_strings
-;  BNE.w JL_0_8076
-;  ADDQ.l #1,D4
-;  MOVEA.l (A0),A0
-;  CMPA.l #$0,A0
-;  BNE.b JL_0_8048
-;  BRA.w JL_0_808C
-;
-;  JL_0_8076:
-;  MOVEQ.l #$00,D2
-;  MOVE.w visiblecolumns,D2
-;  ADDQ.w #4,D2
-;  MOVE.l D4,D3
-;  ;JSR AJL_0_3A5E
-;  ;JSR JL_0_73FA
-;  JL_0_808C:
-;RTS
-;L_0_808E: Ds.w 17
-;L_0_80B0: Ds.w 17
 
 
 .handle_event_newsizewindow:
@@ -15210,7 +15127,7 @@ Return
     If dummy <> 0 
       Pop If : Pop If : Return
     Else
-      Pop If : Pop If : Goto load_selected_file
+      Pop If : Pop If : Goto load_rem_file
     EndIf
   EndIf
 
@@ -15228,7 +15145,7 @@ Return
   ;
   ; -- loading the selected source file
   ;
-  .load_selected_file:
+  .load_rem_file:
   log_Print{"loading remembered sourcefile"}                                                                                                                                                                                                             
   
   ; TODO: refacoring of following code, is used more than one time (see menu_load)
