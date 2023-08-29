@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2947
+; NumberOfBuilds  = 2951
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 4100
-; CursorColumn    = 38
-; LabelSearch     = "wz_addmenustrip"
+; CursorLine      = 4298
+; CursorColumn    = 8
+; LabelSearch     = "*varbase"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -335,6 +335,7 @@ XINCLUDE "/Shared/ted.include.ab3"
 DEFTYPE.tokendata *tokenbase
 DEFTYPE.l *newtypebase                                                                                                                                                                                                                                   
 DEFTYPE.l *constantbase
+DEFTYPE.l *varbase
 
 ;XINCLUDE "eclock.include.ab3"
 XINCLUDE "v43+.definitions.ab3"                       ; for MouseWheel support  tomsmart1
@@ -4350,34 +4351,40 @@ End Function
 ; -- check for TEDY as input of D1, if NOT, program was not run from IDE
 ; -- we have to switch to asm-context, as the registers have been stored there
 !asm
-CMP.l #"TEDY",D1
-BEQ 'no_exit
-  !basic
+MOVE.l A1,comLong_AB3IsAvailable   ; only used as indicator if started by compiler
+MOVEM.l D1/A1,-(A7)
+!basic
+MOVEM.l (A7)+,D1/A1
+PutReg D1, tedy.l      ; should be "TEDY
+PutReg A1, teddata.l      ; should contain pointer to compilers "teddata"-structure
+If tedy <> @"TEDY"
   error{"PED is not a standalone editor anymore.\\nPlease start the AmiBlitz3-IDE via Compiler."}
   Goto abnormal_exit
-'no_exit
+EndIf
 
 ; -- copy received teddata of compiler in A1 to local data structures
-MOVE.l A1,comLong_AB3IsAvailable   ; only used as indicator if started by compiler
-MOVEA.l #comPtr_TokenBase,A0
-MOVE.l (A1)+,(A0)+                 ; pointer to tokens
-MOVE.l (A1)+,(A0)+                 ; pointer to function read_xtradata
-MOVE.l (A1)+,(A0)+                 ; pointer to function write_xtradata
-MOVE.l (A1)+,(A0)+                 ; pointer to function compiler
-MOVE.l (A1)+,(A0)+                 ; 4 Indicator Characters ;:. etc.
+Poke.l ?comPtr_TokenBase        , Peek.l(teddata)     : *tokenbase = Peek.l(?comPtr_TokenBase)
+Poke.l ?comFunc_ReadXtraFile    , Peek.l(teddata+4)
+Poke.l ?comFunc_WriteXtraFile   , Peek.l(teddata+8)
+Poke.l ?comFunc_CallMenuEntry   , Peek.l(teddata+12)
+Poke.l ?comByte_ColonIdentifier , Peek.l(teddata+16)
+*newtypebase = Peek.l(teddata+20)
+*constantbase = Peek.l(teddata+24)
 
-; skip simple types b,w,l,q,s
-MOVE.l (a1)+,d0
-BEQ 'l10
-  MOVE.l d0,a0
-  MOVEQ #6,d1
-  'l11
-    MOVE.l (a0),a0
-  DBF d1,'l11
-  MOVE.l a0,newtypebase
-'l10:
-MOVE.l (A1)+,constantbase
-                                                                                                                                                                                                                                                         
+
+; skip simple newtypes b,w,l,q,s
+For _nt.b = 1 To 5
+  *newtypebase = Peek.l(*newtypebase)
+Next _nt
+
+; --
+; -- check/set tokenisation mode, If no tokens available, Disable tokenization
+If *tokenbase = 0 
+  ped\DoTokenize = 0
+Else
+  ped\DoTokenize = $ffff
+EndIf
+Poke.w ?comWord_DoTokenize, ped\DoTokenize
 
 ; --
 ; -- initiation of the disallowed characters table
@@ -4416,8 +4423,6 @@ MOVE.b #1,"^"(a0)
 MOVE.w #0101,1(a0)
 MOVE.b #1,$20(a0)
  
-!basic
-
 ; -- setting comdatas
 !ComData_LEA{comFunc_ErrorRequest           ,A0}        : MOVE.l #show_errorrequester         ,(A0) ;$0C
 !ComData_LEA{comFunc_DebugTrap              ,A0}        : MOVE.l #com_0_44E2                  ,(A0) ;$38
@@ -4432,7 +4437,7 @@ MOVE.b #1,$20(a0)
 !ComData_SetL{comData_Magic                 ,##MagicIdentifier_Long}
 !ComData_SetL{comFunc_UpdateCompileStatusWin,#Update_CompileStatus_Window}
 
-
+ 
 ;****************** ted.library is only needed for sharing comdata with the Debugger!
 If ted_OpenLib{0}
    TEDSetJumpTable  {?COMDATABASE}
@@ -4505,22 +4510,10 @@ Else
 End If
 !log_AvailMem{"after Compiler has given control back"}
 
-; --
-; -- check/set tokenisation mode, If no tokens available, Disable tokenization
-*constantbase = Peek.l(?constantbase)                                                                                                                                                                                                                    
-*newtypebase = Peek.l(?newtypebase)
-*tokenbase = Peek.l(?comPtr_TokenBase)
-If *tokenbase = 0 
-  ped\DoTokenize = 0
-Else
-  ped\DoTokenize = $ffff
-EndIf
-Poke.w ?comWord_DoTokenize, ped\DoTokenize
-
-
 ; ======================================================================================
 .MAINPORGRAM
 ; ======================================================================================
+*varbase = Peek.l(?comPtr_VarBase)
 
 FindScreen 0
 
@@ -11026,7 +11019,7 @@ RTS
 ;ptr_errortext:        Ds.l 1                  ; Text
 .show_errorrequester:  ; A0: ptr to Errortext,
                        ; A5: ptr current sourceline
-                       ; A6: "INLN" If in INCLUDE
+                       ; A6: "INLN" if in INCLUDE
                        ; D7: includeline
 ;  MOVE.l D7,-(A7)
 ;
@@ -16717,12 +16710,14 @@ RTS
   CMP.b #"*",d0
   BEQ 'x12
   CLR.b (a2)
+
   MOVE.l comPtr_CurrentSourceLine,a0
   JSR gettype
   TST.l d0
   BNE 'found
     JSR findvar
  'found
+
   MOVE.l (a7)+,a2
   LEA typestr,a0
   BRA typehelp
@@ -16931,25 +16926,25 @@ RTS
 
 .findvar
   !basic
-  MOVE.l comPtr_VarBase,d0
-  BEQ 'oldped
-    MOVE.l d0,a0
-    CMP.l #0,(a0)
-    BEQ 'oldped
-      *nt.l = PutD0 : *nt = Peek.l(*nt)
-      fvar$ = Peek$(?typestr)
-      fvar$ = StripLead$(fvar$, @"*")
-      While *nt
-        a$ = Peek$(*nt + $13)
-        If a$ = fvar$
-          it.l = Peek.l(*nt + 10)
-          If it
-            Poke$ ?typestr, Peek$(it + $b)
-          End If
+  If *varbase       
+    fvar$ = Peek$(?typestr)
+    fvar$ = StripLead$(fvar$, @"*")
+    log_Print{"findvar [" + fvar$ + "]"}
+
+    *vb.l = *varbase      
+    While *vb
+      a$ = Peek$(*vb + $13)
+      If a$ = fvar$
+        it.l = Peek.l(*vb + 10)
+        If it
+          Poke$ ?typestr, Peek$(it + $b)
         End If
-        *nt = Peek.l(*nt)
-      Wend
- 'oldped
+      End If
+      *vb = Peek.l(*vb)
+    Wend
+  Else
+    log_Print{"findvar: no variables available."}
+  EndIf
   !asm
 RTS
 
@@ -16959,21 +16954,17 @@ RTS
   ;i = PutD0 : str2$ = Peek$(i) : a$ = str2$
   str2$ = tokname$ : a$ = str2$
   log_Print{"typehelp [" + a$ + "]"}
+
   If NOT WZ_CheckOpen{"WIN_NEWTYPE"}
     USEPATH wtemp
     WZWindow WZID("WIN_NEWTYPE"),?wzgui,255,\type_x,\type_y,\type_w,\type_h,WZID("WIN_NEWTYPE")
     WZ_AddMenuStrip{"WIN_NEWTYPE", ped\menuStrip}
-    ;GTSetMenuChecked 0,5,9,On
-    MOVE.l comPtr_VarBase,d0
-    BEQ 'oldped
-      MOVE.l d0,a0
-      CMP.l #0,(a0)
-      BNE 'nocompile
-        WTitle "Compile the file to see all"
-     'nocompile
-    'oldped
-     Gosub activatesourcewindow
+    If *varbase = 0
+        WTitle "Compile the source to see all vars!"
+    EndIf
+    Gosub activatesourcewindow
   End If
+
   Use Window WZID("WIN_NEWTYPE")
   WZPrint "STRING2",&str2$
   WZPrint "newtype_const",0
@@ -16992,7 +16983,7 @@ RTS
       b$ = Peek$(*nt + 11)
       If b$ = a$
         quicktype = 1 : Gosub newtype_listsubtype
-        find = 1 : Pop If : Goto f1ab
+        find = 1 : Pop If : Pop While : Goto f1ab
       End If
       *nt = Peek.l(*nt)
     Wend
@@ -18014,24 +18005,22 @@ Return
   InitArgParse str2$
   word1$ = NextArg$
   word2$ = NextArg$
-  MOVE.l comPtr_VarBase,d0
-  *nt = PutD0
-  If *nt
-    *nt = Peek.l(*nt):
-    While *nt
-      a$ = Peek$(*nt + $13)
-      If Peek.w(*nt + 6) AND 2 Then arr$ = "()" Else arr$ = ""
-      If Peek.w(*nt + 6) AND 1 Then poin$ = "*" Else poin$ = ""
-      If Instr (a$,word1$)
+  If *varbase
+    *vb = Peek.l(*varbase)
+    While *vb
+      a$ = Peek$(*vb + $13)
+      If Peek.w(*vb + 6) AND 2 Then arr$ = "()" Else arr$ = ""
+      If Peek.w(*vb + 6) AND 1 Then poin$ = "*" Else poin$ = ""
+      If Instr(a$,word1$)
         If Instr(a$,word2$)
-          it.l = Peek.l(*nt+10)
+          it.l = Peek.l(*vb + 10)
           WZ_AddRow{"TYPETABLE",poin$ + a$ + arr$,Peek$(it + $b)}
         EndIf
       End If
-      *nt = Peek.l(*nt)
+      *vb = Peek.l(*vb)
     Wend
   Else
-    error{"comPtr_VarBase = NULL => GURU!!!"}
+    error{"*varbase = NULL => GURU!!!"}
   End If
   WZ_TableSort{"TYPETABLE",1}
   WZ_UpdateTable{"TYPETABLE"}
@@ -18445,14 +18434,9 @@ Return
 
 .open_labelwindow:
   WZWindow WZID("WIN_LABELS"),?wzgui,255,\click_x,\click_y,\click_w,\click_h,WZID("WIN_LABELS")
-
-  Use Window WZID("WIN_LABELS")
-  log_Print{Hex$(Addr Window(WZID("WIN_LABELS")))}
-  log_Print{Hex$(Peek.l(Addr Window(WZID("WIN_LABELS"))))}
-  log_Print{Hex$(WZWindowAddr)}
-
   WZ_AddMenuStrip{"WIN_LABELS", ped\menuStrip}
 
+  Use Window WZID("WIN_LABELS")
   LabelList_PreSelectItemNumber = -1                             ;added because we don't know what was the preselectitem  tomsmart1
   WZPrint "rem",Peek.w(?comWord_LabelRemark)
   WZPrint "all",Peek.w(?comWord_LabelAll)
@@ -19723,15 +19707,13 @@ textbufferaddr:       Dc.l 0
 instring              Dc.b 0
 instring2             Dc.b 0
 instring3             Dc.b 0
-comLong_Label1VisableItem: Dc.l 0
 noDetokenizing:       Ds.w 1
 keepstring            Ds.b 1
-deftypefound          Ds.w 1
-convert               Dc.b 0
 instru                Ds.w 1
-constantbase          Dc.l 0
-newtypebase           Dc.l 0
+convert               Dc.b 0
 tokenCache            Ds.l 32769
 tempbuf               Ds.b 260      ; used for import_start
 chartab               Ds.b 260 
 typestr               Ds.b 80
+deftypefound          Ds.w 1
+comLong_Label1VisableItem: Dc.l 0
