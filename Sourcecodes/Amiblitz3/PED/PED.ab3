@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2973
+; NumberOfBuilds  = 2975
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 7468
-; CursorColumn    = 61
-; LabelSearch     = "ped_setblock"
+; CursorLine      = 11149
+; CursorColumn    = 3
+; LabelSearch     = "menu_new"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -845,8 +845,14 @@ Dim pos2(15),pos$(15),postype$(15)
 MaxLen a$                 = 300      ;need for read .xtra
 a$ = ""
 
-messageErrorWriteFile.s = "Error writing file!"
 
+;-- for Macro PED_LoadSsource
+loadsourcefilename.s = ""
+loadnewtab.b = False
+loadchecktab.b = False
+loadcheckchanged.b = False
+
+messageErrorWriteFile.s = "Error writing file!"
 
 MaxLen tsourcedir$        = 192
 MaxLen tincludedir$       = 192
@@ -942,9 +948,6 @@ Macro PED_DecreaseDisplayLine
   ped\ptrCurrentSourceData\TextBufferOffset - #MAX_Columns
 End Macro
 
-
-
-
 Macro updateBlockMark ;{d1 = currentLine, d0 = currentColumn}
   ped\ptrCurrentSourceData\StateBlockMark = False
 
@@ -965,6 +968,20 @@ Macro PED_CursorOff
   If sourceWindow\cursorState = True Then PED_SwitchCursor{}
 End Macro
 
+
+SHARED storeBlockStartX.w : storeBlockStartX = $FFFF
+Macro PED_ResetBlockflag
+  storeBlockStartX = $FFFF
+  ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
+End Macro
+
+Macro PED_LoadSource ; filename, checkchanged, checktab, newtab
+  loadsourcefilename.s = `1
+  loadcheckchanged.b = `2
+  loadchecktab.b = `3
+  loadnewtab.b = `4
+  Gosub load_source
+End Macro
 
 ; ------------------------------------------------------
 ; FUNCTIONDEFINITIONS
@@ -3073,6 +3090,54 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
 End Statement
 
 
+Statement PED_SetBlockStart{}
+SHARED ped
+USEPATH ped\ptrCurrentSourceData
+  storeBlockStartX      = \ColumnsOffset + \Column
+  \BlockStartDisplayLine = \DisplayLineOffset + \DisplayLine
+  log_Print{"set blockstart to: " + Str$(storeBlockStartX)}
+End Statement
+
+Statement PED_SetBlockEnd{}
+SHARED ped
+USEPATH ped\ptrCurrentSourceData
+  If storeBlockStartX < 0
+    log_Print{"setblockend: no blockstart set!"}
+  Else
+    log_Print{"setblockend"}
+    newX.l = \ColumnsOffset + \Column
+    \BlockStartX = newX
+    tmpDL.l = \DisplayLineOffset + \DisplayLine
+    If \BlockStartX = storeBlockStartX
+      If \BlockStartDisplayLine = tmpDL
+        !PED_ResetBlockflag
+        PED_RedrawSource{}
+        Statement Return
+      EndIf
+    EndIf
+
+    If newX = 0
+      If tmpDL
+        If \BlockStartDisplayLine >= tmpDL
+          \BlockStartDisplayLine - 1
+          ;newX = #MAX_Columns
+        Else
+          tmpDL - 1
+          ;newX = #MAX_Columns
+        EndIf
+      EndIf
+    EndIf
+    \BlockEndX = newX
+    \BlockEndY = tmpDL
+    \BlockStartX = storeBlockStartX
+    \BlockStartY = \BlockStartDisplayLine
+    PED_AbsBlockDimensions{}
+    PED_RedrawSource{}  
+  EndIf
+End Statement
+
+
+
 Function.w getLineLength{lineaddr.l}
   _length.w = #MAX_Columns - 1
   exit_loop.b = False
@@ -4987,8 +5052,7 @@ EndIf
 .AUTOLOAD_SOURCE
 If ped\currentFile <> ""
   !PED_CursorOff
-  loadsourcefilename.s = ped\sourceFileComplete
-  Gosub load_source
+  !PED_LoadSource{ped\sourceFileComplete,False,False,False}
   !PED_CursorOn
 Else
   log_Print{"no file to autoload."}
@@ -6428,20 +6492,47 @@ RTS
 Return
 
 
-
-.load_source:  ;D7: sourcefilename: not used anymore
+.load_source:
   log_Print{"load_source called"}
 
-  *fileEntry.sourceEntry = PED_CheckSourceAlreadyOpen{ dos_FilePart{loadsourcefilename} }
-  If *fileEntry 
-    log_Print{"source already loaded, switching to that tab."}
-    GetD0 *fileEntry : Gosub selectfile
-    dummy.l = ask{!TRANS{"The file is already open. Do you want to reload it?"},!TRANS{"Yes|Cancel"},!TRANS{"Load File"}}
-    If dummy = 0
-      Pop If : Pop If : Return
+  ; -- security requester
+  If loadcheckchanged = True
+    If ped\ptrCurrentSourceData
+      If ped\ptrCurrentSourceData\SourceChanged
+        dummy.l = ask{!TRANS{"You have unsaved changes!"},!TRANS{"Continue|Cancel"},!TRANS{"Load File"}}
+        If dummy = 0 Then Return
+      EndIf
     EndIf
   EndIf
 
+  ; -- select tab, if source is already opened
+  *fileEntry.sourceEntry = 0
+  If loadchecktab = True
+    *fileEntry = PED_CheckSourceAlreadyOpen{ dos_FilePart{loadsourcefilename} }
+    If *fileEntry
+      GetD0 *fileEntry : Gosub selectTab
+      dummy.l = ask{!TRANS{"The file is already open. Do you want to reload it?"},!TRANS{"Yes|Cancel"},!TRANS{"Load File"}}
+      If dummy = 0
+        Pop If : Pop If : Pop If : Return
+      EndIf
+      loadnewtab = False
+    EndIf
+  EndIf
+
+  ; -- check if actual source is unnamed to decide to open new or just open
+  If loadnewtab = True
+    If ped\ptrCurrentSourceData
+      log_Print{"Current sourcename [" + Peek$(&ped\ptrCurrentSourceData\SourceName) + "]"}
+      If Peek.s(&ped\ptrCurrentSourceData\SourceName) <> ""
+        log_Print{"opening a new tab"}
+        Gosub menu_new
+      EndIf
+    Else
+      log_Print{"no actual file"}
+    EndIf
+  EndIf
+
+  ; -- load the source file 
   Gosub set_pointer_busy
   WZ_LockAllOpenWindows{}
   PED_ShowMessage{!TRANS{"Loading file"} + " " + loadsourcefilename + "..."}
@@ -6532,7 +6623,7 @@ Return
   Gosub set_CurrentDir
 
   Gosub set_pointer_busy
-  Gosub reset_Blockflag
+  !PED_ResetBlockflag
   Gosub free_actualsource
 
   ped\ptrCurrentSourceData\TotalLines = 1
@@ -7515,59 +7606,6 @@ Return
   !PED_CursorOn
 Return
 
-SHARED storeBlockStartX.w : storeBlockStartX = $FFFF
-Macro PED_ResetBlockflag
-  storeBlockStartX = $FFFF
-  ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
-End Macro
-
-
-Statement PED_SetBlockStart{}
-SHARED ped
-USEPATH ped\ptrCurrentSourceData
-  storeBlockStartX      = \ColumnsOffset + \Column
-  \BlockStartDisplayLine = \DisplayLineOffset + \DisplayLine
-  log_Print{"set blockstart to: " + Str$(storeBlockStartX)}
-End Statement
-
-Statement PED_SetBlockEnd{}
-SHARED ped
-USEPATH ped\ptrCurrentSourceData
-  If storeBlockStartX < 0
-    log_Print{"setblockend: no blockstart set!"}
-  Else
-    log_Print{"setblockend"}
-    newX.l = \ColumnsOffset + \Column
-    \BlockStartX = newX
-    tmpDL.l = \DisplayLineOffset + \DisplayLine
-    If \BlockStartX = storeBlockStartX
-      If \BlockStartDisplayLine = tmpDL
-        !PED_ResetBlockflag
-        PED_RedrawSource{}
-        Statement Return
-      EndIf
-    EndIf
-
-    If newX = 0
-      If tmpDL
-        If \BlockStartDisplayLine >= tmpDL
-          \BlockStartDisplayLine - 1
-          ;newX = #MAX_Columns
-        Else
-          tmpDL - 1
-          ;newX = #MAX_Columns
-        EndIf
-      EndIf
-    EndIf
-    \BlockEndX = newX
-    \BlockEndY = tmpDL
-    \BlockStartX = storeBlockStartX
-    \BlockStartY = \BlockStartDisplayLine
-    PED_AbsBlockDimensions{}
-    PED_RedrawSource{}  
-  EndIf
-End Statement
-
 .selectblockdown_bas:
   If ped\ptrCurrentSourceData\BlockEndY = $FFFFffff Then PED_SetBlockStart{}
   Gosub movecursorlinedown
@@ -8379,8 +8417,7 @@ Return
     aslfr_SetRequesterTitle{0,!TRANS{"Select a filename to insert in source"},"",""}
     aslfr_SetPath{0,pedconfig\mainDir,"",""}
     If aslfr_Request{0,False,False,False,sourceWindow\pedScreen}
-      a$ = aslfr_GetNextFile{}
-      Gosub insertstring
+      a$ = aslfr_GetNextFile{} : Gosub insertstring
     EndIf
 
   Case #MENU_OPENFILEUNDERCURSOR
@@ -8388,21 +8425,20 @@ Return
     _file$ = PED_GetWordAtPos{strline$, ped\ptrCurrentSourceData\Column,False,False}
     log_Print{"open file under cursor [" + _file$+ "]"}
     If _file$ <> ""
-      a$ = _file$
-      If NOT dos_Exist{a$}
-        a$ = dos_AddPart{pedconfig\includeDir,_file$}
-        log_Print{"not found, trying " + a$}
+      tmp_string = _file$
+      If NOT dos_Exist{tmp_string}
+        tmp_string = dos_AddPart{pedconfig\includeDir,_file$}
+        log_Print{"not found, trying " + tmp_string}
       EndIf
-      If NOT dos_Exist{a$}
-        a$ = dos_AddPart{Peek.s(&ped\ptrCurrentSourceData\CurrentDir),_file$}
-        log_Print{"not found, trying " + a$}
+      If NOT dos_Exist{tmp_string}
+        tmp_string = dos_AddPart{Peek.s(&ped\ptrCurrentSourceData\CurrentDir),_file$}
+        log_Print{"not found, trying " + tmp_string}
       EndIf
-      If dos_Exist{a$}
-        log_Print{"open file under cursor: " + a$}
-        GetD0 &a$ : Gosub loadfile
-        Gosub storeCurrentSourceData
+      If dos_Exist{tmp_string}
+        log_Print{"open file under cursor: " + tmp_string}
+        !PED_LoadSource{tmp_string,False,True,True}  
       Else
-        log_Print{"could not find file: " +a$}
+        log_Print{"could not find file: " + tmp_string}
       EndIf
     EndIf
 
@@ -8470,11 +8506,11 @@ Return
   If NextItem(templates())
     log_Print{"opening new source tab."}
 
-    Gosub menu_new
-
     loadsourcefilename.s = templates()\filename
     log_Print{"selected template: " + loadsourcefilename}
-    Gosub load_source
+    ;Gosub menu_new
+    ;Gosub load_source
+    !PED_LoadSource{templates()\filename,False,False,True}
 
   Else
     log_Print{"unknown template, opening a new file instead."}
@@ -8568,7 +8604,8 @@ Return
   If aslfr_Request {1,False,False,False,-1,False}
     loadsourcefilename.s = aslfr_GetNextFile{}
     If loadsourcefilename.s <> ""
-      Gosub load_source
+      ;Gosub load_source
+      !PED_LoadSource{loadsourcefilename,False,True,True}
     EndIf
   EndIf
   log_Print{"menu load finished."}
@@ -8602,17 +8639,22 @@ Return
   Gosub RestoreLabelAndNewtypeWin
 Return
 
-.selectfile:  ; D0: current entry in opened file table
+.selectTab:  ; D0: current entry in opened file table
   selectedEntry.l = PutD0
 
-  Gosub storeCurrentSourceData
-  Gosub save_tempprefs
-  ped\currentSourceEntry = selectedEntry
-  Gosub getCurrentSourceData
-  Gosub reset_sourcewindow
-  Gosub read_tempprefs
+  If ped\currentSourceEntry <> selectedEntry
+    log_Print{"switching to tab."}
+    Gosub storeCurrentSourceData
+    Gosub save_tempprefs
+    ped\currentSourceEntry = selectedEntry
+    Gosub getCurrentSourceData
+    Gosub reset_sourcewindow
+    Gosub read_tempprefs
 
-  PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
+    PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
+  Else
+    log_Print{"source is already at current tab."}
+  EndIf
 Return
 
 
@@ -8846,7 +8888,7 @@ Return
 
   ped\ptrCurrentSourceData\CurrentSourceLine = *previousLine
 
-  Gosub reset_Blockflag
+  !PED_ResetBlockflag
 
   If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine > ped\ptrCurrentSourceData\TotalLines
     ped\ptrCurrentSourceData\TotalLines - 1
@@ -8948,7 +8990,7 @@ Return
   JL_0_351C:
 
   !basic
-  Gosub reset_Blockflag
+  !PED_ResetBlockflag
   If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine > ped\ptrCurrentSourceData\TotalLines
     ped\ptrCurrentSourceData\TotalLines - 1
     ped\ptrCurrentSourceData\DisplayLineOffset = ped\ptrCurrentSourceData\TotalLines
@@ -9220,7 +9262,7 @@ Return
   ped\ptrCurrentSourceData\CurrentSourceLine = storeCurrentSourceLine                                                                                                                                                                                    
   
   PED_UpdateStatusArea{}                                                                                                                                                                                                                                 
-  Gosub reset_Blockflag
+  !PED_ResetBlockflag
   PED_RedrawSource{}
 Return
 
@@ -9429,7 +9471,7 @@ Return
     Gosub set_pointer_normal
     Pop If : Return
   EndIf
-  Gosub reset_Blockflag
+  !PED_ResetBlockflag
   PED_RedrawSource{}
 Return
 
@@ -9441,7 +9483,7 @@ Return
   EndIf
 
   If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF     ; if blockmark is set, clear the block
-    Gosub reset_Blockflag
+    !PED_ResetBlockflag
     PED_RedrawSource{}
   EndIf
   oldBlockDims\xMin = ped\ptrCurrentSourceData\BlockStartX ; why store the old block ?? it has been killed with the clause above
@@ -9607,7 +9649,7 @@ Return
 
       ped\ptrCurrentSourceData\ColumnsOffset - sourceWindow\scrollSize
       Gosub scroll_right
-      Gosub reset_Blockflag
+      !PED_ResetBlockflag
     EndIf
   Else            ; scroll to left if where are not at the rightmost column
     If (mousePos\textX - ped\ptrCurrentSourceData\ColumnsOffset) => sourceWindow\visibleColumns
@@ -9624,7 +9666,7 @@ Return
 
         ped\ptrCurrentSourceData\ColumnsOffset + sourceWindow\scrollSize
         Gosub scroll_left
-        Gosub reset_Blockflag
+        !PED_ResetBlockflag
       EndIf
     EndIf
   EndIf
@@ -11002,10 +11044,9 @@ RTS
     file_Close{fid}
 
     If error_incname <> "none"              ; open source file with error
-      GetD0 &error_incname
       If Exists (error_incname)
         log_Print{"Error in include ["+ error_incname + "], opening it and jumping to errorline ["+ error_incline + "]..."}
-        GetD0 &error_incname : Gosub loadfile
+        !PED_LoadSource{error_incname,False,True,True}
         PED_GotoLine{Val(error_incline)-1,#LINE_END}
         PED_UpdateStatusArea{#STATUS_REDRAW}
       End If
@@ -11257,12 +11298,7 @@ JL_0_5650:
     MOVEQ.l #$00,D0
 RTS
 
-
-.reset_Blockflag:
-  MOVE.w #$FFFF, store_BlockStartX
-  ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
-Return
-
+store_BlockStartX: Dc.w 0
 .reset_Blockflag_asm:
   MOVE.w #$FFFF, store_BlockStartX
   MOVE.l #$ffffFFFF, comLong_BlockEndY
@@ -12056,7 +12092,7 @@ Return
 Return
 
 .clear_sourcebuffer:
-  Gosub reset_Blockflag
+  !PED_ResetBlockflag
 
   ped\ptrCurrentSourceData\Column = 0
   ped\ptrCurrentSourceData\DisplayLine = 0
@@ -12870,7 +12906,7 @@ RTS                                                      ; endif
     ped\ptrCurrentSourceData\BlockStartX = 0
     ped\ptrCurrentSourceData\BlockStartY + 1
     If ped\ptrCurrentSourceData\BlockStartY > ped\ptrCurrentSourceData\BlockEndY
-      Gosub reset_Blockflag
+      !PED_ResetBlockflag
       Return
     EndIf
   EndIf
@@ -12881,14 +12917,14 @@ RTS                                                      ; endif
     If ped\ptrCurrentSourceData\BlockStartY <= ped\ptrCurrentSourceData\BlockEndY
       Return
     Else
-      Gosub reset_Blockflag
+      !PED_ResetBlockflag
       Return
     EndIf
   EndIf
 
   If ped\ptrCurrentSourceData\BlockStartY = ped\ptrCurrentSourceData\BlockEndY
     If ped\ptrCurrentSourceData\BlockEndX <= ped\ptrCurrentSourceData\BlockStartX
-      Gosub reset_Blockflag
+      !PED_ResetBlockflag
       Return
     EndIf
   EndIf
@@ -14961,45 +14997,12 @@ Return
      Return
   EndIf
 
-  *fileEntry.sourceEntry = PED_CheckSourceAlreadyOpen{ dos_FilePart{rememberfiles$(_rememberitem)} }
-  If *fileEntry 
-    log_Print{"source already loaded, switching to that tab."}
-    GetD0 *fileEntry : Gosub selectfile
-    dummy.l = ask{!TRANS{"The file is already open. Do you want to reload it?"},!TRANS{"Yes|Cancel"},!TRANS{"Load File"}}
-    If dummy = 0
-      Pop If : Pop If : Return
-    Else
-      Pop If : Pop If : Goto load_rem_file
-    EndIf
-  EndIf
-
-  ; -- check if actual source is unnamed to decide to open new or just open
-  If ped\ptrCurrentSourceData
-    log_Print{"Current sourcename [" + Peek$(&ped\ptrCurrentSourceData\SourceName) + "]"}
-    If Peek$(&ped\ptrCurrentSourceData\SourceName) <> ""
-      log_Print{"opening a new tab"}
-      Gosub menu_new                                                                                                                                                                                                                                 
-    Else
-    EndIf
-  Else
-    log_Print{"no actual file"}
-  End If
-  ;
-  ; -- loading the selected source file
-  ;
-  .load_rem_file:
-  log_Print{"loading remembered sourcefile"}                                                                                                                                                                                                             
+  log_Print{"loading remembered sourcefile"}
   
-  ; TODO: refacoring of following code, is used more than one time (see menu_load)
-  If ped\ptrCurrentSourceData\SourceChanged
-    dummy.l = ask{!TRANS{"You have unsaved changes!"},!TRANS{"Continue|Cancel"},!TRANS{"Load File"}}
-    If dummy = 0 Then Return
-  EndIf
-
-  loadsourcefilename.s = rememberfiles$(_rememberitem)
-  Gosub load_source
+  ;loadsourcefilename.s = rememberfiles$(_rememberitem) : Gosub load_source
+  !PED_LoadSource{rememberfiles$(_rememberitem),False,True,True}  
   Gosub analyze_loadedsource
-  PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
+  PED_UpdateStatusArea{#STATUS_REDRAW}
 Return
 
 .set_remembered_filename:
@@ -15582,7 +15585,7 @@ RTS
               fext$ = dos_GetExt{ab2_project\sourcefile[pc]}
               If fext$="ab2" OR fext$="bb2" OR fext$="bb"
                 sourcefile$ = ab2_project\sourcepath[pc]+ab2_project\sourcefile[pc]
-                GetD0 &sourcefile$ : Gosub loadfile
+                !PED_LoadSource{sourcefile$,False,True,True}  
               EndIf
             Next pc
             Gosub activatesourcewindow
@@ -15779,7 +15782,7 @@ Return
 .project_loadfile:
   t$ = LCase$(actual_file$)
   If Instr(t$,".bb2")     OR Instr(t$,".ab2")  OR Instr(t$,".ab3")    OR Instr(t$,".bb")
-    GetD0 &actual_file$ : Gosub loadfile
+    !PED_LoadSource{actual_file$,False,True,True}  
   EndIf
 Return
 
@@ -16282,7 +16285,7 @@ Return
       If found_in_cache
         tmp_string = dos_AddPart{pedconfig\includeDir, HelpIndexCache()\includefile}
         log_Print{"found in HelpIndexCache(), will open it:" + tmp_string}
-        GetD0 &tmp_string : Gosub loadfile
+        !PED_LoadSource{tmp_string,False,True,True}  
         PED_UpdateStatusArea{}                                                                                                                                                                                                                           
         Gosub set_pointer_normal
         *currLine = ped\ptrCurrentSourceData\CurrentSourceLine
@@ -18609,7 +18612,7 @@ Return                                                                        ; 
             log_Print{"tab is not actual file."}
             Gosub storeline
 
-            GetD0 *fileEntry : Gosub selectfile
+            GetD0 *fileEntry : Gosub selectTab
 
             Gosub storeCurrentSourceData
           EndIf
@@ -18623,42 +18626,6 @@ Return                                                                        ; 
     EndIf
   EndIf
 Return
-
-.loadfile:
-  tmpD0.l = PutD0 : fileToLoad.s = Peek.s(tmpD0)
-  log_Print{"load file: " + fileToLoad}
-  If fileToLoad = "<unnamed>"
-    log_Print{"nothing to load: " + fileToLoad}
-  Else
-    ; checking if File is already open:
-    If ped\firstSourceEntry
-      log_Print{"searching if already in open files: "}
-      *fileEntry.sourceEntry = ped\firstSourceEntry
-      Repeat
-        lpath.s = Peek.s(&*fileEntry\CurrentDir)
-        lfile.s = Peek.s(&*fileEntry\SourceName)
-        If dos_AddPart{lpath,lfile} = fileToLoad
-          log_Print{"source already loaded, switching to that tab."}
-          GetD0 *fileEntry : Gosub selectfile
-          Pop If : Pop If : Pop Repeat : Pop If
-          Return
-        EndIf
-        *fileEntry = *fileEntry\nextEntry
-      Until *fileEntry = 0
-      log_Print{"not loaded yet, loading ..."}
-    EndIf
-
-    log_Print{"opening a new tab..."}
-    Gosub menu_new
-
-    log_Print{"new tab opened, now loading [" + fileToLoad + "]"}
-    loadsourcefilename.s = fileToLoad
-    Gosub load_source
-  EndIF
-Return
-
-
-
 
 ; Begin routines for function build_HelpIndexFile  ; moved the functions and statemend defination out of the build index rountine for a better overview  tomsmart1
 Function.l ab3_IsTokenChar{char.w}
