@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2975
+; NumberOfBuilds  = 2994
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 11149
-; CursorColumn    = 3
-; LabelSearch     = "menu_new"
+; CursorLine      = 10572
+; CursorColumn    = 121
+; LabelSearch     = ""print"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -533,6 +533,8 @@ NEWTYPE.ped
   *ptrCurrentSourceData.sourceEntry       ; needed as long as comPtr_CurrentSourceLine ist converted
 
   sourceFileHandle.l
+  inString.b
+  keepString.b
   convert.b
   DoTokenize.w
   amigaguide.b
@@ -578,6 +580,9 @@ NEWTYPE.ped
 
   historyPointer.l
   historyTable.l[#maxhistory]
+
+  ptrTextbufferPrint.l
+  ptrLineUndeleteStore.l
 End NEWTYPE
 DEFTYPE.ped ped
 
@@ -1515,12 +1520,11 @@ SHARED ped
   If *storeLine = 0 Then Function Return False
 
   If Peek.b(*storeLine + 9) <> 0
-    storeAddr.l = Peek.l(?lineundeletestore)
     tempLen.b = Peek.b(*storeLine + 8)
     log_Print{"storing line: " + Peek.s(*storeLine + 9)}
     ped\undeleteStrLen = tempLen
     For i.b = 0 To tempLen-1
-      Poke.b storeAddr + i, Peek.b(*storeLine + 9 + i)
+      Poke.b ped\ptrLineUndeleteStore + i, Peek.b(*storeLine + 9 + i)
     Next i
   EndIf
   Function Return True
@@ -1905,25 +1909,32 @@ End Function
 
 Function.s PED_GetTokenName{tokenNumber.l}
 SHARED *tokenbase
-
+ 
   ;-- search in tokencache
-  _tn.w = tokenNumber BitClr $f
+  _tn.w = tokenNumber BitClr $F
+  _libnum.w = _tn LSR 7
+
+  ;log_Print{"searching for token " + Hexw$(_tn) + ", libnum " + Hexb$(_libnum),#log_debug}
+
   *token.tokendata = Peek.l(?tokenCache + _tn * 4)
   If *token
-    log_Print{"token " + Hexw$(tokenNumber) + " / " + Str$(_tn * 4) + " / " + Peek.s(&*token\dat) + " found in cache."}
+    ;log_Print{"token " + Hexw$(tokenNumber) + ": " + Peek.s(&*token\dat) + " found in cache.", #log_debug}
     Function Return Peek.s(&*token\dat)
   Else
-    *token = *tokenbase
+    *token = *tokenbase 
     While *token
-      If *token\number = tokenNumber
-        log_Print{"token " + Hexw$(tokenNumber) + " cached."}
+      If *token\number = _tn
+        ;log_Print{"token " + Hexw$(tokenNumber) + " cached.", #log_debug}
+        ; add token to tokencache
         Poke.l ?tokenCache + _tn * 4, *token
+
+        Pop If : Pop While
         Function Return Peek.s(&*token\dat)
       EndIf
       *token = *token\next_token
-    Wend
+    Wend 
   EndIf
-  Function Return "????Lib "+Str$(tokenNumber LSR 7)+"/"+Str$(tokenNumber & $7f)
+  Function Return "????Lib "+ Str$(_libnum) + "/" + Str$(tokenNumber AND $7f)
 End Function
 
 Function.l PED_GetTokenPointer{tname.s}
@@ -1998,37 +2009,41 @@ SHARED ped,*PreProcessor
   Function Return strLine
 End Function
 
-Function.s PED_DetokenizeText2{ptrOrgString.l}
+Function.b PED_Detokenize2Textbuffer{ptrOrgString.l}
+SHARED ped
 
-  MaxLen linebuffer.s = 256
   _strLen.w = Len(Peek.s(ptrOrgString))
   If _strLen
-    If Peek.b(?keepstring) = 0 Then Poke.b ?instring2, 0
+    If ped\keepString = 0 Then ped\inString = False
 
     If Peek.b(?noDetokenizing)
-      linebuffer = Peek.s(ptrOrgString)
+      For i.w = 0 To _strLen - 1
+        Poke.b ped\ptrTextbufferPrint + i, Peek.b(ptrOrgString + i)
+      Next i
+      runnerP.w = i + 1
     Else
+      runnerP.w = 0
       For i.w = 0 To _strLen - 1
         curChar.b  = Peek.b(ptrOrgString + i)
-        If curChar = $22 Then NOT.b instring2
-        If Peek.b(?instring2) OR curChar => 0
-          linebuffer + Chr$(curChar)
+        If curChar = $22 Then ped\inString = NOT ped\inString
+        If ped\inString = 0 AND (curChar < 0)
+          _token.l = Peek.w(ptrOrgString + i)
+          _tokname.s = PED_GetTokenName{_token}
+          For j.b = 0 To FLen(_tokname)-1
+            Poke.b ped\ptrTextbufferPrint + runnerP, Peek.b(&_tokname + j) BitSet 7
+            runnerP + 1
+          Next j
+          i + 1
         Else
-          If curChar < 0
-            i + 1
-            _token.w = curChar LSL 8 + Peek.b(ptrOrgString + i)
-            _tokname.s = PED_GetTokenName{_token}
-            For j.b = 1 To FLen(_tokname)
-              linebuffer + Chr$(Peek.b(&_tokname + j) BitSet 7)
-            Next j
-          EndIf
+          Poke.b ped\ptrTextbufferPrint + runnerP, curChar
+          runnerP + 1
         EndIf
-      Next i
+      Next i      
     EndIf
+    Poke.b ped\ptrTextbufferPrint + runnerP,0 
   EndIf
 
-  Function Return linebuffer
-
+  Function Return True
 End Function
 
 
@@ -2235,7 +2250,7 @@ SHARED ped,sourceWindow,AB3Pen()
 
   ; copy the current Line To a tempBuffer
   For i.w = 0 To Len(Peek$(*textaddr))
-    Poke.b Peek.l(?textbufferPrint) + i, Peek.b(*textaddr+i)
+    Poke.b ped\ptrTextbufferPrint + i, Peek.b(*textaddr + i)
   Next i
 
   startPos.w = ped\ptrCurrentSourceData\ColumnsOffsetTmp
@@ -2334,36 +2349,21 @@ End Statement
 Statement PED_PrintTokenizedText{*textaddr.l, tposx.w, tposy.w}
 SHARED sourceWindow, ped, pedconfig, AB3Pen()
 USEPATH sourceWindow
+
   ;-- clear textBufferPrint
-  tmpAddr.l = Peek.l(?textbufferPrint)
   For i.w = 0 To #MAX_Columns/4-1 Step 4
-    Poke.l  tmpAddr + i, 0
+    Poke.l  ped\ptrTextbufferPrint + i, 0
   Next i
-
-  ;-- copy the current line to a tempBuffer
-  For i = 0 To #MAX_Columns - 1
-    Poke.b Peek.l(?textbufferPrintTok) + i, Peek.b(*textaddr + i)
-  Next i
-  Poke.b Peek.l(?textbufferPrintTok) + #MAX_Columns-1, 0
-
-  ;-- copy whole line from A0 to A1 and detokenize it but keep token indicator (bit7)
-  !asm
-  MOVEA.l textbufferPrintTok,A0
-  MOVEA.l textbufferPrint,A1
-  MOVEM.l D0-D1/A1,-(A7)
-  JSR JL_0_5060
-  MOVEM.l (A7)+,D0-D1/A1
-  !basic
 
   ;-- original string
-  tmpString1.s = Peek.s(Peek.l(?textbufferPrintTok))
+  tmpString1.s = Peeks$(*textaddr,#MAX_Columns)
 
-  ;-- detokenized string, tokens are still marked with bit 7 set in each character
-  tmpString2.s = Peek.s(Peek.l(?textbufferPrint))
-  ;log_Print{Str$(tposy) + "[" + Left$(tmpString2,32) + "]"}
-
+  ;-- detokenize it but keep token indicator (bit7)  
+  PED_Detokenize2Textbuffer{&tmpString1}
+  tmpString2.s = Peek.s(ped\ptrTextbufferPrint)
+ 
   ;-- check if source left of display start position has an opened string literal
-  If Peek.b(?keepstring) = 0
+  If ped\keepString = 0
     chkString.b = 0
 
     If tmpString1 <> ""
@@ -2426,7 +2426,7 @@ USEPATH sourceWindow
     ;-- print the token
     SetBPen_ \win\RPort, AB3Pen(#AB3_ctokenbackground)
     If pedconfig\bold_tokens
-      SetFont_ \win\RPort, \fontB
+     SetFont_ \win\RPort, \fontB
       SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
     EndIf
 
@@ -2578,7 +2578,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
           Next i
         EndIf
         Exit_function:
-        instring.b = False
+        ped\inString = False
         textlen = 0
       EndIf
 
@@ -2603,9 +2603,9 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
         For i.w = runner + 1 To #MAX_Columns - 1
           checkchr.b = Peek.b(lineaddr + i)
 
-          If checkchr = $22 Then instring.b = NOT instring
+          If checkchr = $22 Then ped\inString = NOT ped\inString
 
-          If instring = False
+          If ped\inString = False
             ;log_Print{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
             If checkchr <> @"$" AND checkchr <> @"%"; OR checkchr = @"-"
               If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
@@ -2618,7 +2618,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
           EndIf
         Next i
         Exit_constant:
-        instring.b = False
+        ped\inString = False
       EndIf
 
     Case "\"
@@ -2626,9 +2626,9 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
         For i.w = runner + 1 To #MAX_Columns - 1
           checkchr.b = Peek.b(lineaddr + i)
 
-          If checkchr = $22 Then instring.b = NOT instring
+          If checkchr = $22 Then ped\inString = NOT ped\inString
 
-          If instring = False
+          If ped\inString = False
             ;log_Print{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
             If checkchr <> @"\"
               If !PED_CheckUnAllowedChar{Peek.b(lineaddr + i)}
@@ -2641,7 +2641,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
           EndIf
         Next i
         Exit_newtype:
-        instring.b = False
+        ped\inString = False
        EndIf
 
     End Select
@@ -2731,21 +2731,21 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
     yMax.w = yMin + \font\tf_YSize - 1
     If (xMax => xMin) AND (yMax => yMin)
       RectFill_ \win\RPort, xMin, yMin, xMax, yMax
-   Else
+    Else
       log_Print{"illegal area for JL_0_5E72!",#log_error}
       log_Print{Str$(xMin) + ", " + Str$(xMax)}
       log_Print{Str$(yMin) + ", " + Str$(yMax)}
     EndIf
     Move_ \win\RPort, 0, ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize + \font\tf_YSize ; move cursor to next line
 
-    Poke.l Peek.l(?textbufferPrint),0
+    Poke.l ped\ptrTextbufferPrint,0
   EndIf                                                                                                                                                                                                                                                ;
 
 
   ;-- copy current printed line to textbuffer
   tmpColumn.w = ped\ptrCurrentSourceData\Column                           ; save Columnpos as it is changed for process_highlighting
 
-  char.b = Peek.b(Peek.l(?textbufferPrint))
+  char.b = Peek.b(ped\ptrTextbufferPrint)
   If char <> 0
     tmpD2.w = 0
     tmpD3.w = 0
@@ -2754,7 +2754,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
     Gosub copy_to_textBuffer
     Repeat
       tmpD2 + 1
-      char = Peek.b(Peek.l(?textbufferPrint) + tmpD2)
+      char = Peek.b(ped\ptrTextbufferPrint + tmpD2)
       If char <> 0
 jump_into_it:
         Gosub copy_to_textBuffer
@@ -3208,11 +3208,12 @@ SHARED ped, sourceWindow
   ped\ptrCurrentSourceData\DisplayLineOffset = newDLO
   ped\ptrCurrentSourceData\DisplayLine = newDL
   !PED_UpdateTextBufferOffset
-
+  
   If tmpDisplayLineOffset <> ped\ptrCurrentSourceData\DisplayLineOffset
     PED_RedrawSource{}
   EndIf
 
+  !PED_CursorOff
   Select columnMode
   Case #LINE_START
     ped\ptrCurrentSourceData\ColumnsOffset = 0
@@ -3222,6 +3223,8 @@ SHARED ped, sourceWindow
     lineaddr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset                                                                                                                                                                     
     ped\ptrCurrentSourceData\Column = getLineLength{lineaddr}
   End Select 
+  !PED_CursorOn
+
 End Statement
 
 Function.b PED_GotoLineAddress{ptrSourceLine.l}                                                                                                                                                                                                          
@@ -3238,10 +3241,8 @@ SHARED ped, sourceWindow
       EndIf
     Wend
     If found 
-      !PED_CursorOff
       PED_GotoLine{lineNum, #LINE_START}
       PED_UpdateStatusArea{#STATUS_SCROLLERS}
-      !PED_CursorOn                                                                                                                                                                                                                                      
     EndIf                                                                                                                                                                                                                                                
   EndIf
   Function Return found
@@ -4566,11 +4567,10 @@ Poke.l ?comPtr_Temp_TokenString3, tokenstringptr + (#MAX_Columns + 2) * 2
 
 ; --
 ; -- alloc memory for textbuffer of source editor
-textbuffers.l = PED_AllocMem{(#MAX_Columns + 4) * 3}
+textbuffers.l = PED_AllocMem{(#MAX_Columns + 4) * 2}
 If textbuffers = 0 Then Goto exit_PED_closelibraries
-Poke.l ?textbufferPrintTok,        textbuffers + (#MAX_Columns + 4)
-Poke.l ?textbufferPrint,  textbuffers + (#MAX_Columns + 4) * 2
-Poke.l ?lineundeletestore,textbuffers + (#MAX_Columns + 4) * 3
+ped\ptrTextbufferPrint   = textbuffers + (#MAX_Columns + 4) * 0
+ped\ptrLineUndeleteStore = textbuffers + (#MAX_Columns + 4) * 1
 
 ; ########################################################################################
 ; # return to compiler and continue after being recalled by compiler
@@ -7879,7 +7879,7 @@ Return
 
 .menu_undeleteline:
   log_Print{"menu undeleteline called"}
-  insertStr.s = Peek.s(Peek.l(?lineundeletestore))
+  insertStr.s = Peek.s(ped\ptrLineUndeleteStore)
   If FLen(insertStr) > 0
     log_Print{"undeleting line: " + insertStr}
     Gosub menu_insertline
@@ -7953,8 +7953,10 @@ Return
 Return
 
 .menu_joinline:
+USEPATH ped\ptrCurrentSourceData
+
   log_Print{"menu joinlines called."}
-  *currLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+  *currLine.sourceLine = \CurrentSourceLine
   If *currLine\nextLine = 0
     log_Print{"no next line to join."}
 
@@ -7964,134 +7966,37 @@ Return
     *nextLine.sourceLine = *currLine\nextLine
   EndIf
 
-  ped\ptrCurrentSourceData\SourceChanged = $FFFF
-  !asm
-  MOVE.l comPtr_CurrentSourceLine,A4
-  MOVE.l (A4),A5
-  MOVEA.l textbufferaddr,A2 : ADDA.w comWord_TextBufferOffset,A2
+  \SourceChanged = $FFFF
 
-  MOVE.w #MAX_Columns,D0
-  JL_0_27E6:                                    ; get end of current line
-  SUBQ.w #1,D0
-  BMI.w JL_0_27F4
-    CMPI.b #$20,$0(A2,D0.W)
-    BEQ.b JL_0_27E6
-  JL_0_27F4:
-  ADDQ.w #1,D0
+  ; -- adjust blockmark
+  ; TODO: currently not necessary, as the blockmark ist resetted after each key event
 
-  CMPI.l #$ffffFFFF,comLong_BlockEndY
-  BEQ.w JL_0_2880
-    MOVE.l comLong_DisplayLineOffset,D1 : ADD.l comLong_DisplayLine,D1
-    CMP.l comLong_BlockEndY,D1
-    BCC.w JL_0_2880
-      ADDQ.l #1,D1
-      CMP.l comLong_BlockStartY,D1
-      BEQ.w JL_0_282C
-        BCS.w JL_0_2874
-          CMP.l comLong_BlockEndY,D1
-          BEQ.w JL_0_283E
-            BRA.w JL_0_287A
-      JL_0_282C:
-      CMP.l comLong_BlockEndY,D1
-      BEQ.w JL_0_2854
-        ADD.w D0,comWord_BlockStartX
-        BRA.w JL_0_2870
+  ; -- get end of line in textbuffer
+  lineaddr.l = Peek.l(?textbufferaddr) + \TextBufferOffset
+  strline$ = ""
+  runner.w = #MAX_Columns
+  Repeat
+    runner - 1
+    actbyte.b = Peek.b(lineaddr + runner)
+  Until actbyte <> $20 OR runner = 0  
+  If runner 
+    runner + 1
+    strline$ = Peeks$(lineaddr,runner)
+  EndIf
 
-      JL_0_283E:
-      CMP.l comLong_BlockStartY,D1
-      BEQ.w JL_0_2854
-        ADD.w D0,comWord_BlockEndX
-        JSR JL_0_7A14
-        BRA.w JL_0_287A
-      JL_0_2854:
-      MOVE.w comWord_BlockEndX,D3
-      SUB.w comWord_BlockStartX,D3
-      MOVE.w comWord_BlockStartX,D2
-      ADD.w D0,D2
-      MOVE.w D2,comWord_BlockStartX
-      ADD.w D3,D2
-      MOVE.w D2,comWord_BlockEndX
-
-      JL_0_2870:
-      JSR JL_0_7A14
-
-      JL_0_2874:
-      SUBQ.l #1,comLong_BlockStartY
-
-      JL_0_287A:
-      SUBQ.l #1,comLong_BlockEndY
-  JL_0_2880:                                    ; **********************************
-
-
-                                                ; d0 contains endposition of line to join with
-  MOVEA.l comPtr_Temp_TokenString2,A0           ; copy line to TokenString2
-  LEA $0(A0,D0.W),A1
-  JL_0_2888:
-    SUBQ.w #1,D0
-    BMI.w JL_0_2896
-    MOVE.b $0(A2,D0.W),$0(A0,D0.W)
-  BRA.b JL_0_2888
-  JL_0_2896:
-  LEA $9(A5),A0
- 'l2
-    CMP.b #32,(a0)                              ; skip leading spaces
-    BNE 'l1
-      ADDQ.l #1,a0
-  BRA 'l2
- 'l1
-
-  MOVE.w comWord_DoTokenize,D0
-  BNE.w JL_0_28AE
-    JL_0_28A4:
-      MOVE.b (A0)+,(A1)+
-    BNE.b JL_0_28A4
-    SUBQ.w #1,A1
-    BRA.w JL_0_28B2
-  JL_0_28AE:
-    JSR detokenize_line
-
-  JL_0_28B2:
-    CMPA.l comPtr_Temp_TokenString3,A1
-    BCC.w JL_0_28C0
-      MOVE.b #$20,(A1)+
-  BRA.b JL_0_28B2
-  JL_0_28C0:
-
-  MOVEA.l comPtr_Temp_TokenString2,A2
-  JSR parse_line
-  JSR replaceCurrentLine
-
-  ;!basic
-  ;*currLine = Peek.l(?comPtr_CurrentSourceLine)
-  ;*nextLine = *currLine\nextLine
-  ;If *nextLine\nextLine
-  ;  *nextLine = *nextLine\nextLine
-  ;  *currLine\nextLine = *nextLine
-  ;  *nextLine\previousLine = *currentLine
-  ;Else
-
-  ;EndIf
-  MOVEA.l (A4),A1                         ; remove deleted line from linked list
-  MOVE.l (A1),D0
-  BEQ.w JL_0_28E0
-    MOVEA.l D0,A0
-    MOVE.l A0,(A4)
-    MOVE.l A4,$4(A0)
-    BRA.w JL_0_28E8
-  JL_0_28E0:
-    MOVE.l A4,comPtr_LastSourceLine
-    CLR.l (A4)
-  JL_0_28E8:
-
-  MOVEQ.l #$00,D0                         ; free memory for deleted line
-  ADD.b $8(A1),D0
-  !newfree
-
-  SUBQ.l #1,comLong_TotalLines
-  !basic
+  strline$ + StripTrail$(PED_Detoke{*nextLine},@" ")
+  strline$ = PED_ParseText{strline$}
+  strline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+  *newLine.sourceLine = PED_CreateNewSourceLine{strline$}
+  PED_ReplaceCurrentSourceLine{*newLine}
+  If cutLine{*nextLine}
+    PED_DeleteSourceLine{*nextLine}
+    \TotalLines - 1
+  EndIf
   PED_RedrawSource{}
 Return
 
+ 
 .splitlines:
   USEPATH ped\ptrCurrentSourceData
   \SourceChanged = True
@@ -8130,7 +8035,7 @@ Return
     restString + Chr$(Peek.b(lineaddr + tcol))    ; copy rest of line to parsebuffer
     Poke.b lineaddr + tcol, $20                 ; remove rest of line from textbuffer
   Next tcol
-  restString = SPACE$(\Column) + Trim$(restString)
+  restString = SPACE$(\Column) + restString
   ;log_Print{"length of restline: " + Str$(Len(restString))}
 
   ;-- update current line
@@ -8150,6 +8055,7 @@ Return
   Gosub movecursorlinedown
   PED_RedrawSource{}
 Return
+
 
 .insertreturn: 
   USEPATH ped\ptrCurrentSourceData
@@ -8222,13 +8128,11 @@ Return
 
 .menu_top:
   PED_HistoryAddEntry{}
-  !PED_CursorOff
   PED_GotoLine{0,#LINE_START}
 Return
 
 .menu_bottom:
   PED_HistoryAddEntry{}
-  !PED_CursorOff
   PED_GotoLine{ped\ptrCurrentSourceData\TotalLines, #LINE_START}
 Return
 
@@ -8342,9 +8246,7 @@ Return
   Case -2
     PED_RedrawSource{}
   Default ; we have got an error line, jump to that pos                                                                                                                                                                                                  
-    !PED_CursorOff
     PED_GotoLine{compile_state, #LINE_END}                                                                                                                                                                                                               
-    !PED_CursorOn
   End Select
 
   log_Print{"all done with compiler, returning to IDE..."}
@@ -8651,7 +8553,7 @@ Return
     Gosub reset_sourcewindow
     Gosub read_tempprefs
 
-    PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                   
+    PED_UpdateStatusArea{#STATUS_REDRAW}                                                                                                                                                                                                                 
   Else
     log_Print{"source is already at current tab."}
   EndIf
@@ -8907,105 +8809,6 @@ Return
   EndIf
 Return
 
-.menu_kill_old:
-  log_Print{"menu kill called."}
-  USEPATH ped\ptrCurrentSourceData
-
-  If \BlockEndY = $ffffFFFF
-    log_Print{"no block selected."}
-    Gosub set_pointer_normal
-    Pop If : Return
-  EndIf
-
-  Gosub update_currsourceline
-
-  \SourceChanged = $FFFF
-  \CurrentSourceLine = PED_GetBlockStartSourceLine{}
-  startY.l = \BlockStartY
-  log_Print{"startY: " + Str$(startY)}
-  log_Print{"endY: "  + Str$(\BlockEndY)}
-
-  !asm
-  MOVE.l comPtr_CurrentSourceLine,a4
-
-  CLR.w comWord__AL_0_8AD8
-  MOVE.w #$FFFF,comWord_SourceChanged
-  JSR JL_0_5524                                 ; move to Blockbegin, returns pointer in A5; D6: blockStartY
-
-  MOVEQ.l #$00,D5
-  MOVEA.l comPtr_Temp_TokenString2,A0
-  JL_0_3498:
-    CMP.w comWord_BlockStartX,D5                ; save the string before BlockStartX to TokenString2
-    BCC.w JL_0_34A8
-      JSR JL_0_5650
-      MOVE.b D0,(A0)+
-  BRA.b JL_0_3498
-  JL_0_34A8:
-
-  MOVE.l A0,-(A7)
-  JL_0_34AA:
-    CMP.l comLong_BlockEndY,D6
-    BCC.w JL_0_34BE
-      MOVE.l (A5),-(A7)
-      JSR JL_0_5474                            ; delete the lines
-      MOVEA.l (A7)+,A5
-      ADDQ.l #1,D6
-  BRA.b JL_0_34AA
-  JL_0_34BE:
-
-  CMP.l comLong_BlockStartY,D6
-  BEQ.w JL_0_34CA
-    JSR JL_0_553A                                   ; ?? copy marked string of last marked line ??
-  JL_0_34CA:
-  MOVEA.l (A7)+,A0
-
-  MOVE.w comWord_BlockEndX,D5
-  JL_0_34D0:
-    ADDQ.w #1,D5
-    CMP.w #MAX_Columns,D5
-    BCC.w JL_0_34E4
-      JSR JL_0_5650
-      SUBQ.w #1,D5
-      MOVE.b D0,(A0)+
-  BRA.b JL_0_34D0
-  JL_0_34E4:
-    CMPA.l comPtr_Temp_TokenString3,A0
-    BCC.w JL_0_34F2
-      MOVE.b #$20,(A0)+
-  BRA.b JL_0_34E4
-  JL_0_34F2:
-
-  MOVE.w comWord_BlockStartX,D0
-  BNE.w JL_0_3510
-    MOVE.w comWord_BlockEndX,D0
-    ADDQ.w #1,D0
-    CMP.w #MAX_Columns,D0
-    BCS.w JL_0_3510
-      JSR JL_0_5474                                ; delete the line
-      BRA.w JL_0_351C
-  JL_0_3510:
-    MOVEA.l A5,A4
-    MOVE.l A4,comPtr_CurrentSourceLine
-    JSR parseAndReplaceCurrentLine                   ; parse the newline in TokenString2 and allocate memory for it
-  JL_0_351C:
-
-  !basic
-  !PED_ResetBlockflag
-  If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine > ped\ptrCurrentSourceData\TotalLines
-    ped\ptrCurrentSourceData\TotalLines - 1
-    ped\ptrCurrentSourceData\DisplayLineOffset = ped\ptrCurrentSourceData\TotalLines
-    ped\ptrCurrentSourceData\DisplayLine = 0
-
-    Gosub update_currsourceline
-    PED_RedrawSource{}
-    PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset}
-  Else
-    Gosub update_currsourceline
-    PED_RedrawSource{}
-  EndIf
-Return
-
-
 .menu_saveascii:
   tmp_string = PED_RequestFile{"", "", "Select file to save as ASCII...", "(#?.info)"}
   If tmp_string ="" Then Return
@@ -9187,12 +8990,12 @@ Return
   currentColumn.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
 
   ; -- get first part of current line
-  Poke.b ?instring, 0
+  ped\inString = 0
   pasteString.s = ""
   For p.w = 0 To currentColumn - 1
     currentbyte.b = Peek.b(lineaddr + p)
-    If currentbyte = $22 Then Poke.b ?instring, NOT Peek.b(?instring)
-    If NOT Peek.b(?instring) Then currentbyte = currentbyte BitClr 7
+    If currentbyte = $22 Then ped\inString = NOT ped\inString
+    If NOT ped\inString Then currentbyte = currentbyte BitClr 7
     pasteString + Chr$(currentbyte)
   Next p
 
@@ -9257,7 +9060,7 @@ Return
   EndIf
  
   If ped\pasteMode = 0 Then PED_CloseFile{ped\sourceFileHandle}
-  Poke.b ?instring,0
+  ped\inString = False
 
   ped\ptrCurrentSourceData\CurrentSourceLine = storeCurrentSourceLine                                                                                                                                                                                    
   
@@ -9275,190 +9078,8 @@ Return
     Pop If: Return
   EndIf
 
-  !asm
-  CLR.w comWord__AL_0_8AD8
-  MOVE.w #$FFFF,comWord_SourceChanged
+  error{"Function disabled, WIP."}
 
-  MOVE.l comLong_DisplayLineOffset,D7 : ADD.l comLong_DisplayLine,D7
-  CMP.l comLong_BlockStartY,D7
-  BCS.w JL_0_387E
-    BNE.w JL_0_386A
-      JSR checkBeforeBlockStartX
-      BNE.w JL_0_386A
-        BRA.w JL_0_387E
-    JL_0_386A:
-    CMP.l comLong_BlockEndY,D7
-      BHI.w JL_0_387E
-      BNE.w setpointer_to_normal
-        JSR checkBeforeBlockEndX
-      BEQ.w setpointer_to_normal
-  JL_0_387E:
-
-  JSR JL_0_5524                               ; move to Blockbegin, returns pointer in A5
-  MOVEA.l textbufferaddr,A2
-  ADDA.w comWord_TextBufferOffset,A2
-  MOVEA.l A2,A1
-  MOVE.w comWord_ColumnsOffset,D2
-  ADD.w comWord_Column,D2
-  MOVEQ.l #$00,D1
-  MOVEA.l comPtr_Temp_TokenString2,A0
-  JL_0_389A:
-  CMP.w D2,D1
-  BCC.w JL_0_38AC
-    MOVE.b (A1)+,D0
-    ANDI.b #$7F,D0
-    MOVE.b D0,(A0)+
-    ADDQ.w #1,D1
-    BRA.b JL_0_389A
-  JL_0_38AC:
-  MOVEM.l D1/A1,-(A7)
-  JL_0_38B0:
-    JSR JL_0_5630
-    BMI.w JL_0_3982
-    BEQ.w JL_0_38C8
-      CMP.w #MAX_Columns,D1
-      BCC.b JL_0_38B0
-        MOVE.b D0,(A0)+
-        ADDQ.w #1,D1
-  BRA.b JL_0_38B0
-  JL_0_38C8:
-
-  CMP.w #MAX_Columns,D1
-  BCC.w JL_0_38D8
-    MOVE.b #$20,(A0)+
-    ADDQ.w #1,D1
-    BRA.b JL_0_38C8
-  JL_0_38D8:
-
-  MOVEA.l comPtr_Temp_TokenString2,A2
-  JSR parse_line
-
-  MOVE.l D5,D0                                      ; allocmem for sourceline-structentry
-  ADDI.w #$9,D0
-  JSR AllocPoolMem
-  MOVEA.l D0,A0
-
-  LEA $9(A0),A0
-  MOVEA.l comPtr_Temp_TokenString1,A1
-  JL_0_38FA:
-    MOVE.b (A1)+,(A0)+
-  BNE.b JL_0_38FA
-  MOVEA.l D0,A0
-
-  JL_0_3900:
-  ADDQ.l #1,comLong_TotalLines
-  MOVE.b D5,$8(A0)
-  MOVE.l $4(A4),D1
-   BNE.w JL_0_3920
-  MOVE.l A0,comPtr_FirstSourceLine
-  CLR.l $4(A0)
- BRA.w JL_0_3928
-
-JL_0_3920:
-  MOVEA.l D1,A1
-  MOVE.l A0,(A1)
-  MOVE.l A1,$4(A0)
-JL_0_3928:
-  MOVE.l A0,$4(A4)
-  MOVE.l A4,(A0)
-  CMP.l comLong_BlockEndY,D6
-  BCC.w JL_0_3968
-    MOVEQ.l #$00,D0
-    MOVE.b $8(A5),D0
-    MOVE.w D0,D5
-    ADDI.w #$9,D0
-    JSR AllocPoolMem
-    MOVEA.l D0,A0
-    MOVEM.l A0/A5,-(A7)
-    LEA $9(A0),A0
-    LEA $9(A5),A5
-    JL_0_395A:
-      MOVE.b (A5)+,(A0)+
-    BNE.b JL_0_395A
-    MOVEM.l (A7)+,A0/A5
-    ADDQ.l #1,D6
-    MOVEA.l (A5),A5
-  BRA.b JL_0_3900
-  JL_0_3968:
-
-  MOVE.w comWord_DoTokenize,D0
-  BEQ.w JL_0_3976
-    JSR JL_0_553A
-  JL_0_3976:
-  MOVEA.l comPtr_Temp_TokenString2,A0
-  MOVEQ.l #$00,D5
-  MOVEQ.l #$00,D1
- BRA.w JL_0_38B0
-
-JL_0_3982:
-  MOVEM.l (A7)+,D1/A1
-JL_0_3986:
-  CMP.w #MAX_Columns,D1
-   BCC.w JL_0_399A
-  MOVE.b (A1)+,D0
-  ANDI.b #$7F,D0
-  MOVE.b D0,(A0)+
-  ADDQ.w #1,D1
- BRA.b JL_0_3986
-
-JL_0_399A:
-  CMPA.l comPtr_Temp_TokenString3,A0
-   BCC.w JL_0_39A8
-  MOVE.b #$20,(A0)+
- BRA.b JL_0_399A
-
-JL_0_39A8:
-   JSR parseAndReplaceCurrentLine
-  MOVE.w comWord_ColumnsOffset,D0
-  ADD.w comWord_Column,D0
-  MOVE.l comLong_DisplayLineOffset,D7
-  ADD.l comLong_DisplayLine,D7
-  CMP.l comLong_BlockEndY,D7
-   BHI.w JL_0_3A42
-   BNE.w JL_0_39D0
-  CMP.w comWord_BlockEndX,D0
-   BHI.w JL_0_3A42
-JL_0_39D0:
-  MOVE.l comLong_BlockEndY,D1
-  SUB.l comLong_BlockStartY,D1
-  MOVE.w comWord_BlockEndX,D2
-  ADDQ.w #1,D2
-  CMP.w #MAX_Columns,D2
-   BCS.w JL_0_39FA
-  ADDQ.l #1,D1
-  CMP.l comLong_BlockStartY,D7
-   BCS.w JL_0_3A36
-  SUB.w D0,comWord_BlockStartX
- BRA.w JL_0_3A36
-
-JL_0_39FA:
-  CMP.l comLong_BlockStartY,D7
-   BCS.w JL_0_3A36
-  CMP.l comLong_BlockEndY,D7
-   BEQ.w JL_0_3A1C
-  MOVE.w comWord_BlockEndX,D2
-  SUB.w D0,D2
-  ADDQ.w #1,D2
-  ADD.w D2,comWord_BlockStartX
- BRA.w JL_0_3A32
-
-JL_0_3A1C:
-  MOVE.w comWord_BlockEndX,D2
-  SUB.w comWord_BlockStartX,D2
-  ADDQ.w #1,D2
-  ADD.w D2,comWord_BlockStartX
-  ADD.w D2,comWord_BlockEndX
-
-  JL_0_3A32:
-  JSR JL_0_7A14
-
-  JL_0_3A36:
-  ADD.l D1,comLong_BlockStartY
-  ADD.l D1,comLong_BlockEndY
-  JL_0_3A42:
-  
-  !basic
-  Gosub  update_currsourceline
   PED_RedrawSource{}
   log_Print{"menu dublicate finished."}
 Return
@@ -10305,12 +9926,12 @@ Return
     EndIf
 
     If Peek.w(?comWord_LabelRemark)
-      CLR.b instring
+      ped\inString = 0
       found.b = False
       Repeat
         checkByte.b = Peek.b(&tmpStr)
-        If checkByte = $22 Then NOT.b instring
-        If checkByte = @";" AND (Peek.b(?instring) = 0) Then found = True
+        If checkByte = $22 Then ped\inString = NOT ped\inString
+        If checkByte = @";" AND (ped\inString = 0) Then found = True
         tmpStr = UnRight$(tmpStr,1)
       Until found OR tmpStr = ""
     EndIf
@@ -10877,55 +10498,6 @@ RTS
   MOVEM.l (A7)+,A0-A1
 RTS
 
-
-.JL_0_5060:
-  TST.b keepstring
-  BNE 'l1
-    CLR.b instring2
- 'l1
-
-  TST.b noDetokenizing            ; if set, just copy whole line and return
-  BEQ.w JL_0_5072
-    JL_0_506A:
-      MOVE.b (A0)+,(A1)+
-    BNE.b JL_0_506A
-    SUBQ.w #1,A1
-    RTS
-  JL_0_5072:
-
-  MOVEQ.l #$00,D0
-  MOVE.b (A0)+,D0
-  BEQ.w JL_0_5096
-
-    CMP.b #$22,d0                ; check string
-    BNE 'l10
-      NOT.b instring2
-   'l10
-
-    TST.b instring2              ; if not in string
-    BNE 'l11
-      TST.b d0
-      BMI.w JL_0_5082            ; if character byte < 0 we have a token!
-   'l11
-      MOVE.b D0,(A1)+            ; else copy the character
-      BNE.b JL_0_5072
-    JL_0_5082:
-
-    LSL.w #8,D0                  ; get next byte to get the complete tokennumber
-    MOVE.b (A0)+,D0
-    JSR token_to_ascii           ; returns the detokenized string in A3!
-
-    JL_0_508A:
-      MOVE.b (A3)+,D1
-      BEQ.b JL_0_5072
-      BSET #$7,D1
-      MOVE.b D1,(A1)+
-    BRA.b JL_0_508A
-  JL_0_5096:
-  CLR.b (A1)
-RTS
-
-
 .token_to_ascii:
   ;MOVEA.l comPtr_TokenBase,A3       ;findtokenlib $80
   BCLR #$F,D0
@@ -10965,68 +10537,10 @@ RTS
   MOVE.l d0,a3
 RTS
 
-;ptr_errortitle:       Dc.l 0;AL_0_D5E8        ; Title
-;ptr_errortext:        Ds.l 1                  ; Text
-.show_errorrequester:  ; A0: ptr to Errortext,
+.show_errorrequester:  ; A0: ptr to Errortext,            only to be called by compiler
                        ; A5: ptr current sourceline
                        ; A6: "INLN" if in INCLUDE
                        ; D7: includeline
-;  MOVE.l D7,-(A7)
-;
-;  MOVE.l A0,ptr_errortext
-;
-;  CMP.l #0,a5
-;  BNE 'l4
-;    LEA dummystr + 1,a5
-; 'l4
-;  MOVEQ #20,d0
-;  MOVE.l a5,a0                       ;macro title
-;  SUBQ.l #1,a0
-; 'l2
-;    MOVE.b -(a0),d1
-;    BEQ 'l1
-;      CMP.b #":",d1
-;      BEQ 'l1
-;        SUBQ.l #1,d0
-;  BNE 'l2
-; 'l1
-;  ADDQ #1,a0
-;
-;  LEA helpstring,a1
-;  CMP.l #"INLN",a6
-;  BNE 'l1x
-;    LEA helpstring,a1
-;    ADDQ #4,a1
-;    MOVE.b #32,(a1)+
-; 'l1x
-;
-;  MOVEQ #60,d1
-; 'l5
-;    MOVE.b (a0)+,d0
-;    BEQ 'n1
-;    MOVE.b d0,(a1)+
-;    SUBQ.l #1,d1
-;  BNE 'l5
-; 'n1
-;  CLR.b (a1)+
-;  LEA helpstring,a0
-;  TST.b (a0)
-;  BNE 'l1b
-;    ADDQ.l #4,a0
-; 'l1b
-;  MOVE.l expandstore,a1
-;  JSR detokenize_line
-;  MOVE.l expandstore,a1
-;
-;  MOVE.l a1,ptr_errortitle
-;  ;MOVE.b #">",(a1)
-; 'l8
-;    MOVE.b (a1)+,d0
-;    BEQ 'l9
-;    CMP.b #":",d0
-;  BNE 'l8
-;  ;MOVE.b #"<",-1(a1)
-; 'l9
   !regs2stack
   !basic
   fid.l = file_Open{dos_AddPart{pedconfig\systemDir,"ab_compileerror.txt"},#file_read}
@@ -11092,137 +10606,6 @@ RTS
   ;EndIf
 Return
 
-JL_0_5474:
-  CMPI.l #$1,comLong_TotalLines
-  BEQ.w JL_0_54EA
-
-  SUBQ.l #1,comLong_TotalLines
-  MOVE.l (A5),D1
-  MOVE.l $4(A5),D2
-  BEQ.w JL_0_54A4
-    TST.l D1
-    BEQ.w JL_0_54B4
-      MOVEA.l D2,A0
-      MOVE.l D1,(A0)
-      MOVEA.l D1,A0
-      MOVE.l D2,$4(A0)
-      BRA.w JL_0_54BE
-    JL_0_54B4:
-      MOVE.l D2,comPtr_LastSourceLine
-      MOVEA.l D2,A0
-      CLR.l (A0)
-      BRA.w JL_0_54BE
-  JL_0_54A4:
-    MOVE.l D1,comPtr_FirstSourceLine
-    MOVEA.l D1,A0
-    CLR.l $4(A0)
-  JL_0_54BE:
-
-  MOVEA.l A5,A1
-  MOVE.b comByte_LabelIdentifier,D0
-  MOVE.l A0,-(A7)                          ;
-  LEA $9(A1),A0
-
-  JL_0_54CA:
-    CMPI.b #$20,(A0)+
-  BEQ.b JL_0_54CA
-
-  CMP.b -(A0),D0
-  MOVEA.l (A7)+,A0                         ;
-  BNE.w JL_0_54Dca
-   !regs2stack
-   !basic
-   ped\LabelListChanged = True
-   !asm
-   !stack2regs
-   ; MOVE.w #$FFFF,comWord_LabelListChanged
-  JL_0_54Dca:
-
-  !newfree                            ; A1: memory , -(a1) is size
-RTS
-
-JL_0_54EA:
-  !basic
-  Gosub alloc_firstsourceline
-  !asm
-BRA.b JL_0_54BE
-
-.move_to_blockstarty:                ; in A4: currentsourceline, out A5: adjusted currentsourceline
-  MOVEA.l A4,A5
-
-  MOVE.l comLong_DisplayLineOffset,D7 : ADD.l comLong_DisplayLine,D7 : MOVE.l D7,D6
-  CMP.l comLong_BlockStartY,D6
-  BEQ.w JL_0_5522
-    BCC.w JL_0_5516
-      JL_0_5508:
-        MOVEA.l (A5),A5
-        ADDQ.l #1,D6
-      CMP.l comLong_BlockStartY,D6
-      BNE.b JL_0_5508
-      BRA.w JL_0_5522
-    JL_0_5516:
-      MOVEA.l $4(A5),A5
-      SUBQ.l #1,D6
-    CMP.l comLong_BlockStartY,D6
-    BNE.b JL_0_5516
-  JL_0_5522:
-RTS
-
-JL_0_5524:
-  BSR.b move_to_blockstarty
-  MOVE.w comWord_BlockStartX,D5
-
-  MOVE.w comWord_DoTokenize,D0
-  BEQ.w JL_0_5538
-    BRA.w JL_0_553A
-  JL_0_5538:
-RTS
-
-JL_0_553A:                                  ; sourcelinepointer in A5, returns
-  MOVEA.l comPtr_Temp_TokenString3,A0
-  CMP.l #0,a5
-  BEQ 'l1
-    LEA $9(A5),A1
-    ADDQ.w #1,A0
-    JSR JL_0_5556
-    MOVE.l A0,D0
-    SUB.l comPtr_Temp_TokenString3,D0
-    MOVEA.l comPtr_Temp_TokenString3,A0
-    MOVE.b D0,(A0)
- 'l1
-RTS
-
-JL_0_5556:
-  CLR.b instring3
-
-  JL_0_5556b:
-    MOVE.b (A1)+,D0                    ;cut token
-    BEQ.w JL_0_5574
-
-      CMP.b #$22,d0
-      BNE 'l1
-        NOT.b instring3
-     'l1
-      TST.b instring3
-      BNE 'l2
-        TST.b d0
-        BMI.w JL_0_5564
-     'l2
-        MOVE.b D0,(A0)+
-        BRA.b JL_0_5556b
-      JL_0_5564:
-
-      LSL.w #8,D0
-      MOVE.b (A1)+,D0
-      JSR token_to_ascii
-      JL_0_556C:
-        MOVE.b (A3)+,(A0)+
-      BNE.b JL_0_556C
-      SUBQ.w #1,A0
-    BRA.b JL_0_5556b
-
-  JL_0_5574:
-RTS
 
 .update_currsourceline:
   *currentSourceLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
@@ -11257,170 +10640,8 @@ Return
 RTS
 
 
-JL_0_5630:
-  CMP.w #MAX_Columns,D5
-  BGE.w JL_0_568C                        ; if D5>Maxcolumns, d5=0,d6=0, exit
-    CMP.l comLong_BlockEndY,D6
-    BCS.w JL_0_5650
-    BNE.w JL_0_564C
-      CMP.w comWord_BlockEndX,D5
-      BLS.w JL_0_5650
-    JL_0_564C:
-  MOVEQ.l #-$01,D0
-RTS
-
-JL_0_5650:
-  ADDQ.w #1,D5
-  MOVE.w comWord_DoTokenize,D0
-  BEQ.w JL_0_5670
-    MOVEA.l comPtr_Temp_TokenString3,A3
-    CMP.b (A3),D5
-    BCC.w JL_0_5680
-      MOVEQ.l #$00,D0
-      MOVE.b $0(A3,D5.W),D0
-      TST.w D0
-        RTS
-  JL_0_5670:
-    CMP.b $8(A5),D5
-    BCC.w JL_0_5680
-      MOVEQ.l #$00,D0
-      MOVE.b $8(A5,D5.W),D0
-      RTS
-    JL_0_5680:
-    MOVE.w comWord__AL_0_8AD8,D0
-    BNE.w JL_0_568C
-      MOVEQ.l #$20,D0
-      RTS
-    JL_0_568C:
-    MOVEA.l (A5),A5
-    ADDQ.l #1,D6
-    MOVEQ.l #$00,D5
-    MOVEQ.l #$00,D0
-RTS
-
-store_BlockStartX: Dc.w 0
-.reset_Blockflag_asm:
-  MOVE.w #$FFFF, store_BlockStartX
-  MOVE.l #$ffffFFFF, comLong_BlockEndY
-RTS
-
-
-;.block_updatePosY:
-;  CMPI.l #$ffffFFFF,comLong_BlockEndY
-;  BEQ.w JL_0_57DE
-;    CMP.l comLong_BlockEndY,D0
-;    BHI.w JL_0_57DE
-;      ADDQ.l #1,comLong_BlockEndY
-;      CMP.l comLong_BlockStartY,D0
-;        BHI.w JL_0_57DE
-;          ADDQ.l #1,comLong_BlockStartY
-;  JL_0_57DE:
-;RTS
-
-.update_scrollers:
-  PED_UpdateStatusArea{#STATUS_SCROLLERS}
-  PED_UpdateStatusArea{#STATUS_SCROLLERS}
-Return
-
-.AbsDimensions:
-  CMP.w D3,D1
-  BCS.w JL_0_5888
-    BNE.w JL_0_5884
-      CMP.w D2,D0
-      BLE.w JL_0_5888
-    JL_0_5884:
-    EXG.l D0,D2
-    EXG.l D1,D3
-
-  JL_0_5888:
-RTS
-
-
-
-
-._redrawBlock:                           ;redraw blockmark
-  JSR AbsDimensions
-
-  MOVEM.l D0-D3/A0-A1,-(A7)
-  !basic
-  xMin.w = PutD0
-  MOVE.l d1,d0 : yMin.w = PutD0
-  MOVE.l d2,d0 : xMax.w = PutD0
-  MOVE.l d3,d0 : yMax.w = PutD0
-  log_Print{"draw block"}
-  ;xMin = xMin - ped\ptrCurrentSourceData\ColumnsOffset
-  ;PED_ShowMessage{"Xmin:" + Str$(xMin)}
-
-  If xMin < 0 Then xMin = 0
-  If xMax < 0 Then xMax = 0 : Else : xMax = xMax + 1
-  If yMin < 0 Then yMin = 0
-  If yMax < 0 Then yMax = 0
-  xMax = xMax - ped\ptrCurrentSourceData\ColumnsOffset
-  xMin = xMin - ped\ptrCurrentSourceData\ColumnsOffset
-  If xMax > \visibleColumns Then xMax = \visibleColumns
-  If yMax > sourceWindow\visibleLines-1 Then yMax = sourceWindow\visibleLines-1
-  If yMin > sourceWindow\visibleLines-1 Then yMin = sourceWindow\visibleLines-1
-
-  xMin = xMin * \font\tf_XSize
-  yMin = yMin * \font\tf_YSize
-  xMax = xMax * \font\tf_XSize
-  yMax = yMax * \font\tf_YSize
-  If yMin > yMax Then Exchange yMax,yMin
-
-  If yMin = yMax
-      yMax = yMax + \font\tf_YSize - 1
-      Gosub rectfill
-  Else
-      yMaxold.l = yMax : xMaxold.l = xMax : yMinold.l = yMin : xMinold.l = xMin
-      yMax = yMin + \font\tf_YSize - 1
-      xMax = \visibleColumns * \font\tf_XSize
-      Gosub rectfill
-      yMax = yMaxold : xMax = xMaxold : yMin = yMinold : xMin = xMinold
-
-      yMin = yMin + \font\tf_YSize
-      If yMin < yMax
-          yMaxold.l = yMax : xMaxold.l = xMax : yMinold.l = yMin : xMinold.l = xMin
-          yMax = yMax - 1
-          xMax = \visibleColumns * \font\tf_XSize
-          xMin = 0
-          Gosub rectfill
-          yMax = yMaxold : xMax = xMaxold : yMin = yMinold : xMin = xMinold
-          xMin = 0
-          yMin = yMax
-      EndIf
-
-      xMin = 0
-      yMax = yMax + \font\tf_YSize - 1
-      Gosub rectfill
-  EndIf
-  !asm
-  MOVEM.l (A7)+,D0-D3/A0-A1
-RTS
-
-.rectfill:
-  If (xMax >= xMin) AND (yMax >= yMin)
-    xMin = sourceWindow\BoxLeft + xMin
-    xMax = sourceWindow\BoxLeft + xMax - 1
-    ;    msg$ =  Str$(xMin) + ", " + Str$(yMin) + ", " + Str$(xMax) + ", " + Str$(yMax)
-    ;   log_Print{msg$}
-    RectFill_ *sourcerp, xMin, yMin, xMax, yMax
-  EndIf
-Return
-
-.alloc_firstsourceline:
-  *tempLine.sourceLine = PED_CreateNewSourceLine{""}
-  If *tempLine
-    ped\ptrCurrentSourceData\FirstSourceLine = *tempLine
-    ped\ptrCurrentSourceData\CurrentSourceLine = *tempLine
-    ped\ptrCurrentSourceData\LastSourceLine = *tempLine
-  Else
-    error{"Could not allocate a new sourceline!"}
-  EndIf
-Return
- 
-
 .draw_new_sourceline_top:
-  log_Print{"print 1 line up from line " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
+  ;log_Print{"print 1 line up from line " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
 
   !PED_storeCursorPosition
 
@@ -11450,7 +10671,7 @@ Return
 Return
 
 .draw_new_sourceline_bottom:
-  log_Print{"print 1 line down from line " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
+  ;log_Print{"print 1 line down from line " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
 
   !PED_storeCursorPosition
 
@@ -11469,12 +10690,7 @@ Return
 Return
 
 
-textbufferPrintTok:    Ds.l 1
 textbufferPrint:    Ds.l 1
-lineundeletestore:    Ds.l 1
-
-
-
 
 .parse_line:                         ; input A2: textstring, results: comPtr_Temp_TokenString1 = parsed string, D5: length of string
   MOVEA.l comPtr_Temp_TokenString1,A1
@@ -11755,9 +10971,9 @@ Return
 
 .update_blockmark_left:
   If ped\ptrCurrentSourceData\BlockEndY > -1
-    xMin = ped\ptrCurrentSourceData\ColumnsOffset
-    yMin = ped\ptrCurrentSourceData\DisplayLineOffset
-    yMax = yMin + sourceWindow\visibleLines
+    xMin.w = ped\ptrCurrentSourceData\ColumnsOffset
+    yMin.w = ped\ptrCurrentSourceData\DisplayLineOffset
+    yMax.w = yMin + sourceWindow\visibleLines
     If (yMin <= ped\ptrCurrentSourceData\BlockEndY) AND (yMax >= ped\ptrCurrentSourceData\BlockStartY)
       If ped\ptrCurrentSourceData\BlockStartY = ped\ptrCurrentSourceData\BlockEndY
         Gosub JL_0_66F2
@@ -11783,7 +10999,7 @@ Return
 
       yMax =  ped\ptrCurrentSourceData\BlockEndY - ped\ptrCurrentSourceData\DisplayLineOffset
       If yMax > sourceWindow\visibleLines Then yMax = sourceWindow\visibleLines
-      xMax = xMin + \font\tf_YSize * 2 - 1  ; we scroll always 2 lines
+      xMax.w = xMin + \font\tf_YSize * 2 - 1  ; we scroll always 2 lines
       yMax = yMax * \font\tf_YSize - 1
       If (xMax => xMin) AND (yMax => yMin)
          RectFill_ *sourcerp,sourceWindow\BoxLeft + xMin,sourceWindow\BoxTop + yMin,sourceWindow\BoxLeft + xMax,sourceWindow\BoxTop + yMax
@@ -11802,7 +11018,7 @@ Return
 
 JL_0_6658:      ; draw missing blockparts in first line when scrolling left
   If xMin >= ped\ptrCurrentSourceData\BlockStartX
-    yMaxold = yMax : xMaxold = xMax : yMinold = yMin : xMinold = xMin
+    yMaxold.w = yMax : xMaxold.w = xMax : yMinold.w = yMin : xMinold.w = xMin
 
     xMin = 0
     xMax = xMin + \font\tf_XSize * 2 - 1
@@ -11885,9 +11101,9 @@ Return
 
     ; -- print the characters
     ST noDetokenizing
-    Poke.b ?keepstring, 1
+    ped\keepString = 1
     PED_PrintSourceText{&newChars, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, False}
-    Poke.b ?keepstring, 0
+    ped\keepString = 0
     PED_ProcessHighlighting{}
     SF noDetokenizing
 
@@ -11928,9 +11144,9 @@ Return
 
     ; -- print the characters
     ST noDetokenizing
-    Poke.b ?keepstring, 1
+    ped\keepString = 1
     PED_PrintSourceText{&newChars, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, False}
-    Poke.b ?keepstring, 0
+    ped\keepString = 0
     PED_ProcessHighlighting{}
     SF noDetokenizing
 
@@ -12023,7 +11239,7 @@ Return
 
 .JL_0_68C4:
   If xMin >= ped\ptrCurrentSourceData\BlockStartX
-    yMaxold.l = yMax : xMaxold.l = xMax : yMinold.l = yMin : xMinold.l = xMin
+    yMaxold.w = yMax : xMaxold.w = xMax : yMinold.w = yMin : xMinold.w = xMin
 
     xMin = (xMin - ped\ptrCurrentSourceData\ColumnsOffset) * \font\tf_XSize
     xMax = xMin + \font\tf_XSize * 2 - 1
@@ -12042,7 +11258,7 @@ Return
 
 .JL_0_6906: ; update mission block last line
   If xMin <= ped\ptrCurrentSourceData\BlockEndX + 1
-    yMaxold.l = yMax : xMaxold.l = xMax : yMinold.l = yMin : xMinold.l = xMin
+    yMaxold.w = yMax : xMaxold.w = xMax : yMinold.w = yMin : xMinold.w = xMin
 
     d4.l = ped\ptrCurrentSourceData\BlockEndX - xMin + 1 + 2
     If d4 > 2 Then d4 = 2     ; we scroll always 2 characters
@@ -12106,10 +11322,18 @@ Return
   ped\ptrCurrentSourceData\TotalLines = 1
   
   Gosub clear_sourcewindow
-  Gosub alloc_firstsourceline
+
+  *tempLine.sourceLine = PED_CreateNewSourceLine{""}
+  If *tempLine
+    ped\ptrCurrentSourceData\FirstSourceLine = *tempLine
+    ped\ptrCurrentSourceData\CurrentSourceLine = *tempLine
+    ped\ptrCurrentSourceData\LastSourceLine = *tempLine
+  Else
+    error{"Could not allocate a new sourceline!"}
+  EndIf
 
   PED_UpdateStatusArea{#STATUS_SCROLLERS}
-  Return
+Return
 
 .free_actualsource:
   log_Print{"freeing current source..."}
@@ -12830,9 +12054,9 @@ Return
         tmpd2 = tmpd2 + 1
       Wend
 
-      Poke.b ?keepstring,1
+      ped\keepString = 1
       PED_PrintSourceText{curline, 0, curY, True}
-      Poke.b ?keepstring,0
+      ped\keepString = 0
 
       PED_ProcessHighlighting{}
     EndIf
@@ -12869,38 +12093,6 @@ Macro checkBeforeBlockEndX
 
 End Macro
 
-
-.checkBeforeBlockStartX:
-  MOVE.l comLong_DisplayLineOffset,D2
-  ADD.l comLong_DisplayLine,D2                           ; d2 = current Linenumber
-
-  CMP.l comLong_BlockStartY,D2                           ; if blockstartY = d2
-  BNE.w JL_0_79EE
-    MOVE.w comWord_Column,D2                             ;   d2 = current Columnnumber
-    ADD.w comWord_ColumnsOffset,D2
-    CMP.w comWord_BlockStartX,D2                         ;   if d2 <= blockstartX
-    BHI.w JL_0_79EE
-      MOVEQ.l #$00,D3                                    ;     d3 = 0
-                                                         ;   endif
-  JL_0_79EE:                                             ; endif
-RTS
-
-checkBeforeBlockEndX:
-  MOVE.l comLong_DisplayLineOffset,D2
-  ADD.l comLong_DisplayLine,D2                           ; d2 = current Linenumber
-
-  CMP.l comLong_BlockEndY,D2                             ; if blockstartY = d2
-  BNE.w JL_0_7A12
-    MOVE.w comWord_Column,D2                             ;   d2 = current Columnnumber
-    ADD.w comWord_ColumnsOffset,D2
-    CMP.w comWord_BlockEndX,D2                           ;   if d2 <= blockEndX
-    BHI.w JL_0_7A12
-      MOVEQ.l #$00,D3                                    ;     d3 = 0
-  JL_0_7A12:                                             ;   endif
-RTS                                                      ; endif
-
-
-
 .adjustBlockPosition:
   If ped\ptrCurrentSourceData\BlockStartX >= #MAX_Columns
     ped\ptrCurrentSourceData\BlockStartX = 0
@@ -12933,48 +12125,6 @@ RTS                                                      ; endif
     ped\ptrCurrentSourceData\BlockEndX = #MAX_Columns-1
   EndIf
 Return
-
-.JL_0_7A14: ;adjustBlockPosition_asm
-  MOVE.w comWord_BlockStartX,D2
-  CMP.w #MAX_Columns,D2
-  BCS.w JL_0_7A3C                                                       ; if d2 < Maxcolumns   isLower
-    CLR.w comWord_BlockStartX
-    ADDQ.l #1,comLong_BlockStartY
-    MOVE.l comLong_BlockStartY,D2
-    CMP.l comLong_BlockEndY,D2
-    BLS.w JL_0_7A3C                                                     ; if d2 <= BlockendY  isLowerOrSame
-      JMP reset_Blockflag_asm
-  JL_0_7A3C:
-
-  MOVE.w comWord_BlockEndX,D2
-  BPL.w JL_0_7A66                                                       ; if d2 >= BlockEndX  isGreater
-    MOVE.w #MAX_Columns,D2
-    SUBQ.w #1,D2
-    MOVE.w D2,comWord_BlockEndX
-    SUBQ.l #1,comLong_BlockEndY
-    MOVE.l comLong_BlockEndY,D2
-    CMP.l comLong_BlockStartY,D2
-    BCC.w JL_0_7A90                                                     ; if d2 >= BlockStartY  isHigherOrSame
-
-    JL_0_7A62:
-    JMP reset_Blockflag_asm
-  JL_0_7A66:
-
-  MOVE.l comLong_BlockStartY,D2
-  CMP.l comLong_BlockEndY,D2
-  BNE.w JL_0_7A7C                                                      ; if d2 <> BlockEndY    isNotEqual
-    MOVE.w comWord_BlockEndX,D2
-    CMP.w comWord_BlockStartX,D2
-    BLT.b JL_0_7A62                                                    ; if d2 <= BlockStartX   isLessOrEqual
-  JL_0_7A7C:
-
-  CMP.w #MAX_Columns,D2
-  BCS.w JL_0_7A90                                                      ; if d2 < MaxColumns    isLower
-    MOVE.w #MAX_Columns,D2
-    SUBQ.w #1,D2
-    MOVE.w D2,comWord_BlockEndX
-  JL_0_7A90:
-RTS
 
 
 .handlePedEvents:
@@ -13275,7 +12425,7 @@ Function.s FindHelp{tokname$}
 ;    tokhelp$ = PED_GetMacroHelp{*macrobase,tokname$}
     tokexte$ = "Macro"
   Else
-    tokid.l = PED_GetTokenID{tokname$}
+    tokid.w = PED_GetTokenID{tokname$}
     If tokid >= 0
       tokname$ = PED_GetTokenName{tokid}
       libnum.l = PED_GetTokenLibnum{tokname$}
@@ -13462,7 +12612,7 @@ Return
     anzbytes.w = Peek.b(*sourceLine + 8)
     testaddr.l = *sourceLine + 9
     acttoken.w = Peek.w(testaddr) AND $FFFF
-    acttoke2.l = Peek.w(testaddr) AND $FFFF
+    acttoke2.w = Peek.w(testaddr) AND $FFFF
     skip_string.b = False
 
     While (bytecount<=anzbytes)
@@ -13478,8 +12628,8 @@ Return
       EndIf
       testaddr + 1 : bytecount + 1
       acttoken = Peek.w(testaddr) AND $FFFF
-      acttoke2.l = Peek.w(testaddr) AND $FFFF
-      actbyte.w = acttoke2 LSR 8
+      acttoke2.w = Peek.w(testaddr) AND $FFFF
+      actbyte.b = acttoke2 LSR 8
       ; skip comments ...
       If actbyte = Asc(";")
         anzbytes = bytecount + 1
@@ -13499,7 +12649,7 @@ Return
   WZ_ShowMessage{!TRANS{"Building result tree..."},0}
   For i = 0 To 65535
     If tokentable(i) > 0
-      acttoke2 = i
+      acttoke2 = i 
       tokname$ = PED_GetTokenName{acttoke2}
       libnum.l = acttoke2 LSR 7 ;PED_GetTokenLibnumID{tokname$})
       libname$ = lib_mapping$(libnum,0)
@@ -13586,8 +12736,6 @@ Return
 
   !PED_CursorOn
 Return
-
-
 
 
 .deletekey:
@@ -14077,7 +13225,6 @@ Return
               If Peek.l(?comWord_LinePosStartX) <> realline
                 Poke.l ?comWord_LinePosStartX, realline
                 PED_GotoLine{realline}
-                !PED_CursorOn
                 PED_UpdateStatusArea{#STATUS_CURSOR|#STATUS_SCROLLERS}
               EndIf
 
@@ -14449,9 +13596,7 @@ Return
     End Select
 
     If goto_line
-      !PED_CursorOff
       PED_GotoLine{goto_line}
-      !PED_CursorOn
     EndIf
     Pop Select : Return
   End Select
@@ -14599,7 +13744,7 @@ Return
       If result Then ped\ptrCurrentSourceData\BlockStartX + moveCount
       !checkBeforeBlockEndX{result}
       If result Then ped\ptrCurrentSourceData\BlockEndX + moveCount
-      Gosub adjustBlockPosition  ; JL_0_7A14
+      Gosub adjustBlockPosition
     EndIf
 
     ;-- move rest of line to right or left
@@ -14755,19 +13900,15 @@ Return
 ;Scroll Sourcetext at MouseWheelY events  tomsmart1
 .wheel_down:
   Gosub storeline
-  !PED_CursorOff
   PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine + pedconfig\wheelStep}
   PED_UpdateStatusArea{#STATUS_SCROLLERS}
-  !PED_CursorOn
 Return
 
 
 .wheel_up:
   Gosub storeline                                            ; added to save the changes of the corrent line
-  !PED_CursorOff
   PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine - pedconfig\wheelStep}
   PED_UpdateStatusArea{#STATUS_SCROLLERS}                                  ; update position of the vertical scroller
-  !PED_CursorOn
 Return
 
 .handle_event_mousemove:
@@ -14847,67 +13988,8 @@ Return
     WriteType 0,wpref(1)
     WriteType 0,wpref(2)
     CloseFile 0
-  End If
-RTS
-
-Even                   ; make sure to have enough space reserved
-.PREFSFORMAT
- ;use_wbcolors:
- ;                       Dc.b $00,$00        ; OBSOLETE
- ;clone_wb:
- ;                       Dc.b $00,$00        ; TOOLTYPE
- ;use_asldims:           Dc.b $FF,$FF
- ;aslreq_x:              Dc.l $18
- ;aslreq_y:              Dc.l $18
- ;aslreq_width:          Dc.l $17C
- ;aslreq_height:         Dc.l $17C
- ;flag_tokenization:     Dc.w $FF,$FF
- ;prefs_source_icon:     Ds.w 3
- ;ownscreen_modeid:      Dc.l 0              ; TOOLTYPE
- ;myscreen_Width:
- ;                       Ds.w 1
- ;ownscreen_width:       Dc.b $02,$80        ; TOOLTYPE
- ;myscreen_Height:
- ;                       Ds.w 1
- ;ownscreen_height:      Dc.b $01,$00        ; TOOLTYPE
- ;myscreen_Depth:
- ;                       Dc.b $00,$00
- ;                       Ds.w 1
- ;clickpos:              Dc.b $00,$0F        ; labelsize??
- ;othercolor:            Dc.b $00,$02        ; TOOLTYPE ex. backgroundcoler
- ;tokencolor:            Dc.b $00,$03        ; TOOLTYPE
- ;str_sourcefontname:   Dc.b 0              ; TOOLTYPE
- ;                       Ds.b #MAX_STRINGSIZE
- ;                       Even
- ;sourcefontstyle:       Dc.b $00            ; TOOLTYPE
- ;sourcefontflags:       Dc.b $03            ; TOOLTYPE
- ;sourcefontsize:        Dc.b $00,$08        ; TOOLTYPE
-                        Dc.w 1              ; DUMMY
- ;auto_indent:           Dc.b $FF,$FF        ; TOOLTYPE
- ;use_filepattern:       Dc.b $FF,$FF        ; TOOLTYPE
- ;AL_0_B7E0:             Dc.b $FF,$FF        ; Save xtra-File ???
- ;tabSize:              Dc.b $00,$02        ; TOOLTYPE
- ;use_pubscreen:        Dc.b $FF,$FF        ; TOOLTYPE
- ;remember_saved:       Dc.b $FF,$FF        ; TOOLTYPE
- ;use_default_pubscreen:Ds.w 1              ; TOOLTYPE
- ;ownscreen_depth:       Dc.b $00,$04        ; TOOLTYPE
- ;startup_folder:        Dc.b $FF,$FF
- ;oldWindowPos:                             ; ??? irgendwas mit Fensterpos  OBSOLETE ??
- ;                       Ds.w 1
- ;oldWindowNumber:                          ; ??? irgendwas mit Fensterpos  OBSOLETE ??
- ;                       Ds.w 1
- ;AL_0_B7F2:                                ; OBSOLETE
- ;                       Ds.w 1
- ;comWord_BoundLinesX:                       ; moved to common.ab3
- ;                       Dc.b $00,$02
- ;comWord_BoundLinesY:
- ;                       Dc.b $00,$06
- ;AL_0_B7F8:
- ;                       Dc.b "%1ld ",0
- ;L_0_B7FE:
-;                       Ds.l 4
- Even
-.PREFSFORMAT_END
+  EndIf
+Return
 
 
 .update_rememberlist:
@@ -15211,297 +14293,82 @@ Return
 
 Even
 .menutable:
-;   $5A: Leerzeile im Menu
-;   $50: Compile & Run
-;   $5b: Save & Create Exec
-;   $5c: Save & Compile & Run
-;   $5d: Debug / Runerrors On 10*slower Code
-;   $5e: Create Executable absolut Smallest
+  ;    menu/ShortcutID   refresh   pointer to menuaction code
 
-;   $56: CLI arguments
-;   $57: calculator
-;   $58: reload all libs
-;   $59: open sourcebrowser
-
-  Dc.l #MENU_NEW                      ; menu/shortcut ID            ; replaced hardcode values with constants  tomsmart1
-  Dc.l 0                              ; refresh after function call 0= No  1 Yes
-  Dc.l menu_new                       ;new      (function call address)
-
-  Dc.l #MENU_OPENNEW
-  Dc.l 0
-  Dc.l menu_loadAsNew                 ;open new and load
-
-  Dc.l #MENU_OPEN
-  Dc.l 1
-  Dc.l menu_load                      ;load
-
-  Dc.l #MENU_INCLUDEFILE
-  Dc.l 1
-  Dc.l menu_includeblock              ;include block
-
-  Dc.l #MENU_SAVE
-  Dc.l 0
-  Dc.l menu_save                      ;save
-
-  Dc.l #MENU_SAVEAS
-  Dc.l 0
-  Dc.l menu_saveas                    ;save as
-
-  Dc.l #MENU_EXPORTASCII
-  Dc.l 0
-  Dc.l menu_saveascii                 ;save ascii
-
-  Dc.l #MENU_CLOSE
-  Dc.l 0
-  Dc.l menu_quit                      ;quit
-
-  Dc.l #MENU_QUIT
-  Dc.l 0
-  Dc.l menu_quitall                   ;quitall
-
-  Dc.l #MENU_PRINT
-  Dc.l 0
-  Dc.l menu_print                     ;print
-
-  Dc.l #MENU_OPENWORKBENCH
-  Dc.l 0
-  Dc.l menu_openwb                    ;openwb
-
-  Dc.l #MENU_CLOSEWORKBENCH
-  Dc.l 0
-  Dc.l menu_closewb                   ;closewb
-
-  Dc.l #MENU_ICONIFY
-  Dc.l 0
-  Dc.l menu_iconify                   ;iconify
-
-  Dc.l #MENU_OPENSHELL
-  Dc.l 0
-  Dc.l menu_newshell                  ;newcli
-
-  Dc.l #MENU_IDEPREFERENCES
-  Dc.l 0
-  Dc.l menu_settings                  ;prefs       ; changed to jump direct to the function  tomsmart1
-
-  Dc.l #MENU_AUTOLAYOUT
-  Dc.l 0
-  Dc.l menu_autolayout
-
-  Dc.l #MENU_GETLAYOUT1
-  Dc.l 0
-  Dc.l menu_autolayout
-
-  Dc.l #MENU_GETLAYOUT2
-  Dc.l 0
-  Dc.l menu_autolayout
-
-  Dc.l #MENU_GETLAYOUT3
-  Dc.l 0
-  Dc.l menu_autolayout
-
-
-  Dc.l #MENU_ABOUT
-  Dc.l 0
-  Dc.l menu_about                     ; about
-  ;
-  Dc.l #MENU_LASTSOURCE1
-  Dc.l 1
-  Dc.l load_remembered                ; remembered sources
-
-  Dc.l #MENU_LASTSOURCE2
-  Dc.l 1
-  Dc.l load_remembered
-
-  Dc.l #MENU_LASTSOURCE3
-  Dc.l 1
-  Dc.l load_remembered
-
-  Dc.l #MENU_LASTSOURCE4
-  Dc.l 1
-  Dc.l load_remembered
-
-  Dc.l #MENU_LASTSOURCE5
-  Dc.l 1
-  Dc.l load_remembered
+  ; -- MENU PROJECT
+  Dc.l #MENU_OPENWORKBENCH,  0,    menu_openwb
+  Dc.l #MENU_CLOSEWORKBENCH, 0,    menu_closewb
+  Dc.l #MENU_ICONIFY,        0,    menu_iconify
+  Dc.l #MENU_OPENSHELL,      0,    menu_newshell
+  Dc.l #MENU_IDEPREFERENCES, 0,    menu_settings
+  Dc.l #MENU_PROJECTSETTINGS,0,    menu_project  
+  Dc.l #MENU_AUTOLAYOUT,     0,    menu_autolayout
+  Dc.l #MENU_GETLAYOUT1,     0,    menu_autolayout
+  Dc.l #MENU_GETLAYOUT2,     0,    menu_autolayout
+  Dc.l #MENU_GETLAYOUT3,     0,    menu_autolayout
+  Dc.l #MENU_ABOUT,          0,    menu_about
+  Dc.l #MENU_QUIT,           0,    menu_quitall
 
   ; -- MENU SOURCE
-  Dc.l #MENU_CUT
-  Dc.l 1
-  Dc.l menu_cut
+  Dc.l #MENU_NEW,            0,    menu_new                       
+  Dc.l #MENU_OPENNEW,        0,    menu_loadAsNew
+  Dc.l #MENU_OPEN,           1,    menu_load
+  Dc.l #MENU_INCLUDEFILE,    1,    menu_includeblock
+  Dc.l #MENU_SAVE,           0,    menu_save
+  Dc.l #MENU_SAVEAS,         0,    menu_saveas
+  Dc.l #MENU_EXPORTASCII,    0,    menu_saveascii
+  Dc.l #MENU_PRINT,          0,    menu_print
+  Dc.l #MENU_CLOSE,          0,    menu_quit  
+  Dc.l #MENU_LASTSOURCE1,    1,    load_remembered
+  Dc.l #MENU_LASTSOURCE2,    1,    load_remembered
+  Dc.l #MENU_LASTSOURCE3,    1,    load_remembered
+  Dc.l #MENU_LASTSOURCE4,    1,    load_remembered
+  Dc.l #MENU_LASTSOURCE5,    1,    load_remembered
 
-  Dc.l #MENU_COPY
-  Dc.l 1
-  Dc.l menu_copy
+  ; -- MENU EDIT
+  Dc.l #MENU_CUT,            1,    menu_cut
+  Dc.l #MENU_COPY,1, menu_copy
+  Dc.l #MENU_PASTE,1, menu_paste
+  Dc.l #MENU_DUPLICATE,1,menu_dublicate
+  Dc.l #MENU_FORGET,1,menu_forget
+  Dc.l #MENU_KILL,1, menu_kill
+  Dc.l #MENU_SAVEBLOCKAS,1,menu_saveblockas
+  Dc.l #MENU_INSERTLINE,0,menu_insertline
+  Dc.l #MENU_DELETELINE,0,menu_deleteline
+  Dc.l #MENU_UNDELETELINE,0,menu_undeleteline           
+  Dc.l #MENU_JOINLINES,0,menu_joinline                
+  Dc.l #MENU_BLOCKTAB,1,menu_blocktab
+  Dc.l #MENU_BLOCKUNTAB,1,menu_blockuntab           
+  Dc.l #MENU_BLOCKCOMMENT,1,menu_blockcomment           
+  Dc.l #MENU_BLOCKUNCOMMENT,1,menu_blockuncomment
+  Dc.l #MENU_MARKINDENT,1,menu_markindent
 
-  Dc.l #MENU_PASTE
-  Dc.l 1
-  Dc.l menu_paste
+  ;-- MENU NAVIGATION
+  Dc.l #MENU_OPENFIND,1, menu_find  
+  Dc.l #MENU_FIND,1,menu_findnext
+  Dc.l #MENU_PREVIOUS,1,menu_findprevious
+  Dc.l #MENU_REPLACE,1,menu_replace
+  Dc.l #MENU_TOP,1,  menu_top
+  Dc.l #MENU_BOTTOM,1,   menu_bottom
+  Dc.l #MENU_GOTOLINE,1,menu_gotoline
+  Dc.l #MENU_PREVPAGE,0,menu_previousfile
+  Dc.l #MENU_NEXTPAGE,0,menu_nextfile
 
-  Dc.l #MENU_DUPLICATE
-  Dc.l 1
-  Dc.l menu_dublicate
+  ; -- MENU COMPILER
 
-  Dc.l #MENU_FORGET
-  Dc.l 1
-  Dc.l menu_forget
-
-  Dc.l #MENU_KILL
-  Dc.l 1
-  Dc.l menu_kill
-
-  Dc.l #MENU_SAVEBLOCKAS
-  Dc.l 1
-  Dc.l menu_saveblockas
-
-  Dc.l #MENU_INSERTLINE
-  Dc.l 0
-  Dc.l menu_insertline
-
-  Dc.l #MENU_DELETELINE
-  Dc.l 0
-  Dc.l menu_deleteline
-
-  Dc.l #MENU_UNDELETELINE
-  Dc.l 0
-  Dc.l menu_undeleteline            ; undelete
-
-  Dc.l #MENU_JOINLINES
-  Dc.l 0
-  Dc.l menu_joinline                ; join
-
-  Dc.l #MENU_BLOCKTAB
-  Dc.l 1
-  Dc.l menu_blocktab                ; block Tab
-
-  Dc.l #MENU_BLOCKUNTAB
-  Dc.l 1
-  Dc.l menu_blockuntab              ; block untab
-
-  Dc.l #MENU_BLOCKCOMMENT
-  Dc.l 1
-  Dc.l menu_blockcomment            ; block comment
-
-  Dc.l #MENU_BLOCKUNCOMMENT
-  Dc.l 1
-  Dc.l menu_blockuncomment
-
-  Dc.l #MENU_MARKINDENT
-  Dc.l 1
-  Dc.l menu_markindent
-
-  Dc.l #MENU_PROJECTSETTINGS
-  Dc.l 0
-  Dc.l menu_project
-
-  Dc.l #MENU_TOP
-  Dc.l 1
-  Dc.l menu_top
-
-  Dc.l #MENU_BOTTOM
-  Dc.l 1
-  Dc.l menu_bottom
-
-  Dc.l #MENU_GOTOLINE
-  Dc.l 1
-  Dc.l menu_gotoline
-
-  Dc.l #MENU_PREVPAGE
-  Dc.l 0
-  Dc.l menu_previousfile
-
-  Dc.l #MENU_NEXTPAGE
-  Dc.l 0
-  Dc.l menu_nextfile
-
-  Dc.l #MENU_OPENFIND
-  Dc.l 1
-  Dc.l menu_find
-
-  Dc.l #MENU_FIND
-  Dc.l 1
-  Dc.l menu_findnext
-
-  Dc.l #MENU_PREVIOUS
-  Dc.l 1
-  Dc.l menu_findprevious
-
-  Dc.l #MENU_REPLACE
-  Dc.l 1
-  Dc.l menu_replace
-
-  Dc.l #MENU_WHATSNEW
-  Dc.l 0
-  Dc.l menu_helpnews
-
-  Dc.l #MENU_GENERALGUIDE
-  Dc.l 0
-  Dc.l menu_helpgeneral
-
-  Dc.l #MENU_PROGRAMGUIDE
-  Dc.l 0
-  Dc.l menu_helpprogramming
-
-  Dc.l #MENU_BLITZLIBSGUIDE
-  Dc.l 0
-  Dc.l menu_helpblitzlibs
-
-  Dc.l #MENU_INCLUDEGUIDE
-  Dc.l 0
-  Dc.l menu_helpincludesguide           ;syntax
-
-  Dc.l #MENU_INSTRUCTIONBROWSER
-  Dc.l 0
-  Dc.l menu_helpcompletion
-
-  Dc.l #MENU_SHORTCUTREFERENCE
-  Dc.l 0
-  Dc.l menu_helpshortcuts
-
-  Dc.l #MENU_LIBRARYBROWSER
-  Dc.l 0
-  Dc.l menu_helplibrarybrowser
-
-  Dc.l #MENU_UPDATEHELPINDEX
-  Dc.l 0
-  Dc.l menu_helpbuildindex
-
+  ; -- MENU HELP
+  Dc.l #MENU_WHATSNEW,0,menu_helpnews
+  Dc.l #MENU_GENERALGUIDE,0, menu_helpgeneral
+  Dc.l #MENU_PROGRAMGUIDE,0,menu_helpprogramming
+  Dc.l #MENU_BLITZLIBSGUIDE,0,menu_helpblitzlibs
+  Dc.l #MENU_INCLUDEGUIDE,0,menu_helpincludesguide
+  Dc.l #MENU_INSTRUCTIONBROWSER,0, menu_helpcompletion
+  Dc.l #MENU_SHORTCUTREFERENCE,0, menu_helpshortcuts
+  Dc.l #MENU_LIBRARYBROWSER,0,  menu_helplibrarybrowser
+  Dc.l #MENU_UPDATEHELPINDEX,0,menu_helpbuildindex
   ; end of menutable
-  Dc.l $FFFFFFFF                        ; end of menutable  tomsmart1
+  Dc.l $FFFFFFFF
 Even
-
-.compare_strings:       ; compare string in A1/A3     (AJL_0_DD12)
-  MOVEQ.l #$00,D0
-  MOVEQ.l #$00,D1
-  MOVEM.l A1/A3,-(A7)
-
-  JL_0_DD1A:
-    MOVE.b (A1)+,D2
-    MOVE.b (A3)+,D3
-    CMP.b #$20,D2
-     BNE.w JL_0_DD2C
-    TST.b D3
-     BEQ.w JL_0_DD4C
-
-    JL_0_DD2C:
-    TST.b D2
-     BNE.w JL_0_DD38
-    TST.b D3
-     BEQ.w JL_0_DD4C
-
-    JL_0_DD38:
-    BSET #$5,D2
-    BSET #$5,D3
-    CMP.b D2,D3
-  BEQ.b JL_0_DD1A
-
-  MOVEM.l (A7)+,A1/A3
-  MOVEQ.l #$00,D0
-  RTS
-
-  JL_0_DD4C:
-  MOVEM.l (A7)+,A1/A3
-  MOVEQ.l #-$01,D0          ; string not equal
-RTS
 
 
 .menu_project:
@@ -15844,113 +14711,78 @@ Return
 
 .menu_print:
   Gosub set_pointer_busy
+
   WZ_LockAllOpenWindows{}                                                                                                                                                                                                                                
   If Peek.l(Addr Window(WZID("WIN_PRINT")))=0
     WZWindow WZID("WIN_PRINT"),?wzgui,128,-2,-2,-2,-2,WZID("WIN_PRINT")
-    Use Window WZID("WIN_PRINT")
-    exit_print.b = False
-
-    Repeat
-      ev.l = WaitEvent
-      Select ev
-
-        Case #IDCMP_CLOSEWINDOW
-          exit_print = True
-
-        Case #IDCMP_IDCMPUPDATE
-          Select WZGadName
-
-            Case "PRINT_CANCEL"
-              exit_print = True
-
-            Case "PRINT_PRINT"
-              printerdevice$ = WZGetString("PRINT_DEVICE")
-              Gosub printout_source
-              exit_print = True
-
-          End Select
-
-      End Select
-    Until exit_print = True
-
-    WZCloseWindow WZID("WIN_PRINT")
   EndIf
+  Use Window WZID("WIN_PRINT")
+  
+  exit_print.b = False
+  Repeat
+    ev.l = WaitEvent
+    log_Print{"event " + Hex$(ev)}
+    Select ev
+
+    Case #IDCMP_CLOSEWINDOW
+      exit_print = True
+
+    Case #IDCMP_IDCMPUPDATE
+      log_Print{"Button: " + WZGadName}
+      Select WZGadName
+        Case "PRINT_CANCEL"
+          exit_print = True
+        Case "PRINT_PRINT"
+          printerDevice.s = WZGetString("PRINT_DEVICE")
+          Gosub printout_source
+          exit_print = True
+      End Select
+
+    End Select
+  Until exit_print = True
+
+  WZCloseWindow WZID("WIN_PRINT")
   WZ_UnlockAllOpenWindows{}
   Gosub set_pointer_normal
   Gosub activatesourcewindow
 Return
 
 .printout_source:
-  *prthandle.l = Open_ (&printerdevice$,#HUNK_RELOC_8__MODE_NEWFILE)
-  If *prthandle = 0
-    Pop If
-    error{"Couldnot open Printer."}
-    Return
+  *prthandle.l = Open_ (&printerDevice,#HUNK_RELOC_8__MODE_NEWFILE)
+  If *prthandle
+    *currentline.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
+    ped\inString = 0
+    While *currentline
+      newstr.s = ""
+      ptrString.l = *currentline + 9
+      Repeat
+        curchar.b = Peek.b(ptrString)
+        If curchar
+          If curchar = $22 Then ped\inString = NOT ped\inString
+          ;-- here comes a tokens
+          If (curchar < 0) AND (ped\inString = 0)
+            toknum.w = Peek.w(ptrString)
+            newstr + "\\1B[1m"
+            newstr + PED_GetTokenName{toknum}
+            newstr + "\\1B[22m"
+            ptrString + 2
+          Else
+            newstr + Chr$(curchar)
+            ptrString + 1
+          EndIf
+        EndIf
+      Until curchar = 0                                                                                                                                                                                                                                  
+      newstr = Trim$(newstr) + "\\0A"
+      
+      ;log_Print{">>" + Hex$(Cvl(newstr)) + " : " + newstr}
+      Write_ *prthandle, &newstr, FLen(newstr)
+
+      *currentline = *currentline\nextLine
+    Wend
+    Close_ *prthandle
+  Else
+    error{"Couldnot open printer [" + printerDevice + "]"}
   EndIf
-
-  !asm
-  CLR.b instring
-  MOVE.l comLong_TotalLines,D6
-  MOVEA.l comPtr_FirstSourceLine,A4
-
-  JL_0_F58E:
-    MOVEA.l comPtr_Temp_TokenString1,A0
-    LEA $9(A4),A1
-    MOVE.l A0,D2
-
-    JL_0_F598:                        ;print code
-      MOVE.b (A1)+,(A0)+
-      BEQ.w JL_0_F5D8
-      CMP.b #$22,-1(a0)
-      BNE 'l1
-        NOT.b instring
-     'l1
-      TST.b -1(a0)
-      BPL.b JL_0_F598
-      TST.b instring
-      BNE JL_0_F598
-     'l2
-      MOVE.b -(A0),D0
-      LSL.w #8,D0
-      MOVE.b (A1)+,D0
-      MOVE.b #$1B,(A0)+
-      MOVE.b #"[",(A0)+
-      MOVE.b #"1",(A0)+
-      MOVE.b #"m",(A0)+
-      JSR token_to_ascii
-
-      JL_0_F5BC:
-        MOVE.b (A3)+,(A0)+
-      BNE.b JL_0_F5BC
-
-      MOVE.b #$1B,-$1(A0)
-      MOVE.b #"[",(A0)+
-      MOVE.b #"2",(A0)+
-      MOVE.b #"2",(A0)+
-      MOVE.b #"m",(A0)+
-    BRA.b JL_0_F598
-
-    JL_0_F5D8:
-    MOVE.b #$A,-$1(A0)
-    MOVE.l A0,D3
-    SUB.l D2,D3
-    !regs2stack
-    MOVE.l D3,-(a7)
-    MOVE.l D2,-(a7)
-    !basic
-    MOVE.l (a7)+,d0 : *pbuffer.l = PutD0
-    MOVE.l (a7)+,d0 : plength.l = PutD0
-    Write_ *prthandle, *pbuffer, plength
-    !asm
-    !stack2regs
-    ;JSR _Write(A6)
-    ; write_ (d1:buffer, d2:buffer, d3:length)
-    MOVEA.l (A4),A4
-    SUBQ.l #1,D6
-  BNE.b JL_0_F58E
-
-  !basic
-  Close_ *prthandle
 Return
 
 
@@ -16253,18 +15085,12 @@ Return
     linecounter + 1
     *tempLine = *tempLine\nextLine
   Until found_to_jump OR (*tempLine = 0)
-
   If found_to_jump
     Pop If
     PED_HistoryAddEntry{}
     PED_GotoLine{linecounter-1,#LINE_START}
-    ;GetD0 linecounter-1
-    ;!asm
-    ;JSR jumpline
-    ;!basic
     Return
   EndIf 
-
 
   ;-- nothing found in current source search in helpcache
   If clickjump_fromfile = 0
@@ -16299,19 +15125,6 @@ Return
 
   EndIf
 Return
-
-.jumpline     ; D0: Zielzeile
-;basic
-;ineNum.l = PutRegD0
-;f lineNum < ped\ptrCurrentSourceData\TotalLines
-; !PED_CursorOff
-; PED_GotoLine{lineNum, #LINE_START}
-; PED_UpdateStatusArea{#STATUS_SCROLLERS}
-; !PED_CursorOn
-;ndIf
-;;asm
-;
-
 
 .open_helpdiag
   If diag.l = 0
@@ -18404,9 +17217,6 @@ Return
             Poke.s ?str_searchstring   ,searchcmd
             If searchcmdStore.s <> searchcmd
               searchcmdStore.s = searchcmd
-              ;!asm
-              ;MOVEQ #0,d0 : JSR jumpline
-              ;!basic
               PED_GotoLine{0,#LINE_START}
             EndIf
             Gosub storeline
@@ -18445,9 +17255,8 @@ Return
     Gosub storeline
     lineAddress.l = WZListData (list_labels,LabelList_NewSelectItemNumber)
     PED_GotoLineAddress{lineAddress}
-    !PED_CursorOn
   End If
-Return
+Return 
 
 .navigate_to_next_label:
   If WZ_CheckOpen{"WIN_LABELS"}
@@ -18459,7 +17268,6 @@ Return
     Gosub storeline
     lineAddress.l = WZListData (list_labels,LabelList_NewSelectItemNumber)
     PED_GotoLineAddress{lineAddress}    
-    !PED_CursorOn
   End If
 Return
 
@@ -19521,15 +18329,14 @@ wzgui:                IncBin "ped.wizard"
 BSS
 Even
 textbufferaddr:       Dc.l 0
-instring              Dc.b 0
-instring2             Dc.b 0
-instring3             Dc.b 0
+convert               Dc.b 0        ; > import_start
+tempbuf               Ds.b 260      ; > import_start
+instring              Dc.b 0        ; > import_start
+instring2             Dc.b 0        ; > parse_line
+instring3             Dc.b 0        ; > detokenize_line
 noDetokenizing:       Ds.w 1
-keepstring            Ds.b 1
 instru                Ds.w 1
-convert               Dc.b 0
 tokenCache            Ds.l 32769
-tempbuf               Ds.b 260      ; used for import_start
 chartab               Ds.b 260 
 typestr               Ds.b 80
 deftypefound          Ds.w 1
