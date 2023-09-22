@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.9
-; NumberOfBuilds  = 2994
+; NumberOfBuilds  = 3076
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 10572
-; CursorColumn    = 121
-; LabelSearch     = ""print"
+; CursorLine      = 10223
+; CursorColumn    = 19
+; LabelSearch     = "error_line"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -117,8 +117,6 @@ DEBUG
 #USE_WIZARD          = 1     ; use wizard library
 #WZ_USE_IMAGES       = 0     ; use pictures in tables
 #WZ_singletable      = 1     ; only on table at the same time
-#Max_WZWindows       = 22    ; max of WZ windows (IDs) needed for the functions to (un)lock all WZ windows, at the moment IDs 1-22 are used ( 0 = source window)  tomsmart1
-
 #slowdown            = 0     ; reduce scrolling speed (for very fast machines)
 
 ; OS Version to enable/disable various features
@@ -163,6 +161,7 @@ DEBUG
 #TOKEN_Repeat    = $80BB
 #TOKEN_EndIf     = $80C0
 #TOKEN_Object    = $80D7
+#TOKEN_DEFTYPE   = $8033
 
 ; scrolling options for sourceWindow
 #SCROLL_UP       = 1
@@ -333,6 +332,7 @@ XINCLUDE "/Shared/common.ab3"
 XINCLUDE "/Shared/preprocessor.include.ab3"
 XINCLUDE "/Shared/ted.include.ab3"
 DEFTYPE.tokendata *tokenbase
+DEFTYPE.l *macrobase
 DEFTYPE.l *newtypebase                                                                                                                                                                                                                                   
 DEFTYPE.l *constantbase
 DEFTYPE.l *varbase
@@ -513,8 +513,11 @@ DEFTYPE.pedconfig pedconfig
 NEWTYPE.ped
   taskWinPtr.l                           ; save possibly set window to thisTask
   *screen.Screen
-  *menuStrip.Menu                                                                                                                                                                                                                                        
-  
+  *menuStrip.Menu
+
+  mempool.l
+  errorCode.w
+
   currentDir.s
   currentFile.s
   filePattern.s
@@ -538,14 +541,30 @@ NEWTYPE.ped
   convert.b
   DoTokenize.w
   amigaguide.b
-  debugMode.b                                                                                                                                                                                                                                            
+  debugMode.b
 
   caseSensitive.b
 
   lastAutoLayout.b
   lastLayout.b
-  newtype_mode.b
+  pubScreenNumber.s
+  pubscreenName.s
+  defaultPubscreenName.s
+  defaultScreenTitle.s
 
+
+  ;-- Definitionbrowser
+  definitionMode.b
+  structLevel.b
+  lastStructLevel.b
+  currentConstantStr.s
+  currentVariableStr.s
+  currentNewtypeStr.s
+  lastConstantStr.s
+  lastVariableStr.s
+  lastNewtypeStr.s
+
+  ;-- biglibs data
   baselibFileSize.l
   baselibFileDate.s
   utillibFileSize.l
@@ -555,14 +574,6 @@ NEWTYPE.ped
   cslibFileSize.l
   cslibFileDate.s
 
-  pubScreenNumber.s
-  pubscreenName.s
-  defaultPubscreenName.s
-  defaultScreenTitle.s
-
-  errorCode.w
-
-  mempool.l
   LabelIdentifier.b
   LabelListChanged.w
   LabelIsFunction.b
@@ -594,14 +605,14 @@ ped\extention_info = ".info"
 ped\extention_xtra = ".xtra"
 ped\extention_bak = ".bak"
 ped\filePattern = "(#?.bb|#?.bb2|#?.asm|#?.ab2|#?.ab3|#?.txt|#?.guide)"
- 
+
 NEWTYPE.sourceWindow
   *pedScreen.Screen
   *drawinfo.DrawInfo
   *win.Window
   *rp.RastPort
-  *vertiprop.Gadget                                                                                                                                                                                                                                      
-  *horizprop.Gadget                                                                                                                                                                                                                                      
+  *vertiprop.Gadget
+  *horizprop.Gadget
 
   *font.TextFont
   *fontI.TextFont
@@ -867,6 +878,7 @@ MaxLen tautodocdir$       = 192
 MaxLen tmp_string.s       = 1024                   ; used for passing strings to os-functions
 MaxLen pedmessage.s       = 96                     ; used for display the text area
 MaxLen tmpDetokeStr.s     = #MAX_Columns
+MaxLen tmpTokeStr.s       = #MAX_Columns
 
 WZListAdd list_labels.List ," "
 
@@ -992,6 +1004,46 @@ End Macro
 ; FUNCTIONDEFINITIONS
 ; ------------------------------------------------------
 .FUNCTIONS
+
+Statement WZ_CloseAllWindows{}                    ; made a Statement to close all (used) Wizard Windows to remove double code  tomsmart1
+  Gosub close_contexthelp
+  Gosub close_popupwindow
+  WZ_HideHelp{}                                  ; added because it used for the wz_contexthelp
+  Gosub kill_menus                               ; moved in that everytime tis statment are called the menues are detached fom the wz windows  tomsmart1
+  ; windows with menu added
+  WZCloseWindow WZID("WIN_INSTRUCTIONBROWSER")
+  WZCloseWindow WZID("WIN_NEWTYPE")
+  WZCloseWindow WZID("WIN_LABELS")
+  WZCloseWindow WZID("WIN_LIBRARYBROWSER")
+  WZCloseWindow WZID("WIN_SEARCH")
+  WZCloseWindow WZID("WIN_SHORTCUTS")
+  WZCloseWindow WZID("WIN_HELPDIAG")
+  ; windows with no menu added
+  WZCloseWindow WZID("WIN_HELP")
+  WZCloseWindow WZID("WIN_SETTINGS")
+End Statement
+
+
+; Added the menu to the open WZ window
+Statement WZ_AddMenuStrip{wzwinname.s, *menuStrip.Menu}
+  winaddr.l = Peek.l(Addr Window(WZID(wzwinname)))
+  If *menuStrip AND winaddr
+    SetMenuStrip_ winaddr, *menuStrip
+  EndIf
+End Statement
+
+; Remove the menu and than close WZ window
+Statement WZ_CloseWindowAndRemoveMenu{wzwinname.s}
+  wzwinid.l = WZID(wzwinname)
+  *win.Window = Peek.l(Addr Window(wzwinid))
+  If *win
+    ClearMenuStrip_ *win
+    WZCloseWindow wzwinid
+  Else
+    log_Print{"WZ_CloseWindowAndRemoveMenu: Window [" + wzwinname + "] ist not open.",#log_warning}
+  EndIf
+End Statement
+
 Function.l PED_AllocMem{memsize.l}
 SHARED ped
   memptr.l = AllocPooled_(ped\mempool, memsize + 4)
@@ -1655,24 +1707,6 @@ SHARED ped
 End Function
 
 
-
-Function PED_GetConstantValue{constantName.s}
-SHARED *constantbase                                                                                                                                                                                                                                     
-  *cb.l = *constantbase
-  If *cb
-    cfound.b = False
-    While *cb AND NOT cfound
-      cname.s = Peek$(*cb + $13)
-      If cname = constantName
-        cfound = True
-      Else
-        *cb = Peek.l(*cb)
-      EndIf
-    Wend
-    If cfound Then Function Return Peek.l(*cb + 8)
-  EndIf
-End Function
-
 Function.b CheckChr{char$,table$}
   For i.b = 1 To FLen(table$)
     If char$ = Mid$(table$,i,1)
@@ -1793,6 +1827,468 @@ SHARED pedconfig
 End Function
 
 
+Macro IsIllegalChar
+  Peek.b(?chartab + `1)
+End Macro
+
+Function.l PED_GetNewtypeByName{newtypename.s}
+SHARED *newtypebase
+
+  *nt.l = 0
+
+  If *newtypebase = 0
+    error{"No newtypebase-Pointer available!"}
+  Else
+    newtypename = Trim$(newtypename)  
+    log_Print{"GetNewtypeByName [" + newtypename + "]"}  
+    *nt = Peek.l(*newtypebase)
+    While *nt AND NOT Peek.s(*nt + 11) = newtypename
+      *nt = Peek.l(*nt)
+    Wend
+  EndIf
+  Function Return *nt  
+
+End Function
+
+Function.l PED_GetVariableByName{varname.s}
+SHARED *varbase
+
+  *vb.l = 0
+
+  If *varbase = 0
+    error{"No varbase-Pointer available!"}
+  Else
+    varname = Trim$(StripLead$(varname, @"*"))
+    log_Print{"GetVariableByName [" + varname + "]"}
+    *vb.l = Peek.l(*varbase)
+    While *vb AND NOT Peek.s(*vb + $13) = varname
+      *vb = Peek.l(*vb)
+    Wend
+  EndIf
+  Function Return *vb
+  
+End Function
+
+
+Function.s PED_GetNewtypeOf{varname.s}
+  *var.l = PED_GetVariableByName{varname}
+  If *var
+    ntp.l = Peek.l(*var + 10)            ; get the newtype-pointer of that var
+    If ntp
+      Function Return Peek$(ntp + $b)    ; get the newtype-name of that var
+    End If
+  EndIf
+End Function
+
+
+
+Function.l PED_GetConstantByName{constname.s}
+SHARED *constantbase
+
+  *cb.l = 0
+
+  If *constantbase = 0
+    error{"No contantbase-Pointer available!"}
+  Else
+    log_Print{"GetConstantByName [" + constname + "]"}
+    *cb.l = Peek.l(*constantbase)
+    While *cb AND NOT Peek.s(*cb + $13) = constname
+      *cb = Peek.l(*cb)
+    Wend
+  EndIf
+  Function Return *cb
+  
+End Function
+
+Function.l PED_GetConstantValue{constname.s}
+  *cb.l = PED_GetConstantByName{constname.s}
+  If *cb
+    Function Return Peek.l(*cb + 8)
+  EndIf
+End Function
+
+
+
+Function.s PED_GetDefinitionOf{varname.s}
+SHARED ped
+  ; search all previous code if we can find a definition for the current varname
+  ; a definition may be a DEFTYPE-command or an indirect type definition by using the type extention at the first time
+
+  log_Print{"searching type for variable [" + varname + "]"}
+  If Trim$(varname)="" Then Function Return ""
+
+  typename.s = ""
+
+  *tempLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine\previousLine
+  While *tempLine
+    lineAddr.l = *tempLine + 9
+    lineStr.s = Peek.s(lineAddr)
+
+    runner.w = 0 : deftype_found.b = False
+    While Peek.b(lineAddr + runner) <> 0
+      actlong.l = Peek.l(lineAddr + runner)
+      actword.l = actlong LSR 16
+      ;log_Print{Hexw$(actword) + " " + Hexw$(#TOKEN_DEFTYPE)}
+      If actword = #TOKEN_DEFTYPE
+        log_Print{"DEFTYPE!"}
+        deftype_found = True
+        runner + 2
+      Else 
+        runner + 1
+      EndIf 
+                                                                                                                                                                                                                                                         
+      ; search for the first character of the varname in the current line
+      If Peek.b(lineAddr + runner) = Peek.b(&varname)
+        ;If runner - 10 > 0
+          ; check if variable has an "," or " "
+          If Peek.b(lineAddr + runner-1) = @"," OR Peek.b(lineAddr + runner-1) = @" "
+            If Peeks$(lineAddr + runner, FLen(varname)) = varname ;AND !IsIllegalChar{Peek.b(lineAddr + runner + FLen(varname) + 1)}
+
+              runner + FLen(varname)
+              While Peek.b(lineAddr + runner) = @" "
+                runner + 1
+              Wend
+              If deftype_found
+                runner.w = Instr(lineStr,".") - 1
+                If runner < 0
+                  error{"DEFTYPE without . found!"}
+                  Pop While : Goto move2nextline
+                EndIf
+              EndIf
+              If Peek.b(lineAddr + runner) = @"."
+                runner + 1
+                While !IsIllegalChar{Peek.b(lineAddr + runner)} = 0
+                  typename + Chr$(Peek.b(lineAddr + runner))
+                  runner + 1
+                Wend
+                Pop While : Pop While : Function Return typename
+              Else
+                Pop While : Goto move2nextline
+              EndIf
+            EndIf
+          EndIf
+        ;EndIf
+      EndIf
+    Wend
+    move2nextline:
+    *tempLine = *tempLine\previousLine
+  Wend
+End Function
+
+                                                                                                                                                                                                                                                         
+#DEFBROWSER_RESET = 0
+#DEFBROWSER_RESETTYPE = 1
+#DEFBROWSER_SELECTTYPE = 2
+#DEFBROWSER_LISTSUBTYPE = 3
+#DEFBROWSER_NEWTYPE = 10
+#DEFBROWSER_VARIABLE = 20
+#DEFBROWSER_CONSTANT = 30
+                                                                                                                                                                                                                                 
+Function.b PED_UpdateDefinitionBrowser{action.b, @defname.s,@openwin.b}
+SHARED *newtypebase, *varbase, *constantbase
+SHARED wtemp, ped, AB3Pen()
+SHARED lev, newtype_found, quicktype, pos$(), postype$()
+
+  log_Print{"UpdateDefinitionBrowser action [" + Str$(action) + "], string [" + Str$(defname) + "]"}
+
+  ;-- optionally open window if requested
+  If openwin = -1
+    If NOT WZ_IsOpen{"WIN_NEWTYPE"}
+      log_Print{"opening definitionbrowser."}
+      USEPATH wtemp
+      WZWindow WZID("WIN_NEWTYPE"),?wzgui,255,\type_x,\type_y,\type_w,\type_h,WZID("WIN_NEWTYPE")
+      WZ_AddMenuStrip{"WIN_NEWTYPE", ped\menuStrip}
+      If Peek.l(*varbase) = 0
+          WTitle "Compile the source to see all vars!"
+      EndIf
+      Gosub activatesourcewindow
+    EndIf
+  EndIf
+  If NOT WZ_IsOpen{"WIN_NEWTYPE"} Then Function Return False
+  Use Window WZID("WIN_NEWTYPE")
+
+  ;-- switch to correct view
+  If action = #DEFBROWSER_LISTSUBTYPE OR action = #DEFBROWSER_NEWTYPE OR action = #DEFBROWSER_SELECTTYPE
+    defmode.b = 2
+  EndIf
+  If action = #DEFBROWSER_CONSTANT Then defmode = 0
+  If action = #DEFBROWSER_VARIABLE Then defmode = 1
+  If action = #DEFBROWSER_RESET Then defmode = 0
+
+  If ped\definitionMode <> defmode OR ped\lastStructLevel <> lev
+    log_Print{"setting new definitionmode: " + Str$(defmode) + ", was " + Str$(ped\definitionMode)}
+    log_Print{"setting new structlevel: " + Str$(lev) + ", was " + Str$(ped\lastStructLevel)}
+    ped\lastStructLevel = lev
+
+    WZ_KillTable{"TYPETABLE"}
+    Use Window WZID("WIN_NEWTYPE")
+
+    Select defmode
+    Case 0
+      WZPrint "newtype_const",1
+      WZPrint "newtype_var",0
+      WZPrint "newtype_struct",0
+      WZ_InitTable{"WIN_NEWTYPE","TYPETABLE",2}
+      WZ_SetTableTitle{"TYPETABLE","Identifier","Value"}
+      WZ_SetTableColors{"TYPETABLE",1,0,1,0}
+      WZ_SetPriority{"TYPETABLE",2,1}
+      WZ_DrawTable{"TYPETABLE"}
+
+    Case 1
+      WZPrint "newtype_const",0
+      WZPrint "newtype_var",1
+      WZPrint "newtype_struct",0
+      WZ_InitTable{"WIN_NEWTYPE","TYPETABLE",2}
+      WZ_SetTableTitle{"TYPETABLE","Identifier","Value"}
+      WZ_SetTableColors{"TYPETABLE",1,0,1,0}
+      WZ_SetPriority{"TYPETABLE",2,1}
+      WZ_DrawTable{"TYPETABLE"}
+ 
+    Case 2
+      WZPrint "newtype_const",0
+      WZPrint "newtype_var",0
+      WZPrint "newtype_struct",1
+      If action  = #DEFBROWSER_RESETTYPE Then lev = 0
+      If lev = 0
+        WZ_InitTable{"WIN_NEWTYPE","TYPETABLE",1}
+        WZ_SetTableTitle{"TYPETABLE","Identifier"}
+        WZ_SetTableColors{"TYPETABLE",1,0,1,0}
+        WZ_DrawTable{"TYPETABLE"}
+      Else
+        WZ_InitTable{"WIN_NEWTYPE","TYPETABLE",3}
+        WZ_SetTableTitle{"TYPETABLE","Identifier","Type","Offset"}
+        WZ_SetTableColors{"TYPETABLE",1,0,1,0}
+        WZ_SetPriority{"TYPETABLE",3,2,2}
+        WZ_DrawTable{"TYPETABLE"}
+      EndIf
+    End Select
+
+    ped\definitionMode = defmode
+  EndIf
+  
+  ;WZPrint "NEWTYPE_ENTRY",&defname                                                                                                                                                                                                                      
+  If action = #DEFBROWSER_RESET Then defname = ""
+  If defname <> WZGetString("STRING2")
+    WZPrint "STRING2",&defname
+    If defmode = 2 Then action = #DEFBROWSER_SELECTTYPE
+  EndIf
+
+  If FLen(defname) > 2
+    InitArgParse defname
+    word1$ = NextArg$
+    word2$ = NextArg$
+  EndIf
+
+  Select defmode
+  Case 0 ; constantlist
+    WZ_ClearTable{"TYPETABLE"}
+
+    If word1$ <> ""
+      *cb.l = *constantbase
+      If *cb
+        *cb = Peek.l(*cb)
+        While *cb
+          a$ = Peek$(*cb + $13)
+          If Instr (a$,word1$)
+            If Instr(a$,word2$)
+              WZ_AddRow{"TYPETABLE",a$,"$" + Hex$(Peek.l(*cb + 8))}
+            EndIf
+          EndIf
+          *cb = Peek.l(*cb)
+        Wend
+      Else
+        error{"constantbase = NULL => GURU!!!"}
+      EndIf
+    EndIf
+
+    WZ_TableSort{"TYPETABLE",1}
+    WZ_UpdateTable{"TYPETABLE"}
+
+  Case 1 ; variableslist
+    WZ_ClearTable{"TYPETABLE"}
+    If *varbase
+      *vb.l = Peek.l(*varbase)
+      While *vb
+        a$ = Peek$(*vb + $13)
+        If Peek.w(*vb + 6) AND 2 Then arr$ = "()" Else arr$ = ""
+        If Peek.w(*vb + 6) AND 1 Then poin$ = "*" Else poin$ = ""
+        If Instr(a$,word1$)
+          If Instr(a$,word2$)
+            it.l = Peek.l(*vb + 10)
+            WZ_AddRow{"TYPETABLE",poin$ + a$ + arr$, Peek$(it + $b)}
+          EndIf
+        EndIf
+        *vb = Peek.l(*vb)
+      Wend
+    Else
+      error{"*varbase = NULL => GURU!!!"}
+    EndIf
+    WZ_TableSort{"TYPETABLE",1}
+    WZ_UpdateTable{"TYPETABLE"}
+
+  Case 2
+    Select action
+    Case #DEFBROWSER_RESETTYPE
+      WZ_ClearTable{"TYPETABLE"}
+      *nt.l = *newtypebase
+      If *nt
+        *nt = Peek.l(*nt)
+        While *nt
+          WZ_AddRow{"TYPETABLE", Peek.s(*nt + 11)}
+          *nt = Peek.l(*nt)
+        Wend
+      Else
+        error{"newtypebase = NULL => GURU!!!"}
+      EndIf
+
+    ;  WZ_TableSort{"TYPETABLE",1}
+      WZ_UpdateTable{"TYPETABLE"}
+
+
+    Case #DEFBROWSER_SELECTTYPE
+      If *newtypebase = 0
+        error{"newtypebase = NULL => GURU!!!"}    
+      Else
+        WZ_ClearTable{"TYPETABLE"}
+        *nt = *newtypebase
+        If lev
+          *nt = Peek.l(*nt)
+          While *nt
+            If Peek$(*nt + 11) = postype$(lev)
+              *nt3.l = Peek.l(*nt + 4)
+              While *nt3
+                If Peek.w(*nt3 + 6) = 1 Then b$ = "*" Else b$ = ""
+                b$ = b$ + Peek$(*nt3 + 15)
+                c$ = Peek$(Peek.l(*nt3 + 10) + 11)
+                ;If Instr(b$,word1$) Then If Instr(b$,word2$)
+                nt_value.w = Peek.w(*nt3+4)
+                nt_displayvalue.s = "$"+Right$(Hex$(nt_value),4) + "(" + Str$(nt_value) + ")"
+                ;nt_displayvalue.s = Str$(nt_value)
+                WZ_AddRow{"TYPETABLE",b$,c$,nt_displayvalue}
+                ;End If
+                b$ + "  ." + c$
+                *nt3 = Peek.l(*nt3)
+              Wend
+              *nt = 0 : Goto out2
+            EndIf
+            *nt = Peek.l(*nt)
+            out2        
+          Wend
+          WZ_TableSort{"TYPETABLE",3}
+        Else
+          *nt = Peek.l(*nt)
+          While *nt
+            b$ = Peek$(*nt + 11)
+            If Instr(b$,word1$) 
+              If Instr(b$,word2$)
+                WZ_AddRow{"TYPETABLE",b$,""}
+                newtype_found = newtype_found + 1
+                f$ = b$
+              EndIf
+            EndIf
+            *nt = Peek.l(*nt)
+          Wend
+          WZ_TableSort{"TYPETABLE",1}
+        EndIf
+        WZ_UpdateTable{"TYPETABLE"}    
+      EndIf
+
+      ; -- update selected entry gadget
+      ;a$ = ""
+      ;For i.w = 1 To lev
+      ;  If i > 1
+      ;      a$ = a$ + "\" + pos$(i)
+      ;  Else
+      ;      a$ = a$ + "." + pos$(i)
+      ;  EndIf
+      ;Next
+      ;typestr$ = a$
+      ;WZTags #WZRD_TEXTPEN,AB3Pen(#AB3_cnewtype)
+      ;WZPrint "NEWTYPE_ENTRY",&a$
+      ; --
+
+    Case #DEFBROWSER_LISTSUBTYPE
+      postype$(lev) = defname
+      If lev > 1
+        pos$(lev) = t$
+      Else
+        pos$(lev) = defname
+      EndIf
+      a$ = ""
+      For i.b = 1 To lev
+        If i > 1
+          a$ = a$ + "\" + pos$(i)
+        Else
+          a$ = a$ + "." + pos$(i)
+        EndIf
+      Next
+
+      typestr$ = a$
+      WZTags #WZRD_TEXTPEN,AB3Pen(#AB3_cnewtype)
+      WZPrint "NEWTYPE_ENTRY",&a$
+      WZ_ClearTable{"TYPETABLE"}
+      i = 0
+    ;  *nt = *nt2(lev)
+    ;  While *nt
+    ;    If Peek.w(*nt+6) = 1 Then a$ = "*" Else a$ = ""
+    ;    a$ = a$ + Peek$(*nt+15)
+    ;    c$ = Peek$(Peek.l(*nt+10)+11)
+    ;    WZ_AddRow{"TYPETABLE",a$,c$,"$" + Right$(Hex$(Peek.w(*nt+4)),4)}
+    ;    a$ = a$ + " ."+c$
+    ;    *nt = Peek.l(*nt)
+    ;    i = i + 1
+    ;  Wend
+
+      *nt = *newtypebase
+      If *nt
+        *nt = Peek.l(*nt)
+        Format ""
+        While *nt
+          b$ = Peek$(*nt + 11)
+          If postype$(lev) = b$
+            *nt3.l = Peek.l(*nt + 4)
+            While *nt3
+              If Peek.w(*nt3 + 6) = 1 Then b$ = "*" Else b$ = ""
+              b$ = b$ + Peek$(*nt3 + 15)
+              c$ = Peek$(Peek.l(*nt3 + 10) + 11)
+              ;If Instr(b$,word1$) Then If Instr(b$, word2$)
+              nt_value.w = Peek.w(*nt3 + 4)
+              nt_displayvalue.s = "$" + Right$(Hex$(nt_value),4) + "(" + Str$(nt_value) + ")"
+              WZ_AddRow{"TYPETABLE",b$,c$,nt_displayvalue}
+              ;End If
+              b$ + "  ." + c$
+              *nt3 = Peek.l(*nt3)
+            Wend
+          EndIf
+          *nt = Peek.l(*nt)
+        Wend 
+        WZ_TableSort{"TYPETABLE",3}
+        WZ_UpdateTable{"TYPETABLE"}
+      EndIf
+ 
+    End Select
+
+    ;lev.l = 0
+    ;newtype_found.l = 0
+    ;Gosub definitionbrowser_SelectType
+    ;lev = 1
+
+    ;*nt.l = *newtypebase
+    ;If *nt
+    ;  *nt = Peek.l(*nt)
+    ;  While *nt
+    ;    If Peek$(*nt + 11) = defname
+    ;      quicktype = 1 : Gosub definitionbrowser_ListSubType
+    ;      newtype_found = 1 : Pop If : Pop While : Goto f1ab
+    ;    EndIf
+    ;    *nt = Peek.l(*nt)
+    ;  Wend
+    ;EndIf 
+    ;quicktype = 0
+    ;f1ab:
+  End Select
+End Function
+
 Function.s PED_GetLibname{libnum.w}
   SHARED lib_mapping$()
   If libnum > 255 OR libnum < 0
@@ -1832,7 +2328,6 @@ Function.s PED_GetLibname{libnum.w}
   EndIf
 End Function
 
-
 Function.s PED_GetFirstTokenname{libnum.w}
   SHARED lib_mapping$()
   If libnum>255
@@ -1843,69 +2338,20 @@ Function.s PED_GetFirstTokenname{libnum.w}
 End Function
 
 
-Function.s PED_ParseText{strLine.s}
-  GetReg D0,&strLine : MOVE.l D0,-(a7)
-  !asm
-  MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
-  MOVEA.l comPtr_CurrentSourceLine,A4 : JSR parse_line
-  ;MOVE.l D5,-(a7)                     ; returns length of string in D5
-  !basic
-  ;MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
-  ;MOVE.l comPtr_Temp_TokenString1,D0 : PutReg D0,ptrTokenString1.l
-  ;result.s = Peeks$(Peek.l(ptrTokenString1),tmpd0)
-  result.s = ""
-  Function Return result
+Function.w FAST PED_GetToken{toknameptr.l}
+SHARED *tokenbase
+
+  *token.tokendata = *tokenbase
+  log_Print{"search for: " + Peek.s(toknameptr)}                                                                                                                                                                                                         
+  log_Print{".." + Peek.s(&*token\dat)}
+  While *token                                                                                                                                                                                                                                           
+
+    If Peek.s(toknameptr) = Peek.s(&*token\dat)                                                                                                                                                                                                          
+      Pop If : Pop While : Function Return *token\number
+    EndIf
+    *token = *token\next_token
+  Wend
 End Function
-
-
-
-Function.s PED_Detoke{*sourceLine.sourceLine}
-SHARED tmpDetokeStr.s
-
-  If *sourceLine = 0 Then Function Return ""
-
-  tmpDetokeStr = String$(Chr$(0),#MAX_Columns)
-  GetReg A0, *sourceLine + 9
-  GetReg A1, &tmpDetokeStr
-  MOVEM.l A0-a1,-(a7)
-  !asm
-  MOVEM.l (a7)+,A0-a1
-  JSR detokenize_line   ;input A0: tokenized string; returns A1: detokenized string
-  !basic
-  result.s = Peek.s(&tmpDetokeStr)
-  Function Return result
-End Function
-
-Function.s PED_DetokeText{strLine.s}
-SHARED tmpDetokeStr.s
-
-  If strLine = "" Then Function Return ""
-
-  tmpDetokeStr = String$(Chr$(0),#MAX_Columns)
-  GetReg A0, &strLine
-  GetReg A1, &tmpDetokeStr
-  MOVEM.l A0-a1,-(a7)
-  !asm
-  MOVEM.l (a7)+,A0-a1
-  JSR detokenize_line   ;input A0: tokenized string; returns A1: detokenized string
-  !basic
-  result.s = Peek.s(&tmpDetokeStr)
-  Function Return result
-End Function
-
-Function.s PED_DetokenizeText{strLine.s}
-SHARED ped,*PreProcessor
-
-  If ped\DoTokenize
-    MaxLen linebuff$ = 256
-    preproc_Detokenize{*PreProcessor,&strline$,&linebuff$,FLen(strline$)}
-    strLine = Peek.s(&linebuff$)
-  EndIf
-
-  Function Return strLine
-
-End Function
-
 
 Function.s PED_GetTokenName{tokenNumber.l}
 SHARED *tokenbase
@@ -1995,19 +2441,58 @@ Function.b PED_CheckForClassicToken{_token.l}
 End Function
 
 
-Function.s PED_TokenizeText{strLine.s}
-SHARED ped,*PreProcessor
-
-  If ped\DoTokenize
-    MaxLen linebuff$ = 256
-    preproc_Tokenize{*PreProcessor,&strLine.s,&linebuff$,FLen(strLine)}
-    strLine.s = Peek.s(&linebuff$)
-  Else
-    log_Print{"PED_TokenizeText: tokenization turned off"}
-  EndIf
-
-  Function Return strLine
+Function.s PED_ParseText{strLine.s}
+  GetReg D0,&strLine : MOVE.l D0,-(a7)
+  !asm
+  MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
+  MOVEA.l comPtr_CurrentSourceLine,A4 : JSR parse_line
+  ;MOVE.l D5,-(a7)                     ; returns length of string in D5
+  !basic
+  ;MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
+  ;MOVE.l comPtr_Temp_TokenString1,D0 : PutReg D0,ptrTokenString1.l
+  ;result.s = Peeks$(Peek.l(ptrTokenString1),tmpd0)
+  result.s = ""
+  Function Return result
 End Function
+
+
+Function.s PED_DetokeText{strLine.s}
+SHARED ped, tmpDetokeStr.s
+
+  If strLine = "" Then Function Return ""
+ 
+  _strLen.w = FLen(strLine)
+  If _strLen
+    tmpDetokeStr = "" ;String$(Chr$(0),#MAX_Columns)  
+
+    If Peek.b(?noDetokenizing)
+      tmpDetokeStr = strLine
+    Else
+      ped\inString = False
+      For i.w = 0 To _strLen - 1
+        curChar.b  = Peek.b(&strLine +  i)
+        If curChar = $22 Then ped\inString = NOT ped\inString
+        If ped\inString = 0 AND (curChar < 0)
+          _token.l = Peek.w(&strLine + i)
+          _tokname.s = PED_GetTokenName{_token}
+          tmpDetokeStr + _tokname
+          i + 1
+        Else
+          tmpDetokeStr + Chr$(curChar)
+        EndIf
+      Next i      
+    EndIf
+  EndIf
+  ;log_Print{">>" + tmpDetokeStr}
+  Function Return tmpDetokeStr
+End Function
+
+Function.s PED_Detoke{*sourceLine.sourceLine}
+  If *sourceLine = 0 Then Function Return ""
+  Function Return PED_DetokeText{Peek.s(*sourceLine + 9)}
+End Function
+
+
 
 Function.b PED_Detokenize2Textbuffer{ptrOrgString.l}
 SHARED ped
@@ -2048,6 +2533,34 @@ End Function
 
 
 
+
+Function.s PED_DetokenizeText{strLine.s}
+SHARED ped,*PreProcessor
+
+  If ped\DoTokenize
+    MaxLen linebuff$ = 256
+    preproc_Detokenize{*PreProcessor,&strline$,&linebuff$,FLen(strline$)}
+    strLine = Peek.s(&linebuff$)
+  EndIf
+
+  Function Return strLine
+
+End Function
+
+
+Function.s PED_TokenizeText{strLine.s}
+SHARED ped,*PreProcessor
+
+  If ped\DoTokenize
+    MaxLen linebuff$ = 256
+    preproc_Tokenize{*PreProcessor,&strLine.s,&linebuff$,FLen(strLine)}
+    strLine.s = Peek.s(&linebuff$)
+  Else
+    log_Print{"PED_TokenizeText: tokenization turned off"}
+  EndIf
+
+  Function Return strLine
+End Function
 
 
 NEWTYPE .HelpIndexCacheItem
@@ -2203,12 +2716,14 @@ Function.s PED_GetIncludeName{tname$}
 End Function
 
 
-Function.s PED_GetMacroHelp{macrobase.l,macname.s}
+Function.s PED_GetMacroHelp{macname.s}
+SHARED *macrobase                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                         
   macfound.b = False
   maccounter.l = 0
   mname.s = StripLead$(StrLower(macname),@"!")
 
-  *mpointer.b = macrobase
+  *mpointer.b = *macrobase
   Repeat
     result.s = Peek$(*mpointer + 13)
     If StrLower(result) = macname
@@ -2226,12 +2741,13 @@ Function.s PED_GetMacroHelp{macrobase.l,macname.s}
 End Function
 
 
-Function.s PED_GetMacroName{macrobase.l,macname.s}
+Function.s PED_GetMacroName{macname.s}
+SHARED *macrobase
   macfound.b = False
   maccounter.l = 0
   macname.s = StripLead$(StrLower(macname.s),@"!")
 
-  *mpointer.b = macrobase
+  *mpointer.b = *macrobase
   Repeat
     result.s = Peek.s(*mpointer + 13)
     If StrLower(result) = macname.s
@@ -2241,6 +2757,56 @@ Function.s PED_GetMacroName{macrobase.l,macname.s}
   Until *mpointer = 0
   Function Return ""
 End Function
+
+Function.s PED_GetHelptextFor{tokname$}
+                                                                                                                                                                                                                                         
+  If Left$(tokname$,1) = "!"
+
+    tokname$ = PED_GetMacroName{tokname$}
+;    tokhelp$ = PED_GetMacroHelp{tokname$}
+    tokexte$ = "Macro"
+  Else
+    tokid.w = PED_GetTokenID{tokname$}
+    If tokid >= 0
+      tokname$ = PED_GetTokenName{tokid}
+      libnum.l = PED_GetTokenLibnum{tokname$}
+      If libnum>=0
+        tokhelp$ = PED_GetTokenHelp{tokname$}
+        tokexte$ = "BlitzLib: " + PED_GetLibname{libnum}
+      End If
+    Else
+      tokname$ = PED_GetIncludeFunction{tokname$}
+      If tokname$<>""
+        tokhelp$ = PED_GetIncludeHelp{tokname$}
+        tokexte$ = "Include: " + PED_GetIncludeName{tokname$}
+      End If
+    End If
+  End If
+
+  strhelp$ = tokname$
+  If tokhelp$ <> "" Then strhelp$ + " " + tokhelp$
+  If tokexte$ <> "" Then strhelp$ + " | " + tokexte$
+
+  Function Return strhelp$
+End Function
+
+                                                                                                                                                                                                                                                         
+Function.b PED_ShowHelptextFor{tokname.s}
+  log_Print{"ShowHelpTextFor{}"}
+
+  result.b = False
+  If tokname <> ""
+    strhelp.s =  PED_GetHelptextFor{tokname}
+    If FLen(strhelp) < 3
+      PED_ShowMessage{""}                                                                                                                                                                                                                                
+    Else
+      PED_ShowMessage{strhelp}                                                                                                                                                                                                                           
+      result.b = True
+    EndIf
+  EndIf                                                                                                                                                                                                                                                  
+  Function Return result
+End Function
+
 
 
 Statement PED_PrintTextStandard{*textaddr.l, tx.w, ty.w}
@@ -3795,7 +4361,7 @@ Statement savewinpref{layoutNum.l}
   \short_on = 0
   \activewin = 0
 
-  If WZ_CheckOpen{"WIN_LIBRARYBROWSER"}
+  If WZ_IsOpen{"WIN_LIBRARYBROWSER"}
      Use Window WZID("WIN_LIBRARYBROWSER")
      \lbrowser_x  = WindowX
      \lbrowser_y  = WindowY
@@ -3803,7 +4369,7 @@ Statement savewinpref{layoutNum.l}
      \lbrowser_h  = WindowHeight
      \lbrowser_on = 1
   End If
-  If WZ_CheckOpen{"WIN_INSTRUCTIONBROWSER"}
+  If WZ_IsOpen{"WIN_INSTRUCTIONBROWSER"}
      Use Window WZID("WIN_INSTRUCTIONBROWSER")
      \ibrowser_x  = WindowX
      \ibrowser_y  = WindowY
@@ -3811,7 +4377,7 @@ Statement savewinpref{layoutNum.l}
      \ibrowser_h  = WindowHeight
      \ibrowser_on = 1
   End If
-  If WZ_CheckOpen{"WIN_NEWTYPE"}
+  If WZ_IsOpen{"WIN_NEWTYPE"}
      Use Window WZID("WIN_NEWTYPE")
      \type_x  = WindowX
      \type_y  = WindowY
@@ -3819,7 +4385,7 @@ Statement savewinpref{layoutNum.l}
      \type_h  = WindowHeight
      \type_on = 1
   End If
-  If WZ_CheckOpen{"WIN_HELPDIAG"}
+  If WZ_IsOpen{"WIN_HELPDIAG"}
      Use Window WZID("WIN_HELPDIAG")
      \diag_x  = WindowX
      \diag_y  = WindowY
@@ -3827,7 +4393,7 @@ Statement savewinpref{layoutNum.l}
      \diag_h  = WindowHeight
      \diag_on = 1
   End If
-  If WZ_CheckOpen{"WIN_LABELS"}
+  If WZ_IsOpen{"WIN_LABELS"}
      Use Window WZID("WIN_LABELS")
      \click_x  = WindowX
      \click_y  = WindowY
@@ -3835,7 +4401,7 @@ Statement savewinpref{layoutNum.l}
      \click_h  = WindowHeight
      \click_on = 1
   End If
-  If WZ_CheckOpen{"WIN_SHORTCUTS"}
+  If WZ_IsOpen{"WIN_SHORTCUTS"}
      Use Window WZID("WIN_SHORTCUTS")
      \short_x  = WindowX
      \short_y  = WindowY
@@ -4234,47 +4800,6 @@ Function.l AutoLayout{*wprefs.winprefs,mode.l}
   Function Return True
 End Function
 
-
-Statement CloseAllWZWindows{}                    ; made a Statement to close all (used) Wizard Windows to remove double code  tomsmart1
-  Gosub close_contexthelp
-  Gosub close_popupwindow
-  WZ_HideHelp{}                                  ; added because it used for the wz_contexthelp
-  Gosub kill_menus                               ; moved in that everytime tis statment are called the menues are detached fom the wz windows  tomsmart1
-  ; windows with menu added
-  WZCloseWindow WZID("WIN_INSTRUCTIONBROWSER")
-  WZCloseWindow WZID("WIN_NEWTYPE")
-  WZCloseWindow WZID("WIN_LABELS")
-  WZCloseWindow WZID("WIN_LIBRARYBROWSER")
-  WZCloseWindow WZID("WIN_SEARCH")
-  WZCloseWindow WZID("WIN_SHORTCUTS")
-  WZCloseWindow WZID("WIN_HELPDIAG")
-  ; windows with no menu added
-  WZCloseWindow WZID("WIN_HELP")
-  WZCloseWindow WZID("WIN_SETTINGS")
-End Statement
-
-
-; Added the menu to the open WZ window
-Statement WZ_AddMenuStrip{wzwinname.s, *menuStrip.Menu}
-  winaddr.l = Peek.l(Addr Window(WZID(wzwinname)))
-  If *menuStrip AND winaddr
-    SetMenuStrip_ winaddr, *menuStrip
-  EndIf
-End Statement
-
-; Remove the menu and than close WZ window
-Statement WZ_CloseWindowAndRemoveMenu{wzwinname.s}
-  wzwinid.l = WZID(wzwinname)
-  *win.Window = Peek.l(Addr Window(wzwinid))
-  If *win
-    ClearMenuStrip_ *win
-    WZCloseWindow wzwinid
-  Else
-    log_Print{"WZ_CloseWindowAndRemoveMenu: Window [" + wzwinname + "] ist not open.",#log_warning}
-  EndIf
-End Statement
-
-
 Function.l PED_CheckSourceAlreadyOpen{fname.s}
 SHARED ped
 
@@ -4453,14 +4978,15 @@ If tedy <> @"TEDY"
 EndIf
 
 ; -- copy received teddata of compiler in A1 to local data structures
-Poke.l ?comPtr_TokenBase        , Peek.l(teddata)     : *tokenbase = Peek.l(?comPtr_TokenBase)
+Poke.l ?comPtr_TokenBase        , Peek.l(teddata)     
 Poke.l ?comFunc_ReadXtraFile    , Peek.l(teddata+4)
 Poke.l ?comFunc_WriteXtraFile   , Peek.l(teddata+8)
 Poke.l ?comFunc_CallMenuEntry   , Peek.l(teddata+12)
 Poke.l ?comByte_ColonIdentifier , Peek.l(teddata+16)
+*tokenbase = Peek.l(?comPtr_TokenBase)
+*macrobase = Peek.l(?comPtr_MacroBase)
 *newtypebase = Peek.l(teddata+20)
 *constantbase = Peek.l(teddata+24)
-
 
 ; skip simple newtypes b,w,l,q,s
 For _nt.b = 1 To 5
@@ -4514,18 +5040,18 @@ MOVE.w #0101,1(a0)
 MOVE.b #1,$20(a0)
  
 ; -- setting comdatas
-!ComData_LEA{comFunc_ErrorRequest           ,A0}        : MOVE.l #show_errorrequester         ,(A0) ;$0C
-!ComData_LEA{comFunc_DebugTrap              ,A0}        : MOVE.l #com_0_44E2                  ,(A0) ;$38
-!ComData_LEA{comFunc_OpenConsole            ,A0}        : MOVE.l #console_open                ,(A0) ;$3C
-!ComData_LEA{comFunc_CloseConsole           ,A0}        : MOVE.l #console_close               ,(A0) ;$40
-!ComData_LEA{comFunc_LogPrint               ,A0}        : MOVE.l #log_print                   ,(A0) ;$44
-!ComData_LEA{comFunc_DetokenizeLine         ,A0}        : MOVE.l #detokenize_line             ,(A0) ;$64
+!ComData_LEA{comFunc_ErrorRequest           ,A0}        : MOVE.l #com_showErrorRequest        ,(A0) ;$0C
+!ComData_LEA{comFunc_DebugTrap              ,A0}        : MOVE.l #com_debugTrap               ,(A0) ;$38
+!ComData_LEA{comFunc_OpenConsole            ,A0}        : MOVE.l #com_consoleOpen             ,(A0) ;$3C
+!ComData_LEA{comFunc_CloseConsole           ,A0}        : MOVE.l #com_consoleClose            ,(A0) ;$40
+!ComData_LEA{comFunc_LogPrint               ,A0}        : MOVE.l #com_logPrint                ,(A0) ;$44
+!ComData_LEA{comFunc_DetokenizeLine         ,A0}        : MOVE.l #com_detokenizeLine          ,(A0) ;$64
 !ComData_LEA{comPtr_SourceDir               ,A0}        : MOVE.l #comStr_SourceDir            ,(A0) ;$68
 !ComData_LEA{comPtr_SourceName              ,A0}        : MOVE.l #comStr_SourceName           ,(A0) ;$6C
 !ComData_SetL{comFunc_CloseGUI              ,#close_gui}
 !ComData_SetL{comFunc_CreateGUI             ,#create_whole_gui}
 !ComData_SetL{comData_Magic                 ,##MagicIdentifier_Long}
-!ComData_SetL{comFunc_UpdateCompileStatusWin,#Update_CompileStatus_Window}
+!ComData_SetL{comFunc_UpdateCompileStatusWin,#com_updateCompileWindow}
 
  
 ;****************** ted.library is only needed for sharing comdata with the Debugger!
@@ -4786,14 +5312,6 @@ If ende Then Goto abnormal_exit
      pedconfig\use_wbscreen = True  ; we use WBScreen if no Screen Tooltype is set
   EndIf
 
-  MaxLen str2$   = 4096   ; this is important since Honitos used some string pointers, that might be empty
-  MaxLen cstr$   = 4096   ; pointers to empty string might be NULL, that's why!
-  MaxLen cstr2$  = 4096   ; pointers to empty string might be NULL, that's why!
-  MaxLen str2b$  = 4096
-  str2$          = ""
-  cstr$          = ""
-  cstr2$         = ""
-  str2b$         = ""
   project_changelog$ = ""
   find_strold.s    = ""                                                                                                                                                                                                                                  
   find_replaceStrOld.s = ""                                                                                                                                                                                                                              
@@ -4893,7 +5411,7 @@ If ende Then Goto abnormal_exit
   EndIf
 
   ; settings for type browser
-  ped\newtype_mode = 0
+  ped\definitionMode = -1
 
 
   !log_AvailMem{"after tooltypes"}
@@ -5129,7 +5647,7 @@ exit_PED_closelibraries:
 
   !asm
   !exitasm             ; exitasm jumps into basic mode
-  Gosub coutclose      ; move to the real end  tomsmart1
+  !coutclose
 End
 
 ; ----------------------------------- END OF MAINPROGRAM ------------------------------------------
@@ -5147,6 +5665,7 @@ End
 ; ---------------------------------- THIS IS THE MAINLOOP -----------------------------------------
 .main_loop:
   exit_mainloop.b = False
+
   While NOT exit_mainloop
     ped\LabelListChanged = False
     sourceWindow\redrawFlag = False
@@ -5176,11 +5695,12 @@ End
       PED_PreparseTextLine{lineaddr}
       
       ; -- parse the current line
-      newline$ = Peeks$(lineaddr,#MAX_Columns-1)
+      newline$ = Peeks$(lineaddr,#MAX_Columns)
       newline$ = PED_ParseText{newline$}
 
       newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
       newline$ = StripTrail$(newline$,@" ")
+      ;log_Print{"len: " + Str$(FLen(newline$))}
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
       PED_ReplaceCurrentSourceLine{*newLine}
 
@@ -6763,18 +7283,17 @@ Return
   LabelList_FirstVisableItemNumber.l = Peek.l(?comLong_Label1VisableItem)  ;  set/restore the first visable entry of the labellist  tomsmart1
   LabelList_PreSelectItemNumber.l    = -1          ; set the preselected labellist entry to -1 because we don't save/store it. ; change from 0 to -1 so not the first entry was preselect  tomsmart1
 
-  If WZ_CheckOpen{"WIN_LABELS"}
+  If WZ_IsOpen{"WIN_LABELS"}
     Use Window WZID("WIN_LABELS")
     WZPrint "STRING_LABEL",LabelListSearchString
-    WZPrint "case"         ,Peek.w(?comWord_LabelCase)
+    WZPrint "case"        ,Peek.w(?comWord_LabelCase)
     WZPrint "rem"         ,Peek.w(?comWord_LabelRemark)
     WZPrint "all"         ,Peek.w(?comWord_LabelAll)
     WZListRemove lib_list.List
     WZPrint "LIBRARY_LIST",0,lib_list
   EndIf
-  If WZ_CheckOpen{"WIN_NEWTYPE"}
-    Use Window WZID("WIN_NEWTYPE")
-    Gosub newtype_updatelist
+  If WZ_IsOpen{"WIN_NEWTYPE"}
+    PED_UpdateDefinitionBrowser{#DEFBROWSER_RESET}
   End If
 Return
 
@@ -6782,15 +7301,14 @@ Return
 .analyze_loadedsource:
   log_Print{"analyze_loadedsource"}
 
+  sourceWindow\Title = "unnamed"
+  If pedconfig\smart_tokenization Then ped\DoTokenize = $FFFF
+
   ped\currentDir = Peek.s(&ped\ptrCurrentSourceData\CurrentDir)
   ped\currentFile = Peek.s(&ped\ptrCurrentSourceData\SourceName)
   ped\sourceFileComplete = dos_AddPart{ped\currentDir,ped\currentFile}
 
-  ;sourceWindow\Title = ""
-  If ped\currentFile = ""
-    sourceWindow\Title = "unnamed"
-    If pedconfig\smart_tokenization Then ped\DoTokenize = $FFFF
-  Else
+  If ped\currentFile <> ""
     sourceWindow\Title = ped\currentFile + " (" + ped\currentDir + ")"
 
     ; -- check extension
@@ -7034,7 +7552,7 @@ Return
         log_Print{"write as text: writing text line-by-line to file"}
         Repeat
           strLine.s = ""
-          strLength.l = *tempLine\strLength - 1
+          strLength.w = *tempLine\strLength - 1
           If strLength > 0 Then strLine.s = Peeks$(*tempLine + 9, strLength)
           ;log_Print{"writing [" + Str$(FLen(strLine))+ "]: [" + strLine + "]"}
           strLine + Chr$(10)
@@ -7062,14 +7580,14 @@ Return
     *tempLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
     Repeat
       baseptr.l = *tempLine + 9
-      linelength.l = *tempLine\strLength
+      strLength.w = *tempLine\strLength
 
       If ped\DoTokenize = 0
-        strLine$ = Peeks$(baseptr,linelength) + Chr$(10)
+        strLine$ = Peeks$(baseptr,strLength) + Chr$(10)
       Else
-        strLine$ = Peeks$(baseptr,linelength)
+        strLine$ = Peeks$(baseptr,strLength)
       EndIf
-      ;log_Print{Str$(linelength) + " >> " + strLine$}
+      ;log_Print{Str$(strLength) + " >> " + strLine$}
       Write_ *write_fh, &strLine$, FLen(strLine$)
       *tempLine = *tempLine\nextLine
     Until *tempLine = 0
@@ -7136,7 +7654,7 @@ Even
     find_findStrOld.s = actualword$
   EndIf
 
-  If WZ_CheckOpen{"WIN_SEARCH"} = False
+  If WZ_IsOpen{"WIN_SEARCH"} = False
     WZWindow WZID("WIN_SEARCH"),?wzgui,128,-2,-2,-2,-2,WZID("WIN_SEARCH")
     WZ_AddMenuStrip{"WIN_SEARCH",ped\menuStrip}
     Delay_ 2
@@ -8039,7 +8557,7 @@ Return
   ;log_Print{"length of restline: " + Str$(Len(restString))}
 
   ;-- update current line
-  strline$ = Peeks$(lineaddr,#MAX_Columns-1)
+  strline$ = Peeks$(lineaddr,#MAX_Columns)
   strline$ = PED_ParseText{strline$}
   strline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
   *newLine.sourceLine = PED_CreateNewSourceLine{strline$}
@@ -8170,7 +8688,7 @@ Return
     Gosub set_pointer_normal
 
   Case #MENU_DEFINITIONBROWSER
-    Gosub open_newtype
+    Gosub open_definitionbrowser
 
   Case #MENU_SETCLIARGS
     Gosub set_pointer_busy
@@ -8180,15 +8698,15 @@ Return
     Gosub set_pointer_normal
 
   Case #MENU_SOURCEBROWSER
-    Gosub open_labelwindow
+    Gosub open_sourcebrowser
 
   Case #MENU_COMPILERSETTINGS
     Gosub set_pointer_busy
     WZ_LockAllOpenWindows{}                                                                                                                                                                                                                              
     Gosub menu_compilersettings
-    If WZ_CheckOpen{"WIN_NEWTYPE"}
+    If WZ_IsOpen{"WIN_NEWTYPE"}
        Use Window WZID("WIN_NEWTYPE")
-       Gosub newtype_updatelist
+       PED_UpdateDefinitionBrowser{#DEFBROWSER_RESET}
     End If
     WZ_UnlockAllOpenWindows{}                                                                                                                                                                                                                            
     Gosub update_debuggertoggle
@@ -8277,9 +8795,9 @@ Return
   MOVE.l (a7)+,D0
   compile_state.l = PutD0                                  ; get the return code of compiler
 
-  Delay_ 10                                                ; without wating we get s serious crash, dont know why!!
+  Delay_ 10                                                ; without waiting we get s serious crash, dont know why!!
 
-  Gosub update_debuggertoggle                              ; set the state to the commenu "Create Debug Code"
+  Gosub update_debuggertoggle                              ; update the state to the commenu "Create Debug Code"
 
   previoussearch_instruction$ = "|"
 
@@ -8860,8 +9378,8 @@ Return
         log_Print{"write ab2: writing text line-by-line to file"}
         Repeat
           baseptr.l = *tempLine + 9
-          linelength.l = Peek.b(baseptr + 8) - 1
-          strLine$ = Peeks$(baseptr,linelength) + Chr$(10)
+          strLength.w = Peek.b(baseptr + 8) - 1
+          strLine$ = Peeks$(baseptr,strLength) + Chr$(10)
           Write_ *write_fh, &strLine$, Len(strLine$)
           *tempLine = *tempLine\nextLine
         Until *tempLine = 0
@@ -9130,7 +9648,7 @@ Return
   storeCurrentSourceLine.l = ped\ptrCurrentSourceData\CurrentSourceLine
 
   ;log_Print{"initial block draw"}
-  Poke.w ?comWord__AL_0_86B8, 0
+  Poke.w ?comWord__QuoteFlag, 0
   storeX.w = mousePos\textX + ped\ptrCurrentSourceData\ColumnsOffset
   storeY.l = mousePos\textY
 
@@ -9313,7 +9831,7 @@ Return
       If ped\ptrCurrentSourceData\LinePosEndY <= ped\ptrCurrentSourceData\LinePosStartY
         ;log_Print{"lineposendy < lineposstarty " + Str$(storeY)}
         If (ped\ptrCurrentSourceData\LinePosEndX => ped\ptrCurrentSourceData\LinePosStartX) OR (ped\ptrCurrentSourceData\LinePosEndY = ped\ptrCurrentSourceData\LinePosStartY)
-          If Peek.w(?comWord__AL_0_86B8) = 0
+          If Peek.w(?comWord__QuoteFlag) = 0
             bmark\xMin = storeX
             bmark\yMin = storeY
             bmark\xMax = tmpX
@@ -9331,7 +9849,7 @@ Return
       Else
         other_path:
         ;log_Print{"lineposendy > lineposstarty"}
-        If Peek.w(?comWord__AL_0_86B8) = 0
+        If Peek.w(?comWord__QuoteFlag) = 0
           bmark\xMin = storeX
           bmark\yMin = storeY
           bmark\xMax = tmpX
@@ -9347,7 +9865,7 @@ Return
 
       ;------------------------------------------------------------------------
       log_Print{"mouseclick in same line"}
-      Poke.w ?comWord__AL_0_86B8, NOT Peek.w(?comWord__AL_0_86B8)
+      Poke.w ?comWord__QuoteFlag, NOT Peek.w(?comWord__QuoteFlag)
 
       bmark\xMax = storeX
       bmark\yMax = storeY
@@ -9565,12 +10083,17 @@ Return
   Execute_ &exe,0,0
 Return
 
+;================================================================================================================================
+;=                                                                                                                              =
+;=                   functions to be called by compiler or other programs                                                       =
+;=                                                                                                                              =
+;================================================================================================================================
 CLI_input_stream:  Ds.l 1
 CLI_output_stream: Ds.l 1
 CLI_output_file:   Ds.l 1
 Even
 
-.console_open:
+.com_consoleOpen:
   MOVEM.l A2-A3,-(A7)
 
   SUBA.l A1,A1
@@ -9645,7 +10168,7 @@ Even
   MOVEM.l (A7)+,A2-A3
 RTS
 
-.console_close:
+.com_consoleClose:
   SUBA.l A1,A1
   MOVEA.l _execbase,A6
   JSR _FindTask(A6)
@@ -9686,7 +10209,7 @@ RTS
   !asm
 RTS
 
-.log_print: ;A1: pointer to string, D0: optional value
+.com_logPrint: ;A1: pointer to string, D0: optional value
  MOVEM.l a1/d0-d2,-(a7)
  !basic
  MOVEM.l (a7)+,a1/d0-d2
@@ -9708,7 +10231,7 @@ RTS
 RTS
 
 
-.com_0_44E2:
+.com_debugTrap:
   MOVEA.l A0,A2
   MOVEQ.l #$00,D1
 
@@ -9719,77 +10242,673 @@ RTS
 
   MOVEA.l A2,A1
   SUBQ.w #1,D1
-  BPL.w JUMP_tokenizeA1
+  BPL.w JUMP_tokenizeToA1
 RTS
 
-JUMP_tokenizeA1:
-JMP tokenizeA1
+JUMP_tokenizeToA1:
+JMP tokenizeToA1
+
+                                                                                                                                                                                                                                                        
+.com_detokenizeLine:
+  !regs2stack
+  !basic
+  MOVE.l (a7)+,D0 : *strptr.l = PutD0                                                                                                                                                                                                                    
+  MOVE.l (a7)+,D0 : *destptr.l = PutD0
+  tmp_string.s = PED_DetokeText{Peek.s(*strptr)}
+  For i = 0 To FLen(tmp_string) - 1
+      Poke.b *destptr + i, Peek.b(&tmp_string + i)
+  Next i
+  !asm                                                                                                                                                                                                                                                   
+  !stack2regs
+RTS
 
 
-;TokenizeSource:
-;  MOVE.w comWord_DoTokenize,D0
-;  BNE.w JUMP_setpointer_to_normal
-;
-;  NOT.w comWord_DoTokenize
-;  MOVEA.l comPtr_FirstSourceLine,A4
-;  MOVE.l comLong_TotalLines,-(A7)
-;
-; JL_0_450E:
-;    MOVEQ.l #$00,D1
-;    MOVE.b $8(A4),D1
-;    SUBQ.w #1,D1
-;    BMI.w JL_0_4530
-;      LEA $9(A4),A2
-;      MOVEA.l comPtr_Temp_TokenString1,A1
-;      JSR tokenizeA1
-;      MOVE.l A4,comPtr_CurrentSourceLine
-;      JSR replaceCurrentLine
-;    JL_0_4530:
-;    MOVEA.l (A4),A4
-;    SUBQ.w #1,(A7)
-;  BNE.b JL_0_450E
-;
-;  ADDQ.w #2,A7
-;BRA.w JL_0_458E
-;
-;
-;DetokenizeSource:
-;  MOVE.w comWord_DoTokenize,D0
-;   BEQ.w JUMP_setpointer_to_normal
-;  CLR.w comWord_DoTokenize
-;
-; JL_0_454C:
-;  MOVEA.l comPtr_FirstSourceLine,A4
-;  MOVE.l comLong_TotalLines,-(A7)
-;
-; JL_0_4554:
-;    LEA $9(A4),A0
-;    MOVEA.l comPtr_Temp_TokenString1,A1
-;    JSR detokenize_line
-;    SUBA.l comPtr_Temp_TokenString1,A1
-;    ADDQ.w #1,A1
-;    MOVE.l A1,D5
-;    MOVE.l A4,comPtr_CurrentSourceLine
-;    JSR replaceCurrentLine
-;    MOVEA.l (A4),A4
-;    SUBQ.w #1,(A7)
-;  BNE.b JL_0_4554
-;  ADDQ.w #2,A7
-;RTS
-;
-;
-;JL_0_457C:
-;  MOVE.w comWord_DoTokenize,D0
-;   BEQ.w JUMP_setpointer_to_normal
-;  CLR.w comWord_DoTokenize
-;  BSR.b JL_0_454C
-;
-; JL_0_458E:
-;  Gosub update_currsourceline
-;JMP _redraw
-;
-JUMP_setpointer_to_normal:
-JMP setpointer_to_normal
+.com_showErrorRequest:  ; A0: ptr to Errortext,            only to be called by compiler
+                       ; A5: ptr current sourceline
+                       ; A6: "INLN" if in INCLUDE
+                       ; D7: includeline
+  !regs2stack
+  !basic
+  fid.l = file_Open{dos_AddPart{pedconfig\systemDir,"ab_compileerror.txt"},#file_read}
+  If fid <> -1
+    error_type.s  = StrRight(file_ReadLine{fid},-8)
+    error_code.s  = StrRight(file_ReadLine{fid},-8)    
+    error_line.s  = StrRight(file_ReadLine{fid},-8)  
+    error_lineptr.s=StrRight(file_ReadLine{fid},-8)
+    error_cause1.s = StrRight(file_ReadLine{fid},-8)
+    error_cause2.s = StrRight(file_ReadLine{fid},-8)
+    error_source.s = StrRight(file_ReadLine{fid},-8)
+    error_libnum.s = StrRight(file_ReadLine{fid},-8)
+    error_incname.s = StrRight(file_ReadLine{fid},-8)
+    error_incline.s = StrRight(file_ReadLine{fid},-8)
+    compilestatus.s = StrRight(file_ReadLine{fid},-8)
+    file_Close{fid}
+
+    If error_incname <> "none"              ; open source file with error
+      If Exists (error_incname)
+        log_Print{"Error in include ["+ error_incname + "], opening it and jumping to errorline ["+ error_incline + "]..."}
+        !PED_LoadSource{error_incname,False,True,True}
+        PED_GotoLine{Val(error_incline)-1,#LINE_END}
+        PED_UpdateStatusArea{#STATUS_REDRAW}
+      End If
+    End If
+  Else
+    error_line$ = ""
+  End If
+
+  ; building the inforequester:
+  If error_line <> ""
+    msg$ = !TRANS{Replace$(error_type,"\n","\\n")} + "\\n"
+
+    If error_incname <> "none"
+      msg$ + "Include " + !TRANS{"file"} + ": " + error_incname + "\\n"
+      msg$ + "Include " + !TRANS{"line"} + ": " + error_incline + " - " + !TRANS{"Source line"} + ": " + error_line
+    Else
+      msg$ + !TRANS{"Source line"} + ": " + error_line
+    EndIf
+                                                                                                                                                                                                                                                         
+    msg$ + "\\n"                                                                                                                                                                                                                                         
+                                                                                                                                                                                                                                              
+    If error_lineptr <> ""                                                                                                                                                                                                                               
+      *errorline.sourceLine = Vallong(error_lineptr)
+      log_Print{"Source line pointer provided by compiler:" + Hex$(*errorline)}
+      error_source2.s = Trim$(PED_Detoke{*errorline})
+      log_Print{"affected sourceline: [" + error_source2 + "]"}
+      msg$ + "\\n" + error_source2
+    EndIf
+    msg$ + "\\n" + error_source + "\\n"
+     
+    If error_cause1 <> "" OR error_cause2 <> ""
+      msg$ + "\\n\\n------ " + !TRANS{"Details"} + " ------\\n"
+      If error_cause1 <> "" Then msg$ + error_cause1 + "\\n"
+      If error_cause2 <> "" Then msg$ + error_cause2
+    EndIf
+  EndIf
+  dummy.l = ask{msg$,!TRANS{"OK"},!TRANS{"Compile Error"}}
+  !asm
+  !stack2regs
+;  MOVE.l (A7)+,D7
+RTS
+
+
+.import_start:                              ; was used with import block and paste
+  MOVEM.l D1-D4/D6-D7/A0-A6,-(A7)
+  MOVE.w D5,D1
+  MOVEA.l comPtr_Temp_TokenString2,A1
+  CLR.b instring
+  LEA tempbuf,a2
+
+  TST.b convert
+  BEQ 'l2b  ;'l1
+
+    ;BRA 'l2b                         ; convert is done with preproc
+    ;CMP.w #122,d1
+    ;BLE 'noclip
+    ;MOVE.w #122,d1
+    ;MOVE.w d1,d5
+    ;'noclip
+    CMP.b #".",(a1)
+    BNE 'l1
+      MOVE.w #"'l",(a2)+
+      ADDQ.w #1,d5                       ;add 1 additional char
+      ADDQ.l #1,a1
+      BRA 'ln1
+   'l1
+
+  TST.b convert
+  BNE 'l1a
+   'l1b
+      MOVE.b (a1)+,d0
+      BEQ 'exit
+      MOVE.b d0,(a2)+
+    DBF d1,'l1b
+    BRA 'exit
+ 'l1a
+
+  CMP.w #"\@",(a1)
+  BNE 'ln1
+    MOVE.w #"'l",(a2)+
+    ADDQ.l #2,a1
+   'n3
+      MOVE.b (a1)+,d0
+      BEQ 'n2
+        CMP.b #" ",d0
+        BEQ 'n2
+          CMP.b #":",d0
+          BEQ 'n2
+            MOVE.b d0,(a2)+
+      BRA 'n3
+   'n2
+    SUBQ.l #1,a1
+    MOVE.l #"l`@ ",(a2)+
+    ADDQ.w #4,d5
+ 'ln1
+
+  CMP.b #";",(a1)   ;-1
+  BEQ 'l2c
+    CMP.b #$22,(a1)     ;-1       ;"
+    BNE 'l2b
+      TST.b instring
+      BEQ 'l2c
+        CLR.b instring
+        BRA 'l2b
+ 'l2c
+  MOVE.b #1,instring
+ 'l2b
+
+  MOVE.b (a1)+,d0
+  BEQ 'exit
+
+  TST.b instring                     ;do only if no string
+  BNE 'l5
+    TST.b convert
+    BEQ 'l5
+      ;BRA 'l5
+      CMP.b #".",d0
+      BNE 'l2
+       CMP.b #",",-2(a1)
+        BEQ 'l500
+          CMP.b #" ",-2(a1)
+          BNE 'l2
+       'l500
+        ADDQ.w #1,d5
+        MOVE.b #"'",(a2)+
+        MOVEQ #"l",d0
+     'l2
+      CMP.b #"_",-2(a1)
+      BEQ 'l4
+      ;TST.b instring
+      ;BNE 'l5
+      CMP.l #"grap",-1(a1) : BEQ 'l3
+      CMP.l #"dosb",-1(a1) : BEQ 'l3
+      CMP.l #"intu",-1(a1) : BEQ 'l3
+      CMP.l #"Allo",-1(a1) : BEQ 'l3
+      CMP.l #"Free",-1(a1) : BEQ 'l3
+      CMP.l #"Wait",-1(a1) : BEQ 'l3
+      CMP.l #"\",d0
+      BNE 'p1
+        MOVE.b #"`",d0
+     'p1
+      CMP.l #"end",-1(a1)
+      BEQ 'l4a                           ;endm
+        CMP.l #"END",-1(a1)
+        BNE 'l4
+     'l4a
+      CMP.b #"m",3(a1)
+      BEQ 'l44a
+        CMP.b #"M",3(a1)
+        BNE 'l4
+     'l44a
+      CMP.b #" ",4(a1)
+      BEQ 'l444a
+        CMP.b #";",4(a1)
+        BEQ  'l444a
+          TST.b 4(a1)
+          BNE 'l4
+     'l444a
+      MOVE.l #"end ",(a2)+
+      MOVE.l #"macr",(a2)+
+      MOVE.b #"o",d0
+      ADD.w #9,d5
+      ADDQ.l #4,a1
+    'l4
+      CMP.l #" mac",-1(a1)
+                  ;BRA 'l4c              ;macro
+      BEQ 'l4b
+
+      CMP.l #" MAC",-1(a1)
+      BNE 'l4c
+    'l4b
+      CMP.w #"ro",3(a1)
+      BEQ 'l44b
+
+      CMP.w #"RO",3(a1)
+      BNE 'l4c
+
+    'l44b
+      CMP.b #" ",5(a1)
+      BEQ 'l444b
+      CMP.b #";",5(a1)
+      BEQ  'l444b
+      TST.b 5(a1)
+      BNE 'l4c
+
+    'l444b
+        ADDQ.l #5,a1
+        ADDQ.w #2,d5
+        MOVE.b #" ",(a2)+
+        MOVE.l #"macr",(a2)+
+        MOVE.w #"o ",(a2)+
+        SUBQ.w #5,d1
+        MOVE.l a1,-(a7)
+        MOVEA.l comPtr_Temp_TokenString2,A1
+
+    'n3b
+        MOVE.b (a1)+,d0
+        BEQ 'n2b
+
+        CMP.b #" ",d0
+        BEQ 'n2b
+
+        CMP.b #":",d0
+        BEQ 'n2b
+
+        MOVE.b d0,(a2)+
+        ADDQ.w #1,d5
+      BRA 'n3b
+    'n2b
+
+      MOVEQ #0,d0
+      MOVE.l (a7)+,a1
+    'l4c
+      CMP.l #"ovem",(a1)
+      BEQ 'mm
+       CMP.l #"OVEM",(a1)
+        BNE 'mm6
+     'mm
+      CMP.b #"m",-1(a1)
+      BEQ 'mm2
+        CMP.b #"M",-1(a1)
+        BNE 'mm6
+     'mm2
+      MOVE.l a1,a0
+      MOVEQ #0,d2
+
+     'mm3
+        MOVE.b (a0)+,d3
+        BEQ 'mm6
+
+        CMP.b #"(",d3
+        BEQ 'mm6
+
+        CMP.b #"-",d3
+        BNE 'mm4
+          MOVEQ #1,d2
+       'mm4
+        CMP.b #"/",d3
+        BNE 'mm5
+          MOVEQ #1,d2
+       'mm5
+      CMP.b #",",d3
+      BNE 'mm3
+
+      TST.l d2
+      BNE 'mm6
+        MOVE.b #$20,3(a1)
+        SUBQ.l #1,a1
+        MOVE.l (a1)+,(a2)+
+        MOVE.w (a1)+,(a2)+
+        SUBQ #6,d1
+        BRA 'b1
+     'mm6
+        ;CMP.w #".W",-1(a1)
+        ;BNE 'l5
+        ;TST.b 1(a1)
+        ;BNE 'l5
+        ;MOVEQ #0,d0
+        ;SUBQ.l #2,d1
+   'l5
+    MOVE.b d0,(a2)+
+ 'b1
+  DBF d1,'l1
+
+ 'exit
+  CMP.b #$0d,-1(a2)   ; check of ASC 13 carriage return
+  BNE 'nd0
+    CLR.b -1(a2)
+    SUBQ.w #1,d5
+ 'nd0
+  CLR.b (a2)
+  MOVE.w d5,d1
+  MOVEA.l comPtr_Temp_TokenString2,A1
+  LEA tempbuf,a2
+                                                       ;MOVEA.l A1,A2
+                                               'l10:   ; maybe obsolete ?
+  JSR tokenizeToA1
+
+  MOVEA.l comPtr_Temp_TokenString2,A2
+  TST.b convert
+  BEQ 'l21
+    MOVEQ #0,d0
+    MOVE.b (a2)+,d0
+    CMP.b #" ",d0
+    BNE 'l21
+   'l20
+    MOVE.b (a2)+,d0
+    BEQ 'l21
+    CMP.b #" ",d0
+    BEQ 'l20
+    CMP.b #";",d0
+    BEQ 'l21
+    CMP.w #$80,d0
+    BGE 'l21
+    MOVE.b #"!",-2(a2)
+ 'l21
+  MOVEM.l (A7)+,D1-D4/D6-D7/A0-A6
+  RTS
+
+ 'l3
+  ADDQ.l #1,d5
+  MOVE.b #"_",(a2)+
+BRA 'l4
+
+Function.b FAST IsLetter{c.b}
+  If (c > 64 AND c < 92) OR (c > 96 AND c < 123 )
+    Function Return True
+  EndIf
+End Function
+
+Function.s PED_ParseText2{strLine.s}
+SHARED ped, tmpTokeStr
+
+  If ped\DoTokenize = 0
+    tmpTokeStr = strLine
+  Else  
+    If Trim$(strLine) = ""
+      tmpTokeStr = ""
+    Else
+      strLen.w = FLen(strLine)
+      runner.w = 0
+      ped\inString = False
+      CLR.w comWord__QuoteFlag
+
+      Repeat
+        curChar.b = Peek.b(&strLine + runner)
+        If curChar = $22 Then ped\inString = NOT ped\inString
+        If ped\inString = False Then curChar = curChar BitClr 7     
+
+        If curChar = $22 ;Peek.b(?comByte_QuotationIdentifier)
+          NOT.w comWord__QuoteFlag
+          tmpTokeStr + Chr$(curChar)
+        EndIf
+
+;        If Peek.w(?comWord__QuoteFlag)
+          tmpTokeStr + Chr$(curChar)
+ ;       EndIf
+
+        If NOT IsLetter{curChar}
+          If (curChar > $29 AND curChar < $58) OR curChar = @"_" OR curChar = @"." OR curChar = @"\"  ; check if char is a number or special char
+          EndIf
+        EndIf
+
+        ; we found a comment, so just copy the rest of the string
+        If curChar.b = $22 ;Peek.b(?comByte_QuotationIdentifier)
+          For i.w = runner To strLen
+            curChar = Peek.b(&strLine + runner) BitClr 7
+            tmpTokeStr + Chr$(curChar)
+          Next i
+          Pop If : Pop Repeat : Pop If : Pop If 
+          Goto exitsub
+        EndIf
+
+
+        If curChar = @"'" OR curChar = @"#" OR curChar = @"$"
+        EndIf
+
+        runner + 1
+      Until runner = #MAX_Columns - 1
+    EndIf
+  EndIf
+  exitsub:
+  Function Return tmpTokeStr
+End Function
+
+
+.parse_line:                         ; input A2: textstring, results: comPtr_Temp_TokenString1 = parsed string, D5: length of string
+  MOVEA.l comPtr_Temp_TokenString1,A1
+  MOVE.l A1,-(A7)
+  MOVE.w #MAX_Columns,D1 : SUBQ.w #1,D1
+
+  MOVE.w comWord_DoTokenize,D0
+  BNE.w JL_0_5F68
+
+    MOVEA.l A1,A0                      ; ---- just copy the textstring to comPtr_temp_tokenstring
+    JL_0_5F48:
+      MOVE.b (A2)+,(A0)+
+      CMPI.b #$20,-$1(A0)              ; space
+      BEQ.w JL_0_5F56
+        MOVEA.l A0,A1                  ; A1 points to the last char that is not a space
+      JL_0_5F56:
+    DBF D1,JL_0_5F48
+
+    exitParsing:                         ; return the copied string
+      CLR.b (A1)+
+      MOVE.l A1,D5
+      SUB.l (A7)+,D5                   ; return the length of the string in D5
+      RTS
+
+  tokenizeToA1:                          ;A1 string to parse
+    MOVE.l A1,-(A7)
+  BRA.w JL_0_5F72
+  
+  JL_0_5F68:
+  CMPI.b #$20,$0(A2,D1.W)              ; -------  check spaces from right to left
+  BNE.w JL_0_5F7E
+    JL_0_5F72:
+    SUBQ.w #1,D1
+    BPL.b JL_0_5F68
+      ADDQ.w #4,A7                     ; Stack richten
+      CLR.b (A1)
+      MOVEQ.l #$01,D5                  ; only spaces in string, so return length 1 as we dont store only 1 space
+      RTS
+  JL_0_5F7E:
+
+
+
+  MOVE.l A4,-(A7)                      ; currentLine to Stack
+  MOVEQ.l #$00,D0
+  MOVE.w D0,comWord__QuoteFlag
+  CLR.b instring2
+
+  JL_0_5F88:
+    MOVE.b (A2)+,D2
+
+    CMP.b #$22,d2                      ; ------------------ check for string "
+    BNE 'l10
+      NOT.b instring2
+   'l10
+    TST.b instring2
+    BNE 'l11
+      BCLR #$7,D2                      ; remove tokenflag in string
+   'l11
+
+    CMP.b comByte_QuotationIdentifier,D2
+    BNE.w JL_0_5FA2
+      JL_0_5F96:
+      NOT.w comWord__QuoteFlag
+
+      JL_0_5F9C:
+      JSR copyD2toA1
+      BRA.b JL_0_5F88
+    JL_0_5FA2:
+
+    MOVE.w comWord__QuoteFlag,D4
+    BNE.b JL_0_5F9C                    ; ----------------------------------------------------
+
+    JSR checkD2ForLetter
+    BEQ.w findToken                  ; go to tokenfinder
+
+    JL_0_5FB0:
+    CMP.b #$30,d2                    ;number 0-9
+    BLT 'l10
+      CMP.b #$39,d2
+      BGT 'l10
+        BRA JL_0_6066
+   'l10:
+
+    CMP.b #"_",D2
+    BEQ.w JL_0_6066
+
+    CMP.b #$2E,D2                  ; "."
+    BEQ.w JL_0_6066
+
+    CMP.b #"\",D2
+    BEQ.w JL_0_6066
+
+    CMP.b comByte_SemicolonIdentifier,D2
+    BNE.w JL_0_5FDC
+      JL_0_5FD0:
+        JSR copyD2toA1
+        MOVE.b (A2)+,D2
+        BCLR #$7,D2
+      BRA.b JL_0_5FD0
+    JL_0_5FDC:
+
+    CMP.b #"'",d2                       ; do not tokenize ' $ #
+    BEQ JL_0_5FE4
+      CMP.b #"#",D2
+      BEQ.w JL_0_5FE4                  
+        CMP.b #"$",D2                    
+        BNE.w JL_0_6018
+
+      JL_0_5FE4:
+        JSR copyD2toA1
+        MOVE.b (A2)+,D2
+        BCLR #$7,D2
+        CMP.b #$22,d2                  ; "
+        BNE 'l10
+          BRA JL_0_5FE4
+       'l10
+        CMP.b #"_",d2
+        BEQ JL_0_5FE4
+        CMP.b #"0",D2
+        BCS.w JL_0_6018
+        CMP.b #"z",D2                  ;f
+        BHI.w JL_0_6018
+        CMP.b #"9",D2
+        BLS.b JL_0_5FE4
+        CMP.b #"A",D2
+        BCS.w JL_0_6018
+        CMP.b #"a",D2
+        BCC.b JL_0_5FE4
+        CMP.b #"Z",D2                  ;F
+      BLS.b JL_0_5FE4
+    JL_0_6018:
+
+    JSR copyD2toA1
+    MOVE.b (A2)+,D2
+    CMP.b #$22,d2
+    BNE 'l10
+      NOT.b instring2
+   'l10
+    TST.b instring2
+    BNE 'l11
+      BCLR #$7,D2                      ;morechar
+   'l11
+    CMP.b comByte_QuotationIdentifier,D2
+    BEQ.w JL_0_5F96
+
+    JSR checkD2ForLetter
+    BNE.b JL_0_5FB0
+
+    findToken:                         ; ------ start tokenizing
+    SUBQ.w #1,A2
+    MOVEA.l comPtr_TokenBase,A3
+
+    JL_0_6036:
+    MOVEA.l A2,A4
+    MOVE.l A3,-(A7)
+    ADDQ.w #6,A3
+
+    JL_0_603C:
+    MOVE.b (A3)+,D3                    ; char of Tokenname -> D3
+    BEQ.w JL_0_6082
+      MOVE.b (A4)+,D2                  ; char of string    -> D2
+      BCLR #$7,D2
+      ORI.b #$20,D3                    ; or space ?
+      ORI.b #$20,D2
+      CMP.b D3,D2
+      BEQ.b JL_0_603C
+
+      JL_0_6054:
+      MOVEA.l (A7)+,A3
+      MOVE.l (A3),D3                   ; move to next token
+      BEQ.w JL_0_6060                  ; no token left
+      MOVEA.l D3,A3                    
+      BRA.b JL_0_6036
+
+      JL_0_6060:                       ; no token found, so write the char
+      MOVE.b (A2)+,D2
+      BCLR #$7,D2
+
+      JL_0_6066:
+      JSR copyD2toA1
+      MOVE.b (A2)+,D2
+      CMP.b #$22,d2
+      BNE 'l10
+        NOT.b instring2
+     'l10
+      TST.b instring2
+      BNE 'l11
+        BCLR #$7,D2
+     'l11
+      CMP.b comByte_QuotationIdentifier,D2
+      BEQ.w JL_0_5F96
+
+      JSR checkD2ForLetter
+      BEQ.b JL_0_6066
+
+      BRA.w JL_0_5FB0
+    JL_0_6082:
+
+    MOVE.b (A4),D2
+    BCLR #$7,D2
+    JSR checkD2ForLetter
+    BEQ.b JL_0_6054
+
+    CMP.b #$30,d2            ;number 0-9
+    BLT 'l10
+      CMP.b #$39,d2
+      BGT 'l10
+        BRA JL_0_6054
+   'l10:
+    CMP.b #"_",D2
+    BEQ.b JL_0_6054
+
+    MOVEA.l (A7)+,A3        ; copy token word to destination string
+    ADDQ.w #4,A3
+    MOVE.b (A3)+,(A1)
+    BSET #$7,(A1)+
+    MOVE.b (A3),(A1)+
+    MOVE.l A4,D4
+    SUB.l A2,D4
+    ADD.w D4,D0
+    CMP.w D1,D0             ; d1: maxcolumns - 1
+    BHI.w leaveParsing
+    MOVEA.l A4,A2
+  BRA.w JL_0_5F88
+
+.copyD2toA1:
+  MOVE.b D2,(A1)+
+  ADDQ.w #1,D0
+  CMP.w D1,D0
+  BHI.w JL_0_60BE
+    RTS
+  JL_0_60BE:
+  ADDQ.w #4,A7
+
+  leaveParsing:
+  MOVEA.l (A7)+,A4
+BRA.w exitParsing
+
+
+.checkD2ForLetter:
+  CMP.b #"A",D2
+   BCS.w JL_0_60E8
+  CMP.b #"z",D2
+   BHI.w JL_0_60E8
+  CMP.b #"[",D2
+   BCS.w JL_0_60E6
+  CMP.b #"a",D2
+   BCS.w JL_0_60E8
+
+  JL_0_60E6:
+  CMP.w D2,D2
+
+  JL_0_60E8:
+RTS
+
+
 
 
 .update_labellist:
@@ -10026,26 +11145,15 @@ Return
   EndIf
   LabelList_FirstVisableItemNumber = Peek.l(?comLong_Label1VisableItem)
 
-  If WZ_CheckOpen{"WIN_LABELS"}
+  If WZ_IsOpen{"WIN_LABELS"}
     Use Window WZID("WIN_LABELS")
+    WZPrint "LABEL_PAGE",0
+
     WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_labels,LabelList_FirstVisableItemNumber
     WZListRemove lib_list.List
     WZPrint "LIBRARY_LIST",0,lib_list
   EndIf
 Return
-
-
-.AllocPoolMem:
-  !basic
-  tmpMemSize.l = PutD0
-  ptr_MemAlloc.l = PED_AllocMem{tmpMemSize}
-  If ptr_MemAlloc = 0
-    Pop If
-    Goto memAlert_CloseSource
-  EndIf
-  GetD0 ptr_MemAlloc
-  !asm
-RTS
 
 .memAlert_CloseSource:
   Gosub display_memoryalert
@@ -10144,457 +11252,7 @@ Return
   EndIf
 Return
 
-
-;.newSourcelineFromTempString:
-;  MOVE.l D5,D0                            ; strlen form D5 to D0
-;  ADDI.w #$9,D0                           ; add 9
-;  JSR AllocPoolMem                        ; return memaddress in D0/A0
-;
-;  JSR init_sourceline                     ; init sourcelinestruct at New memadress
-;                                          ; clr pointer to previous/next line, set stringlength byte
-;
-;  MOVEA.l comPtr_Temp_TokenString2,A1     ; copy stored source string to new sourceline
-;  LEA $9(A0),A0
-;  JL_0_4F3A:
-;    MOVE.b (A1)+,(A0)+
-;  BNE.b JL_0_4F3A
-;
-;  ;-- check if there is an label in the new line and set update flag for labellist
-;  MOVEA.l D0,A0                           ; memaddress again in A0
-;  MOVE.b comByte_LabelIdentifier,D0
-;
-;  MOVE.l A1,-(A7)                         ; skip spaces
-;  LEA $9(A0),A1
-;  JL_0_4F4A:
-;    CMPI.b #$20,(A1)+
-;  BEQ.b JL_0_4F4A
-;  CMP.b -(A1),D0                          ; and check if Label at the beginning?
-;  MOVEA.l (A7)+,A1
-;
-;  !basic
-;  ped\LabelListChanged = True
-;  !asm
-;  ;MOVE.w #$FFFF,comWord_LabelListChanged
-;RTS
-
-
-
-
-.import_start:                              ; was used with import block and paste
-  MOVEM.l D1-D4/D6-D7/A0-A6,-(A7)
-  MOVE.w D5,D1
-  MOVEA.l comPtr_Temp_TokenString2,A1
-  CLR.b instring
-  LEA tempbuf,a2
-
-  TST.b convert
-  BEQ 'l2b  ;'l1
-
-    ;BRA 'l2b                         ; convert is done with preproc
-    ;CMP.w #122,d1
-    ;BLE 'noclip
-    ;MOVE.w #122,d1
-    ;MOVE.w d1,d5
-    ;'noclip
-    CMP.b #".",(a1)
-    BNE 'l1
-      MOVE.w #"'l",(a2)+
-      ADDQ.w #1,d5                       ;add 1 additional char
-      ADDQ.l #1,a1
-      BRA 'ln1
-   'l1
-
-  TST.b convert
-  BNE 'l1a
-   'l1b
-      MOVE.b (a1)+,d0
-      BEQ 'exit
-      MOVE.b d0,(a2)+
-    DBF d1,'l1b
-    BRA 'exit
- 'l1a
-
-  CMP.w #"\@",(a1)
-  BNE 'ln1
-    MOVE.w #"'l",(a2)+
-    ADDQ.l #2,a1
-   'n3
-      MOVE.b (a1)+,d0
-      BEQ 'n2
-        CMP.b #" ",d0
-        BEQ 'n2
-          CMP.b #":",d0
-          BEQ 'n2
-            MOVE.b d0,(a2)+
-      BRA 'n3
-   'n2
-    SUBQ.l #1,a1
-    MOVE.l #"l`@ ",(a2)+
-    ADDQ.w #4,d5
- 'ln1
-
-  CMP.b #";",(a1)   ;-1
-  BEQ 'l2c
-    CMP.b #$22,(a1)     ;-1       ;"
-    BNE 'l2b
-      TST.b instring
-      BEQ 'l2c
-        CLR.b instring
-        BRA 'l2b
- 'l2c
-  MOVE.b #1,instring
- 'l2b
-
-  MOVE.b (a1)+,d0
-  BEQ 'exit
-
-  TST.b instring                     ;do only if no string
-  BNE 'l5
-    TST.b convert
-    BEQ 'l5
-      ;BRA 'l5
-      CMP.b #".",d0
-      BNE 'l2
-       CMP.b #",",-2(a1)
-        BEQ 'l500
-          CMP.b #" ",-2(a1)
-          BNE 'l2
-       'l500
-        ADDQ.w #1,d5
-        MOVE.b #"'",(a2)+
-        MOVEQ #"l",d0
-     'l2
-      CMP.b #"_",-2(a1)
-      BEQ 'l4
-      ;TST.b instring
-      ;BNE 'l5
-      CMP.l #"grap",-1(a1) : BEQ 'l3
-      CMP.l #"dosb",-1(a1) : BEQ 'l3
-      CMP.l #"intu",-1(a1) : BEQ 'l3
-      CMP.l #"Allo",-1(a1) : BEQ 'l3
-      CMP.l #"Free",-1(a1) : BEQ 'l3
-      CMP.l #"Wait",-1(a1) : BEQ 'l3
-      CMP.l #"\",d0
-      BNE 'p1
-        MOVE.b #"`",d0
-     'p1
-      CMP.l #"end",-1(a1)
-      BEQ 'l4a                           ;endm
-        CMP.l #"END",-1(a1)
-        BNE 'l4
-     'l4a
-      CMP.b #"m",3(a1)
-      BEQ 'l44a
-        CMP.b #"M",3(a1)
-        BNE 'l4
-     'l44a
-      CMP.b #" ",4(a1)
-      BEQ 'l444a
-        CMP.b #";",4(a1)
-        BEQ  'l444a
-          TST.b 4(a1)
-          BNE 'l4
-     'l444a
-      MOVE.l #"end ",(a2)+
-      MOVE.l #"macr",(a2)+
-      MOVE.b #"o",d0
-      ADD.w #9,d5
-      ADDQ.l #4,a1
-    'l4
-      CMP.l #" mac",-1(a1)
-                  ;BRA 'l4c              ;macro
-      BEQ 'l4b
-
-      CMP.l #" MAC",-1(a1)
-      BNE 'l4c
-    'l4b
-      CMP.w #"ro",3(a1)
-      BEQ 'l44b
-
-      CMP.w #"RO",3(a1)
-      BNE 'l4c
-
-    'l44b
-      CMP.b #" ",5(a1)
-      BEQ 'l444b
-      CMP.b #";",5(a1)
-      BEQ  'l444b
-      TST.b 5(a1)
-      BNE 'l4c
-
-    'l444b
-        ADDQ.l #5,a1
-        ADDQ.w #2,d5
-        MOVE.b #" ",(a2)+
-        MOVE.l #"macr",(a2)+
-        MOVE.w #"o ",(a2)+
-        SUBQ.w #5,d1
-        MOVE.l a1,-(a7)
-        MOVEA.l comPtr_Temp_TokenString2,A1
-
-    'n3b
-        MOVE.b (a1)+,d0
-        BEQ 'n2b
-
-        CMP.b #" ",d0
-        BEQ 'n2b
-
-        CMP.b #":",d0
-        BEQ 'n2b
-
-        MOVE.b d0,(a2)+
-        ADDQ.w #1,d5
-      BRA 'n3b
-    'n2b
-
-      MOVEQ #0,d0
-      MOVE.l (a7)+,a1
-    'l4c
-      CMP.l #"ovem",(a1)
-      BEQ 'mm
-       CMP.l #"OVEM",(a1)
-        BNE 'mm6
-     'mm
-      CMP.b #"m",-1(a1)
-      BEQ 'mm2
-        CMP.b #"M",-1(a1)
-        BNE 'mm6
-     'mm2
-      MOVE.l a1,a0
-      MOVEQ #0,d2
-
-     'mm3
-        MOVE.b (a0)+,d3
-        BEQ 'mm6
-
-        CMP.b #"(",d3
-        BEQ 'mm6
-
-        CMP.b #"-",d3
-        BNE 'mm4
-          MOVEQ #1,d2
-       'mm4
-        CMP.b #"/",d3
-        BNE 'mm5
-          MOVEQ #1,d2
-       'mm5
-      CMP.b #",",d3
-      BNE 'mm3
-
-      TST.l d2
-      BNE 'mm6
-        MOVE.b #$20,3(a1)
-        SUBQ.l #1,a1
-        MOVE.l (a1)+,(a2)+
-        MOVE.w (a1)+,(a2)+
-        SUBQ #6,d1
-        BRA 'b1
-     'mm6
-        ;CMP.w #".W",-1(a1)
-        ;BNE 'l5
-        ;TST.b 1(a1)
-        ;BNE 'l5
-        ;MOVEQ #0,d0
-        ;SUBQ.l #2,d1
-   'l5
-    MOVE.b d0,(a2)+
- 'b1
-  DBF d1,'l1
-
- 'exit
-  CMP.b #$0d,-1(a2)   ; check of ASC 13 carriage return
-  BNE 'nd0
-    CLR.b -1(a2)
-    SUBQ.w #1,d5
- 'nd0
-  CLR.b (a2)
-  MOVE.w d5,d1
-  MOVEA.l comPtr_Temp_TokenString2,A1
-  LEA tempbuf,a2
-                                                       ;MOVEA.l A1,A2
-                                               'l10:   ; maybe obsolete ?
-  JSR tokenizeA1
-
-  MOVEA.l comPtr_Temp_TokenString2,A2
-  TST.b convert
-  BEQ 'l21
-    MOVEQ #0,d0
-    MOVE.b (a2)+,d0
-    CMP.b #" ",d0
-    BNE 'l21
-   'l20
-    MOVE.b (a2)+,d0
-    BEQ 'l21
-    CMP.b #" ",d0
-    BEQ 'l20
-    CMP.b #";",d0
-    BEQ 'l21
-    CMP.w #$80,d0
-    BGE 'l21
-    MOVE.b #"!",-2(a2)
- 'l21
-  MOVEM.l (A7)+,D1-D4/D6-D7/A0-A6
-  RTS
-
- 'l3
-  ADDQ.l #1,d5
-  MOVE.b #"_",(a2)+
-BRA 'l4
-
-
-.detokenize_line:                    ; input A0: tokenized string; returns A1: detokenized string
-  CLR.b instring3
-
-  detokenize_line2
-    TST.w comWord_DoTokenize
-    BEQ.w JL_0_5054
-
-    MOVEQ.l #$00,D0
-    MOVE.b (A0)+,D0
-    BEQ.w JL_0_5050
-
-    CMP.b #$22,d0
-    BNE 'l1
-      NOT.b instring3
-   'l1
-    TST.b instring3
-    BNE 'l2
-      TST.b d0
-      BMI.w JL_0_5040               ; beginning of token found
-   'l2
-    MOVE.b D0,(A1)+
-    BNE.b detokenize_line2
-
-    JL_0_5040:
-    LSL.w #8,D0
-    MOVE.b (A0)+,D0
-    JSR token_to_ascii
-    JL_0_5048:
-      MOVE.b (A3)+,(A1)+
-    BNE.b JL_0_5048
-    SUBQ.w #1,A1
-
-  BRA.b detokenize_line2
-
-  JL_0_5050:
-  CLR.b (A1)
-RTS
-
-.JL_0_5054:
-  MOVE.l A3,-(A7)
-  MOVEA.l A0,A3
-  JSR copy_A0_to_A1
-  MOVEA.l (A7)+,A3
-RTS
-
-
-.copy_A0_to_A1:
-  MOVEM.l A0-A1,-(A7)
-
-  JL_0_4A92:
-    MOVE.b (A0)+,(A1)+
-  BNE.b JL_0_4A92
-
-  MOVEM.l (A7)+,A0-A1
-RTS
-
-.token_to_ascii:
-  ;MOVEA.l comPtr_TokenBase,A3       ;findtokenlib $80
-  BCLR #$F,D0
-  LEA tokenCache,a3
-
-  Dc.l $26730400 ;Dc.l $26730600 MOVE.l 0(a3,d0.w*4),a3
-
-  CMP.l #0,a3
-  BNE 'l10
-    MOVEA.l comPtr_TokenBase,A3
-   'JL_0_50A2:
-      CMP.w $4(A3),D0
-      BEQ.w knowntoken
-        TST.l (A3)
-        BEQ.w unknowntoken
-          MOVEA.l (A3),A3
-    BRA.b 'JL_0_50A2
- 'l10
-  ADDQ.w #6,A3
-RTS
-
-.knowntoken:
-  MOVE.l a1,-(a7)
-  LEA tokenCache,a1
-
-  Dc.l $238B0400 ; MOVE.l a3,0(a1,d0.w*4)
-  MOVE.l (a7)+,a1
-  ADDQ.w #6,A3
-RTS
-
-.unknowntoken:
-  !basic
-  i = PutD0
-  temp$ = "????Lib " + Str$(i LSR 7) + "/" + Str$((i AND $7f)-1)
-  MOVE.l temp@(a5),d0
-  !asm
-  MOVE.l d0,a3
-RTS
-
-.show_errorrequester:  ; A0: ptr to Errortext,            only to be called by compiler
-                       ; A5: ptr current sourceline
-                       ; A6: "INLN" if in INCLUDE
-                       ; D7: includeline
-  !regs2stack
-  !basic
-  fid.l = file_Open{dos_AddPart{pedconfig\systemDir,"ab_compileerror.txt"},#file_read}
-  If fid <> -1
-    error_type.s  = StrRight(file_ReadLine{fid},-8)
-    error_line.s  = StrRight(file_ReadLine{fid},-8)
-    error_lineptr.s=StrRight(file_ReadLine{fid},-8)
-    error_cause1.s = StrRight(file_ReadLine{fid},-8)
-    error_cause2.s = StrRight(file_ReadLine{fid},-8)
-    error_source.s = StrRight(file_ReadLine{fid},-8)
-    error_libnum.s = StrRight(file_ReadLine{fid},-8)
-    error_incname.s = StrRight(file_ReadLine{fid},-8)
-    error_incline.s = StrRight(file_ReadLine{fid},-8)
-    compilestatus.s = StrRight(file_ReadLine{fid},-8)
-    file_Close{fid}
-
-    If error_incname <> "none"              ; open source file with error
-      If Exists (error_incname)
-        log_Print{"Error in include ["+ error_incname + "], opening it and jumping to errorline ["+ error_incline + "]..."}
-        !PED_LoadSource{error_incname,False,True,True}
-        PED_GotoLine{Val(error_incline)-1,#LINE_END}
-        PED_UpdateStatusArea{#STATUS_REDRAW}
-      End If
-    End If
-  Else
-    error_line$ = ""
-  End If
-
-  ; building the inforequester:
-  If error_line <> ""
-    msg$ = !TRANS{Replace$(error_type,"\\0a","\n")}
-    msg$ = Replace$(msg$,"\n","\\0a")
-
-    If error_incname <> "none"
-      msg$ + "\\nInclude " + !TRANS{"file"} + ": " + error_incname
-      msg$ + "\\nInclude " + !TRANS{"line"} + ": " + error_incline + " - " + !TRANS{"Source line"} + ": " + error_line
-    Else
-      msg$ + "\\n" + !TRANS{"Source line"} + ": " + error_line
-      msg$ + "\\n" + !TRANS{"Pointer"} + ": " + error_lineptr
-    EndIf
-
-    msg$ + "\\n\\n" + !TRANS{"Affected source"} + ": " + error_source
-    If error_cause1 <> "" OR error_cause2 <> ""
-      msg$ + "\\n" + !TRANS{"Details"} + ": "
-      If error_cause1 <> "" Then msg$ + error_cause1 + "\\n"
-      If error_cause2 <> "" Then msg$ + error_cause2
-    EndIf
-  EndIf
-  dummy.l = ask{msg$,!TRANS{"OK"},!TRANS{"Compile Error"}}
-  !asm
-  !stack2regs
-;  MOVE.l (A7)+,D7
-RTS
-
+ 
 .flush_intuimessages:
   FlushEvents
   ;If sourceWindow\win
@@ -10619,26 +11277,6 @@ Return
 
   ped\ptrCurrentSourceData\CurrentSourceLine = *currentSourceLine
 Return
- 
-.parseAndReplaceCurrentLine:
-  MOVEA.l comPtr_Temp_TokenString2,A2
-  JSR parse_line
-
-
-  replaceCurrentLine:
-  ; Input:  d5 = length of parsed string?
-  ;         a4 = current sourceline
-  ;         ptr_temp_tokenstring1 = tokenized text to insert
-  MOVE.l D5,-(a7)                     ; returns length of string in D5
-  !basic
-  MOVE.l (a7)+,D0 : PutReg D0,tmpd0.l
-  newsourceline.s = Peeks$(Peek.l(?comPtr_Temp_TokenString1),tmpd0)
-  *newLine.sourceLine = PED_CreateNewSourceLine{newsourceline}
-  PED_ReplaceCurrentSourceLine{*newLine.sourceLine}
-  !asm
-  MOVE.l comPtr_CurrentSourceLine,A4
-RTS
-
 
 .draw_new_sourceline_top:
   ;log_Print{"print 1 line up from line " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
@@ -10690,252 +11328,6 @@ Return
 Return
 
 
-textbufferPrint:    Ds.l 1
-
-.parse_line:                         ; input A2: textstring, results: comPtr_Temp_TokenString1 = parsed string, D5: length of string
-  MOVEA.l comPtr_Temp_TokenString1,A1
-  MOVE.l A1,-(A7)
-  MOVE.w #MAX_Columns,D1 : SUBQ.w #1,D1
-
-  MOVE.w comWord_DoTokenize,D0
-  BNE.w JL_0_5F68
-
-    MOVEA.l A1,A0                      ; ---- just copy the textstring to comPtr_temp_tokenstring
-    JL_0_5F48:
-      MOVE.b (A2)+,(A0)+
-      CMPI.b #$20,-$1(A0)              ; space
-      BEQ.w JL_0_5F56
-        MOVEA.l A0,A1
-      JL_0_5F56:
-    DBF D1,JL_0_5F48
-
-    JL_0_5F5A:                         ; return the copied string
-      CLR.b (A1)+
-      MOVE.l A1,D5
-      SUB.l (A7)+,D5
-      RTS
-
-  tokenizeA1:                         ;A1 string to parse
-    MOVE.l A1,-(A7)
-  BRA.w JL_0_5F72
-  
-  JL_0_5F68:
-  CMPI.b #$20,$0(A2,D1.W)              ; -------  check spaces from right to left
-  BNE.w JL_0_5F7E
-    JL_0_5F72:
-    SUBQ.w #1,D1
-    BPL.b JL_0_5F68
-      ADDQ.w #4,A7
-      CLR.b (A1)
-      MOVEQ.l #$01,D5                  ; only spaces in string, so return length 1 as we dont store only 1 space
-      RTS
-  JL_0_5F7E:
-
-  MOVE.l A4,-(A7)                      ; currentLine to Stack
-  MOVEQ.l #$00,D0
-  MOVE.w D0,comWord__AL_0_86B8
-  CLR.b instring2
-
-  JL_0_5F88:
-    MOVE.b (A2)+,D2
-    CMP.b #$22,d2                      ; check for string "
-    BNE 'l10
-      NOT.b instring2
-   'l10
-    TST.b instring2
-    BNE 'l11
-      BCLR #$7,D2                      ;morechar
-   'l11
-    CMP.b comByte_QuotationIdentifier,D2
-    BNE.w JL_0_5FA2
-
-    JL_0_5F96:
-    NOT.w comWord__AL_0_86B8
-
-    JL_0_5F9C:
-    JSR JL_0_60B2
-    BRA.b JL_0_5F88
-
-    JL_0_5FA2:
-    MOVE.w comWord__AL_0_86B8,D4
-    BNE.b JL_0_5F9C
-    JSR checkForLetter
-    BEQ.w JL_0_6030                  ; go to tokenfinder
-
-    .temp1
-    JL_0_5FB0:
-    CMP.b #$30,d2                    ;number 0-9
-    BLT 'l10
-      CMP.b #$39,d2
-      BGT 'l10
-        BRA JL_0_6066
-   'l10:
-    CMP.b #"_",D2
-    BEQ.w JL_0_6066
-      CMP.b #$2E,D2                  ; "."
-      BEQ.w JL_0_6066
-        CMP.b #"\",D2
-        BEQ.w JL_0_6066
-          CMP.b comByte_SemicolonIdentifier,D2
-          BNE.w JL_0_5FDC
-
-    JL_0_5FD0:
-      JSR JL_0_60B2
-      MOVE.b (A2)+,D2
-      BCLR #$7,D2
-    BRA.b JL_0_5FD0
-
-    JL_0_5FDC:
-    CMP.b #"'",d2
-     BEQ JL_0_5FE4
-    CMP.b #"#",D2
-     BEQ.w JL_0_5FE4                 ;jump notokenize
-    CMP.b #"$",D2                    ;tokenize $ #
-     BNE.w JL_0_6018
-
-    JL_0_5FE4:
-      JSR JL_0_60B2
-      MOVE.b (A2)+,D2
-      BCLR #$7,D2
-      CMP.b #$22,d2                  ; "
-      BNE 'l10
-        BRA JL_0_5FE4
-     'l10
-      CMP.b #"_",d2
-       BEQ JL_0_5FE4
-      CMP.b #"0",D2
-       BCS.w JL_0_6018
-      CMP.b #"z",D2                  ;f
-       BHI.w JL_0_6018
-      CMP.b #"9",D2
-       BLS.b JL_0_5FE4
-      CMP.b #"A",D2
-       BCS.w JL_0_6018
-      CMP.b #"a",D2
-       BCC.b JL_0_5FE4
-      CMP.b #"Z",D2                  ;F
-    BLS.b JL_0_5FE4
-
-    JL_0_6018:
-    JSR JL_0_60B2
-    MOVE.b (A2)+,D2
-    CMP.b #$22,d2
-    BNE 'l10
-      NOT.b instring2
-   'l10
-    TST.b instring2
-    BNE 'l11
-      BCLR #$7,D2                      ;morechar
-   'l11
-    CMP.b comByte_QuotationIdentifier,D2
-    BEQ.w JL_0_5F96
-
-    JSR checkForLetter
-    BNE.b JL_0_5FB0
-
-    JL_0_6030:                         ; ------ start tokenizing
-    SUBQ.w #1,A2
-    MOVEA.l comPtr_TokenBase,A3
-
-    JL_0_6036:
-    MOVEA.l A2,A4
-    MOVE.l A3,-(A7)
-    ADDQ.w #6,A3
-
-    JL_0_603C:
-    MOVE.b (A3)+,D3
-    BEQ.w JL_0_6082
-      MOVE.b (A4)+,D2
-      BCLR #$7,D2
-      ORI.b #$20,D3
-      ORI.b #$20,D2
-      CMP.b D3,D2
-      BEQ.b JL_0_603C
-
-      JL_0_6054:
-      MOVEA.l (A7)+,A3
-      MOVE.l (A3),D3
-      BEQ.w JL_0_6060
-      MOVEA.l D3,A3
-      BRA.b JL_0_6036
-
-      JL_0_6060:
-      MOVE.b (A2)+,D2
-      BCLR #$7,D2
-
-      JL_0_6066:
-      JSR JL_0_60B2
-      MOVE.b (A2)+,D2
-      CMP.b #$22,d2
-      BNE 'l10
-      NOT.b instring2
-    'l10
-      TST.b instring2
-      BNE 'l11
-      BCLR #$7,D2            ;morechar
-    'l11
-      CMP.b comByte_QuotationIdentifier,D2
-      BEQ.w JL_0_5F96
-      JSR checkForLetter
-      BEQ.b JL_0_6066
-      BRA.w JL_0_5FB0
-    JL_0_6082:
-
-    MOVE.b (A4),D2
-    BCLR #$7,D2
-    JSR checkForLetter            ;ascii to token
-     BEQ.b JL_0_6054
-    CMP.b #$30,d2            ;number 0-9
-     BLT 'l10
-    CMP.b #$39,d2
-     BGT 'l10
-    BRA JL_0_6054
-   'l10:
-    CMP.b #"_",D2
-     BEQ.b JL_0_6054
-    MOVEA.l (A7)+,A3
-    ADDQ.w #4,A3
-    MOVE.b (A3)+,(A1)
-    BSET #$7,(A1)+
-    MOVE.b (A3),(A1)+
-    MOVE.l A4,D4
-    SUB.l A2,D4
-    ADD.w D4,D0
-    CMP.w D1,D0
-     BHI.w JL_0_60C0
-    MOVEA.l A4,A2
-  BRA.w JL_0_5F88
-
-JL_0_60B2:
-  MOVE.b D2,(A1)+
-  ADDQ.w #1,D0
-  CMP.w D1,D0
-  BHI.w JL_0_60BE
-    RTS
-  JL_0_60BE:
-  ADDQ.w #4,A7
-
-  JL_0_60C0:
-  MOVEA.l (A7)+,A4
-BRA.w JL_0_5F5A
-
-
-.checkForLetter:
-  CMP.b #"A",D2
-   BCS.w JL_0_60E8
-  CMP.b #"z",D2
-   BHI.w JL_0_60E8
-  CMP.b #"[",D2
-   BCS.w JL_0_60E6
-  CMP.b #"a",D2
-   BCS.w JL_0_60E8
-
-  JL_0_60E6:
-  CMP.w D2,D2
-
-  JL_0_60E8:
-RTS
-
 .scroll_rest_of_line_left:
   USEPATH ped\ptrCurrentSourceData
   xPos.w = \Column + \ColumnsOffset
@@ -10965,7 +11357,6 @@ RTS
   EndIf
 
   PED_ScrollHorizontal{#SCROLL_LEFT,  #SCROLL_CURRENT_LINE}
-
 Return
 
 
@@ -11868,7 +12259,7 @@ Return
   JL_0_7334:
   Gosub close_sourcewindow
   !coutclose
-  CloseAllWZWindows{}
+  WZ_CloseAllWindows{}
 
   screen_Close{} ;/* screen close knows if it is on wb! */
 Goto exit_PED_closeall
@@ -11893,7 +12284,7 @@ Return
 
 .close_gui:
   log_Print{"closing gui..."}
-  CloseAllWZWindows{}                                      ; replaced the close of all WZ Windows with a statement call  tomsmart1
+  WZ_CloseAllWindows{}                                      ; replaced the close of all WZ Windows with a statement call  tomsmart1
 
   If Peek.l(?CLI_output_file) <> 0
     Close_ Peek.l(?CLI_output_file) : Poke.l ?CLI_output_file,0
@@ -12146,7 +12537,7 @@ Return
 ;        Gosub intellisense
 ;      EndIf
 ; -- CURSOR_KEYs navigation
-;      If WZ_CheckOpen{"WIN_POPUP"} AND (last_rawkey.l>(#RAWKEY_UP-1) AND last_rawkey<(#RAWKEY_LEFT+1) )
+;      If WZ_IsOpen{"WIN_POPUP"} AND (last_rawkey.l>(#RAWKEY_UP-1) AND last_rawkey<(#RAWKEY_LEFT+1) )
 ;        Select last_rawkey                                             ; test only rawkey code for cursor keys  tomsmart1
 ;          Case #RAWKEY_UP    : WZ_SetPopUpEntry{popupdata\selected_entry - 1}
 ;          Case #RAWKEY_DOWN  : WZ_SetPopUpEntry{popupdata\selected_entry + 1}
@@ -12327,18 +12718,10 @@ Return
 
     If ped\ptrCurrentSourceData\Column > 0
 
-      If WZ_CheckOpen{"WIN_POPUP"} Then Gosub close_popupwindow
+      If WZ_IsOpen{"WIN_POPUP"} Then Gosub close_popupwindow
 
       lineaddr = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset
-      strline$ = Peek.s(lineaddr) ;Peeks$(lineaddr,ped\ptrCurrentSourceData\Column)
-      ;slen.w = FLen(strline$) : found.l = False
-      ;Gosub getstring_new2
-      ;tokname$ = actualword$
-      ;error{"Line Pre:"+strline$}
-      ;MaxLen linebuff$ = 256
-      ;preproc_Detokenize{*PreProcessor,&strline$,&linebuff$,FLen(strline$)}
-      ;strline$ = Peek.s(&linebuff$)
-      ;error{"Line Post:"+strline$}
+      strline$ = Peek.s(lineaddr)
 
       bracketclose1.l = Instr(strline$,")")
       bracketclose2.l = Instr(strline$,"}")
@@ -12360,8 +12743,7 @@ Return
         End If
       End If
       If tokname$
-        Gosub syntax_help
-        If strhelp$ = ""
+        If PED_ShowHelptextFor{tokname$} = False
           Gosub intellisense
         End If
       End If
@@ -12373,23 +12755,23 @@ Return
       tokname$ = PED_GetWordAtPos{strline$, ped\ptrCurrentSourceData\Column,True}
       If tokname$ <> ""
         log_Print{"HELP on <" + tokname$ + ">"}
-
         If StrLower(tokname$) = "endif"
           Gosub help_checkforif
         Else
-          !asm
-          JSR help_checkfortype
-          !basic
-          type_found.b = PutD0
-          If (type_found = False)
-            Gosub syntax_help
+          ;!asm
+          ;JSR help_checkfortype
+          ;!basic
+          Gosub help_checkfortype_bas
+          If typestr$ = ""
+            log_Print{"as there is no typehelp available, trying to get a token help text..."}
+            PED_ShowHelptextFor{tokname$}
           EndIf
         EndIf
       EndIf
 
      Case $0D ; ENTER
        If pedconfig\intellisense AND pedconfig\onlinehelp_includes
-         If WZ_CheckOpen{"WIN_POPUP"}
+         If WZ_IsOpen{"WIN_POPUP"}
            a$ = WZ_GetPopUpEntry{WZ_GetPopUpMenu{}+1}
 
            ; include function
@@ -12415,56 +12797,6 @@ Return
     End Select
   EndIf
 Return
-
-
-Function.s FindHelp{tokname$}
-
-  If Left$(tokname$,1) = "!"
-    MOVE.l comPtr_MacroBase,d0 : *macrobase.l = PutD0
-    tokname$ = PED_GetMacroName{*macrobase,tokname$}
-;    tokhelp$ = PED_GetMacroHelp{*macrobase,tokname$}
-    tokexte$ = "Macro"
-  Else
-    tokid.w = PED_GetTokenID{tokname$}
-    If tokid >= 0
-      tokname$ = PED_GetTokenName{tokid}
-      libnum.l = PED_GetTokenLibnum{tokname$}
-      If libnum>=0
-        tokhelp$ = PED_GetTokenHelp{tokname$}
-        tokexte$ = "BlitzLib: " + PED_GetLibname{libnum}
-      End If
-    Else
-      tokname$ = PED_GetIncludeFunction{tokname$}
-      If tokname$<>""
-        tokhelp$ = PED_GetIncludeHelp{tokname$}
-        tokexte$ = "Include: " + PED_GetIncludeName{tokname$}
-      End If
-    End If
-  End If
-
-  strhelp$ = tokname$
-  If tokhelp$ <> "" Then strhelp$ + " " + tokhelp$
-  If tokexte$ <> "" Then strhelp$ + " | " + tokexte$
-
-  Function Return strhelp$
-End Function
-
-
-.syntax_help:
-  log_Print{"syntax_help"}
-
-  strhelp.s = ""
-  If tokname$ <> ""
-    strhelp =  FindHelp{tokname$}
-    If Len(strhelp) < 3
-      ; keine Hilfe und kein Word unter Cursor
-      PED_ShowMessage{""}
-    Else
-      PED_ShowMessage{strhelp}
-    EndIf
-  EndIf
-RTS
-
 
 .intellisense:
   ; -- bei delete-key wird ?comWord_Column nicht aktualisiert
@@ -12569,21 +12901,11 @@ Return
 
 .scan_source_for_used_libs:
   log_Print{"scan source for used libs..."}
+  If ped\ptrCurrentSourceData\TotalLines = 0 Then Return
+
   Gosub set_pointer_busy
   WZ_LockAllOpenWindows{}
-
-  ; --
-  ; -- scan for number of lines
-  number_of_lines.l = ped\ptrCurrentSourceData\TotalLines
-  If number_of_lines = 0 Then Goto exit_scan_for_libs
-
-;  libpointer.l = Peek.l(?comPtr_LibPointer)
-;  Repeat
-;    lib_size.l = Peek.l(libpointer)
-;    lib_num.l = Peek.w(libpointer + 4 + 36)
-;    libpointer = libpointer + lib_size + 4
-;    log_Print{"libs size: " + Str$(lib_size) + " libnum: " + Str$(lib_num)}
-;  Until lib_size = 0
+  Use Window WZID("WIN_LABELS")
 
   ; --
   ; -- reset tables and arrays
@@ -12591,99 +12913,76 @@ Return
     tokentable(i) = 0
   Next i
   HIERARCHY_Clear{&lib_list}
-
-  Use Window WZID("WIN_LABELS")
   WZPrint "LIBRARY_LIST",0,lib_list
-
-  ; Zeilenstruktur:
-  ; 0 - 3 bytes : Adresse naechste Zeile
-  ; 4 - 7 bytes : Adresse prev Zeile
-  ; 8 byte      : Laenge der Zeile
-  ; 9.. bytes   : tokenized Text
-  ; kill any spaces before Token
 
   ; --
   ; -- scanning each line for tokens
   WZ_ShowMessage{!TRANS{"Analyzing source..."},0}
 
-  *sourceLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine : zeile.l = 0
-  While *sourceLine <> 0
-    bytecount.w = 0
-    anzbytes.w = Peek.b(*sourceLine + 8)
-    testaddr.l = *sourceLine + 9
-    acttoken.w = Peek.w(testaddr) AND $FFFF
-    acttoke2.w = Peek.w(testaddr) AND $FFFF
-    skip_string.b = False
+  scanned_lines.l = 0
+  *sourceLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
+  While *sourceLine
+    ptrString.l = *sourceLine + 9
+    ped\inString = 0
+    skip_rest_of_line.b = False
+    Repeat
+      curchar.b = Peek.b(ptrString)
 
-    While (bytecount<=anzbytes)
-      If (acttoken<0) AND (NOT skip_string)
-        If (acttoke2 AND $FF) > 0
-          If (zeile MOD 10)=0 Then !WZ_Update_Gauge{zeile,number_of_lines}
-
-          If acttoke2 > $8000 Then acttoke2 = acttoke2 - $8000
-          tokentable(acttoke2) = tokentable(acttoke2) + 1
-          bytecount + 1 : testaddr + 1
-
-        EndIf
+      If curchar = $22 Then ped\inString = NOT ped\inString      
+      If curchar = @";" AND NOT ped\inString Then skip_rest_of_line = True
+      If curchar < 0 AND NOT ped\inString
+        toknum2.l = Peek.w(ptrString) AND $FFFF
+        If toknum2 > $8000 Then toknum2 - $8000
+        tokentable(toknum2) = tokentable(toknum2) + 1
+        ptrString + 1
       EndIf
-      testaddr + 1 : bytecount + 1
-      acttoken = Peek.w(testaddr) AND $FFFF
-      acttoke2.w = Peek.w(testaddr) AND $FFFF
-      actbyte.b = acttoke2 LSR 8
-      ; skip comments ...
-      If actbyte = Asc(";")
-        anzbytes = bytecount + 1
-      Else
-        ; skip strings ...
-        If actbyte = 34
-          If skip_string = False Then skip_string = True Else skip_string = False
-        EndIf
-      EndIf
-    Wend
-    *sourceLine = *sourceLine\nextLine : zeile = zeile + 1
+
+      ptrString + 1
+    Until skip_rest_of_line OR curchar = 0
+
+    If (scanned_lines MOD 10) = 0 Then !WZ_Update_Gauge{scanned_lines, ped\ptrCurrentSourceData\TotalLines}
+    scanned_lines = scanned_lines + 1                                                                                                                                                                                                   
+    *sourceLine = *sourceLine\nextLine                                                                                                                                                                                                                   
   Wend
 
-  ;
-  ; build hierarchy table
-  ;
-  WZ_ShowMessage{!TRANS{"Building result tree..."},0}
-  For i = 0 To 65535
-    If tokentable(i) > 0
-      acttoke2 = i 
-      tokname$ = PED_GetTokenName{acttoke2}
-      libnum.l = acttoke2 LSR 7 ;PED_GetTokenLibnumID{tokname$})
-      libname$ = lib_mapping$(libnum,0)
+  ;-- build hierarchy tree
+  log_Print{Str$(scanned_lines) + " lines scanned, building result tree..."}
+  WZ_ShowMessage{!TRANS{"Building result tree..."}, 0}
 
-      If tokname$<>""
-        entry$ = libname$ + ": " + tokname$ + " ("+Str$(tokentable(i))+")"
-        hpos.w = Instr(entry$,":")
-        If (hpos > 1)
-          main$ = Left$(entry$,hpos - 1)
-          child$= Right$(entry$,FLen(entry$) - hpos - 1)
-          pid.l = HIERARCHY_GetParentID{main$}
+  For toknum2 = 0 To 65535
+    If tokentable(toknum2)
+      tokname.s = PED_GetTokenName{toknum2}
+      If tokname <> ""
+        libnum.l = toknum2 LSR 7
+        libname.s = lib_mapping$(libnum,0)
+
+        entry.s = tokname + " (" + Str$(tokentable(toknum2)) + ")"
+        If libname <> ""
+          main.s = libname
+          child.s= entry
+          pid.l = HIERARCHY_GetParentID{main}
           If pid > 0
-            HIERARCHY_AddChild{pid,child$}
+            HIERARCHY_AddChild{pid,child}
           Else
-            dummy = HIERARCHY_AddParent{&lib_list,main$}
-            If child$<>""
-              pid.l = HIERARCHY_GetParentID{main$}
-              If pid<>0 Then HIERARCHY_AddChild{pid,child$}
+            HIERARCHY_AddParent{&lib_list,main}
+            If child <> ""
+              pid.l = HIERARCHY_GetParentID{main}
+              If pid <> 0 Then HIERARCHY_AddChild{pid, child}
             EndIf
           EndIf
         Else
-          dummy = HIERARCHY_AddParent{&lib_list,entry$}
+          HIERARCHY_AddParent{&lib_list, entry}
         EndIf
       EndIf
     EndIf
-    If (i MOD 1024) = 0 Then !WZ_Update_Gauge{i,65535}
-  Next i
+    If (toknum2 MOD 1024) = 0 Then !WZ_Update_Gauge{toknum2,65535}
+  Next toknum2
   ;
   WZ_HideMessage{}
 
   Use Window WZID("WIN_LABELS")
   WZPrint "LIBRARY_LIST",0,lib_list
 
-  exit_scan_for_libs:
   WZ_UnlockAllOpenWindows{}
   Gosub set_pointer_normal
 Return
@@ -12936,10 +13235,10 @@ Return
         Case 0                              : Gosub event_sourcewindow
         Case WZID("WIN_SEARCH")             : Gosub event_find
         Case WZID("WIN_CONTEXTHELP")        : If pedMessage\_Class = #IDCMP_CLOSEWINDOW Then Gosub close_contexthelp
-        Case WZID("WIN_NEWTYPE")            : Gosub event_newtype
+        Case WZID("WIN_NEWTYPE")            : Gosub event_definitionbrowser
         Case WZID("WIN_INSTRUCTIONBROWSER") : Gosub event_instructionbrowser
         Case WZID("WIN_LIBRARYBROWSER")     : Gosub event_librarybrowser
-        Case WZID("WIN_LABELS")             : Gosub event_label
+        Case WZID("WIN_LABELS")             : Gosub event_sourcebrowser
         Case WZID("WIN_POPUP")              : Gosub event_popup
         Case WZID("WIN_HELPDIAG")           : Gosub event_diag
         Case WZID("WIN_SHORTCUTS")          : Gosub event_shortcuts
@@ -13129,6 +13428,7 @@ Return
             helpvalue = PED_GetConstantValue{helptext$}
           Else
             ;-- check for a newtype
+            *var.l = PED_GetVariableByName{helptext$}
           EndIf
           ;            $45464748
           ;PED_ShowMessage{helptext$}
@@ -13140,8 +13440,12 @@ Return
             msg$ + Chr$(10) + Chr$(10) + "# " + helpvaluestr
             msg$ + Chr$(10) + "$ " + Hex$(helpvalue)
             msg$ + Chr$(10) + "% " + Bin$(helpvalue)
-
             msg$ + Chr$(10) + Mkl$(helpvalue)
+          Else
+            If *var
+              msg$ = helptext$
+              msg$ + Chr$(10) + Chr$(10) + "(variable) " + PED_GetNewtypeOf{helptext$}
+            EndIf
           EndIf
           If msg$ <> ""
             log_Print{"showing context help: " + msg$}
@@ -13280,7 +13584,7 @@ Return
       strline$ = PED_Detoke{ped\ptrCurrentSourceData\CurrentSourceLine}
       actualword$ = PED_GetWordAtPos{strline$, ped\ptrCurrentSourceData\Column,True}
       log_Print{"doubleclick on ==>" + actualword$}
-      If WZ_CheckOpen{"WIN_LABELS"}
+      If WZ_IsOpen{"WIN_LABELS"}
         LabelListSearchString = StripLead$(LCase$(actualword$),32)
         If StrLeft(LabelListSearchString,1)="." Then LabelListSearchString = StrRight(LabelListSearchString,-1)
         Use Window WZID("WIN_LABELS")
@@ -14097,12 +14401,12 @@ Return
 .kill_menus
   If Peek.l(Addr GTMenuList(0))<>0
     If sourceWindow\win <> 0 Then ClearMenuStrip_ sourceWindow\win
-    If WZ_CheckOpen{"WIN_NEWTYPE"}            Then Use Window WZID("WIN_NEWTYPE")            : ClearMenuStrip_ WZWindowAddr
-    If WZ_CheckOpen{"WIN_LABELS"}             Then Use Window WZID("WIN_LABELS")             : ClearMenuStrip_ WZWindowAddr
-    If WZ_CheckOpen{"WIN_INSTRUCTIONBROWSER"} Then Use Window WZID("WIN_INSTRUCTIONBROWSER") : ClearMenuStrip_ WZWindowAddr
-    If WZ_CheckOpen{"WIN_LIBRARYBROWSER"}     Then Use Window WZID("WIN_LIBRARYBROWSER")     : ClearMenuStrip_ WZWindowAddr
-    If WZ_CheckOpen{"WIN_SEARCH"}             Then Use Window WZID("WIN_SEARCH")             : ClearMenuStrip_ WZWindowAddr
-    If WZ_CheckOpen{"WIN_SHORTCUTS"}          Then Use Window WZID("WIN_SHORTCUTS")          : ClearMenuStrip_ WZWindowAddr
+    If WZ_IsOpen{"WIN_NEWTYPE"}            Then Use Window WZID("WIN_NEWTYPE")            : ClearMenuStrip_ WZWindowAddr
+    If WZ_IsOpen{"WIN_LABELS"}             Then Use Window WZID("WIN_LABELS")             : ClearMenuStrip_ WZWindowAddr
+    If WZ_IsOpen{"WIN_INSTRUCTIONBROWSER"} Then Use Window WZID("WIN_INSTRUCTIONBROWSER") : ClearMenuStrip_ WZWindowAddr
+    If WZ_IsOpen{"WIN_LIBRARYBROWSER"}     Then Use Window WZID("WIN_LIBRARYBROWSER")     : ClearMenuStrip_ WZWindowAddr
+    If WZ_IsOpen{"WIN_SEARCH"}             Then Use Window WZID("WIN_SEARCH")             : ClearMenuStrip_ WZWindowAddr
+    If WZ_IsOpen{"WIN_SHORTCUTS"}          Then Use Window WZID("WIN_SHORTCUTS")          : ClearMenuStrip_ WZWindowAddr
     Free GTMenuList 0 : ped\menuStrip = 0
   EndIf
 Return
@@ -14257,12 +14561,12 @@ Return
   ped\menuStrip = Peek.l(Addr GTMenuList(0))
   If ped\menuStrip
     If sourceWindow\win <> 0                  Then                                             SetMenuStrip_ sourceWindow\win,ped\menuStrip
-    If WZ_CheckOpen{"WIN_SHORTCUTS"}          Then Use Window WZID("WIN_SHORTCUTS")          : SetMenuStrip_ WZWindowAddr,ped\menuStrip
-    If WZ_CheckOpen{"WIN_SEARCH"}             Then Use Window WZID("WIN_SEARCH")             : SetMenuStrip_ WZWindowAddr,ped\menuStrip
-    If WZ_CheckOpen{"WIN_NEWTYPE"}            Then Use Window WZID("WIN_NEWTYPE")            : SetMenuStrip_ WZWindowAddr,ped\menuStrip
-    If WZ_CheckOpen{"WIN_LABELS"}             Then Use Window WZID("WIN_LABELS")             : SetMenuStrip_ WZWindowAddr,ped\menuStrip
-    If WZ_CheckOpen{"WIN_INSTRUCTIONBROWSER"} Then Use Window WZID("WIN_INSTRUCTIONBROWSER") : SetMenuStrip_ WZWindowAddr,ped\menuStrip
-    If WZ_CheckOpen{"WIN_LIBRARYBROWSER"}     Then Use Window WZID("WIN_LIBRARYBROWSER")     : SetMenuStrip_ WZWindowAddr,ped\menuStrip
+    If WZ_IsOpen{"WIN_SHORTCUTS"}          Then Use Window WZID("WIN_SHORTCUTS")          : SetMenuStrip_ WZWindowAddr,ped\menuStrip
+    If WZ_IsOpen{"WIN_SEARCH"}             Then Use Window WZID("WIN_SEARCH")             : SetMenuStrip_ WZWindowAddr,ped\menuStrip
+    If WZ_IsOpen{"WIN_NEWTYPE"}            Then Use Window WZID("WIN_NEWTYPE")            : SetMenuStrip_ WZWindowAddr,ped\menuStrip
+    If WZ_IsOpen{"WIN_LABELS"}             Then Use Window WZID("WIN_LABELS")             : SetMenuStrip_ WZWindowAddr,ped\menuStrip
+    If WZ_IsOpen{"WIN_INSTRUCTIONBROWSER"} Then Use Window WZID("WIN_INSTRUCTIONBROWSER") : SetMenuStrip_ WZWindowAddr,ped\menuStrip
+    If WZ_IsOpen{"WIN_LIBRARYBROWSER"}     Then Use Window WZID("WIN_LIBRARYBROWSER")     : SetMenuStrip_ WZWindowAddr,ped\menuStrip
   EndIf
 Return
 
@@ -14377,7 +14681,7 @@ Even
   Gosub storeCurrentSourceData
 
   WZ_LockAllOpenWindows{}
-  If NOT WZ_CheckOpen{"WIN_PROJECT"}
+  If NOT WZ_IsOpen{"WIN_PROJECT"}
     WZWindow WZID("WIN_PROJECT"),?wzgui,192,-2,-2,-2,-2,WZID("WIN_PROJECT")
     Use Window WZID("WIN_PROJECT")
     WZ_InitTable{"WIN_PROJECT","PROJECTTABLE",2}
@@ -14503,9 +14807,8 @@ Even
           EndIf
         Next pc
 ;        Gosub activatesourcewindow                              ; replaced jsr by gosub to show that this is a BASIC subroutine  tomsmart1
-;        !asm
-;        JSR menu_quit
-;        !basic
+;        Gosub menu_quit
+
 
 ; -- TAB Versionmanagement --
 
@@ -14679,7 +14982,7 @@ Return
 Return
 
 .get_versiondata_from_gui:
-  If WZ_CheckOpen{"WIN_PROJECT"}
+  If WZ_IsOpen{"WIN_PROJECT"}
     If Peek.l(?comPtr_VersionInformation)
       version_code = WZInput("INTEGER_VER_MAJOR") LSL 24
       version_code + (WZInput("INTEGER_VER_MINOR") LSL 16)
@@ -14696,7 +14999,7 @@ Return
     If (Peek.l(?comPtr_VersionInformation)<>0) AND (Peek.l(?comPtr_NumberOfBuilds)<>0)
       version_code.l = Peek.l(Peek.l(?comPtr_VersionInformation))
       anz_builds.l   = Peek.l(Peek.l(?comPtr_NumberOfBuilds))
-      If WZ_CheckOpen{"WIN_PROJECT"}
+      If WZ_IsOpen{"WIN_PROJECT"}
         Use Window WZID("WIN_PROJECT")
         WZPrint "INTEGER_VER_MAJOR",version_code LSR 24
         WZPrint "INTEGER_VER_MINOR",(version_code LSL 8) LSR 24
@@ -14759,7 +15062,7 @@ Return
         curchar.b = Peek.b(ptrString)
         If curchar
           If curchar = $22 Then ped\inString = NOT ped\inString
-          ;-- here comes a tokens
+          ;-- here comes a token
           If (curchar < 0) AND (ped\inString = 0)
             toknum.w = Peek.w(ptrString)
             newstr + "\\1B[1m"
@@ -14841,7 +15144,7 @@ Return
 .open_menueditor
   Gosub set_pointer_busy
   WZ_LockAllOpenWindows{}                                                                                                                                                                                                                                
-  If NOT WZ_CheckOpen{"WIN_MENUED"}
+  If NOT WZ_IsOpen{"WIN_MENUED"}
     WZWindow WZID("WIN_MENUED"),?wzgui,255,-2,-2,-2,-2,WZID("WIN_MENUED")
   End If
   DEFTYPE.List menuedlist
@@ -15076,7 +15379,7 @@ Return
         char_after$ = Mid$(strline$,found_at + actualword_len,1)
         log_Print{"before <" + char_before$ + "> after <" + char_after$ + ">" + Str$(linecounter+1) + "  "  +strline$}
         If CheckChr{char_after$, ":;{"} OR (char_before$=".")
-          log_Print{"<"+actualword$ + "> in Zeile <" + Str$(linecounter + 1) + "> gefunden, jump!"}
+          log_Print{"<"+actualword$ + "> found in line <" + Str$(linecounter + 1) + ">, jump!"}
           found_to_jump = True
         EndIf
         skip_jump:
@@ -15154,6 +15457,7 @@ Return
     End If
     token = Peek.l(token)
   Wend
+
   If res$ = ""
     MOVE.l comPtr_MacroBase,a0:MOVE.l (a0),token@(a5)
     c.l = 0
@@ -15170,6 +15474,7 @@ Return
       token = Peek.l(token)
     Wend
   End If
+
   diag_addcodesize.l = 0:linesize.l = 0
   If res$<>""
        Use Window WZID("WIN_HELPDIAG")
@@ -15185,11 +15490,8 @@ Return
        Next
        linesize.l = 0
 
-       MOVEA.l textbufferaddr,A0
-       ADDA.w comWord_TextBufferOffset,A0
-       MOVE.l a0,a1
-       ADD.w #MAX_Columns,a1
-       SUBQ.l #1,a1
+       MOVEA.l textbufferaddr,A0 : ADDA.w comWord_TextBufferOffset,A0
+       MOVE.l a0,a1 : ADD.w #MAX_Columns,a1 : SUBQ.l #1,a1
       's2
        CMP.b #" ",(a1)
        BNE 's1
@@ -15277,32 +15579,90 @@ nopeek:  InitArgParse res$
 RTS
 
 
+
+.help_checkfortype_bas:
+  typestr$ = ""
+  tmpColumn.w = ped\ptrCurrentSourceData\Column - 2
+  If tmpColumn < 0 Then tmpColumn = 1
+                                                                                                                                                                                
+  lineAddr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset + ped\ptrCurrentSourceData\Column
+  lineAddrStore.l = lineAddr
+  log_Print{"check current char <" + Chr$(Peek.b(lineAddr)) + "> for type help"}
+
+  If Peek.b(lineAddr-1) = @"\" 
+    lineAddr - 1
+  Else
+    If Peek.b(lineAddr) <> @"\" 
+      log_Print{"no \ found nearby."}
+      Return
+    EndIf
+  EndIf
+ 
+  ; -- skip spaces 
+  Repeat                                                  
+    lineAddr - 1
+  Until Peek.b(lineAddr) <> @" " OR (lineAddr = lineAddrStore)
+
+  ; -- skip brackets if we have an array
+  If Peek.b(lineAddr) = @")"
+    log_Print{"skipping array brackets"}
+    Repeat
+      lineAddr - 1
+    Until Peek.b(lineAddr) = @"(" OR (lineAddr = lineAddrStore)
+  EndIf
+
+  ; -- skip characters not allowed for typedefs
+  actbyte.b = Peek.b(lineAddr)                            
+  If actbyte <> @"_" AND actbyte < @"0" AND (actbyte < @":" OR actbyte < @"A") OR actbyte > @"z"
+    log_Print{"no printable character found, exiting help routine for type"}
+    Goto exit_checkfortype
+  EndIf
+
+  ; -- skip illegal characters
+  type_again:
+  Repeat
+    lineAddr - 1
+  Until !IsIllegalChar{Peek.b(lineAddr)} OR (lineAddr = lineAddrStore)
+  If Peek.b(lineAddr) = @"*" Then Goto type_again
+
+  ; -- we have dot, that means the typename is right here!
+  If Peek.b(lineAddr) = @"."                            
+    log_Print{"we have a dot, so the typename is right here:" + Peeks$(lineAddr,10)+ "..."}
+    PED_UpdateDefinitionBrowser{#DEFBROWSER_SELECTTYPE,Peek.s(lineAddr),True}
+    Return
+  EndIf
+
+  ;----------------------------------------------------------------------------------
+  ; -- no dot we have to determine the type by searching for type definitions in previous code
+  log_Print{"no dot, searching for type defintions in previous code"}
+  typestr$ = ""
+  ; -- skip illegal characters again
+  lineAddr + 1
+  While !IsIllegalChar{Peek.b(lineAddr)} = False OR Peek.b(lineAddr) = @"*"
+    typestr$ + Chr$(Peek.b(lineAddr))
+    lineAddr + 1
+  Wend
+ 
+  log_Print{"this is what we have so far as the variable name: [" + typestr$ + "]"}
+  ;-- try to get the type
+  typestr$ = PED_GetDefinitionOf{typestr$}
+  If typestr$ <> ""
+    log_Print{"type [" + typestr$ + "] found, showing in Browser..."}
+    PED_UpdateDefinitionBrowser{#DEFBROWSER_SELECTTYPE, typestr$, True}
+  Else
+    If PED_GetVariableByName{typestr$}
+      log_Print{"variable found, showing in Browser..."}
+      PED_UpdateDefinitionBrowser{#DEFBROWSER_VARIABLE, typestr$, True}
+    EndIf
+  EndIf
+  If typestr$ = ""
+    log_Print{"no type or var information found."}
+  EndIf
+
+  exit_checkfortype:
+Return
+
 .help_checkfortype:
-;!basic
-;  curcharptr.l = Peek.l(?textbufferaddr) + ped\ptrCurrentSourceData\TextBufferOffset + ped\ptrCurrentSourceData\Column
-;  curchar.w = Peek.b(curcharptr)
-;  lastchar.w = Peek.b(curcharptr-1)
-;  log_Print{"check current char <" + Chr$(curchar) + "> for type help"}
-;  If lastchar = Asc("\")
-;    curcharptr - 1
-;  Else If curchar <> Asc("\")
-;    !asm
-;    RTS
-;  EndIf
-;
-;  While Peek.b(curchar-1) = $20
-;    curchar - 1
-;  Wend
-;
-;  If Peek.b(curchar) = Asc(")")
-;    While Peek.b(curchar-1) <> Asc("(")
-;      curchar - 1
-;    Wend
-;  EndIf
-;
-;!asm
-;RTS
-;
   MOVE.w comWord_Column,d1
   ;MOVE.w d1,columnstore
   SUBQ.w #2,d1
@@ -15327,13 +15687,13 @@ RTS
   SUBQ #1,a0
 
   typehelp2:
-  CMP.b #$20,-(a0)
+  CMP.b #$20,-(a0)              ;-- skip spaces
   BNE 't2b
     CMP.l a0,a1
     BNE typehelp2
  't2b
 
-  CMP.b #")",(a0)
+  CMP.b #")",(a0)               ;-- skip brackets
   BNE 't2
    'rb
       CMP.b #"(",-(a0)
@@ -15344,20 +15704,20 @@ RTS
     SUBQ.l #1,a0
  't2
 
-  CMP.b #"_",(a0)
+  CMP.b #"_",(a0)               ;-- 
   BEQ 'ok
-    CMP.b #$30,(a0)
+    CMP.b #$30,(a0)             ; <0
     BLT 'path
-      CMP.b #":",(a0)
+      CMP.b #":",(a0)           ; ":"
       BLT 'p2
-        CMP.b #"A",(a0)
+        CMP.b #"A",(a0)         ; <A
         BLT 'path
      'p2
-      CMP.b #"z",(a0)
+      CMP.b #"z",(a0)           ; >z
       BGT 'path
  'ok
 
-  MOVEQ #0,d0
+  MOVEQ #0,d0                   ; skip illegal characters
   LEA chartab,a1
   ADDQ.l #1,a0
  'x1
@@ -15366,19 +15726,20 @@ RTS
     BNE 'x
       BRA 'x1
    'x
-  CMP.b #"*",d0
+  CMP.b #"*",d0                 ; skip "*"
   BEQ 'x1
 
-  CMP.b #".",d0
+  CMP.b #".",d0                 ; if "." branch to show_newtypehelp
   BNE 't1
-    BRA typehelp
+    BRA show_newtypehelp
  't1
 
+  ;--------------------------------------
   MOVE.l a2,-(a7)
   LEA typestr,a2
   ADDQ.l #1,a0
  'x111
-    MOVE.b (a0)+,d0
+    MOVE.b (a0)+,d0            ; skip illegal characters and copy typename to "typestr"
     TST.b 0(a1,d0)
     BNE 'xc
    'x12
@@ -15393,19 +15754,21 @@ RTS
   JSR gettype
   TST.l d0
   BNE 'found
-    JSR findvar
+    JSR findvar                ; if no type found, search for a variable with that name in "typestr"
  'found
-
   MOVE.l (a7)+,a2
+
   LEA typestr,a0
-  BRA typehelp
- 'path
+BRA show_newtypehelp
+
+'path
   MOVE.l comPtr_CurrentSourceLine,a0
  'nl2
   MOVE.l 4(a0),d0
 ;  BEQ notypehelp
   RTS
 
+  ; never reached ???
   MOVE.l d0,a0
   LEA 9(a0),a1
  'l1
@@ -15414,7 +15777,7 @@ RTS
     CMP.b #$80,d0
     BNE 'l1
     MOVE.b (a1)+,d0
-    CMP.b #$ca,d0            ;find usepath
+    CMP.b #$ca,d0            ;find token "usepath"
   BNE 'l1
  'u1
     CMP.b #$20,(a1)+
@@ -15448,17 +15811,17 @@ RTS
   MOVE.l (a7)+,a2
 
   LEA typestr,a0
-  BRA typehelp
+  BRA show_newtypehelp
 
  'nl
     BRA 'nl2
     ;BRA notypehelp
     RTS
 
-    gettype:
-    MOVEM.l a0-a1,-(a7)
-    LEA typestr,a2
-  'nl2
+.gettype:
+  MOVEM.l a0-a1,-(a7)
+  LEA typestr,a2
+ 'nl2
     MOVE.l 4(a0),d0
     BEQ 'exit
     CLR.b deftypefound
@@ -15471,7 +15834,7 @@ RTS
   CMP.b #$80,d0
   BNE 'notok
     MOVE.b (a1)+,d0
-    CMP.b #$33,d0            ;find deftype
+    CMP.b #$33,d0            ;find token "DEFTYPE"
     BNE 'notok
       MOVE.b #1,deftypefound
  'notok
@@ -15491,13 +15854,13 @@ RTS
 
   ADDQ.l #1,a2
  'l2
-  MOVE.b (a2)+,d0
-  BEQ 'f1
-  CMP.b (a1)+,d0
-  BEQ 'l2
-  LEA typestr,a2
-  BRA 'l1
- 'f1
+    MOVE.b (a2)+,d0
+    BEQ 'f1
+      CMP.b (a1)+,d0
+      BEQ 'l2
+        LEA typestr,a2
+        BRA 'l1
+   'f1
  'r1
   CMP.b #$20,(a1)+
   BEQ 'r1
@@ -15543,7 +15906,8 @@ RTS
 ;.notypehelp
 .help_checkforif:
   *tempLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  nestcount.b = 1
+  nestcount.b = 1                                                                                                                                                                                                                                        
+  bytecount.w = 0
   Repeat
     iffound.b = 0
     *textline.l = *tempLine + 9
@@ -15587,7 +15951,7 @@ RTS
 Return
 
 .close_contexthelp
-  If WZ_CheckOpen{"WIN_CONTEXTHELP"}
+  If WZ_IsOpen{"WIN_CONTEXTHELP"}
     WZListRemove helpme.List
     WZCloseWindow WZID("WIN_CONTEXTHELP")
   EndIf
@@ -15602,7 +15966,7 @@ RTS
 RTS
 
 
-.findvar
+.findvar:       ; typestr: name to search for
   !basic
   If *varbase       
     fvar$ = Peek$(?typestr)
@@ -15613,9 +15977,9 @@ RTS
     While *vb
       a$ = Peek$(*vb + $13)
       If a$ = fvar$
-        it.l = Peek.l(*vb + 10)
+        it.l = Peek.l(*vb + 10)    ; get the newtype of that var
         If it
-          Poke$ ?typestr, Peek$(it + $b)
+          Poke$ ?typestr, Peek$(it + $b)    ; get the newtype of that var
         End If
       End If
       *vb = Peek.l(*vb)
@@ -15626,53 +15990,34 @@ RTS
   !asm
 RTS
 
-.typehelp
-  ;MOVE.l a0,d0
+.show_newtypehelp:   ; A0: Pointer to String with the found type
+  MOVE.l a0,d0
   !basic
-  ;i = PutD0 : str2$ = Peek$(i) : a$ = str2$
-  str2$ = tokname$ : a$ = str2$
-  log_Print{"typehelp [" + a$ + "]"}
+  i = PutD0 : newtypestr.s = Peek.s(i)
+  log_Print{"searching for newtype [" + newtypestr + "]"}
 
-  If NOT WZ_CheckOpen{"WIN_NEWTYPE"}
-    USEPATH wtemp
-    WZWindow WZID("WIN_NEWTYPE"),?wzgui,255,\type_x,\type_y,\type_w,\type_h,WZID("WIN_NEWTYPE")
-    WZ_AddMenuStrip{"WIN_NEWTYPE", ped\menuStrip}
-    If *varbase = 0
-        WTitle "Compile the source to see all vars!"
-    EndIf
-    Gosub activatesourcewindow
-  End If
-
-  Use Window WZID("WIN_NEWTYPE")
-  WZPrint "STRING2",&str2$
-  WZPrint "newtype_const",0
-  WZPrint "newtype_var",0
-  WZPrint "newtype_struct",1
-  ped\newtype_mode = 2
-  lev.l = 0
-  find.l = 0
-  Gosub newtype_selecttype
+  newtype_found.l = 0
   lev = 1
 
-  *nt.l = *newtypebase
+  *nt.l = Peek.l(*newtypebase)
   If *nt
-    *nt = Peek.l(*nt)
-    While *nt
-      b$ = Peek$(*nt + 11)
-      If b$ = a$
-        quicktype = 1 : Gosub newtype_listsubtype
-        find = 1 : Pop If : Pop While : Goto f1ab
-      End If
+    Repeat
+      If Peek$(*nt + 11) = newtypestr
+        quicktype = 1 
+        log_Print{"found newtype!"}        
+        PED_UpdateDefinitionBrowser{#DEFBROWSER_LISTSUBTYPE,newtypestr}
+        newtype_found = True
+      EndIf
       *nt = Peek.l(*nt)
-    Wend
+    Until *nt = 0 OR newtype_found
   EndIf
   quicktype = 0
-  f1ab:
   !asm
 RTS
 
 .open_librarybrowser:
-  If NOT WZ_CheckOpen{"WIN_LIBRARYBROWSER"}
+  If NOT WZ_IsOpen{"WIN_LIBRARYBROWSER"}                                                                                                                                                                                                              
+    USEPATH wtemp
     WZWindow WZID("WIN_LIBRARYBROWSER"),?wzgui,255,\lbrowser_x,\lbrowser_y,\lbrowser_w,\lbrowser_h,WZID("WIN_LIBRARYBROWSER")
     WZ_AddMenuStrip{"WIN_LIBRARYBROWSER", ped\menuStrip}
   EndIf
@@ -15839,7 +16184,7 @@ Return
 
 .open_instructionbrowser
   Gosub close_popupwindow
-  If NOT WZ_CheckOpen{"WIN_INSTRUCTIONBROWSER"} ; thilo: why this was commented out!?
+  If NOT WZ_IsOpen{"WIN_INSTRUCTIONBROWSER"} ; thilo: why this was commented out!?
     WZWindow WZID("WIN_INSTRUCTIONBROWSER"),?wzgui,255,wtemp\ibrowser_x,wtemp\ibrowser_y,wtemp\ibrowser_w,wtemp\ibrowser_h,WZID("WIN_INSTRUCTIONBROWSER")
     WZ_AddMenuStrip{"WIN_INSTRUCTIONBROWSER", ped\menuStrip}
     If search_instruction$<>"" Then WZPrint "INSTRUCTION_STRING",search_instruction$
@@ -16068,7 +16413,7 @@ Return
     Else
       a$ = UnRight$(a$,Len(poptok$)) 
     EndIf
-    ;log_Print{"inserting: " + a$}
+    ;log_Print{"inserting: " + a$} 
     Gosub insertstring
     PED_ShowMessage{a$ + " " + PED_GetIncludeHelp{a$} }    ; removed a$ test because it is not needed  tomsmart1
     Gosub close_popupwindow
@@ -16127,7 +16472,7 @@ Return
 
 
 .open_shortcuts
-  If NOT WZ_CheckOpen{"WIN_SHORTCUTS"}
+  If NOT WZ_IsOpen{"WIN_SHORTCUTS"}
     WZWindow WZID("WIN_SHORTCUTS"),?wzgui,255,wtemp\short_x,wtemp\short_y,wtemp\short_w,wtemp\short_h,WZID("WIN_SHORTCUTS")
     WZ_AddMenuStrip{"WIN_SHORTCUTS", ped\menuStrip}
 
@@ -16362,65 +16707,17 @@ Return
 Return
 
 
-
-
-.open_newtype:
-   WZWindow WZID("WIN_NEWTYPE"),?wzgui,255,wtemp\type_x,wtemp\type_y,wtemp\type_w,wtemp\type_h,WZID("WIN_NEWTYPE")
-   WZ_AddMenuStrip{"WIN_NEWTYPE", ped\menuStrip}
-
-   ;GTSetMenuChecked 0,5,9,On
-   Use Window WZID("WIN_NEWTYPE")
-   WZ_InitTable{"WIN_NEWTYPE","TYPETABLE",2}
-   WZ_SetTableTitle{"TYPETABLE","Type","Value"}
-   WZ_SetTableColors{"TYPETABLE",1,0,1,0}
-   WZ_SetPriority{"TYPETABLE",2,1}
-   WZ_DrawTable{"TYPETABLE"}
-
-   Select ped\newtype_mode
-
-     Case 0
-       WZPrint "STRING2",cstr$
-       WZPrint "NEWTYPE_CONST",1
-       WZPrint "NEWTYPE_VAR",0
-       WZPrint "NEWTYPE_STRUCT",0
-       Gosub newtype_listconsts
-
-     Case 1
-       WZPrint "STRING2",str2$
-       WZPrint "NEWTYPE_CONST",0
-       WZPrint "NEWTYPE_VAR",1
-       WZPrint "NEWTYPE_STRUCT",0
-       Gosub newtype_listvars
-
-     Case 2
-       WZPrint "STRING2",str2$
-       WZPrint "NEWTYPE_CONST",0
-       WZPrint "NEWTYPE_VAR",0
-       WZPrint "NEWTYPE_STRUCT",1
-
-       Gosub newtype_selecttype
-       a$ = ""
-       For i = 1 To lev:
-         If i>1
-            a$ = a$+"\"+pos$(i):
-         Else
-            a$ = a$+"."+pos$(i):
-         End If
-       Next
-       typestr$ = a$
-       WZTags #WZRD_TEXTPEN,AB3Pen(#AB3_cnewtype)
-       WZPrint "NEWTYPE_ENTRY",&a$
-   End Select
-
-   WZ_ActivateGadget{"STRING2"}   ; replaced to use the statement  tomsmart1 2012 03 09                                                                                                                                                                  
+.open_definitionbrowser:
+  PED_UpdateDefinitionBrowser{#DEFBROWSER_RESET,"",True}
+  WZ_ActivateGadget{"STRING2"}
 Return
 
 
-.event_newtype:
+.event_definitionbrowser:
+
   tev.l = WZ_CheckTableEvent{pedMessage\_Class}
   If tev = #WZTABLEEVENT_DOUBLECLICK
-    Select ped\newtype_mode
-
+    Select ped\definitionMode
       Case 0 ; Constants
         temp$ = WZ_GetCell{"TYPETABLE",WZ_Row{"TYPETABLE"},1}
         typestr$ = temp$
@@ -16428,68 +16725,69 @@ Return
         WZPrint "NEWTYPE_ENTRY",&typestr$
 
       Default
-        ;str2$ = "" : str2b$ = ""
-        ;WZPrint "STRING2",&str2$
         temp$ = WZ_GetCell{"TYPETABLE",WZ_Row{"TYPETABLE"},1}
+
         c2$ = WZ_GetCell{"TYPETABLE",WZ_Row{"TYPETABLE"},2}
-        If c2$<>"" Then c2$ = " ."+c2$
+        If c2$ <> "" Then c2$ = " ." + c2$
+
         c3$ = WZ_GetCell{"TYPETABLE",WZ_Row{"TYPETABLE"},3}
-        If c3$<>"" Then c3$ = " $"+c3$
+        If c3$ <> "" Then c3$ = " $" + c3$
+
         temp$ + c2$ + c3$
 
-        If ped\newtype_mode = 1 AND lev  = 0
+        If ped\definitionMode = 1 AND lev  = 0
           i = SearchEnd (temp$,@".",1)
-          If lev = 0 Then var$ = Left$(temp$,i-1)
+          If lev = 0 Then var$ = Left$(temp$,i - 1)
           temp$ = Mid$(temp$,i + 1)
-        End If
+        EndIf
 
-        If ped\newtype_mode <> 1 Then var$ = ""
+        If ped\definitionMode <> 1 Then var$ = ""
         a$ = temp$
+
         lev = lev + 1 : If lev > 13 Then lev = 13
-        pos2(lev) = 0
-        find = 0
-        pos2(lev-1) = WZ_Row{"TYPETABLE"} ;WZListPos("list2")
+
+        pos2(lev) = 0        
+        pos2(lev-1) = WZ_Row{"TYPETABLE"}
+
         t$ = Left$(a$,Instr(a$," ")-1)
         If lev > 1
-          i = SearchEnd(a$,Asc("."),1)
-          i2 = SearchEnd(a$,Asc("$"),1)
-          a$ = Mid$(a$,i+1,i2-i-3)
-        End If                                                                                                                                                                                                                                           
-        
-        *nt.l = *newtypebase
-        If *nt
-          *nt = Peek.l(*nt)
-          While *nt
-            b$ = Peek$(*nt + 11)
-            If b$ = a$
-              ;*nt2(lev) = Peek.l(*nt+4)
-              Gosub newtype_listsubtype
-              find = 1
-              Pop If : Goto f1a
-            End If
-            *nt = Peek.l(*nt)
+          i = SearchEnd(a$, @".", 1)
+          i2 = SearchEnd(a$, @"$", 1)
+          a$ = Mid$(a$, i+1, i2-i-3)
+        EndIf
 
-           f1a:
-          Wend
-        Else
+        newtype_found = 0
+        *nt.l = *newtypebase
+        If *nt = 0
           error{"newtypebase = NULL => GURU!!!"}
-        End If
-        If find = 0
-          lev = lev - 1 ;:WZPrint "list2",-1:
+        Else
+          *nt = Peek.l(*nt)          
+          While *nt AND newtype_found = False
+            If Peek$(*nt + 11) = a$
+              log_Print{"Found the type in newtypes-list [" + a$ + "]"}
+              PED_UpdateDefinitionBrowser{#DEFBROWSER_LISTSUBTYPE, a$}
+              newtype_found = 1
+            EndIf
+            *nt = Peek.l(*nt)
+          Wend
+        EndIf
+
+        If newtype_found = 0
+          lev = lev - 1
           a$ = ""
-          For i = 1 To lev:
+          For i = 1 To lev
             If i > 1
-               a$ = a$ + "\" + pos$(i):
+               a$ = a$ + "\" + pos$(i)
             Else
-               a$ = a$ + "." + pos$(i):
-            End If
+               a$ = a$ + "." + pos$(i)
+            EndIf
           Next
           i = Instr(temp$," ")
           temp$ = Replace$ (temp$,"*","")
           typestr$ = var$ + a$ + "\" + Left$(temp$,i)
           WZTags #WZRD_TEXTPEN,AB3Pen(#AB3_cnewtype)
           WZPrint "NEWTYPE_ENTRY",&typestr$
-        End If
+        EndIf
 
     End Select
 
@@ -16498,43 +16796,38 @@ Return
   Select pedMessage\_Class
 
     Case #IDCMP_INTUITICKS
-      Select ped\newtype_mode
+      Select ped\definitionMode
 
         Case 0
-          cpos.l = 0
-          cpos.l = WZ_Column{"TYPETABLE"} ;WZListPos ("list2")
-          cstr$ = WZGetString("STRING2")
-          If cstr$<>cstr2$
-            cstr2$ = cstr$
-            ;cpos = 0
-            Gosub newtype_listconsts
-          End If
+          ped\currentConstantStr = WZGetString("STRING2")
+          If ped\currentConstantStr <> ped\lastConstantStr
+            ped\lastConstantStr = ped\currentConstantStr
+            PED_UpdateDefinitionBrowser{#DEFBROWSER_CONSTANT, ped\currentConstantStr,False}
+          EndIf
 
         Case 1
-          str2$ = WZGetString("STRING2")
-          If str2$<>str2b$
-            str2b$ = str2$
+          ped\currentVariableStr = WZGetString("STRING2")
+          If ped\currentVariableStr <> ped\lastVariableStr
+            ped\lastVariableStr = ped\currentVariableStr
             pos2(lev) = 0
-            Gosub newtype_listvars
-          End If
+            PED_UpdateDefinitionBrowser{#DEFBROWSER_VARIABLE, ped\currentVariableStr,False}
+          EndIf
 
         Case 2
-          str2$ = WZGetString("STRING2")
-          If str2$<>str2b$
-            str2b$ = str2$
-            find.l = 0
+          ped\currentNewtypeStr = WZGetString("STRING2")
+          If ped\currentNewtypeStr <> ped\lastNewtypeStr
+            ped\lastNewtypeStr = ped\currentNewtypeStr
+            newtype_found.l = 0
             pos2(lev) = 0
-            p$ = str2$
-            Gosub newtype_selecttype
-          End If
-
+            PED_UpdateDefinitionBrowser{#DEFBROWSER_SELECTTYPE, ped\currentNewtypeStr,False}
+          EndIf
       End Select
 
     Case #IDCMP_CLOSEWINDOW
-      Gosub close_newtype
+      Gosub close_definitionbrowser
 
     Case #IDCMP_VANILLAKEY:
-      If pedMessage\_Code = #VANILLAKEY_ESC Then Gosub close_newtype
+      If pedMessage\_Code = #VANILLAKEY_ESC Then Gosub close_definitionbrowser
       If pedMessage\_Code = #VANILLAKEY_TAB Then Gosub activatesourcewindow
 
 
@@ -16545,7 +16838,7 @@ Return
           a$ = typestr$
           If Instr(a$,"\",StrLen(a$)-1)<>0 Then a$ = Left$(a$,StrLen(a$)-1)
           If quicktype Then a$ = Mid$(typestr$,Instr (typestr$,"\")+1)
-          If ped\newtype_mode <> 1 Then a$ = Replace$(a$,"*","")
+          If ped\definitionMode <> 1 Then a$ = Replace$(a$,"*","")
           Gosub insertstring
           Gosub activatesourcewindow
 
@@ -16554,26 +16847,30 @@ Return
 
         Case "parent" :
           quicktype = 0
-          If ped\newtype_mode = 0
+          If ped\definitionMode = 0
           Else
             If lev Then lev = lev - 1
             If lev = 0
-              If ped\newtype_mode = 1
-                Gosub newtype_listvars
+              If ped\definitionMode = 1
+                PED_UpdateDefinitionBrowser{#DEFBROWSER_VARIABLE,"",False}
               Else
-                If str2$<>"" Gosub newtype_selecttype Else Gosub newtype_listtype
-              End If
+                If ped\currentNewtypeStr <> ""
+                  PED_UpdateDefinitionBrowser{#DEFBROWSER_SELECTTYPE, ped\currentNewtypeStr}
+                Else 
+                  PED_UpdateDefinitionBrowser{#DEFBROWSER_RESETTYPE}
+                EndIf
+              EndIf
             Else
-              a$ = pos$(lev)
-              Gosub newtype_listsubtype
-            End If
+              PED_UpdateDefinitionBrowser{#DEFBROWSER_LISTSUBTYPE, pos$(lev)}
+            EndIf
+
             a$ = "" : pos$(lev+1) = ""
             For i = 1 To lev:
               If i > 1
-                a$ = a$+"\"+pos$(i):
+                a$ = a$ + "\" + pos$(i)
               Else
-                a$ = a$+"."+pos$(i):
-              End If
+                a$ = a$ + "." + pos$(i)
+              EndIf
             Next
             typestr$ = a$
             WZTags #WZRD_TEXTPEN,AB3Pen(#AB3_cnewtype)
@@ -16581,29 +16878,33 @@ Return
           End If
 
         Case "clear":
-          If ped\newtype_mode = 0
-            cstr$ = "":
-            WZPrint "STRING2",&cstr$
-          Else
-            str2$ = "":
-            Gosub newtype_selecttype
-            WZPrint "STRING2",&str2$
-          End If
+          Select ped\definitionMode
+          Case 0
+            ped\currentConstantStr = ""
+            WZPrint "STRING2",&ped\currentConstantStr
+          Case 1
+            ped\currentVariableStr = ""
+            WZPrint "STRING2",&ped\currentVariableStr
+          Case 2
+            ped\currentNewtypeStr = ""
+            WZPrint "STRING2",&ped\currentNewtypeStr
+          End Select
+          PED_UpdateDefinitionBrowser{#DEFBROWSER_RESET}
 
         Case "newtype_const"
-          ped\newtype_mode = 0 : Gosub newtype_updatelist
+          PED_UpdateDefinitionBrowser{#DEFBROWSER_CONSTANT,"",False}
 
         Case "newtype_var"
-          ped\newtype_mode = 1 : Gosub newtype_updatelist
+          PED_UpdateDefinitionBrowser{#DEFBROWSER_VARIABLE,"",False}
 
         Case "newtype_struct"
-          ped\newtype_mode = 2 : Gosub newtype_updatelist
+          PED_UpdateDefinitionBrowser{#DEFBROWSER_NEWTYPE,"",False}
 
       End Select
   End Select
 Return
 
-.close_newtype:
+.close_definitionbrowser:
   wtemp\type_x = WindowX
   wtemp\type_y = WindowY
   wtemp\type_w = WindowWidth
@@ -16611,310 +16912,6 @@ Return
   WZ_KillTable{"TYPETABLE"}
   WZ_CloseWindowAndRemoveMenu{"WIN_NEWTYPE"}                                                                                                                                                                                                             
 Return
-
-
-.newtype_updatelist
-  str2b$ = ""
-  WZ_KillTable{"TYPETABLE"}
-
-  Select ped\newtype_mode
-
-    Case 0
-      WZPrint "STRING2",cstr$
-      WZ_InitTable{"WIN_NEWTYPE","TYPETABLE",2}
-      WZ_SetTableTitle{"TYPETABLE","Identifier","Value"}
-      WZ_SetTableColors{"TYPETABLE",1,0,1,0}
-      WZ_SetPriority{"TYPETABLE",2,1}
-      WZ_DrawTable{"TYPETABLE"}
-
-      ptr.l = &str2b$
-      If ptr>4096
-        WZPrint "NEWTYPE_ENTRY",&str2b$
-      Else
-        error{"Pointer to str2b$ is not valid! \\22"+str2b$+"\\22"}
-      End If
-
-      Gosub newtype_listconsts
-
-    Case 1
-      WZPrint "STRING2",str2$
-      WZ_InitTable{"WIN_NEWTYPE","TYPETABLE",2}
-      WZ_SetTableTitle{"TYPETABLE","Identifier","Value"}
-      WZ_SetTableColors{"TYPETABLE",1,0,1,0}
-      WZ_SetPriority{"TYPETABLE",1,1}
-      WZ_DrawTable{"TYPETABLE"}
-      ptr.l = &str2$
-      If ptr>4096
-        WZPrint "NEWTYPE_ENTRY",&str2$
-      Else
-        error{"1: Pointer to str2$ is not valid! \\22"+str2$+"\\22"}
-      End If
-
-      Gosub newtype_listvars
-
-    Case 2
-      WZPrint "STRING2",str2$
-      ptr.l = &str2$
-      If ptr>4096
-        WZPrint "NEWTYPE_ENTRY",&str2$
-      Else
-        error{"2: Pointer to str2$ is not valid! \\22"+str2$+"\\22"}
-      End If
-
-      Gosub newtype_selecttype
-      a$ = ""
-      For i = 1 To lev:
-        If i>1
-           a$ = a$+"\"+pos$(i):
-        Else
-           a$ = a$+"."+pos$(i):
-        End If
-      Next
-      typestr$ = a$
-      WZTags #WZRD_TEXTPEN,AB3Pen(#AB3_cnewtype)
-      WZPrint "NEWTYPE_ENTRY",&a$
-
-  End Select
-Return
-
-
-.newtype_listvars
-  WZ_ClearTable{"TYPETABLE"}
-  InitArgParse str2$
-  word1$ = NextArg$
-  word2$ = NextArg$
-  If *varbase
-    *vb = Peek.l(*varbase)
-    While *vb
-      a$ = Peek$(*vb + $13)
-      If Peek.w(*vb + 6) AND 2 Then arr$ = "()" Else arr$ = ""
-      If Peek.w(*vb + 6) AND 1 Then poin$ = "*" Else poin$ = ""
-      If Instr(a$,word1$)
-        If Instr(a$,word2$)
-          it.l = Peek.l(*vb + 10)
-          WZ_AddRow{"TYPETABLE",poin$ + a$ + arr$,Peek$(it + $b)}
-        EndIf
-      End If
-      *vb = Peek.l(*vb)
-    Wend
-  Else
-    error{"*varbase = NULL => GURU!!!"}
-  End If
-  WZ_TableSort{"TYPETABLE",1}
-  WZ_UpdateTable{"TYPETABLE"}
-Return
-
-
-.newtype_listconsts
-  WZ_ClearTable{"TYPETABLE"}
-  If FLen(cstr$) => 2
-    log_Print{"** listconstants:" + cstr$}
-    InitArgParse cstr$
-    word1$ = NextArg$
-    word2$ = NextArg$
-
-    *cb.l = *constantbase
-    If *cb
-      *cb = Peek.l(*cb)
-      While *cb
-        a$ = Peek$(*cb + $13)
-        If Instr (a$,word1$) Then If Instr(a$,word2$)
-          WZ_AddRow{"TYPETABLE",a$,"$" + Hex$(Peek.l(*cb + 8))}
-        End If
-        *cb = Peek.l(*cb)
-      Wend
-    Else
-      error{"constantbase = NULL => GURU!!!"}
-    End If
-
-  End If
-
-  WZ_TableSort{"TYPETABLE",1}
-  WZ_UpdateTable{"TYPETABLE"}
-Return
-
-
-.newtype_listtype                   ;called when press parent
-  lev = 0
-  WZ_KillTable{"TYPETABLE"}
-  WZ_InitTable{"WIN_NEWTYPE","TYPETABLE",1}
-  WZ_SetTableColors{"TYPETABLE",1,0,1,0}
-  WZ_SetTableTitle{"TYPETABLE","Identifier"}
-  WZ_DrawTable{"TYPETABLE"}
-
-  *nt = *newtypebase
-  If *nt
-    *nt = Peek.l(*nt)
-    While *nt
-      a$ = Peek$(*nt + 11)
-      WZ_AddRow{"TYPETABLE",a$}
-      *nt = Peek.l(*nt)
-    Wend
-  Else
-    error{"newtypebase = NULL => GURU!!!"}
-  End If
-
-;  WZ_TableSort{"TYPETABLE",1}
-  WZ_UpdateTable{"TYPETABLE"}
-Return
-
-
-.newtype_selecttype:
-
-  WZ_KillTable{"TYPETABLE"}
-  If lev = 0
-    WZ_InitTable{"WIN_NEWTYPE","TYPETABLE",1}
-    WZ_SetTableTitle{"TYPETABLE","Identifier"}
-    WZ_SetTableColors{"TYPETABLE",1,0,1,0}
-    WZ_DrawTable{"TYPETABLE"}
-  Else
-    WZ_InitTable{"WIN_NEWTYPE","TYPETABLE",3}
-    WZ_SetTableTitle{"TYPETABLE","Identifier","Type","Offset"}
-    WZ_SetTableColors{"TYPETABLE",1,0,1,0}
-    WZ_SetPriority{"TYPETABLE",3,2,2}
-    WZ_DrawTable{"TYPETABLE"}
-  EndIf
-
-  i = 0
-  InitArgParse p$
-  word1$ = NextArg$
-  word2$ = NextArg$
-  If lev
-    *nt = *newtypebase
-    If *nt
-;       *nt = *nt2(lev)
-;       While *nt
-;       If Peek.w(*nt+6) = 1 Then b$ = "*" Else b$ = ""
-;         b$ = b$ + Peek$(*nt+15)
-;         c$ = Peek$(Peek.l(*nt+10)+11)
-;         If Instr(b$,word1$) Then If Instr(b$,word2$)
-;         WZ_AddRow{"TYPETABLE",b$,c$,"$"+Right$(Hex$(Peek.w(*nt+4)),4)}
-;       End If
-;      b$ + "  ."+c$
-;      *nt = Peek.l(*nt)
-     If *nt
-          *nt = Peek.l(*nt)
-        Else
-          error{"newtypebase = NULL => GURU!!!"}
-        End If
-;      Wend
-        While *nt
-        b$ = Peek$(*nt+11)
-        If postype$(lev) = b$
-                  *nt3.l = Peek.l(*nt+4):
-                  While *nt3
-                  If Peek.w(*nt3+6) = 1 Then b$ = "*" Else b$ = ""
-                    b$ = b$ + Peek$(*nt3+15)
-                    c$ = Peek$(Peek.l(*nt3+10)+11)
-                    ;If Instr(b$,word1$) Then If Instr(b$,word2$)
-                    nt_value.w = Peek.w(*nt3+4)
-                    nt_displayvalue.s = "$"+Right$(Hex$(nt_value),4) + "(" + Str$(nt_value) + ")"
-                    ;nt_displayvalue.s = Str$(nt_value)
-                    WZ_AddRow{"TYPETABLE",b$,c$,nt_displayvalue}
-                    ;End If
-                 b$ + "  ."+c$
-                 *nt3 = Peek.l(*nt3)
-                 Wend
-                 *nt = 0:Goto out2
-        EndIf
-        *nt = Peek.l(*nt)
-out2        Wend
-        WZ_TableSort{"TYPETABLE",3}
-        WZ_UpdateTable{"TYPETABLE"}
-    End If
-  Else
-    *nt = *newtypebase
-    If *nt
-      *nt = Peek.l(*nt)
-    Else
-      error{"newtypebase = NULL => GURU!!!"}
-    End If
-   While *nt
-     b$ = Peek$(*nt+11)
-     If Instr(b$,word1$) Then If Instr(b$,word2$)
-       WZ_AddRow{"TYPETABLE",b$,""}
-       find = find + 1
-       f$ = b$
-     EndIf
-     *nt = Peek.l(*nt)
-   Wend
-   WZ_TableSort{"TYPETABLE",1}
-   WZ_UpdateTable{"TYPETABLE"}
-  End If
-Return
-
-
-.newtype_listsubtype
-  WZ_KillTable{"TYPETABLE"}
-  If lev = 0
-    WZ_InitTable{"WIN_NEWTYPE","TYPETABLE",1}
-    WZ_SetTableTitle{"TYPETABLE","Identifier"}
-    WZ_SetTableColors{"TYPETABLE",1,0,1,0}
-    WZ_DrawTable{"TYPETABLE"}
-  Else
-    WZ_InitTable{"WIN_NEWTYPE","TYPETABLE",3}
-    WZ_SetTableTitle{"TYPETABLE","Identifier","Type","Offset"}
-    WZ_SetTableColors{"TYPETABLE",1,0,1,0}
-    WZ_SetPriority{"TYPETABLE",3,2,2}
-    WZ_DrawTable{"TYPETABLE"}
-  EndIf
-  postype$(lev)=a$
-  If lev > 1
-    pos$(lev) = t$
-  Else
-    pos$(lev) = a$
-  End If
-  a$ = ""
-  For i = 1 To lev:
-    If i > 1
-      a$ = a$+"\"+pos$(i):
-    Else
-      a$ = a$+"."+pos$(i):
-    End If
-  Next
-  typestr$ = a$
-  WZTags #WZRD_TEXTPEN,AB3Pen(#AB3_cnewtype)
-  WZPrint "NEWTYPE_ENTRY",&a$
-  WZ_ClearTable{"TYPETABLE"}
-  i = 0
-;  *nt = *nt2(lev)
-;  While *nt
-;    If Peek.w(*nt+6) = 1 Then a$ = "*" Else a$ = ""
-;    a$ = a$ + Peek$(*nt+15)
-;    c$ = Peek$(Peek.l(*nt+10)+11)
-;    WZ_AddRow{"TYPETABLE",a$,c$,"$" + Right$(Hex$(Peek.w(*nt+4)),4)}
-;    a$ = a$ + " ."+c$
-;    *nt = Peek.l(*nt)
-;    i = i + 1
-;  Wend
-  *nt = *newtypebase
-  If *nt
-    *nt = Peek.l(*nt)
-    Format ""
-    While *nt
-      b$ = Peek$(*nt+11)
-      If postype$(lev) = b$
-        *nt3.l = Peek.l(*nt+4)
-        While *nt3
-          If Peek.w(*nt3+6) = 1 Then b$ = "*" Else b$ = ""
-          b$ = b$ + Peek$(*nt3+15)
-          c$ = Peek$(Peek.l(*nt3+10)+11)
-          ;If Instr(b$,word1$) Then If Instr(b$,word2$)
-          nt_value.w = Peek.w(*nt3+4)
-          nt_displayvalue.s = "$"+Right$(Hex$(nt_value),4) + "(" + Str$(nt_value) + ")"
-          WZ_AddRow{"TYPETABLE",b$,c$,nt_displayvalue}
-          ;End If
-          b$ + "  ." + c$
-          *nt3 = Peek.l(*nt3)
-        Wend
-      EndIf
-      *nt = Peek.l(*nt)
-    Wend
-    WZ_TableSort{"TYPETABLE",3}
-    WZ_UpdateTable{"TYPETABLE"}
-  End If
-Return
-
 
 .event_diag:
   Select pedMessage\_Class
@@ -16926,7 +16923,7 @@ Return
             For i =  1 To 12
               diag_val$(i) = WZGetString("val" + UStr$(i))
             Next
-            Gosub diag_close
+            Gosub close_diag
             Gosub activatesourcewindow
             !PED_CursorOff
 
@@ -16971,17 +16968,17 @@ Return
       End Select
 
     Case #IDCMP_CLOSEWINDOW
-      Gosub diag_close
+      Gosub close_diag
 
     Case #IDCMP_VANILLAKEY
-      If pedMessage\_Code = #VANILLAKEY_ESC Then Gosub diag_close
+      If pedMessage\_Code = #VANILLAKEY_ESC Then Gosub close_diag
 
   End Select
 
 Return
 
 
-.diag_close
+.close_diag:
   wtemp\diag_x = WindowX
   wtemp\diag_y = WindowY
   wtemp\diag_w = WindowWidth
@@ -17022,7 +17019,7 @@ Return
     log_Print{"opening library browser"}
     Gosub open_librarybrowser
   Else
-    If WZ_CheckOpen{"WIN_LIBRARYBROWSER"}
+    If WZ_IsOpen{"WIN_LIBRARYBROWSER"}
       WZ_KillTable{"FUNCTIONSTABLE"}
       WZ_CloseWindowAndRemoveMenu{"WIN_LIBRARYBROWSER"}                                                                                                                                                                                                  
     EndIf
@@ -17032,7 +17029,7 @@ Return
     log_Print{"opening instruction browser"}
     Gosub open_instructionbrowser
   Else
-    If WZ_CheckOpen{"WIN_INSTRUCTIONBROWSER"}
+    If WZ_IsOpen{"WIN_INSTRUCTIONBROWSER"}
       WZ_KillTable{"INSTRUCTIONTABLE"}
       WZ_CloseWindowAndRemoveMenu{"WIN_INSTRUCTIONBROWSER"}                                                                                                                                                                                              
     EndIf
@@ -17041,7 +17038,7 @@ Return
   If \diag_on
     Gosub open_helpdiag
   Else
-    If WZ_CheckOpen{"WIN_HELPDIAG"}
+    If WZ_IsOpen{"WIN_HELPDIAG"}
       WZ_CloseWindowAndRemoveMenu{"WIN_HELPDIAG"}                                                                                                                                                                                                        
       diag = 0
     EndIf
@@ -17049,9 +17046,9 @@ Return
 
   If \click_on
     log_Print{"opening label window"}
-    Gosub open_labelwindow
+    Gosub open_sourcebrowser
   Else
-    If WZ_CheckOpen{"WIN_LABELS"}
+    If WZ_IsOpen{"WIN_LABELS"}
       WZ_CloseWindowAndRemoveMenu{"WIN_LABELS"}                                                                                                                                                                                                          
     EndIf
   End If
@@ -17059,7 +17056,7 @@ Return
   If \short_on
     Gosub open_shortcuts
   Else
-    If WZ_CheckOpen{"WIN_SHORTCUTS"}
+    If WZ_IsOpen{"WIN_SHORTCUTS"}
       WZ_KillTable{"SHORTCUTS"}
       WZ_CloseWindowAndRemoveMenu{"WIN_SHORTCUTS"}                                                                                                                                                                                                       
     EndIf
@@ -17067,9 +17064,9 @@ Return
 
   If \type_on
     log_Print{"opening newtype window"}
-    Gosub open_newtype
+    Gosub open_definitionbrowser
   Else
-    If WZ_CheckOpen{"WIN_NEWTYPE"}
+    If WZ_IsOpen{"WIN_NEWTYPE"}
       WZ_KillTable{"TYPETABLE"}
       WZ_CloseWindowAndRemoveMenu{"WIN_NEWTYPE"}                                                                                                                                                                                                         
     EndIf
@@ -17110,7 +17107,7 @@ Return
 
 
 
-.open_labelwindow:
+.open_sourcebrowser:
   WZWindow WZID("WIN_LABELS"),?wzgui,255,\click_x,\click_y,\click_w,\click_h,WZID("WIN_LABELS")
   WZ_AddMenuStrip{"WIN_LABELS", ped\menuStrip}
 
@@ -17124,7 +17121,7 @@ Return
 Return
 
 
-.event_label:
+.event_sourcebrowser:
   Select pedMessage\_Class
     Case #IDCMP_INTUITICKS
       ;all activities of the window like mouse move
@@ -17140,11 +17137,11 @@ Return
       End If
 
     Case #IDCMP_VANILLAKEY:
-      If EventCode = #VANILLAKEY_ESC Then Gosub close_label
+      If EventCode = #VANILLAKEY_ESC Then Gosub close_sourcebrowser
       If EventCode = #VANILLAKEY_TAB Then Gosub activatesourcewindow
 
     Case #IDCMP_CLOSEWINDOW
-      Gosub close_label
+      Gosub close_sourcebrowser
 
     Case #IDCMP_IDCMPUPDATE
       Select LCase$(WZGadName)
@@ -17235,7 +17232,7 @@ Return
   End Select
 Return
 
-.close_label:
+.close_sourcebrowser:
   wtemp\click_x = WindowX
   wtemp\click_y = WindowY
   wtemp\click_w = WindowWidth
@@ -17246,7 +17243,7 @@ Return
 
 
 .navigate_to_previous_label:
-  If WZ_CheckOpen{"WIN_LABELS"}
+  If WZ_IsOpen{"WIN_LABELS"}
     LabelList_PreSelectItemNumber = LabelList_PreSelectItemNumber-1
     If LabelList_PreSelectItemNumber<0 Then LabelList_PreSelectItemNumber = 0
     LabelList_NewSelectItemNumber = LabelList_PreSelectItemNumber
@@ -17259,7 +17256,7 @@ Return
 Return 
 
 .navigate_to_next_label:
-  If WZ_CheckOpen{"WIN_LABELS"}
+  If WZ_IsOpen{"WIN_LABELS"}
     LabelList_PreSelectItemNumber = LabelList_PreSelectItemNumber+1
     If LabelList_PreSelectItemNumber = >WZListItems (list_labels) Then LabelList_PreSelectItemNumber = WZListItems (list_labels)-1
     LabelList_NewSelectItemNumber = LabelList_PreSelectItemNumber
@@ -17819,10 +17816,6 @@ RTS
 Return
 
 
-.coutclose:
-  !coutclose
-Return
-
 ;####################################################################
 ; BEGIN  routines compiler settings window  tomsmart 2012 03 21     #
 ;####################################################################
@@ -18222,7 +18215,11 @@ Return
 Return
 
 
-.Update_CompileStatus_Window:                                             ; update the compile status window
+
+;######################################################################
+;# END          routines for the compile status Window                #
+;######################################################################
+.com_updateCompileWindow:                                             ; update the compile status window
   !regs2stack
   !basic
   If CompileStatusWindow_Pointer <> 0                                     ; check if window is open
@@ -18279,10 +18276,6 @@ RTS
     CompileStatus_CalculatedProcent_Pointer = 0                         ;set pointer to 0 because we close the window
   EndIf
 Return
-;######################################################################
-;# END          routines for the compile status Window                #
-;######################################################################
-
 
 ; ---------------------------------------------------------------------
 ; Declarations of Variables
@@ -18333,7 +18326,6 @@ convert               Dc.b 0        ; > import_start
 tempbuf               Ds.b 260      ; > import_start
 instring              Dc.b 0        ; > import_start
 instring2             Dc.b 0        ; > parse_line
-instring3             Dc.b 0        ; > detokenize_line
 noDetokenizing:       Ds.w 1
 instru                Ds.w 1
 tokenCache            Ds.l 32769
