@@ -8,7 +8,7 @@
 ; CreateIcon      = 0
 ; Residents       = "all_new.res"
 ; 
-; Compiler 
+; Compiler
 ; -------------------------------------------------------
 ; StringBuffer    = 64000
 ; MakeSmallest    = 1
@@ -46,8 +46,6 @@
 ; Max Bank        = 5
 ; Max MenuList    = 5
 ; Max GTList      = 25
-; Max Stencil     = 5
-; Max XBSound     = 10
 ; Max Palette     = 4
 ; Max BitMap      = 1
 ; Max Screen      = 5
@@ -75,6 +73,8 @@
 ; Max Anim        = 10
 ; Max NChunky     = 50
 ; Max Chunky      = 20
+; Max Stencil     = 5
+; Max XBSound     = 10
 ; /XTRA
 ;///////////////////////////////////////////////////////////////////////////////
 ;/ Name: PED                                                                   /
@@ -329,7 +329,7 @@ SYNTAX 6
 XINCLUDE "/BlitzLibs/Residents/blitzbasic/libnums.ab3"
 XINCLUDE "/Shared/library_offsets.ab3"      ; only for Macro newalloc
 XINCLUDE "/Shared/common.ab3"
-XINCLUDE "/Shared/preprocessor.include.ab3"
+XINCLUDE "/Shared/preprocessor.include.ab3" 
 XINCLUDE "/Shared/ted.include.ab3"
 DEFTYPE.tokendata *tokenbase
 DEFTYPE.l *macrobase
@@ -926,18 +926,9 @@ Macro stack2regs
   MOVEM.l (a7)+,d0-d7/a0-a6
 End Macro
 
-Macro newfree      ; A1: memoryentry in Pool
-  MOVE.l _execbase,a6
-  MOVE.l comPtr_MemPool,a0
-  MOVE.l -(a1),d0
-  JSR _FreePooled(a6)                                      ; a0: poolHeader, a1: memory, d0: memsize
-End Macro
-
-
 Macro checkOption ; 1:variable, 2:optionValue
   (`1 AND `2)
 End Macro
-
 
 Macro PED_UpdateTextBufferOffset
   ped\ptrCurrentSourceData\TextBufferOffset = ped\ptrCurrentSourceData\DisplayLine * #MAX_Columns
@@ -1062,6 +1053,17 @@ Statement PED_FreeMem{memptr.l}
 SHARED ped
   FreePooled_ ped\mempool,memptr-4,Peek.l(memptr-4)
 End Statement
+
+Statement PED_ClearTokencache{}
+SHARED ped
+  GetReg A1, ped\tokenCache
+  MOVE.l #32767,d0
+  'l11:
+    CLR.l (a1)+
+  DBF d0,'l11
+'l10:
+End Statement
+
 
 Statement PED_ClearTextbuffer{}
 SHARED sourceWindow
@@ -2361,7 +2363,7 @@ SHARED *tokenbase, ped
 
   ;log_Print{"searching for token " + Hexw$(_tn) + ", libnum " + Hexb$(_libnum),#log_debug}
 
-  *token.tokendata = Peek.l(?tokenCache + _tn * 4)
+  *token.tokendata = Peek.l(ped\tokenCache + _tn * 4)
   If *token
     ;log_Print{"token " + Hexw$(tokenNumber) + ": " + Peek.s(&*token\dat) + " found in cache.", #log_debug}
     Function Return Peek.s(&*token\dat)
@@ -2371,7 +2373,7 @@ SHARED *tokenbase, ped
       If *token\number = _tn
         ;log_Print{"token " + Hexw$(tokenNumber) + " cached.", #log_debug}
         ; add token to tokencache
-        Poke.l ?tokenCache + _tn * 4, *token
+        Poke.l ped\tokenCache + _tn * 4, *token
 
         Pop If : Pop While
         Function Return Peek.s(&*token\dat)
@@ -5068,9 +5070,6 @@ MOVE.b #1,$20(a0)
 ;****************** ted.library is only needed for sharing comdata with the Debugger!
 If ted_OpenLib{0}
   Gosub set_tedlibbase
-   ;TEDSetJumpTable  {?COMDATABASE}
-   ;TEDSetFirstLine  {?comPtr_FirstSourceLine}
-   ;TEDSetCurrentLine{?comPtr_CurrentSourceLine}
 Else
   error {!TRANS{"Unable to open ted.library!"}}
   Goto exit_PED_nomem
@@ -5112,7 +5111,7 @@ ped\ptrLineUndeleteStore = textbuffers + (#MAX_Columns + 4) * 1
 
 ; --
 ; -- alloc memory for tokencache
-ped\tokenCache = PED_AllocMem{32768}
+ped\tokenCache = PED_AllocMem{32768 * 4}
 If ped\tokenCache = 0 Then Goto exit_PED_closelibraries
 
 ; ########################################################################################
@@ -7246,6 +7245,7 @@ Return
     If Asc(char$)<>0 Then exefilename$ + char$
     i + 1
   Until (i = FLen(tempexename$)) OR (Asc(char$) = 0)
+
 ;  exepathname$ = dos_Trim{exepathname$}
 ;  exefilename$ = dos_Trim{exefilename$}
 ;  !cout{exepathname$+"/"+exefilename$} ;$ , dos_GetFileSize2{exepathname$+"/"+exefilename$}}
@@ -7261,17 +7261,13 @@ Return
   ; update Sourcewindow
   PED_GotoLine{ped\ptrCurrentSourceData\CursorPosStore+1, #LINE_START}                                                                                                                                                                                   
 
-  !asm
-  !regs2stack
-  !ComData_SetB{comByte_FuncOptimize,#1}                   ; added for compatiblity because it is not stored in the xtra file  tomsmart1
-  !ComData_SetW{comWord_CreateDebugFile,#0}                ; to match the old default settings  tomsmart1
-  !stack2regs
+  ; set default as these options are not stored in old xtra-file
+  ptr\getCurrentSourceData\FuncOptimize = 1
+  ptr\getCurrentSourceData\CreateDebugFile = 0
 
-  !basic
   Gosub delete_tempprefs
   Gosub save_tempprefs
   !asm
-
   skip_loadingxtrafile:
   !basic 
 Return
@@ -8737,14 +8733,7 @@ Return
     log_Print{"reload libs"}
 
     ; clear intructioncache as the tokennumbers may change
-    !asm
-    LEA tokenCache,a1
-    MOVE.l #32767,d0
-   'l11:
-      CLR.l (a1)+
-    DBF d0,'l11
-   'l10:
-    !basic
+    PED_ClearTokencache{}    
 
     Gosub call_compiler
 
@@ -13506,7 +13495,7 @@ Return
 .handle_event_menupick:
   log_Print{"handle_event_menupick - selected menuitem: " + Hex$(_menuitem.l)}
   If pedMessage\_Code <> -1
-    ;Gosub set_tedlibbase_bas                     ;why?
+    ;Gosub set_tedlibbase
     _menuNumber.w = pedMessage\_Code
     _ItemAddress.l = ItemAddress_(ped\menuStrip,_menuNumber AND #MaxWord)
     _menuitem.l = Peek.l(_ItemAddress + $22)             ; Userdata of GadTools, longword right after MenuItem-struct
@@ -17145,7 +17134,9 @@ Return                                                                        ; 
                 Gosub storeline
                 Delay_ 2
               EndIf
-              ;Gosub set_tedlibbase_bas
+
+              ;Gosub set_tedlibbase
+
               If pedMessage\_Qualifier AND #IEQUALIFIER_CONTROL
                 log_Print{"control: create exe"}
                 !PED_CursorOff
@@ -18074,7 +18065,6 @@ instring              Dc.b 0        ; > import_start
 instring2             Dc.b 0        ; > parse_line
 noDetokenizing:       Ds.w 1
 instru                Ds.w 1
-tokenCache            Ds.l 32769
 chartab               Ds.b 260 
 comLong_Label1VisableItem: Dc.l 0
 
