@@ -21,8 +21,8 @@
 #define FORTSCHRITT0 0x6
 #define GAUGE 0x7
 #define FORTSCHRITT1 0x9
-#define WIN_HELP 0x4
-#define WIN_HELP_GADGETS 0x1
+#define WIN_BUBBLEHELP 0x4
+#define WIN_BUBBLEHELP_GADGETS 0x1
 #define WIN_POPUP 0x6
 #define WIN_POPUP_GADGETS 0xB
 #define POPUP_PAGE 0x1
