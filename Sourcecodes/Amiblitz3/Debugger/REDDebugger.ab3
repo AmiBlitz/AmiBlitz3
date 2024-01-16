@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.10
-; NumberOfBuilds  = 44
+; NumberOfBuilds  = 63
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 2136
-; CursorColumn    = 41
-; LabelSearch     = "outtextpen"
+; CursorLine      = 2359
+; CursorColumn    = 13
+; LabelSearch     = "hexdump"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -146,6 +146,7 @@ XINCLUDE "rastport.include.ab3"
 XINCLUDE "useful.include.ab3"
 XINCLUDE "asl.include.ab3"
 
+XINCLUDE "logging.include.ab3"
 XINCLUDE "PE/wizard_Tools.include.ab3"
 
 ; -- Statement to log text into PEDs log
@@ -167,6 +168,20 @@ Statement log2PED{message.s}
     error{"Log-function of PED not available for output: \\n" + message}
   EndIf
 End Statement
+
+Macro log2PED_HexDump
+    For imh.l = 0 To `2 Step 8
+      memaddr.l = `1 + imh
+      memdata.l = Peek.l(memaddr)
+      memdata2.l= Peek.l(memaddr+4)
+
+      logtxt$ = Hex$(memaddr-`1)+" ("+LSet$(Str$(imh),4)+") # "
+      logtxt$ + Hex$(memaddr)+": "+ Hex$(memdata)+" "+Hex$(memdata2)+"  " + CharStream{Peeks$(memaddr,8)}+" "
+      logtxt$ + Str$(memdata) + "  " + Str$(memdata2)
+      log2PED{logtxt$}
+   Next
+End Macro
+
 
 
 SystemBitMap 1
@@ -447,7 +462,7 @@ DEFTYPE.w bp,evalrequestex,num_mouseables,mouseables_off
 DEFTYPE.w old_active_win,active_win,n,source_char_offset
 DEFTYPE.w scrmode,signal,newted
 DEFTYPE.l disasm_ad,typepointer,maxobject,ad,si,areg,old_ad,ad1,ad2
-DEFTYPE.l ev,evq,evw,mem,dreg,token_addr
+DEFTYPE.l ev,evq,evw,mem,dreg
 DEFTYPE.l array1,array2,ModeID,stepnumber,breakpoint_adr
 DEFTYPE.l mouseables,rp,task,signalset
 DEFTYPE.l *ComData_Pointer
@@ -455,6 +470,7 @@ DEFTYPE.l
 DEFTYPE.q mq
 DEFTYPE.f mf,ffp
 
+DEFTYPE.tokendata *tokenbase
 DEFTYPE.l address,address2,memadr
 DEFTYPE.w winheight,ox,oy,ow,typelength,typewidth
 
@@ -476,6 +492,7 @@ array$                   = ""
 NEWTYPE.redData
   osType.l
   logging.l
+  arexxPort.l
 
   ScreenBarHeight.l
   ScreenFontNameStr.s
@@ -488,9 +505,20 @@ NEWTYPE.redData
   WinSizeBorRight.l
   WinSizeBorBottom.l
 
+  ;-- source window data
+  boxLeft.w
+  boxTop.w
+  boxWidth.w
+  boxHeight.w
+
+  maxColumns.w
+  maxLines.w
+                                                                                                                                                                                                                                                
+  currentLine.l
+  currentOffset.l
+                                                                                                                                                                                                                                           
   appTitle.s
 
-  arexxPort.l
 
   asmStep.b
   watch0.b          ; this check the NULL pointer, works only on OS3 wihtout enforcer
@@ -818,18 +846,18 @@ End Macro
 
 
 Statement d_sethandler{adr.l}
-SHARED token_addr,task,signal,signalset,vbr_temp.l,*TokenBase_Pointer.l
+SHARED *tokenbase,task,signal,signalset,vbr_temp.l,*TokenBase_Pointer.l
 
   LEA htable(pc),a0 : !debuglib_Call{2}
   MOVE.l a0,mybuffer
   MOVE.l a1,progmode
-  PutReg a2,token_addr                         ; is empty? debuglib does not send it ?
+  PutReg a2,*tokenbase                         ; is empty? debuglib does not send it ?
   PutReg a3,task ; blitz program process
   PutReg d0,signal
   signalset = (0 BitSet signal)
 
   If *TokenBase_Pointer <> 0                   ; test if we had a vailed comdata_tokenbase pointer
-    token_addr = *TokenBase_Pointer            ; yes then we use it insteed of the debuglib one
+    *tokenbase = *TokenBase_Pointer            ; yes then we use it insteed of the debuglib one
   EndIf
 
   vbr_temp.l = VBRcheck
@@ -864,22 +892,22 @@ SHARED startcode.l
       MOVE.l #"AmiB",d2
       MOVE.l #10 000 000,d0
 
-     'loop
+     adloop
         ADDQ.l #1,a0
         CMP.l (a0),d1
-        BEQ 'loop1
+        BEQ adloop1
           SUBQ.l #1,d0
-          BNE 'loop
-          BRA 'loop3
-       'loop1
+          BNE adloop
+          BRA adloop3
+        adloop1:
         CMP.l 4(a0),d2
-      BNE 'loop
+      BNE adloop
 
       MOVE.l a0,d0
       startcode = PutRegD0
       startcode = Peek.l(startcode + 8)
 
-     'loop3
+      adloop3:
     EndIf
     Function Return i2 + startcode
   Else
@@ -888,7 +916,6 @@ SHARED startcode.l
 End Function
 
 
-.getad2
 Function.l getad2 {ad.l}
 SHARED startcode.l
 
@@ -1462,7 +1489,7 @@ End Statement
 
 
 Statement RedrawArray{refreshtype.b}
- SHARED arrayadd,array1,array2,ix,iy
+ SHARED arrayadd,array1,array2,redData
  SHARED xarraynum,yarraynum,arraytype
  SHARED xarrayoff,yarrayoff,arraydatasize,arrayitemsize
  SHARED arraylabelsize
@@ -1577,22 +1604,21 @@ End Statement
 
 
 Statement UpdateDisCop{}
-SHARED discop_ad,ix,iy
+SHARED discop_ad,redData
 
   If (Peek.l(Addr Window(#_winDisCop))=0) Then Statement Return
-  Use Window #_winDisCop
-  w.w  = InnerWidth : If w > 320 Then w = 320
-  hi.w = InnerHeight
 
+  Use Window #_winDisCop
   WLocate 0,0
+
   ad.l = discop_ad
-  For h.w = 1 To (hi/WinFontHeight)
+  For h.w = 1 To (InnerHeight / WinFontHeight)
     If ad
-      NPrint Hex$(ad)+" "+GetCopIns$(ad)
+      NPrint Hex$(ad) + " " + GetCopIns$(ad)
       ad + 4
     EndIf
   Next h
-End Statement
+End Statement 
 
 
 Statement UpdateDisAsm{@clear.l}
@@ -1900,7 +1926,7 @@ End Function
 
 ; Update the object trace window
 Statement RefreshTypeWindow{}
-SHARED winstatus(),ix,iy
+SHARED winstatus(),redData
 SHARED objwins()
 
   DEFTYPE.q mq
@@ -1969,7 +1995,7 @@ End Function
 
 
 Statement RedrawMouseables{n.w}
-SHARED mouseables,num_mouseables,mouseables_off,ix,iy
+SHARED mouseables,num_mouseables,mouseables_off,redData
 
   If Peek.l(Addr Window(#_winMouseables))=0 Then Statement Return
   Use Window #_winMouseables
@@ -2240,6 +2266,195 @@ Statement RedrawMem{}
   dowin = -1
 End Statement
 
+
+Function.b RED_CheckForTrap1{}
+SHARED MyBufferAddress
+
+  result.b = False
+  temp2.l = Peek.l(MyBufferAddress)
+  temp2   = Peek.l(temp2 + 64)
+  If Peek.w(temp2-2) = #opcode_TRAP1 AND Peek.w(temp2-2+Peek.w(temp2+6)) = #opcode_TRAP1
+    result = True
+  EndIf
+  Function Return result
+End Function
+
+
+Statement RED_PrintText{y.w,text.s}   ; y = y pixel to print at, text.s = line to print
+SHARED redData
+
+  Use Window #_winSource
+  *win.Window = Peek.l(Addr Window(#_winSource))
+
+  Wline redData\boxLeft,y - 1,redData\boxLeft + redData\boxWidth-1,y-1,1
+  Wline redData\boxLeft,y,redData\boxLeft + redData\boxWidth-1,y,2
+  WBox redData\boxLeft,y + 1,redData\boxLeft + redData\boxWidth-1,y + WinFontHeight + 2,0
+
+  WLocate 1, y - redData\boxTop + 2
+  WColour 1,0
+
+  tlen.w = FLen(text)
+  tfit.w = TextFit_(*win\RPort, text, tlen, &myextent.TextExtent,0,1,redData\boxWidth - 2,1024)
+  If tlen > tfit
+    text = Left$(text,tfit)
+  EndIf
+
+  ;log2PED{"RED_PrintText: " + text}
+  Print text
+
+End Statement
+
+Function.s RED_PrintSourceLine{i2.l,y.w}
+SHARED lasti2, source_char_offset
+SHARED *win.Window, redData
+
+  ret.l = getad2 {i2}
+  t$  = DetokenizeLine(ret, True)
+  t$  = Replace$(t$,"End\\c0\\c0If","EndIf")      ; change "End If" to "EndIf"
+  InitArgParse t$
+
+  drawoff.l = 0 ; source_char_offset
+  hldone.l  = False
+  tog.l           = 0                             ; toggle output
+  *win\RPort\cp_x = *win\BorderLeft
+  x.l             = -source_char_offset * *win\RPort\TxWidth
+  WLocate x, y
+
+  a$  = NextArgChar$($c0)                         ; extract tokens, they are bounded by character $c0
+  Repeat 
+    If i2 = redData\currentLine AND drawoff >= redData\currentOffset AND hldone = False
+      If tog
+        WColour 3,0
+        WindowFont 2,#FSF_BOLD
+      Else
+        WColour 1,0
+        WindowFont 2,#FSF_BOLD
+      EndIf
+      If Instr(a$,":")    Then hldone = True
+      If Instr(a$,"Then") Then hldone = True
+    Else
+      If tog
+        WColour 3,2
+        WindowFont 2,#FSF_BOLD
+      Else
+        WColour 1,2
+        WindowFont 1
+      EndIf
+    EndIf
+
+    a$ = Replace$(a$,"==> ","")
+    a$ = Replace$(a$,"=> " ,"")
+    drawoff + FLen(a$)
+    x = x + FLen(a$) * *win\RPort\TxWidth
+
+    ; -- handle comments
+    If Instr(a$,";")
+      xpos.l = Instr(a$,";") - 1
+      Print Left$(a$,xpos)
+      WindowFont 1,#FSF_ITALIC : WColour 0,2
+      Print Right$(a$,FLen(a$)-xpos)
+    Else
+      Print a$
+    EndIf
+
+    If redData\logging
+      If (i2 = redData\currentLine) AND (i2 <> lasti2.l) Then log2PED{a$}
+    EndIf
+
+    a$ = NextArgChar$($c0)
+    tog = NOT tog
+  Until a$ = ""
+
+
+  WColour 1,0
+  WindowFont 1
+  x + *win\BorderLeft
+  If x < *win\Width - *win\BorderRight
+    WBox x,y + *win\BorderTop,*win\Width - *win\BorderRight - 1, y + *win\BorderTop-1 + *win\RPort\TxHeight,2
+  EndIf
+  lasti2 = i2
+  Function Return Replace$(t$,"\\c0","")
+End Statement
+
+Statement RED_UpdateSourceWindow{il.l}
+SHARED redData, srcStr(), prtbusy, ym
+
+  If (Peek.l(Addr Window(#_winSource)))
+
+    Use Window #_winSource
+    *win.Window  = Peek.l(Addr Window(#_winSource))
+    If *win = 0
+      error{"No window set!"}
+    EndIf
+
+    rp_SetClipExt{*win\RPort,*win\BorderLeft,*win\BorderTop,*win\Width-*win\BorderRight-1,*win\Height-*win\BorderBottom-1}
+
+    y.l = ym.l : i2.l = il
+    While (y <= redData\boxHeight - *win\RPort\TxHeight) AND (i2 <> 0)
+      t$ = RED_PrintSourceLine{i2,y}
+      srcStr(y / *win\RPort\TxHeight) = t$ ; add line to sourcearray for clickvar
+
+      y + *win\RPort\TxHeight
+      i2 = Peek.l(i2)
+    Wend
+
+    ;  While y <= redData\boxHeight - *win\RPort\TxHeight : WLocate 0,y : NPrint "\\R99 \\R99 " : y + *win\RPort\TxHeight : Wend
+
+    If (y < redData\boxHeight)
+      WBox *win\BorderLeft, y + *win\BorderTop, *win\Width - *win\BorderRight - 1, redData\boxHeight + *win\BorderTop, 2
+    EndIf
+
+    y = ym - *win\RPort\TxHeight : i2 = Peek.l(il + 4)
+    While y >= 0 AND i2 <> 0
+      t$ = RED_PrintSourceLine{i2,y}
+      srcStr(y / *win\RPort\TxHeight) = t$
+
+      y - *win\RPort\TxHeight
+      i2 = Peek.l(i2 + 4)
+    Wend
+  ;  While y >= 0 : WLocate 0,y : NPrint "\\R99 \\R99 " : y - *win\RPort\TxHeight : Wend
+
+    If (y > 0)
+      WBox *win\BorderLeft, *win\BorderTop, *win\Width - *win\BorderRight - 1,y + *win\BorderTop - 1,2
+    EndIf
+
+    rp_RemClipExt{*win\RPort}
+  EndIf
+
+  prtbusy = 0
+End Statement
+
+Function.b RED_ShowSyntaxHelp{i.l}
+SHARED *tokenbase
+SHARED wprinty
+
+  syntax_$ = ""
+  If i
+    toke.w   = Peek.w(getad{i} + Peek.w(i + 4))
+    toke = toke AND $7fff
+    log2PED{"search info for Token " + Hex$(toke)}
+    !log2PED_HexDump{getad{i},64}
+    found.b = False
+    *token.tokendata = *tokenbase
+    While *token AND (NOT found)
+      If *token\number = toke
+        syntax_$ = Peek.s(&*token\dat)
+        syntax_$ + " " + Peek.s(&*token\dat + FLen(tname.s) + 1) ;Peek.s(*token + 7 + FLen(syntax_$))
+        found = True
+      EndIf
+      *token = *token\next_token
+    Wend
+  Else
+    log2PED{"showsyntaxhelp: no i"}
+  EndIf
+
+  log2PED{"syntaxprint: " + syntax_$}
+  Use Window #_winSource
+  y.l = wprinty - WinFontHeight - 5
+  RED_PrintText{y,syntax_$}
+End Statement
+
+
 ;*****************************************************************
 
 
@@ -2313,9 +2528,9 @@ End Statement
     d_sethandler{&procstatus}
   CEND
 
-  log2PED{"init lesdebug with token_base: " + Hex$(token_addr)}
+  log2PED{"init lesdebug with token_base: " + Hex$(*tokenbase)}
 
-  SetupLESDebug token_addr,tokenise
+  SetupLESDebug *tokenbase,tokenise
   RedrawMem{}
 
 
@@ -2450,37 +2665,27 @@ Return
   EndIf
 Return
 
-
-sourceallow
-  temp2.l = Peek.l(MyBufferAddress)
-  temp2   = Peek.l(temp2+64)
-  If Peek.w(temp2-2) = #opcode_TRAP1 AND Peek.w(temp2-2+Peek.w(temp2+6)) = #opcode_TRAP1
-    temp2 = 0
-  Else
-    temp2 = 1
-  EndIf
-Return
-
-
 backward:
-  If pb = 0 Then bb.l = cb
+  If pb = 0
+    bb.l = cb
+  EndIf
   bb-4 AND #buffand : i = Peek.l(buffmem+bb)
   If i = 0
     If pb = 0 Then Return
     bb+4 AND #buffand
-    t$ = "At end of buffer"
-    Goto wprint
+    t$ = "At end of buffer" : Gosub wprint
+  Else
+    If syntax_.l Then RED_ShowSyntaxHelp{i}
+    pb = -1 : mc = -1
+    Gosub prtcode
   EndIf
-  If syntax_.l Then Gosub getsyntax
-  pb = -1 : mc = -1
-Goto prtcode
-
+Return
 
 forward:
   bb+4 AND #buffand
   If (bb+4 AND #buffand) = Peek.w(?bufferput) Then pb = 0
   i = Peek.l(buffmem+bb)
-  If syntax_ Then Gosub getsyntax
+  If syntax_ Then RED_ShowSyntaxHelp{i}
   mc = -1
 Goto prtcode
 
@@ -2490,136 +2695,24 @@ Goto prtcode
 ;i = info
 ;
 ;mc = -1 to make current
-;cil = current ins. line, cio=current offset
 ;
   If i = 0 Then Return
-  Gosub sourceallow
-  If temp2 Then Return
-  il.l = Peek.l(i) : io.l = Peek.w(i+4)-9
-  il = getad {i}
-  If mc.l Then cil.l = il : cio.l = io : mc = 0
-  ;
-  Gosub prtcode2
-  ;
-  ali = i
+ 
+  If RED_CheckForTrap1{}
+    il.l = Peek.l(i)
+    io.l = Peek.w(i + 4) - 9
+    il = getad {i}
+    If mc.l
+      redData\currentLine = il
+      redData\currentOffset = io
+      mc = 0
+    EndIf
+    ;
+    RED_UpdateSourceWindow{il}
+    ;
+    ali = i
+  EndIf
 Return
-
-
-prtcode2:
-  If (Peek.l(Addr Window(#_winSource)))
-
-    Use Window #_winSource
-    *rp.RastPort = RastPort(#_winSource)
-    *win.Window  = Peek.l(Addr Window(#_winSource))
-    If *rp
-      rp_SetClipExt{*rp,*win\BorderLeft,*win\BorderTop,*win\Width-*win\BorderRight-1,*win\Height-*win\BorderBottom-1}
-    EndIf
-
-    w.w  = WindowWidth
-    hi.w = InnerHeight
-
-    y.l = ym.l : i2.l = il
-    While y <= ih.l-WinFontHeight AND i2 <> 0
-      Gosub prti2:
-      i2 = Peek.l(i2)
-      srcStr(y/WinFontHeight) = t$ ; add line to sourcearray for clickvar
-      y+WinFontHeight
-    Wend
-  ;  While y <= ih-WinFontHeight : WLocate 0,y : NPrint "\\R99 \\R99 " : y+WinFontHeight : Wend
-    If (y < ih)
-      WBox *win\BorderLeft,y+*win\BorderTop,*win\Width-*win\BorderRight-1,ih+*win\BorderTop,2
-    EndIf
-
-    y = ym-WinFontHeight : i2 = Peek.l(il+4)
-    While y >= 0 AND i2 <> 0
-      Gosub prti2:
-      srcStr(y / WinFontHeight) = t$
-      y - WinFontHeight
-      ;y-redData\ScreenBarHeight
-      i2 = Peek.l(i2 + 4)
-    Wend
-  ;  While y >= 0 : WLocate 0,y : NPrint "\\R99 \\R99 " : y-WinFontHeight : Wend
-    If (y > 0)
-      WBox *win\BorderLeft,*win\BorderTop,*win\Width-*win\BorderRight-1,y+*win\BorderTop-1,2
-    EndIf
-
-    If *rp
-      rp_RemClipExt{*rp}
-    EndIf
-  EndIf
-  prtbusy = 0
-Return
-
-
-.prti2 ; i2 at y
-  ret.l = getad2 {i2}
-
-  *win\RPort\cp_x = *win\BorderLeft
-  x.l             = -source_char_offset * *win\RPort\TxWidth
-  WLocate x, y
-
-  t$  = DetokenizeLine(ret, True)
-  t$  = Replace$(t$,"End\\c0\\c0If","EndIf")      ; change "End If" to "EndIf"
-  InitArgParse t$
-  a$  = NextArgChar$($c0)                         ; extract tokens, they are bounded by character $c0
-
-  drawoff.l = 0 ; source_char_offset
-  hldone.l  = False
-  tog.l           = 0                             ; toggle output
- _more
-  If i2 = cil AND drawoff >= cio AND hldone = False
-    If tog
-      WColour 3,0
-      WindowFont 2,#FSF_BOLD
-    Else
-      WColour 1,0
-      WindowFont 2,#FSF_BOLD
-    EndIf
-    If Instr(a$,":")    Then hldone = True
-    If Instr(a$,"Then") Then hldone = True
-  Else
-    If tog
-      WColour 3,2
-      WindowFont 2,#FSF_BOLD
-    Else
-      WColour 1,2
-      WindowFont 1
-    EndIf
-  EndIf
-
-  a$ = Replace$(a$,"==> ","")
-  a$ = Replace$(a$,"=> " ,"")
-  drawoff + FLen(a$)
-  x = x + FLen(a$) * *win\RPort\TxWidth
-
-  ; -- handle comments
-  If Instr(a$,";")
-    xpos.l = Instr(a$,";") - 1
-    Print Left$(a$,xpos)
-    WindowFont 1,#FSF_ITALIC : WColour 0,2
-    Print Right$(a$,FLen(a$)-xpos)
-  Else
-    Print a$
-  EndIf
-
-  If redData\logging
-    If (i2 = cil) AND (i2 <> lasti2.l) Then log2PED{a$}
-  EndIf
-
-  a$ = NextArgChar$($c0)
-  If a$ <> "" Then tog = NOT tog : Goto _more
-
-  t$ = Replace$(t$,"\\c0","")
-  WColour 1,0
-  WindowFont 1
-  x + *win\BorderLeft
-  If x < *win\Width - *win\BorderRight
-    WBox x,y + *win\BorderTop,*win\Width - *win\BorderRight-1, y + *win\BorderTop-1 + WinFontHeight,2
-  EndIf
-  lasti2 = i2
-
-Return
-
 
 handle_SearchGadgets:
   log2PED{"handle search gadgets: "+ Str$(redMessage\_GadgetID)}
@@ -2672,20 +2765,20 @@ Return
       Case #SRC_SGAD
         source_char_offset = GetPropCurrent(#_winSource,1)
 
-        If ali Then Gosub prtcode2
+        If ali Then RED_UpdateSourceWindow{il}
 
       Case #SRC_LGAD
         If source_char_offset > 0
           source_char_offset-1
           MoveProp #_winSource,#SRC_SGAD,source_char_offset,#_winSource
-          If ali Then Gosub prtcode2
+          If ali Then RED_UpdateSourceWindow{il}
         EndIf
 
       Case #SRC_RGAD
-        If source_char_offset < (250-cw.l)
+        If source_char_offset < (250-redData\maxColumns)
           source_char_offset+1
           MoveProp #_winSource,#SRC_SGAD,source_char_offset,#_winSource
-          If ali Then Gosub prtcode2
+          If ali Then RED_UpdateSourceWindow{il}
         EndIf
 
       Case #MSE_SGAD
@@ -2874,7 +2967,7 @@ Return
           typ.w = #break_simple
           Gosub addbreakpoint_quiet
         EndIf
-        cil = 0 : pb = 0 : Gosub refwindow : ali = 0 : lt$ = ""
+        redData\currentLine = 0 : pb = 0 : Gosub refreshSourceWindow : ali = 0 : lt$ = ""
 
         Forbid_
          CacheClearU_
@@ -2917,7 +3010,7 @@ Return
               CacheClearU_
                                           ; *** STEP GOSUB ***
               If flag AND (dstatus OR skip)
-                cil = 0 : pb = 0 : Gosub refwindow : ali = 0 : lt$ = ""
+                redData\currentLine = 0 : pb = 0 : Gosub refreshSourceWindow : ali = 0 : lt$ = ""
                 Forbid_
                  prtcode = 0 : dstatus = #RUNNING : statego = 0
                 Permit_
@@ -2963,7 +3056,7 @@ Return
 
     Case 5 ;**RUN**
       If dstatus
-        cil = 0 : pb = 0 : Gosub refwindow : ali = 0 : lt$ = ""
+        redData\currentLine = 0 : pb = 0 : Gosub refreshSourceWindow : ali = 0 : lt$ = ""
         Forbid_
          prtcode = 0 : dstatus = #RUNNING : statego = 0
         Permit_
@@ -3169,11 +3262,10 @@ Return
 
   log2PED{"Mousebutton " + Hexw$(EventCode) + " " + Hexw$(EventQualifier)}
 
-
   Use Window redMessage\_WindowID
 
-  wx = WMouseX - ix
-  wy = WMouseY - iy
+  wx = WMouseX - redData\boxLeft
+  wy = WMouseY - redData\boxTop
   wfonth.w = WinFontHeight
 
   If (EventCode AND $80) <> 0 Then Goto _nomid2 ; ignore up mouse
@@ -3422,7 +3514,7 @@ Return
   EndIf
 
   If (redMessage\_WindowID >= #_winObject0) AND (redMessage\_WindowID <= #_winObject9)
-    y   = wy-8
+    y.l = wy-8
     x.l = wx
     FindStructureWin{redMessage\_WindowID}
     If objwins()\is_bbobject = 0 AND y >= 0 AND x >= typewidth-4
@@ -3495,7 +3587,7 @@ CheckKeyboard:
             ad+(bp ASL 3)
             If redMessage\_WindowID = #_winSource
               il = Peek.l(Peek.l(ad))
-              Gosub prtcode2
+              RED_UpdateSourceWindow{il}
             Else
               disasm_ad = Peek.l(ad)-2
               UpdateDisAsm{}
@@ -3563,7 +3655,7 @@ CheckKeyboard:
 
         Case #_winSource
           flag = 0
-          ;num = 1 : If kbshift Then num = ch
+          ;num = 1 : If kbshift Then num = redData\maxLines
           If ali
             For h = 1 To num
               If Peek.l(il+4)
@@ -3571,7 +3663,7 @@ CheckKeyboard:
                 If Peek.l(il3) = il Then il = il3
               EndIf
             Next h
-            If aflag Then Gosub prtcode2
+            If aflag Then RED_UpdateSourceWindow{il}
           EndIf
 
         Case #_winMemory1
@@ -3604,7 +3696,7 @@ CheckKeyboard:
 
         Case #_winSource
           flag = 0
-          ;num = 1 : If kbshift Then num = ch
+          ;num = 1 : If kbshift Then num = redData\maxLines
           If ali
             For h = 1 To num
               If Peek.l(il)
@@ -3612,7 +3704,7 @@ CheckKeyboard:
                 If Peek.l(il3) <> 0 Then il = il3
               EndIf
             Next h
-            If aflag Gosub prtcode2
+            If aflag RED_UpdateSourceWindow{il}
           EndIf
 
         Case #_winMemory1
@@ -3892,7 +3984,7 @@ Return
 ;         If reply <> tokenise
 ;           If reply Then tokenise=1 Else tokenise = 0
 ;           tokenise = 1
-;           SetupLESDebug token_addr,tokenise
+;           SetupLESDebug *tokenbase,tokenise
 ;             Use Window #_winSource
 ;               w.w  = InnerWidth
 ;               hi.w = InnerHeight
@@ -3915,7 +4007,7 @@ Return
     Case 9
       syntax_ = GTMenuChecked(0,0,9)
       Gosub newsize
-      Gosub refwindow
+      Gosub refreshSourceWindow
 
     Case 10
       redData\logging = GTMenuChecked(0,0,10)
@@ -4360,7 +4452,7 @@ Return
       Use Window #_winSource
       ;BeginRefresh_ !windowaddr
         Gosub newsize
-        Gosub refwindow
+        Gosub refreshSourceWindow
       ;EndRefresh_  !windowaddr,True
 
     Case #_winMemory1
@@ -4418,66 +4510,21 @@ Return
 Return
 
 
-;i=code line to grab
-.getsyntax:
-  syntax_$ = ""
-  If i
-    toke.w   = Peek.w(getad{i}+Peek.w(i+4))
-    ;toke.w   = Peek.w(Peek.l(i)+Peek.w(i+4))
-    tokead.l = token_addr
-    toke = toke AND $7fff
-    While (tokead <> 0 AND toke <> -1)
-      If Peek.w(tokead+4) = toke
-        syntax_$ = Peek.s(tokead+6)
-        syntax_$+" "+Peek.s(tokead+7+Len(syntax_$))
-        toke = -1
-      EndIf
-      tokead = Peek.l(tokead)
-    Wend
-  EndIf
-  Gosub syntaxprint
-Return
-
-
 .wprint:
   If (Peek.l(Addr Window(#_winSource)))
+    log2PED{"wprint: " + t$}
     Use Window #_winSource
     lt$ = t$
     y.l = wprinty.l
-    Gosub printlin
-    If syntax_ = 0
-      ;NPrint "                                                                                                       "
-      Return
-    EndIf
+    RED_PrintText{y,t$}
 
-syntaxprint:
-    Use Window #_winSource
-    y  = wprinty-WinFontHeight-5
-    t$ = syntax_$
-    Gosub printlin
+    If syntax_ = 0 Then Return
+    RED_ShowSyntaxHelp{i}
   EndIf
 Return
 
-
-; y = y pixel to print at
-; t$ = line to print
-printlin:
-  Wline ix.l,y-1,ix+iw.l-1,y-1,1
-  Wline ix.l,y,ix+iw-1,y,2
-  WBox ix,y+1,ix+iw-1,y+WinFontHeight+2,0
-  b = FLen(t$)
-  a = TextFit_(RastPort(#_winSource),t$,b,&myextent.TextExtent,0,1,iw-2,1024)
-
-  WLocate 1,y-iy+2 : WColour 1,0
-  If b < a
-    Print t$
-  Else
-    Print Left$(t$,a)
-  EndIf
-Return
 
 .initgads:
-
   Restore buttondata
 
   GTGZZPosition On
@@ -4681,17 +4728,17 @@ pubname:      Dc.b  "ab3debugger",0
 pens:         Dc.w  -1
 
 
-.printsourcewin
-.refwindow:
-  If ali <> 0 OR lt$ <> ""
-    Use Window #_winSource:
-    ;WindowFont 1
-    WBox ix,iy+(ch.l/WinFontHeight ),ix+iw-1,y,0
+.refreshSourceWindow:
+  If (ali <> 0) OR (lt$ <> "")
+    Use Window #_winSource
+    *win.Window = Peek.l(Addr Window(#_winSource))
+    WBox redData\boxLeft, redData\boxTop + (redData\maxLines/*win\RPort\TxHeight),redData\boxLeft + redData\boxWidth - 1,y,0
     If ali Then i = ali : Gosub prtcode
+
     If syntax_
-      y = wprinty-6-WinFontHeight
+      y = wprinty - 6 - *win\RPort\TxHeight
     Else
-      y = wprinty-1
+      y = wprinty - 1
     EndIf
 
     t$ = lt$ : Gosub wprint
@@ -4923,20 +4970,30 @@ Return
 
 .newsize:
   If rememberInnerWidth.l >< InnerWidth OR rememberInnerHeight.l >< InnerHeight
-    Use Window #_winSource ; : InnerCls
-    ;WindowFont 1
-    rememberInnerWidth.l  = InnerWidth
-    rememberInnerHeight.l = InnerHeight
-    ix = WLeftOff : iy = WTopOff : iw = InnerWidth : ih = InnerHeight-WinFontHeight-5
-    ;ix = 0 : iy = 0 : iw = InnerWidth : ih = InnerHeight-redData\ScreenBarHeight-5
-    wprinty = iy+ih+2
-    ;iy = 11
-    If syntax_ Then ih-WinFontHeight-5
-    cw = iw/8 : ch = ih/WinFontHeight
-    ym = ch LSR 1 : If ch&1 = 0 Then ym-1
-    ym*WinFontHeight:spc$=String$(" ",cw)
-    Gosub printsourcewin
-    SetPropInfo #_winSource,1,cw,1000,source_char_offset
+    Use Window #_winSource
+     *win.Window = Peek.l(Addr Window(#_winSource))
+    rememberInnerWidth.l  = *win\GZZWidth; InnerWidth
+    rememberInnerHeight.l = *win\GZZHeight; InnerHeight
+
+    redData\boxLeft = *win\BorderLeft
+    redData\boxTop = *win\BorderTop
+    redData\boxWidth = *win\GZZWidth; InnerWidth
+    redData\boxHeight = *win\GZZHeight - *win\RPort\TxHeight - 5
+
+    wprinty = redData\boxTop + redData\boxHeight + 2
+
+    If syntax_ Then redData\boxHeight - *win\RPort\TxHeight - 5
+
+    redData\maxColumns = redData\boxWidth / 8
+    redData\maxLines = redData\boxHeight / *win\RPort\TxHeight
+
+    ym = redData\maxLines LSR 1
+    If redData\maxLines & 1 = 0 Then ym - 1
+    ym = ym * *win\RPort\TxHeight
+    spc$ = String$(" ",redData\maxColumns)
+    Gosub refreshSourceWindow
+
+    SetPropInfo #_winSource,1,redData\maxColumns,1000,source_char_offset
     Redraw #_winSource,1
   EndIf
 Return
@@ -5117,13 +5174,11 @@ Return
     Select d_e()\t
 
       Case 0 ; supervisor mode error!
-        t$ = "(*) "+d_e()\s
-        Gosub wprint
+        t$ = "(*) "+d_e()\s : Gosub wprint
         Gosub goterr
 
       Case 1 ; user mode error!
-        t$ = d_e()\s
-        Gosub wprint
+        t$ = d_e()\s : Gosub wprint
         Gosub goterr
 
       Case 2 ; EVAL result
@@ -5184,7 +5239,7 @@ Return
           EndIf
         EndIf
 
-        If syntax_ Then Gosub getsyntax
+        If syntax_ Then RED_ShowSyntaxHelp{i}
 
         pb = 0 : mc = -1 : Gosub prtcode : ;prtbusy = 0
         Signal_ task,signalset
@@ -5238,8 +5293,7 @@ Return
   EndIf
 
   If Peek.w(?donebreakpoint)
-    t$ = "[Breakpoint]"
-    Gosub wprint
+    t$ = "[Breakpoint]" : Gosub wprint
     CLR.w donebreakpoint
   EndIf
 
@@ -5282,7 +5336,7 @@ Return
 
         Case #_winSource
           il = Peek.l(ad+2)
-          Gosub prtcode2
+          RED_UpdateSourceWindow{il}
       End Select
 
     Case #_memwindow
@@ -5484,29 +5538,27 @@ Return
 
 
 Statement DoCurs{xad.b,num.b}
-SHARED ix,iy,mad,mempointer(),wwide,editflag
+SHARED redData,mad,mempointer(),wwide,editflag
 
   If (Peek.l(Addr Window(#_winMemory1+num)) = 0) Then Statement Return
 
   *rp.RastPort = RastPort(#_winMemory1 + num)
 
-  y.l  = (((mad-mempointer(num))/wwide)ASL 3)+iy
-
-
+  y.l  = (((mad-mempointer(num))/wwide)ASL 3)+redData\boxTop
 
   SetDrMd_ *rp,2
 
   If editflag = 0
-    x.l = ix+72+(xad ASL 3)
+    x.l = redData\boxLeft + 72 + (xad ASL 3)
     If (mad AND %1) ; Odd address
-      x+(((xad-1)ASR 2) ASL 3)
+      x + (((xad-1)ASR 2) ASL 3)
     Else
-      x+((xad ASR 2) ASL 3)
+      x + ((xad ASR 2) ASL 3)
     EndIf
   Else
-    x = ix+80+(wwide*20)+(xad ASL 3)
+    x = redData\boxLeft + 80 + (wwide*20)+(xad ASL 3)
   EndIf
-  RectFill_ *rp,x,y,x+7,y+7
+  RectFill_ *rp,x,y,x + 7,y + 7
   SetDrMd_ *rp,1
 End Statement
 
@@ -5701,8 +5753,7 @@ Return
    If nt = 6 Then mf = Val(searchfor$) : si = Peek.l(&mf)
   ;OPTIMIZE 5
 
-  t$ = "Searching memory.... <SPACE> to abort"
-  Gosub wprint
+  t$ = "Searching memory.... <SPACE> to abort" : Gosub wprint
   num = 0
 
  _doagain
@@ -5807,7 +5858,7 @@ Return
     Return
   EndIf
 
-  typewidth = ix+(typelength ASL 3)+8+16
+  typewidth = redData\boxLeft+(typelength ASL 3)+8+16
 
   PropGadget objwins()\winnum,-13,WinFontHeight+5,#VPROP_AFLAGS,#OBJ_SGAD,10,-17-WinFontHeight-22,#VPROP_PFLAGS,3
   SetPropInfo objwins()\winnum,#OBJ_SGAD,1,1
@@ -5825,7 +5876,7 @@ Return
   WindowFont 0
   winstatus(objwins()\winnum) = -1
 
-  Wline typewidth-5,iy,typewidth-5,iy+InnerHeight-1,1
+  Wline typewidth-5,redData\boxTop,typewidth-5,redData\boxTop+InnerHeight-1,1
 
   objwins()\tracenum    = 0
   objwins()\typewidth   = typewidth
@@ -5834,8 +5885,8 @@ Return
 
   ;OutTextPen rp,1
   SetAPen_ *rp,1
-  OutText ix+2,iy+1,rp,"Address"
-  oy = 9+iy
+  OutText redData\boxLeft+2,redData\boxTop+1,rp,"Address"
+  oy = 9+redData\boxTop
   If is_bb
     Gosub ObjectWinD
   Else
@@ -5887,7 +5938,7 @@ ObjectWinD:
     If skp = -1
       If typ < 3 Then skp = typ Else skp = 4
     EndIf
-    OutText ix+2,oy,rp,LSet$(a$,typelength)+"."+Mid$(objtype$,typ,1)
+    OutText redData\boxLeft+2,oy,rp,LSet$(a$,typelength)+"."+Mid$(objtype$,typ,1)
     oy+8
     Poke.w memadr,typ
     Poke.w memadr+2,skp
@@ -6029,7 +6080,7 @@ StructWinD:
       a$+"?"
       typ = 1
     EndIf
-    OutText ix+2,oy,rp,a$
+    OutText redData\boxLeft+2,oy,rp,a$
     oy+8
     Poke.w memadr,typ
     memadr+4
