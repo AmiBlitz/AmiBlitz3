@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.10
-; NumberOfBuilds  = 137
+; NumberOfBuilds  = 148
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 4045
-; CursorColumn    = 77
-; LabelSearch     = "2023"
+; CursorLine      = 4853
+; CursorColumn    = 33
+; LabelSearch     = "evalbuffer$"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -470,7 +470,7 @@ stepnumber               = 1
 searchtype               = 1
 dowin                    = -1
 pmodevalid               = 0
-configsize.l             = Peek.w(?sizeofPrefs)
+prefsSize.l             = Peek.w(?sizeofPrefs)
 array$                   = ""
 
 
@@ -482,7 +482,7 @@ NEWTYPE.redData
   defaultPubScreen.b
   usePubScreen.b
   pubscreenName.s
-  screenMode.l
+  screenType.w
   screenModeId.l
   screenWidth.w
   screenHeight.w
@@ -506,6 +506,7 @@ NEWTYPE.redData
 
   appTitle.s
   appPath.s
+  *appDiscObject.DiskObject_
   ab3Path.s
 
   tokenize.b
@@ -572,21 +573,6 @@ NEWTYPE.redMessage
 End NEWTYPE
 
 DEFTYPE.redMessage redMessage
-
-
-
-;-- set default Border and Font infos  tomsmart1 2016 03 15
-redData\ScreenBarHeight   = 10 + 1
-redData\ScreenFontNameStr = "topaz.font"
-redData\ScreenFontYSize   = 8
-redData\WinBorTop         = 2
-redData\WinBorTextTop     = redData\WinBorTop + redData\ScreenFontYSize + 1
-redData\WinBorLeft        = 4
-redData\WinBorRight       = 4
-redData\WinBorBottom      = 2
-redData\WinSizeBorRight   = 18    ; set default size for hires
-redData\WinSizeBorBottom  = 10    ; set default size for hires
-redData\logging = True
 
 proz.l = Processor                                     ; needed for fpu register pos
 If proz = 3 OR proz = 2 Then MOVE.l #-200   ,fpuoffset ; 020/030
@@ -1434,7 +1420,7 @@ Statement NewWindow{winNumber.w}
 
   AddIDCMP #IDCMP_MOUSEMOVE
   If winNumber = #_winSource
-    AddIDCMP #IDCMP_MOUSEMOVE
+    AddIDCMP #IDCMP_MOUSEMOVE|#IDCMP_IDCMPUPDATE
     winFlags = winFlags OR #WFLG_REPORTMOUSE
     ;Poke.l ?__gimmi+4,1
   EndIf
@@ -1556,13 +1542,15 @@ Statement FindStructureWin{evw.l}
 End Statement
 
 
-Statement SavePrefs{memptr.l}
-SHARED redData, prefs, configsize
+Statement SavePrefs{memptr.l, memsize.l}
+SHARED redData, prefs
 
   If memptr
     If dos_Exist{p$} ; added to check if the path exist
       If WriteFile(0,dos_AddPart{redData\appPath,"RED_DBug.prefs"} )
-        WriteMem 0,memptr,configsize
+        WriteMem 0,memptr,memsize
+        log2PED{"writing prefs from mem location " + Hex$(memptr)}
+        !log2PED_HexDump{memptr,memsize}
         CloseFile 0
       EndIf
       If WriteFile(0,dos_AddPart{redData\appPath,"RED_DBug2.prefs"} )
@@ -2517,13 +2505,15 @@ End Statement
 
 
 
-Statement RED_PrintSource{*sl.sourceLine}
+Statement RED_PrintSource{@*sl.sourceLine}
 SHARED redData,sourceWindow, srcStr(), prtbusy
 USEPATH sourceWindow
 
   If (Peek.l(Addr Window(#_winSource)))
     rp_SetClipExt{\win\RPort,\win\BorderLeft,\win\BorderTop,\win\Width-\win\BorderRight-1,\win\Height-\win\BorderBottom-1}
     Use Window #_winSource
+
+    If *sl = -1 Then *sl = sourceWindow\currentLine
 
     If redData\showLineNumbers
       ;-- get line number
@@ -2590,21 +2580,21 @@ USEPATH sourceWindow
   prtbusy = 0
 End Statement
 
-Statement RED_UpdateSourceWindow{*pcInfo.pcinfo, makeCurrent.b}
-SHARED sourceWindow, *iline.sourceLine, ali.l
+Statement RED_UpdateSourceWindow{*pcInfo.pcinfo}
+SHARED sourceWindow, ali.l
 
   If *pcInfo
     If RED_CheckForTrap1{}
-      *iline.sourceLine = getad {*pcInfo}
-      If makeCurrent
-        sourceWindow\currentLine = *iline
-        sourceWindow\lineOffset = *pcInfo\lineOffset - 9
-      EndIf
+      sourceWindow\currentLine = getad {*pcInfo}
+      sourceWindow\lineOffset = *pcInfo\lineOffset - 9
       ;
-      RED_PrintSource{*iline}
+      RED_PrintSource{}
       ;
       ali = *pcInfo
+      RED_ShowSyntaxHelp{*pcInfo}
     EndIf
+  Else
+    log2PED{"UpdateSourceWindow: no *pcInfo!"}
   EndIf
 End Statement
 
@@ -2725,8 +2715,7 @@ End Statement
   Gosub loadPrefs
 
   log2PED{"opening windows ..."}
-  Gosub openwindows
-
+  Gosub openwindows : Activate #_winControl
   log2PED{"all windows opened ..."}
 
   SetupLESDebug *tokenbase,redData\tokenize
@@ -2745,7 +2734,7 @@ End Statement
 
     Use Window redMessage\_WindowID
 
-    If redMessage\_Class <> #IDCMP_IDCMPUPDATE
+    If redMessage\_Class <> #IDCMP_IDCMPUPDATE AND redMessage\_Class <> #IDCMP_INTUITICKS AND redMessage\_Class <> #IDCMP_GADGETHELP
       log2PED{"handling of event: $" +  Hex$(redMessage\_Class)}
     EndIf
 
@@ -2816,8 +2805,7 @@ End Statement
 
       Case #IDCMP_RAWKEY
         flag = 0
-        ec.l = EventCode
-        Select ec
+        Select redMessage\_Code
 
           Case $21
             flag        = 2
@@ -2833,33 +2821,18 @@ End Statement
             redData\procStatus  = 1
             FlushEvents
 
-          Case $17
-            flag = 3
-
-          Case $14
-            flag = 4
-
-          Case $13
-            flag = 5
-
-          Case $38
-            flag = 6
-
-          Case $39
-            flag = 7
-
-          Case $32
-            flag = 8
-
-          Case $12
-            flag = 9
-
-          Case $34
-            flag = 10
+          Case $17 : flag = 3
+          Case $14 : flag = 4
+          Case $13 : flag = 5
+          Case $38 : flag = 6
+          Case $39 : flag = 7
+          Case $32 : flag = 8
+          Case $12 : flag = 9
+          Case $34 : flag = 10
         End Select
+
         If flag
-          redMessage\_GadgetID = flag : redMessage\_Class = 64 : redMessage\_WindowID = #_winControl
-          ;Repeat : Until RawStatus(ec) = 0
+          redMessage\_GadgetID = flag : redMessage\_Class = #IDCMP_GADGETUP : redMessage\_WindowID = #_winControl
         EndIf
     End Select
   Until exitflag
@@ -2871,11 +2844,13 @@ Return
 
 ;.backoff:
  ; If pb.l
- ;   pb = 0 : *pcInfo = Peek.l(buffmem + cb.l) : RED_UpdateSourceWindow{*pcInfo, -1}
+ ;   pb = 0 : *pcInfo = Peek.l(buffmem + cb.l) : RED_UpdateSourceWindow{*pcInfo}
  ; EndIf
 ;Return
 
 .backward:
+  log2PED{"backward"}
+
   If pb.l = 0 Then bb.l = cb.l
   bb = bb - 4 AND #buffand
   *pcInfo = Peek.l(buffmem + bb)
@@ -2884,18 +2859,17 @@ Return
     bb + 4 AND #buffand
     t$ = "At end of buffer" : RED_ShowStatusText{t$}
   Else
-    RED_ShowSyntaxHelp{*pcInfo}
-    pb = -1 : RED_UpdateSourceWindow{*pcInfo, -1}
+    pb = -1 : RED_UpdateSourceWindow{*pcInfo}
   EndIf
 Return
 
 .forward:
+  log2PED{"forward"}
+
   bb = bb + 4 AND #buffand
   If (bb + 4 AND #buffand) = Peek.w(?bufferput) Then pb = 0
   *pcInfo = Peek.l(buffmem + bb)
-  RED_ShowSyntaxHelp{*pcInfo}
-
-  RED_UpdateSourceWindow{*pcInfo, -1}
+  RED_UpdateSourceWindow{*pcInfo}
 Return
 
 
@@ -2950,20 +2924,23 @@ Return
       Case #SRC_SGAD
         sourceWindow\charOffset = GetPropCurrent(#_winSource,1)
 
-        If ali Then RED_PrintSource{*iline}
+        ;If ali Then 
+        RED_PrintSource{}
 
       Case #SRC_LGAD
         If sourceWindow\charOffset > 0
           sourceWindow\charOffset-1
           MoveProp #_winSource,#SRC_SGAD,sourceWindow\charOffset,#_winSource
-          If ali Then RED_PrintSource{*iline}
+          ;If ali Then 
+          RED_PrintSource{}
         EndIf
 
       Case #SRC_RGAD
         If sourceWindow\charOffset < (250-sourceWindow\visibleColumns)
           sourceWindow\charOffset+1
           MoveProp #_winSource,#SRC_SGAD,sourceWindow\charOffset,#_winSource
-          If ali Then RED_PrintSource{*iline}
+          ;If ali Then 
+          RED_PrintSource{}
         EndIf
 
       Case #MSE_SGAD
@@ -3762,7 +3739,7 @@ CheckKeyboard:
 
     Case $35 ; b
       If redMessage\_WindowID = #_winSource OR redMessage\_WindowID=#_winDisAsm
-        If ali
+        ;If ali
           t$   = "Move To Breakpoint"
           flag = -1
           Gosub SelectBP
@@ -3771,14 +3748,14 @@ CheckKeyboard:
             bp-1
             ad+(bp ASL 3)
             If redMessage\_WindowID = #_winSource
-              *iline = Peek.l(Peek.l(ad))
-              RED_PrintSource{*iline}
+              sourceWindow\currentLine = Peek.l(Peek.l(ad))
+              RED_PrintSource{}
             Else
               disasm_ad = Peek.l(ad)-2
               UpdateDisAsm{}
             EndIf
           EndIf
-        EndIf
+        ;EndIf
       EndIf
 
     Case $40 ; <SPACE>
@@ -3827,7 +3804,7 @@ CheckKeyboard:
     Case $42 ; TAB
       If redMessage\_WindowID < 0 Then redMessage\_WindowID =- 1
       Repeat
-        redMessage\_WindowID+1
+        redMessage\_WindowID + 1
         If redMessage\_WindowID = #_winBackdrop Then redMessage\_WindowID+1
         If redMessage\_WindowID > (Maximum Window-1) Then redMessage\_WindowID = 0
       Until Peek.l(Addr Window(redMessage\_WindowID)) <> 0
@@ -3841,15 +3818,15 @@ CheckKeyboard:
         Case #_winSource
           flag = 0
           ;num = 1 : If kbshift Then num = sourceWindow\visibleLines
-          If ali
+          ;If ali
             For h = 1 To num
-              If *iline\previousLine
-                *il3.sourceLine = *iline\previousLine : aflag.l = -1
-                If *il3\nextLine = *iline Then *iline = *il3
+              If sourceWindow\currentLine\previousLine
+                *il3.sourceLine = sourceWindow\currentLine\previousLine : aflag.l = -1
+                If *il3\nextLine = sourceWindow\currentLine Then sourceWindow\currentLine = *il3
               EndIf
             Next h
-            If aflag Then RED_PrintSource{*iline}
-          EndIf
+            If aflag Then RED_PrintSource{}
+          ;EndIf
 
         Case #_winMemory1
           flag = -1 : dowin = 0 : Gosub Movemem
@@ -3882,15 +3859,15 @@ CheckKeyboard:
         Case #_winSource
           flag = 0
           ;num = 1 : If kbshift Then num = sourceWindow\visibleLines
-          If ali
+          ;If ali
             For h = 1 To num
-              If *iline\nextLine ;Peek.l(il)
-                *il3.sourceLine = *iline\nextLine : aflag = -1
-                If *il3\nextLine <> 0 Then *iline = *il3\nextLine
+              If sourceWindow\currentLine\nextLine ;Peek.l(il)
+                *il3.sourceLine = sourceWindow\currentLine\nextLine : aflag = -1
+                If *il3\nextLine <> 0 Then sourceWindow\currentLine = *il3\nextLine
               EndIf
             Next h
-            If aflag RED_PrintSource{*iline}
-          EndIf
+            If aflag RED_PrintSource{}
+          ;EndIf
 
         Case #_winMemory1
           flag = 1 : dowin = 0 : Gosub Movemem
@@ -4148,7 +4125,8 @@ Return
       message{message}
 
     Case 5
-      Gosub Savewindows
+      Gosub UpdatePrefs
+      SavePrefs{*prefsPtr.l, prefsSize}
 
     Case 6
       Gosub doscreenmode
@@ -4183,7 +4161,7 @@ Return
 ;               UpdateDisAsm{}
 ;
 ;           EndIf
-;           pb = 0 :   RED_UpdateSourceWindow{*pcInfo, -1}
+;           pb = 0 :   RED_UpdateSourceWindow{*pcInfo}
 ;         EndIf
       EndIf
 
@@ -4585,7 +4563,7 @@ Return
 
 .doscreenmode:
   If SubHit < 4
-    redData\screenMode = SubHit
+    redData\screenType = SubHit
   Else
     Select SubHit
 
@@ -4609,7 +4587,7 @@ Return
 
 
 .CheckScrModeMenus:
-  If redData\screenMode = 1 OR redData\screenMode = 2
+  If redData\screenType = 1 OR redData\screenType = 2
     redData\usePubScreen = True
     redData\defaultPubScreen = True
   Else
@@ -4709,7 +4687,7 @@ Return
 
   BorderPens 2,1 : Borders 4,5
 
-  gadHeight.w = 5*2 + redData\ScreenFontYSize ; 5= border top and buttom,  8= topaz fontYSize
+  gadHeight.w = 2 * 2 + redData\ScreenFontYSize
   gadNumber.w = 1
   gadX.l = redData\WinBorLeft
   gadY.w = redData\WinBorTextTop
@@ -4791,7 +4769,7 @@ buttondata:
   redData\pubscreenName = ""
 
   Use IntuiFont 1
-  Select redData\screenMode
+  Select redData\screenType
 
     Case #SCR_WB
       FindScreen 0,"Workbench"
@@ -4805,12 +4783,12 @@ buttondata:
       dreg = &pubscreenname$
   End Select
 
-  If ExecVersion < 39 AND redData\screenMode = #SCR_LIKEWB
+  If ExecVersion < 39 AND redData\screenType = #SCR_LIKEWB
     redData\screenModeId = $8000 : redData\screenWidth = 640 : redData\screenHeight = DispHeight
   EndIf
 
-  If redData\screenMode = #SCR_LIKEWB OR redData\screenMode = #SCR_CUSTOM
-    If redData\screenMode = #SCR_LIKEWB AND ExecVersion >= 39
+  If redData\screenType = #SCR_LIKEWB OR redData\screenType = #SCR_CUSTOM
+    If redData\screenType = #SCR_LIKEWB AND ExecVersion >= 39
       si = ?myscreentags1
       CNIF #test = 1
         Poke.l ?scrbehind1+4,0
@@ -4862,7 +4840,7 @@ buttondata:
 
   AddProcessPtr "s",&redData\pubscreenName
 
-  If redData\screenMode = #SCR_LIKEWB OR redData\screenMode = #SCR_CUSTOM
+  If redData\screenType = #SCR_LIKEWB OR redData\screenType = #SCR_CUSTOM
     If redData\usePubScreen AND redData\defaultPubScreen Then SetDefaultPubScreen_ ?pubname
   Else
     ReleasePubScreen 0,dreg
@@ -4906,7 +4884,8 @@ pens:         Dc.w  -1
 
 .refreshSourceWindow:
   log2PED{"refreshSourceWindow..."}
-  If ali Then *pcInfo = ali : RED_UpdateSourceWindow{*pcInfo, 0}
+  ;If ali Then *pcInfo = ali : 
+  RED_UpdateSourceWindow{*pcInfo}
   If lt$ <> "" Then RED_ShowStatusText{lt$}
 Return
 
@@ -4938,10 +4917,27 @@ Return
 
 
 .loadPrefs:
+  redData\logging = True
+  redData\showLineNumbers = True
+
   If NOT dos_Exist{redData\appPath} Then log2PED{"Path not exist: \\22" + redData\appPath + "\\22"}
 
+  ;TODO: change to tooltypes as settings
+  tt.s = dos_GetProgIcon{dos_AddPart{redData\appPath,"REDDebugger"} }
+  log_Print{"opening tooltypes for <" + tt.s + ">"}
+  redData\appDiscObject = dos_OpenToolTypes{tt.s}
+  If redData\appDiscObject
+    log2PED{"Diskobject found"}
+    dos_SetToolString{"TEST","1"}
+    dos_SetToolState{"TEST",False}
+    ;-- update and write Icon
+    dos_FlushToolTypes{}
+  Else
+    log2PED{"No Diskobject found"}
+  EndIf
+
   ; ***********************************************************************************************
-  If ReadFile(0,dos_AddPart{redData\appPath,"RED_DBug2.prefs"} ) ; Path changed (Marco 21.01.15)
+  If ReadFile(0,dos_AddPart{redData\appPath,"RED_DBug2.prefs"} )
     ReadType 0,prefs : CloseFile 0
   Else
     log2PED{"Unable to find prefsfile: \\22" + redData\appPath + ":RED_DBug2.prefs\\22!"}
@@ -4970,39 +4966,40 @@ Return
   LoadFont 3,prefs\fontname,prefs\fontsize,#FSF_ITALIC
 
   ; ***********************************************************************************************
-  *prefsPtr.l = 0
+  *prefsPtr.l = ?initstate : defaultPrefs.b = True
   If ReadFile(0,dos_AddPart{redData\appPath,"RED_DBug.prefs"} ) ; Path changed (Marco 21.01.15)
-    *prefsPtr = AllocVec_(configsize+4096,#MEMF_PUBLIC|#MEMF_CLEAR)
-    ReadMem 0,*prefsPtr,configsize : CloseFile 0
-    If Peek.w(*prefsPtr) <> ( (Vallong("\\__VER_MAJOR") ASL 8) + Vallong("\\__VER_MINOR") )
-      log2PED{"Version mismatch for prefs, switching to defaults..."}
-      FreeVec_ *prefsPtr
-      *prefsPtr = ?initstate
-      defaultPrefs.l = True         ; added to indicate that we use default settings to arrange the Windows  tomsmart1 2016 03 15
+    *storePtr.l = AllocVec_(prefsSize + 4096,#MEMF_PUBLIC|#MEMF_CLEAR)
+    ReadMem 0,*storePtr,prefsSize : CloseFile 0
+    If Peek.w(*storePtr) <> ( (Vallong("\\__VER_MAJOR") ASL 8) + Vallong("\\__VER_MINOR") )
+      log2PED{"Version mismatch for prefs, using defaults..."}
     Else
-      defaultPrefs   = False
-      !log2PED_HexDump{*prefsPtr,128}
+      CopyMem_ *storePtr,*prefsPtr,prefsSize
+      defaultPrefs = False
     EndIf
+    FreeVec_ *storePtr
   Else
     log2PED{"Unable to find prefsfile: \\22" + redData\appPath + ":RED_DBug.prefs\\22!"}
   EndIf
+  If defaultPrefs Then *prefsPtr = ?initstate
+  log2PED{"prefs stored a location " + Hex$(*prefsPtr)}
+  !log2PED_HexDump{*prefsPtr,prefsSize}
 
-  ad.l = *prefsPtr
-  redData\screenMode      = Peek.w(ad + 2) :  ad + 4
-  redData\screenModeId    = Peek.l(ad)
-  redData\screenWidth     = Peek.w(ad + 4)
-  redData\screenHeight    = Peek.w(ad + 6)
-  redData\tokenize = 1    ; Peek.b(ad + 8)
-  redData\usePubScreen    = Peek.b(ad + 9)
-  redData\windowMaxHeight = Peek.w(ad + 10)
+  ad.l = *prefsPtr : ad + 2
+  redData\screenType      = Peek.w(ad) : ad + 2
+  redData\screenModeId    = Peek.l(ad) : ad + 4
+  redData\screenWidth     = Peek.w(ad) : ad + 2
+  redData\screenHeight    = Peek.w(ad) : ad + 2
+  redData\tokenize = True              : ad + 1
+  redData\usePubScreen    = Peek.b(ad) : ad + 1
+  redData\windowMaxHeight = Peek.w(ad) : ad + 2
 
   ;---- copy and set the window position and dimensions
   winBaseFlags.l = #WFLG_SIZEBBOTTOM|#WFLG_CLOSEGADGET|#WFLG_DEPTHGADGET|#WFLG_DRAGBAR|#WFLG_SIZEGADGET
+  wininfo(#_winSource)    \flags = winBaseFlags, "Sourcecode View", #_winSource, ?help_source
+  wininfo(#_winControl)   \x     = 0, redData\ScreenBarHeight, 632 + redData\WinBorLeft + redData\WinBorRight, redData\WinBorTop + redData\WinBorBottom + 5 * 2 + redData\ScreenFontYSize, $20002e, cntrlwin$, #_winControl, ?help_cntrlwin
   wininfo(#_winMemory1)   \title = "Memory 1"
   wininfo(#_winMemory2)   \title = "Memory 2"
-  wininfo(#_winControl)   \x     = 0, redData\ScreenBarHeight, 632 + redData\WinBorLeft + redData\WinBorRight, redData\WinBorTop + redData\WinBorBottom + 5 * 2 + redData\ScreenFontYSize, $20002e, cntrlwin$, #_winControl, ?help_cntrlwin
   wininfo(#_winRegisters) \flags = winBaseFlags|#WFLG_NEWLOOKMENUS, "Register Window", -1 ,?help_reg
-  wininfo(#_winSource)    \flags = winBaseFlags, "Sourcecode View", #_winSource, ?help_source
   wininfo(#_winVariables) \flags = winBaseFlags|#WFLG_NEWLOOKMENUS, varfollow$, -1, ?help_var
   wininfo(#_winDisAsm)    \flags = winBaseFlags|#WFLG_NEWLOOKMENUS, "Disassembly", -1, ?help_asm
   wininfo(#_winDisCop)    \flags = winBaseFlags|#WFLG_NEWLOOKMENUS, "Copper Instructions",-1, ?help_cop
@@ -5010,21 +5007,25 @@ Return
   wininfo(#_winArray)     \flags = winBaseFlags|#WFLG_NEWLOOKMENUS|#WFLG_SIZEBRIGHT, "Array", #_winArray, ?help_array
   wininfo(#_winCustom)    \x     = 0,redData\ScreenBarHeight + redData\WinBorTextTop,264 + redData\WinBorLeft + redData\WinBorRight, 41,$20002e,"Custom Chip Window", 3, ?help_chips
   wininfo(#_winMouseables)\flags = winBaseFlags|#WFLG_NEWLOOKMENUS|#WFLG_SIZEBRIGHT, "Label List", #_winMouseables, ?help_labels
-  num = Peek.w(ad + 12) : ad + 14
+
+  ;-- loading standard windows
+  num = Peek.w(ad) : ad + 2
   For h = 0 To num-1
-    winstatus(h) = Peek.w(ad) : ad+2
+    winstatus(h) = Peek.w(ad) : ad + 2
+    wininfo(h)\x = Peek.w(ad),Peek.w(ad + 2)
     If (#noresize BitTst h)
       wininfo(h)\h + redData\WinBorTextTop + redData\WinBorBottom
     Else
-      wininfo(h)\w = Peek.w(ad+4),Peek.w(ad+6)
+      wininfo(h)\w = Peek.w(ad + 4),Peek.w(ad + 6)
     EndIf
-    If defaultPrefs = False                      ; added to better arrange the windows if we use default settings  tomsmart1 2016 03 15
-      wininfo(h)\x = Peek.w(ad),Peek.w(ad+2)
-    Else
+
+    ;-- better arrange the windows if we use default settings
+    If defaultPrefs = True
       If h = #_winControl                      ; check if we have the control window
         wininfo(h)\x = 0,redData\ScreenBarHeight       ; to open the control window not over the screenbar
       Else
-        wininfo(h)\x = 0,redData\ScreenBarHeight + redData\WinBorTextTop + redData\WinBorBottom + gadHeight ; to open the other windows not over the control window
+        ; to open the other windows not over the control window
+        wininfo(h)\x = 0,redData\ScreenBarHeight + redData\WinBorTextTop + redData\WinBorBottom + 4 + redData\ScreenFontYSize
       EndIf
     EndIf
 
@@ -5038,22 +5039,25 @@ Return
   redData\showSyntaxHelp = Peek.b(ad) : ad + 1
 ;  redData\showLineNumbers= Peek.b(ad) : ad + 1
 ;  redData\logging        = Peek.b(ad) : ad + 1
-                                                                                                                                                                                                            
- .@prefsload
+
+  ;-- load disasmlock
   MaxLen disasmlock$   = 85
   MaxLen disasmlockpf$ = 85
 
   disasmlock$ = Peek.s(ad)
   If disasmlock$ = "" Then disasmlock$ = "pc-2"
   Poke$ ?disasmlockstr,disasmlock$
-  ConvToPostFix disasmlock$,&evalbuffer$
+  ConvToPostFix disasmlock$, &evalbuffer$
+  log2PED{"disasmlock: " + disasmlock$ + ", converted to postfix: " + Peek.s(&evalbuffer$)}
   i.l = PFEvaluate(Peek.s(&evalbuffer$))
   disasmlockpf$ = Peek.s(&evalbuffer$)
+  log2PED{"PF: " + disasmlockpf$ + ": " + Str$(i)}
   If disasmlock$ <> ""
-    wininfo(#_winDisAsm)\title = "Disassembly ("+disasmlock$+")"
+    wininfo(#_winDisAsm)\title = "Disassembly (" + disasmlock$ + ")"
     initdiss.l                 = 20
   EndIf
 
+  ;-- load window settings for wizardwindows
   ad + 128
   num2.l = Peek.w(ad) : ad + 2
   For h = 23 To num2 - 1
@@ -5068,8 +5072,6 @@ Return
 
     ad + 8
   Next h
-
-  If NOT defaultPrefs Then FreeVec_ *prefsPtr
 Return
 
 .openwindows:
@@ -5105,7 +5107,7 @@ Return
   Next h
 
   GTSetMenuChecked 0,0, 8  ,redData\tokenize
-  GTSetMenuChecked 0,0, 6  ,redData\screenMode,On
+  GTSetMenuChecked 0,0, 6  ,redData\screenType,On
   GTSetMenuChecked 0,0, 6,6,redData\usePubScreen
   GTSetMenuChecked 0,0, 6,7,redData\defaultPubScreen
   GTSetMenuChecked 0,0, 9  ,redData\showLineNumbers
@@ -5387,6 +5389,7 @@ Return
           execrequest = 0
         EndIf
 
+        log2PED{"got a new pcInfo!"}
         cb.l = d_e()\i
         *pcInfo = Peek.l(buffmem + cb)
         log2PED{"Info cb: " + Hex$(cb)}
@@ -5401,9 +5404,7 @@ Return
           EndIf
         EndIf
 
-        RED_ShowSyntaxHelp{*pcInfo}
-
-        pb = 0 : RED_UpdateSourceWindow{*pcInfo, -1}
+        pb = 0 : RED_UpdateSourceWindow{*pcInfo}
         Signal_ task,signalset
 
       Case 4 ; QUIT - outa-here
@@ -5417,6 +5418,8 @@ Return
 
 
 .UpdateWindows:
+  ;log2PED{"... updating windows"}
+
   If redData\watch0
     If Peek.l (0) <> addr0
       Use Window 0
@@ -5451,7 +5454,7 @@ Return
     ad = PFEvaluate(disasmlockpf$) ; update disasm
     disasm_ad = ad
     If winstatus(#_winDisAsm) Then UpdateDisAsm{}
-    initdiss-1
+    initdiss - 1
   EndIf
 
   If Peek.w(?donebreakpoint)
@@ -5497,8 +5500,8 @@ Return
           UpdateDisAsm{}
 
         Case #_winSource
-          *iline = Peek.l(ad+2)
-          RED_PrintSource{*iline}
+          sourceWindow\currentLine =Peek.l(ad+2)
+          RED_PrintSource{}
       End Select
 
     Case #_memwindow
@@ -6256,22 +6259,22 @@ StructWinD:
 Return
 
 
-.Savewindows:
-  *prefsPtr = AllocVec_(configsize+4096,#MEMF_CLEAR|#MEMF_PUBLIC)
+.UpdatePrefs:
   If *prefsPtr
-    Poke.b *prefsPtr   ,Vallong("\\__VER_MAJOR")
-    Poke.b *prefsPtr+ 1,Vallong("\\__VER_MINOR")
-    Poke.w *prefsPtr+ 2,redData\screenMode
-    Poke.l *prefsPtr+ 4,redData\screenModeId
-    Poke.w *prefsPtr+ 8,redData\screenWidth
-    Poke.w *prefsPtr+10,redData\screenHeight
-    Poke.b *prefsPtr+12,redData\tokenize
-    Poke.b *prefsPtr+13,redData\usePubScreen
-    Poke.w *prefsPtr+14,redData\windowMaxHeight
-    Poke.w *prefsPtr+16,#save_numwindows
-    *prefsPtr+18
+    *storePtr.l = *prefsPtr
+    Poke.b *storePtr   ,Vallong("\\__VER_MAJOR")
+    Poke.b *storePtr+ 1,Vallong("\\__VER_MINOR")
+    Poke.w *storePtr+ 2,redData\screenType
+    Poke.l *storePtr+ 4,redData\screenModeId
+    Poke.w *storePtr+ 8,redData\screenWidth
+    Poke.w *storePtr+10,redData\screenHeight
+    Poke.b *storePtr+12,redData\tokenize
+    Poke.b *storePtr+13,redData\usePubScreen
+    Poke.w *storePtr+14,redData\windowMaxHeight
+    Poke.w *storePtr+16,#save_numwindows
+    *storePtr + 18
     For h = 0 To #save_numwindows-1
-      Poke.w *prefsPtr,winstatus(h) : *prefsPtr+2
+      Poke.w *storePtr,winstatus(h) : *storePtr+2
       If (Peek.l(Addr Window(h) ) >< 0)
         Use Window h
         wininfo(h)\x = WindowX
@@ -6279,22 +6282,23 @@ Return
         wininfo(h)\w = WindowWidth
         wininfo(h)\h = WindowHeight
       EndIf
-      Poke.w *prefsPtr,wininfo(h)\x : *prefsPtr+2
-      Poke.w *prefsPtr,wininfo(h)\y : *prefsPtr+2
-      Poke.w *prefsPtr,wininfo(h)\w : *prefsPtr+2
-      Poke.w *prefsPtr,wininfo(h)\h : *prefsPtr+2
+      Poke.w *storePtr,wininfo(h)\x : *storePtr+2
+      Poke.w *storePtr,wininfo(h)\y : *storePtr+2
+      Poke.w *storePtr,wininfo(h)\w : *storePtr+2
+      Poke.w *storePtr,wininfo(h)\h : *storePtr+2
     Next h
 
-    Poke.b *prefsPtr,redData\procStatus       : *prefsPtr + 1
-    Poke.b *prefsPtr,redData\blitzControl     : *prefsPtr + 1
-    Poke.b *prefsPtr,redData\gosubStatus      : *prefsPtr + 1
-    Poke.b *prefsPtr,redData\defaultPubScreen : *prefsPtr + 1
-    Poke.b *prefsPtr,redData\showSyntaxHelp   : *prefsPtr + 1
+    Poke.b *storePtr,redData\procStatus       : *storePtr + 1
+    Poke.b *storePtr,redData\blitzControl     : *storePtr + 1
+    Poke.b *storePtr,redData\gosubStatus      : *storePtr + 1
+    Poke.b *storePtr,redData\defaultPubScreen : *storePtr + 1
+    Poke.b *storePtr,redData\showSyntaxHelp   : *storePtr + 1
+    ;*storePtr + 31
   .@prefssave
-    Poke.s *prefsPtr,disasmlock$              : *prefsPtr + 128
-    Poke.w *prefsPtr,#wizardwindows           : *prefsPtr + 2
+    Poke.s *storePtr,disasmlock$              : *storePtr + 128
+    Poke.w *storePtr,#wizardwindows           : *storePtr + 2
     For h = 23 To #wizardwindows-1
-      Poke.w *prefsPtr,winstatus(h)           : *prefsPtr + 2
+      Poke.w *storePtr,winstatus(h)           : *storePtr + 2
       If (Peek.l(Addr Window(h) ) >< 0)
         Use Window h
         wininfo(h)\x = WindowX
@@ -6302,17 +6306,14 @@ Return
         wininfo(h)\w = WindowWidth
         wininfo(h)\h = WindowHeight
       Else
-        Poke.w *prefsPtr,wininfo(h)\x : *prefsPtr+2
-        Poke.w *prefsPtr,wininfo(h)\y : *prefsPtr+2
-        Poke.w *prefsPtr,wininfo(h)\w : *prefsPtr+2
-        Poke.w *prefsPtr,wininfo(h)\h : *prefsPtr+2
+        Poke.w *storePtr,wininfo(h)\x : *storePtr+2
+        Poke.w *storePtr,wininfo(h)\y : *storePtr+2
+        Poke.w *storePtr,wininfo(h)\w : *storePtr+2
+        Poke.w *storePtr,wininfo(h)\h : *storePtr+2
       EndIf
     Next h
-
-    SavePrefs{*prefsPtr}
-    FreeVec_ *prefsPtr : *prefsPtr = 0
   Else
-    error{"Unable to save config - not enough memory!"}
+    log2PED{"prefsPtr is NULL!"}
   EndIf
 Return
 
@@ -6642,52 +6643,49 @@ GTMenuListType:
   Dc.b "numitems",0,#_word,-1
   Dc.b 0
 
-;Window status,position and size.
-;Format: Status.w (0=closed)
-;        x position
-;        y position
-;        x size
-;        y size
 
 Even
 .@prefsstruct
 initstate:
-  Dc.b 0 ; will be set at program start
-  Dc.b 0 ; will be set at program start
+  Dc.b 0                                                   ; major version number of debugger that stored the config
+  Dc.b 0                                                   ; minor version number of debugger that stored the config
   Dc.w #SCR_WB                                             ; actual screen type
   Dc.l $8000                                               ; Screen mode ID
   Dc.w 640                                                 ; Screen width
   Dc.w 256                                                 ; Screen height
-  Dc.b 0                                                   ; Tokenize
+  Dc.b -1                                                  ; Tokenize
   Dc.b 0                                                   ; public screen
   Dc.w 2048                                                ; max window height
   Dc.w #save_numwindows                                    ; number of window definitions
-                                                                                                                                                                   
-  Dc.w -1,0,124,432,256-124                                ; Source window pos,size
-  Dc.w -1,0,11,640,26                                      ; Control window pos,size
-  Dc.w 0,0,37,640,87                                       ; Registers
-  Dc.w 0,0,0,0,0                                           ; Backdrop
-  Dc.w 0,432,124,208,256-124                               ; Mem1
-  Dc.w 0,432,124,208,256-124                               ; Mem2
-  Dc.w 0,0,11,420,100                                      ; Search window
-  Dc.w 0,0,11,320,128                                      ; Variable window
-  Dc.w 0,0,11,320,128                                      ; 680x0 Disassembly window
-  Dc.w 0,0,11,320,128                                      ; Copper Disassembly window
-  Dc.w 0,0,11,320,128                                      ; Custom chip registers
-  Dc.w 0,0,11,320,128                                      ; Array window
-  Dc.w 0,0,11,160,200                                      ; Label List window
-                                                                                                                                                                        
+                                                           ; --- window settings: status (0=closed),x,y,width,height
+  Dc.w -1,0,200,432,256-124                                ; window Source
+  Dc.w -1,0,11,640,14                                      ; window Control
+  Dc.w 0,0,37,640,87                                       ; window Registers
+  Dc.w 0,0,0,0,0                                           ; window Backdrop
+  Dc.w 0,432,124,208,256-124                               ; window Mem1
+  Dc.w 0,432,124,208,256-124                               ; window Mem2
+  Dc.w 0,0,11,420,100                                      ; window Search
+  Dc.w 0,0,11,320,128                                      ; window Variable
+  Dc.w 0,0,11,320,128                                      ; window 680x0 Disassembly
+  Dc.w 0,0,11,320,128                                      ; window Copper Disassembly
+  Dc.w 0,0,11,320,128                                      ; window Custom chip registers
+  Dc.w 0,0,11,320,128                                      ; window Array
+  Dc.w 0,0,11,160,200                                      ; window Label List
+                                                           ; --- Options
   Dc.b 0                                                   ; Status of ProcedureStep
   Dc.b 0                                                   ; Status of Blitzcontrol
   Dc.b 0                                                   ; Status of GosubStep
   Dc.b 0                                                   ; default Public screen
   Dc.b 0                                                   ; show syntax help
-  ;Dc.b -1                                                  ; show linenumbers
-  ;Dc.b -1                                                  ; log trace
-  Dcb.b 31,0
 
-disasmlockstr: Dc.b "pc-2",0 : Ds.b 128-5
-  Dc.w 0,0,11,420,100                                      ; FPU Reg Window
+disasmlockstr:
+  Dc.b "pc-2",0 : Ds.b 128-5
+                                                           ; --- window settingf for wizard windows
+  Dc.w #wizardwindows                                      ; beginning index number of wizard windows to load
+  Dc.w 0,0,11,420,100                                      ; window FPU Reg
+
+  Dc.b -1                                                  ; show linenumbers
+  Dc.b -1                                                  ; log trace
 
 endof_init:
   Even
@@ -6719,7 +6717,7 @@ help_breakpoints:   Dc.b "NODEbreakpoints",0
 help_fpu:           Dc.b "WIN_FPU",0
 help_asmstep:       Dc.b "WIN_ASMSTEP",0
 help_watch0:        Dc.b "WIN_WATCH0",0
-                                                                                                                                                                                                         
+
 Even
 wzgui:              IncBin "reddebug.wizard"
 Even
