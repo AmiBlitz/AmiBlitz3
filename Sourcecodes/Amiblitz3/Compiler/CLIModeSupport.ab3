@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 811
-; CursorColumn    = 16
+; CursorLine      = 605
+; CursorColumn    = 12
 ; LabelSearch     = "loads"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -580,7 +580,7 @@ Function.l LoadXtra{filename.s}
     Close_ fp
     succ.l = True
   Else
-    error{"WARNING: Unable to open .xtra file!"}
+    log2PED{"warning: unable to open .xtra file [" + filename + "]!"}
   End If
  Function Return succ
 End Function
@@ -646,18 +646,130 @@ Function.l LoadSource{sourcefile.s}
 
   fid.l = file_Open{sourcefile,#file_read}
   If fid>=0
+    ex.s = dos_GetExt{sourcefile}
     byteLength.l = file_GetLength{fid}
     sourcefile.s = file_GetDosName{fid}
 
+    offset.l = 0
     tempBuffer.l = AllocVec_(byteLength+8,#MEMF_ANY)
     If tempBuffer
       If file_ReadMem{fid,tempBuffer,byteLength}
         Poke.b tempBuffer + byteLength,0
 
-        ex.s = dos_GetExt{sourcefile}
-        If ex = "ab2" OR ex = "ab3" OR ex = "asc"
-          offset.l = 0
-          If ex = "ab3"
+        If ex = "bb" OR ex = "bb2" OR ex = "ab2" ; read xtra file
+          LoadXtra{sourcefile + ".xtra"}
+          !ComData_SetB{comByte_FuncOptimize   ,#1}                ; added for compatiblity because it is not stored in the xtra file  tomsmart1
+          !ComData_SetW{comWord_CreateDebugFile,#0}                ; to match the old default settings  tomsmart1
+        Else
+          Gosub ParseAB3Header
+
+          ;-- tokenize text without header (start at offset)
+          ;-- the fileformats above are already tokenized
+          byteLength = preproc_Tokenize{*PreProcessor,tempBuffer+offset,tempBuffer,byteLength-offset}
+        End If
+
+        offset.l = 0
+        count.l = 0
+
+        ;-- convert to source nodes
+        *sourceNode.SourceNode_t = #NULL
+        *prevLine.SourceLine_t   = #NULL
+        While offset < byteLength
+          text.s = Peek.s(tempBuffer + offset)
+          charLength.l = FLen(text) + 1
+
+          ; -- check if last line has no 0-byte at the end,
+          ; -- in this case, the last line will be read until the next 0-byte and be corrupted
+          If charLength > byteLength-offset
+            charLength = byteLength-offset
+            text.s = Peeks$(tempBuffer + offset,charLength)
+          EndIf
+
+          offset + charLength
+
+          If charLength > #MAX_Columns Then charLength = #MAX_Columns : text = Left$(text,#MAX_Columns)
+          allocsize.l = SizeOf.SourceNode_t + FLen(text)   ; the SizeOf contains already the terminating 0-Byte
+          *sourceNode = AllocPooled_(mempoolP, allocsize)
+          If *sourceNode
+            *sourceNode\AllocSize             = allocsize
+            *sourceNode\SourceLine\PrevLine   = *prevLine
+            *sourceNode\SourceLine\NextLine   = #NULL
+            *sourceNode\SourceLine\CharLength = charLength
+            Poke.s &*sourceNode\SourceLine\Text,text
+
+            If *prevLine Then *prevLine\NextLine = &*sourceNode\SourceLine
+            *prevLine = &*sourceNode\SourceLine
+            If *firstLine=#NULL Then *firstLine = &*sourceNode\SourceLine
+            *lastLine = &*sourceNode\SourceLine
+            count + 1
+
+          Else
+            log2PED{"LoadSource() - could not allocate memory for sourceline. allocsize: " + Str$(allocsize)}
+          End If
+        Wend
+        FreeVec_ tempBuffer
+
+        GetRegD0 *firstLine
+        !ComData_SetL{comPtr_FirstSourceLine   ,D0}
+        !ComData_SetL{comPtr_CurrentSourceLine ,D0}
+
+        GetRegD0 *lastLine
+        !ComData_SetL{comPtr_LastSourceLine    ,D0}
+
+        GetRegD0 count
+        !ComData_SetL{comLong_TotalLines       ,D0}
+
+        MOVE.l D0,numlines
+
+        !ComData_SetW{comWord_TextBufferOffset ,#0}
+        !ComData_SetW{comWord_Column           ,#0}
+        !ComData_SetW{comWord_ColumnsOffset    ,#0}
+        !ComData_SetL{comLong_DisplayLineOffset,#0}
+        !ComData_SetL{comLong_DisplayLine      ,#0}
+
+        If ex = "ab3"        ; apply xtra data
+          !asm
+          MOVEM.l D7/A6,-(A7)
+          JSR clear_lastcompileerrordatas   ; added to fix problems if a residents load error happend  tomsmart1 2016 02 02
+          JSR init_buffers
+          JSR reloadresident
+          MOVEM.l (A7)+,D7/A6
+          !basic
+        End If
+
+        ;-- save the cursor line position for the CLIModus  tomsmart1
+        If CLIMode = True                            ; check if we run in CLI mode 
+          !ComData_GetL{comLong_CursorPosStore,d0}   ; yes than get the line of the cursor position
+          !ComData_SetL{comLong_DisplayLine   ,d0}   ; and store it so it gets not lost by a save of the sourcecode
+        EndIf
+
+        ;-- update AB3 context
+        !ComData_SetW{comWord_SourceChanged,#0}
+
+        currdir.s = dos_PathPart{sourcefile}
+        !ComData_LEA{comStr_SourceDir,D0}
+        currentDirP.l = PutRegD0
+        Poke.s currentDirP,currdir
+        SetCurrentDir{currdir}
+
+        ;!ComData_LEA{comStr_SourceFileComplete,D0}
+        ;sfcP.l = PutRegD0
+        ;Poke.s sfcP,sourcefile
+
+        !ComData_LEA{comStr_SourceName,D0}
+        snP.l = PutRegD0
+        Poke.s snP,dos_FilePart{sourcefile}
+
+      End If
+    Else
+      error{"Not enough memory to load file!"}
+    End If
+
+    file_Close{fid}
+  End If
+  Function Return *firstLine
+
+ParseAB3Header:
             headerDone.l = False
             file_Seek{fid,0}
 
@@ -865,115 +977,7 @@ Function.l LoadSource{sourcefile.s}
             GetRegD0 LabelPosition : !ComData_SetL{comLong_Label1VisableItemStore,d0}    ; added the load of the inner postion of the labellist  tomsmart1
             If (MakeSmallest <> False) Then FuncOptimize = 1                          ; added for compatblity with older source  tomsmart1
             GetRegD0 FuncOptimize  : !ComData_SetB{comByte_FuncOptimize,d0}
-          End If
-
-          byteLength = preproc_Tokenize{*PreProcessor,tempBuffer+offset,tempBuffer,byteLength-offset}
-
-        End If
-
-        offset.l = 0
-
-        *sourceNode.SourceNode_t = #NULL
-        *prevLine.SourceLine_t   = #NULL
-
-        count.l = 0
-        While offset < byteLength
-          ; convert standard text to ab-textnodes
-          text.s = Peek.s(tempBuffer + offset)
-          charLength.l = FLen(text) + 1
-
-          ; -- check if last line has no 0-byte at the end,
-          ; -- in this case, the last line will be read until the next 0-byte and be corrupted
-          If charLength > byteLength-offset
-            charLength = byteLength-offset
-            text.s = Peeks$(tempBuffer + offset,charLength)
-          EndIf
-
-          offset + charLength
-          If charLength > #MAX_Columns Then charLength = #MAX_Columns : text = Left$(text,#MAX_Columns)
-          allocsize.l = SizeOf.SourceNode_t + FLen(text)   ; the SizeOf contains already the terminating 0-Byte
-          *sourceNode = AllocPooled_(mempoolP, allocsize)
-          If *sourceNode
-            *sourceNode\AllocSize             = allocsize
-            *sourceNode\SourceLine\PrevLine   = *prevLine
-            *sourceNode\SourceLine\NextLine   = #NULL
-            *sourceNode\SourceLine\CharLength = charLength
-            Poke.s &*sourceNode\SourceLine\Text,text
-;!cout{text}
-            If *prevLine Then *prevLine\NextLine = &*sourceNode\SourceLine
-            *prevLine = &*sourceNode\SourceLine
-            If *firstLine=#NULL Then *firstLine = &*sourceNode\SourceLine
-            *lastLine = &*sourceNode\SourceLine
-            count + 1
-          End If
-        Wend
-        FreeVec_ tempBuffer
-
-        GetRegD0 *firstLine
-        !ComData_SetL{comPtr_FirstSourceLine   ,D0}
-        !ComData_SetL{comPtr_CurrentSourceLine ,D0}
-
-        GetRegD0 *lastLine
-        !ComData_SetL{comPtr_LastSourceLine    ,D0}
-
-        GetRegD0 count
-        !ComData_SetL{comLong_TotalLines       ,D0}
-
-        MOVE.l D0,numlines
-
-        !ComData_SetW{comWord_TextBufferOffset ,#0}
-        !ComData_SetW{comWord_Column           ,#0}
-        !ComData_SetW{comWord_ColumnsOffset    ,#0}
-        !ComData_SetL{comLong_DisplayLineOffset,#0}
-        !ComData_SetL{comLong_DisplayLine      ,#0}
-
-        If ex="bb2" OR ex="bb" OR ex="ab2"    ; read xtra file
-          LoadXtra{sourcefile+".xtra"}
-          !ComData_SetB{comByte_FuncOptimize   ,#1}                ; added for compatiblity because it is not stored in the xtra file  tomsmart1
-          !ComData_SetW{comWord_CreateDebugFile,#0}                ; to match the old default settings  tomsmart1
-        End If
-
-        If ex="ab3"        ; apply xtra data
-          !asm
-          MOVEM.l D7/A6,-(A7)
-          JSR clear_lastcompileerrordatas   ; added to fix problems if a residents load error happend  tomsmart1 2016 02 02
-          JSR init_buffers
-          JSR reloadresident
-          MOVEM.l (A7)+,D7/A6
-          !basic
-        End If
-
-        ; save the cursor line position for the CLIModus  tomsmart1
-        If CLIMode=True                              ; check if we run in CLI mode 
-          !ComData_GetL{comLong_CursorPosStore,d0}   ; yes than get the line of the cursor position
-          !ComData_SetL{comLong_DisplayLine   ,d0}   ; and store it so it gets not lost by a save of the sourcecode
-        EndIf
-
-        ; update AB3 context
-        !ComData_SetW{comWord_SourceChanged,#0}
-
-        currdir.s = dos_PathPart{sourcefile}
-        !ComData_LEA{comStr_SourceDir,D0}
-        currentDirP.l = PutRegD0
-        Poke.s currentDirP,currdir
-        SetCurrentDir{currdir}
-
-        ;!ComData_LEA{comStr_SourceFileComplete,D0}
-        ;sfcP.l = PutRegD0
-        ;Poke.s sfcP,sourcefile
-
-        !ComData_LEA{comStr_SourceName,D0}
-        snP.l = PutRegD0
-        Poke.s snP,dos_FilePart{sourcefile}
-
-      End If
-    Else
-      error{"Not enough memory to load file!"}
-    End If
-
-    file_Close{fid}
-  End If
- Function Return *firstLine
+  Return
 End Function
 
 
