@@ -45,7 +45,7 @@ EXIT
 
 
 replace: procedure
-    parse arg text,srch, repl
+    parse arg text, srch, repl
     slen = length(srch)
     tlen = length(text)
     do until tlen = 0
