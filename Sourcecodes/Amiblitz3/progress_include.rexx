@@ -12,63 +12,8 @@ ELSE
     END
 /*---------------------------------------------*/
 
-basedir = "Development:AmiBlitz3/Sourcecodes/includes/os/"
-filename = "graphics/coerce.ab3"
-
-incfile = basedir || filename
-outfile = incfile".new"
-area = getArea(incfile)
-headername = getHeader(incfile)
-SAY area headername
-
-IF open('inc', incfile, "r") THEN
-    IF open('out',outfile,"w") THEN
-        DO UNTIL EOF('inc')
-            currline = readln('inc')
-            /*IF length(currline) > 0 THEN writeln('out', currline)*/
-
-            IF lastpos("/XTRA",currline) > 0 THEN DO
-                writeln('out', currline)
-                SAY "Beginning of code found."
-
-                currline = readln('inc')
-                IF index(currline,"CNIF") = 0 THEN
-                    finishhim = addlines(area,headername)
-                ELSE DO
-                    SAY "file already updated."
-                    EXIT
-                END
-            END
-
-            /* improve LSL - Code */
-            IF LASTPOS("LSL", currline) > 0 THEN
-                IF SUBSTR(currline,LASTPOS("LSL",currline)-1,1) = "1" THEN 
-                    currline = replace(currline,"LSL"," LSL ")
-
-            /* improve xincludes */
-            IF LASTPOS("XINCLUDE", currline) > 0 THEN DO
-                say currline
-                temp = SUBSTR(currline,INDEX(currline,'"')+1)
-                a = getArea(temp)
-                b = getHeader(temp)
-                wrt = compress(a "_" b "_H=0")
-                wrt2= compress(a "_" b "_H")
-                writeln('out', "CNIF @#"wrt)
-                writeln('out', currline)
-                writeln('out', "CEND ;"wrt2)
-            END 
-            ELSE
-                writeln('out', currline)
-            
-        END
-        IF finishhim=1 THEN writeln('out',"CEND")
-
-        CALL close('inc')
-        CALL close('out')
-        /*say delete(incfile)
-        SAY rename(outfile, incfile)*/
-SAY "finished."
-EXIT
+basedir = "Development:AmiBlitz3/Sourcecodes/includes/os"
+/*filename = "graphics/coerce.ab3"*/
 
 SAY "listing directory of " || basedir
 dirlist = SHOWDIR(basedir)
@@ -83,16 +28,8 @@ DO forever
     DO forever
         PARSE VAR filelist filename filelist
         IF filename = "" THEN LEAVE
-        If RIGHT(filename,3) = "bb2" THEN DO
-            say "converting " || filename
-            fn = currentdir || "/" || filename
-            nfn = replace(fn, ".bb2", ".ab3")
-
-            ADDRESS PED.1
-            LOAD fn
-            SAVEAS nfn
-
-            END
+        If RIGHT(filename,3) = "ab3" THEN
+            call processfile(currentdir, filename)
         ELSE
             say "skipping " || filename
     END
@@ -118,6 +55,7 @@ replace: procedure
 
 addlines: procedure
     parse arg first, second
+    SAY "beginning of code found, adding compiler directive."
     writeln('out',"CNIF @#"first"_"second"_H=0")
     writeln('out',"#"first"_"second"_H = 1")
     return 1
@@ -136,3 +74,64 @@ getHeader: procedure
     text = LEFT(text,lastpos(".",text)-1)
     text = SUBSTR(text,lastpos("/",text)+1)
     return text
+
+processfile: procedure
+    parse arg basedir, filename
+
+    incfile = basedir || "/" || filename
+    outfile = incfile".new"
+    area = getArea(incfile)
+    headername = getHeader(incfile)
+
+    SAY "processing file" incfile ", group " area ", " headername "..."
+
+    IF open('inc', incfile, "r") THEN DO
+        IF open('out',outfile,"w") THEN DO
+            DO UNTIL EOF('inc')
+                currline = readln('inc')
+                /*IF length(currline) > 0 THEN writeln('out', currline)*/
+
+                IF lastpos("/XTRA",currline) > 0 THEN DO
+                    writeln('out', currline)
+
+                    currline = readln('inc')
+                    IF index(currline,"CNIF") = 0 THEN
+                        finishhim = addlines(area,headername)
+                    ELSE DO
+                        SAY "file already updated."
+                        EXIT
+                    END
+                END
+
+                /* improve LSL - Code */
+                IF LASTPOS("LSL", currline) > 0 THEN
+                    IF SUBSTR(currline,LASTPOS("LSL",currline)-1,1) = "1" THEN
+                        currline = replace(currline,"LSL"," LSL ")
+
+                /* improve xincludes */
+                IF LASTPOS("XINCLUDE", currline) > 0 THEN
+                    DO
+                        say currline
+                        temp = SUBSTR(currline,INDEX(currline,'"')+1)
+                        a = getArea(temp)
+                        b = getHeader(temp)
+                        wrt = compress(a "_" b "_H=0")
+                        wrt2= compress(a "_" b "_H")
+                        writeln('out', "CNIF @#"wrt)
+                        writeln('out', currline)
+                        writeln('out', "CEND ;"wrt2)
+                    END
+                ELSE
+                    writeln('out', currline)
+
+            END
+            IF finishhim=1 THEN writeln('out',"CEND")
+
+            CALL close('inc')
+            CALL close('out')
+            delete(incfile)
+            rename(outfile, incfile)
+        END
+    END
+    ELSE
+        say "ERROR: could not open " incfile
