@@ -11,13 +11,13 @@ What we have got here is the complete package of AmiBlitz3 - a BASIC-compiler fo
 
 ## Installation:
 To get started with AB3, just download the [current release](https://github.com/AmiBlitz/AmiBlitz3/releases/latest) and extract it somewhere on your harddisk.
-You may copy the OS-libraries in Libs-Drawer to system's "Libs"-drawer before starting, otherwise the IDE will complain about mission OS-libraries.
+You may copy the OS-libraries in Libs-Drawer to system's "Libs"-drawer before starting, otherwise the IDE will complain about missing OS-libraries.
 
 ## What this package contains:
 Everything you need as of:
 - full IDE with all needed OS-libraries
-- localization for english, german, french and italian 
-- lots of documentations directly accessable by the IDE (check "Help"-Menu)
+- localization for english, german, french and italian
+- lots of documentation directly accessable by the IDE (check "Help"-Menu)
 - lots of usefull includes written in AB3 itself (with its own documentation)
 - every include file has its own short demo in it, just compile and run them!
 - some examples to demonstrate various features
