@@ -9,6 +9,8 @@ What we have got here is the complete package of AmiBlitz3 - a BASIC-compiler fo
 - Workbench 2.1 (V38), or Workbench 2.04 (V37) with locale.library
 - wizard.library (included)
 
+These requirements apply for the IDE only, not for the compiled output.
+
 ## Installation:
 To get started with AB3, just download the [current release](https://github.com/AmiBlitz/AmiBlitz3/releases/latest) and extract it somewhere on your harddisk.
 You may copy the OS-libraries in Libs-Drawer to system's "Libs"-drawer before starting, otherwise the IDE will complain about missing OS-libraries.
