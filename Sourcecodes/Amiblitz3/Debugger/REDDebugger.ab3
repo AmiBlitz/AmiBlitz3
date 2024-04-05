@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.10
-; NumberOfBuilds  = 148
+; NumberOfBuilds  = 152
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 4853
-; CursorColumn    = 33
+; CursorLine      = 3660
+; CursorColumn    = 51
 ; LabelSearch     = "evalbuffer$"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -60,6 +60,8 @@
 ; Max Console     = 5
 ; Max TCPSock     = 5
 ; Max Tape        = 5
+; Max TagList     = 5
+; Max Database    = 16
 ; Max Sound       = 10
 ; Max MedModule   = 8
 ; Max Buffer      = 10
@@ -366,25 +368,29 @@ NEWTYPE.pcinfo
 End NEWTYPE
 DEFTYPE.pcinfo *pcInfo
 
-;-- STATEHANDLER - called before the execution of every line of
-;-- program code, except for stuff in supervisor mode (ie: interupts).
-;-- This routine is only allowed to play with A0 and A1 (to keep things
-;-- fast). On entry, A0 contains a pointer to an 'info' block:
+;-- STATEHANDLER - called before the execution of every line of program
+;-- code, except for stuff in supervisor mode (ie: interupts).
+;-- This routine is only allowed to play with A0 and A1 (to keep things fast).
+;-- On entry, A0 contains a pointer to an 'info' block:
 NEWTYPE.statehandlerinfo
-  DRegs.l[8]        ;contents of data registers D0...D7
-  ARegs.l[8]        ;contents of address registers A0...A7
-  *pc.pcinfo        ;program counter
-  conditionCodes.w              ;condition codes
+  DRegs.l[8]          ; contents of data registers D0...D7
+  ARegs.l[8]          ; contents of address registers A0...A7
+  *pc.pcinfo          ; program counter
+  conditionCodes.w    ; condition codes
 End NEWTYPE
 
 NEWTYPE.variabletype
   address.l ; address of variable
-  typ.b     ; type = 1-6
+  typ.b     ; type = 1-7, byte,word,long,quick,float,,string
   form.b    ; 0 = dec, 1 = hex, 2 = binary
   name.s    ; name of variable
 End NEWTYPE
 
-
+#DEVENT_SUPERVISORERROR = 0
+#DEVENT_USERERROR = 1
+#DEVENT_EVALRESULT = 2
+#DEVENT_TRACELINE = 3
+#DEVENT_END = 4
 NEWTYPE.d_event ; a debug event!
   t.w           ; type...0 = supervisor error
                 ;        1 = user error
@@ -637,6 +643,7 @@ SHARED redData
     GetReg D1,tmpL      ; include file name
     GetReg D2,tmpL      ; logvalue1: code line num
     GetReg D3,tmpL      ; pointer source line
+    GetReg D4,tmpL      ; pointer to source text of current line
 
     !ComData_JSR{comFunc_LogPrint}
   Else
@@ -1238,13 +1245,13 @@ breakstore:     Dc.w 0
 d_superhandler:
   MOVE.l a7,regpos
   !d_basic : PutReg a0,sa.l
-  Gosub stopit : add_event{0,Peek.s(sa)}
+  Gosub stopit : add_event{#DEVENT_SUPERVISORERROR,Peek.s(sa)}
 Return
 
 
 d_userhandler:
   !d_basic : PutReg a0,sa
-  Gosub stopit : add_event{1,Peek.s(sa)}
+  Gosub stopit : add_event{#DEVENT_USERERROR,Peek.s(sa)}
 Return
 
 
@@ -1254,7 +1261,7 @@ d_waithandler:
   !SBNE   {label}
   If prtcode ; print code out?
     prtbusy.l = -1
-    add_event{3,""} ; print me out!
+    add_event{#DEVENT_TRACELINE,""} ; print me out!
     Wait_ signalset
     While prtbusy : Delay_ 1 : Wend ; vwait wait till printed!
   EndIf
@@ -1281,13 +1288,13 @@ noredraw:   Dc.w  0
 
 d_evalhandler:
   !d_basic : PutReg a0,sa
-  add_event{2,Peek.s(sa)}
+  add_event{#DEVENT_EVALRESULT,Peek.s(sa)}
   ST    noredraw
 Return
 
 
 d_cleanup:
-  !d_basic : add_event{4,""}
+  !d_basic : add_event{#DEVENT_END,""}
 Return
 
 
@@ -1550,7 +1557,7 @@ SHARED redData, prefs
       If WriteFile(0,dos_AddPart{redData\appPath,"RED_DBug.prefs"} )
         WriteMem 0,memptr,memsize
         log2PED{"writing prefs from mem location " + Hex$(memptr)}
-        !log2PED_HexDump{memptr,memsize}
+        ;!log2PED_HexDump{memptr,memsize}
         CloseFile 0
       EndIf
       If WriteFile(0,dos_AddPart{redData\appPath,"RED_DBug2.prefs"} )
@@ -1822,7 +1829,7 @@ SHARED varinfo(),winstatus(),ffp;,i
   inw.l = InnerWidth              -1
   inh.l = InnerHeight-(fonth + 2) -1  ; get and calc the height, minus the 1 textline and the border
 
-  xpos.w = TextLength_(RastPort,"1234567890123456789",19) ; get the position to start with the print value
+  xpos.w = TextLength_(RastPort(#_winVariables),"1234567890123456789",19) ; get the position to start with the print value
   inw - xpos  ; to get the width of the window we can use to print the value
 
   If (inh > fonth) AND (inw > 0)  ; test if we have the height and the width to print the Values
@@ -1923,7 +1930,7 @@ SHARED varinfo(),objtype$
   fonth.w = WinFontHeight
 
   InnerCls
-  xpos.l = TextLength_(RastPort,"1234567890123456789",19) ; get the position to start with the print of the value
+  xpos.l = TextLength_(RastPort(#_winVariables),"1234567890123456789",19) ; get the position to start with the print of the value
 
   ; print statusline
   If  inh > fonth + 1 ; test if we have the height to print the status line
@@ -2468,17 +2475,18 @@ SHARED redData, *tokenbase
       ; -- TODO: trim source line to remove leading spaces !!
       toke.w = Peek.w(getad{*pc} + *pc\lineOffset)
       toke = toke AND $7fff
-
+      log2PED{"searching token help..."}
       found.b = False
       *token.tokendata = *tokenbase
       While *token AND (NOT found)
         If *token\number = toke
           syntax_$ = Peek.s(&*token\dat)
-          syntax_$ + " " + Peek.s(&*token\dat + FLen(syntax_$) + 1) ;Peek.s(*token + 7 + FLen(syntax_$))
+          syntax_$ + " " + Peek.s(&*token\dat + FLen(syntax_$) + 1)
           found = True
         EndIf
         *token = *token\next_token
       Wend
+      log2PED{"found ? " + Str$(found)}
     Else
       log2PED{"showsyntaxhelp: no *pc"}
     EndIf
@@ -2493,9 +2501,9 @@ Statement RED_ShowStatusText{t$}
 SHARED redData, lt$, *pcInfo
 
   If (Peek.l(Addr Window(#_winSource)))
-    log2PED{"statustext: " + t$}
-    Use Window #_winSource
+    log2PED{"statustext >> " + t$}
     RED_PrintText{redData\statusTextY,t$}
+    log2PED{"statustext done"}
     lt$ = t$
 
     RED_ShowSyntaxHelp{*pcInfo}
@@ -3465,7 +3473,7 @@ Return
       ev     = Event
       xpos.l = WMouseX-WLeftOff
       ypos.l = WMouseY-WTopOff
-      memvalueStrpos.l = TextLength_(RastPort,&memStr(0),10)  ; get the x startposition
+      memvalueStrpos.l = TextLength_(RastPort(#_winMemory2),&memStr(0),10)  ; get the x startposition
       If (xpos > memvalueStrpos) AND (xpos < InnerWidth) AND (ypos > 0) AND (ypos < InnerHeight)
         xpos   - memvalueStrpos
         ypos   = ypos/WinFontHeight
@@ -3495,7 +3503,7 @@ Return
       Use Window #_winDisAsm
       xpos = WMouseX-WLeftOff ; left border
       ypos = WMouseY-WTopOff  ; top border
-      disasmStrpos.l = TextLength_(RastPort,&disStr(1),18)  ; get the x startposition of the DisAsm string
+      disasmStrpos.l = TextLength_(RastPort(#_winDisAsm),&disStr(1),18)  ; get the x startposition of the DisAsm string
       If (xpos > disasmStrpos) AND (xpos < InnerWidth) AND (ypos > 0) AND (ypos < InnerHeight)
         ; calculate the position
         xpos - disasmStrpos               ; calc the mouse x position of the disasmstring
@@ -3580,7 +3588,7 @@ Return
     Return
 
   If (redMessage\_WindowID = #_winDisAsm) AND (disasm_ad > 4096)
-    xwidth.l = TextLength_(RastPort,"$12345678",9)
+    xwidth.l = TextLength_(RastPort(#_winDisAsm),"$12345678",9)
     If (wx > xwidth) AND (wy >= 0) AND (wy < InnerHeight)
       wy/wfonth
       ad = disasm_ad
@@ -3600,7 +3608,7 @@ Return
         EndIf
         wy-1
       Wend
-      If (Peek.w(ad) = #opcode_TRAP1 OR redData\asmStep) AND (WMouseX < xwidth+TextLength_(RastPort,"12345678",8) AND WMouseX > xwidth) ; only add breakpoint in range
+      If (Peek.w(ad) = #opcode_TRAP1 OR redData\asmStep) AND (WMouseX < xwidth+TextLength_(RastPort(#_winDisAsm),"12345678",8) AND WMouseX > xwidth) ; only add breakpoint in range
         flag = 0
         ad2 = FindBreakPoint{ad+2}
         If ad2
@@ -3623,7 +3631,7 @@ Return
 
   If redMessage\_WindowID = #_winRegisters AND dstatus = #STOPPED
     If (wx > 0) AND (wy > 0) AND (wy < InnerHeight)
-      xwidth = TextLength_(RastPort," ",1)
+      xwidth = TextLength_(RastPort(#_winRegisters)," ",1)
       wx / xwidth  ; calc char position
       wy / wfonth  ; calc line position
       If (wy < 8)
@@ -4924,7 +4932,7 @@ Return
 
   ;TODO: change to tooltypes as settings
   tt.s = dos_GetProgIcon{dos_AddPart{redData\appPath,"REDDebugger"} }
-  log_Print{"opening tooltypes for <" + tt.s + ">"}
+  log2PED{"opening tooltypes for <" + tt.s + ">"}
   redData\appDiscObject = dos_OpenToolTypes{tt.s}
   If redData\appDiscObject
     log2PED{"Diskobject found"}
@@ -4982,7 +4990,7 @@ Return
   EndIf
   If defaultPrefs Then *prefsPtr = ?initstate
   log2PED{"prefs stored a location " + Hex$(*prefsPtr)}
-  !log2PED_HexDump{*prefsPtr,prefsSize}
+  ;!log2PED_HexDump{*prefsPtr,prefsSize}
 
   ad.l = *prefsPtr : ad + 2
   redData\screenType      = Peek.w(ad) : ad + 2
@@ -5048,10 +5056,10 @@ Return
   If disasmlock$ = "" Then disasmlock$ = "pc-2"
   Poke$ ?disasmlockstr,disasmlock$
   ConvToPostFix disasmlock$, &evalbuffer$
-  log2PED{"disasmlock: " + disasmlock$ + ", converted to postfix: " + Peek.s(&evalbuffer$)}
+  ;log2PED{"disasmlock converted to postfix: " + Peek.s(&evalbuffer$)}
   i.l = PFEvaluate(Peek.s(&evalbuffer$))
   disasmlockpf$ = Peek.s(&evalbuffer$)
-  log2PED{"PF: " + disasmlockpf$ + ": " + Str$(i)}
+  log2PED{"disasmlock PF: " + disasmlockpf$ + ": " + Str$(i)}
   If disasmlock$ <> ""
     wininfo(#_winDisAsm)\title = "Disassembly (" + disasmlock$ + ")"
     initdiss.l                 = 20
@@ -5301,119 +5309,119 @@ Return
 .handle_DebuggerEvents:
   If FirstItem(d_e())
     log2PED{"** handle debugger events..."}
-  EndIf
 
-  While FirstItem(d_e())
-    ; Program running mode into title of #_winControl
-    ad = Peek.l(?progmode)
-    a  = Peek.w(ad)
-    If pmodevalid = 0 OR a <> pmode
-      pmodevalid = -1
-      pmode      = a
-      GetProgMode pmode,&cntrlwin$+14
-      SetWindowTitles_ Peek.l(Addr Window(#_winControl)),&cntrlwin$,-1
-    EndIf
+    While FirstItem(d_e())
+      log2PED{"-- d_event: " + Str$(d_e()\t)}
 
-    If memlock$(0)
-      mempointer(0) = PFEvaluate(memlockpf$(0))
-    EndIf
-    If memlock$(1)
-      mempointer(1) = PFEvaluate(memlockpf$(1))
-    EndIf
+      ;-- Program running mode into title of #_winControl
+      ad = Peek.l(?progmode)
+      a  = Peek.w(ad)
+      If pmodevalid = 0 OR a <> pmode
+        pmodevalid = -1
+        pmode      = a
+        GetProgMode pmode,&cntrlwin$ + 14
+        SetWindowTitles_ Peek.l(Addr Window(#_winControl)),&cntrlwin$,-1
+      EndIf
 
-    If winstatus(#_winMemory1) OR winstatus(#_winMemory2) Then RedrawMem{}
-    If winstatus(#_winRegisters) Then RedrawRegs{}
-    If winstatus(#_winVariables) Then UpdateVarWindow{}   ; only the values are print
+      If memlock$(0) Then mempointer(0) = PFEvaluate(memlockpf$(0))
+      If memlock$(1) Then mempointer(1) = PFEvaluate(memlockpf$(1))
 
-    ResetList objwins()
-    While NextItem(objwins())
-      If objwins()\typepointer >= 0 Then RefreshTypeWindow{}
-    Wend
+      If winstatus(#_winMemory1) OR winstatus(#_winMemory2) Then RedrawMem{}
+      If winstatus(#_winRegisters) Then RedrawRegs{}
+      If winstatus(#_winVariables) Then UpdateVarWindow{}   ; only the values are print
 
-    log2PED{"-- d_event: " + Str$(d_e()\t)}
-    Select d_e()\t
+      ResetList objwins()
+      While NextItem(objwins())
+        If objwins()\typepointer >= 0 Then RefreshTypeWindow{}
+      Wend
 
-      Case 0 ; supervisor mode error!
-        t$ = "(*) " + d_e()\s : RED_ShowStatusText{t$}
-        Gosub goterr
+      Select d_e()\t
 
-      Case 1 ; user mode error!
-        t$ = d_e()\s : RED_ShowStatusText{t$}
-        Gosub goterr
+        Case #DEVENT_SUPERVISORERROR                 ; supervisor mode error!
+          t$ = "(*) " + d_e()\s
+          RED_ShowStatusText{t$}
+          Gosub goterr
 
-      Case 2 ; EVAL result
-        If execrequest = #_newtypewindow
-          PopItem objwins()
-          objwins()\typepointer = 0
-          objwins()\maxobject   = 1
-          execrequest           = 0
-          objectbusy            = 0
-          RefreshTypeWindow{}
-        Else
+        Case #DEVENT_USERERROR                       ; user mode error!
           t$ = d_e()\s
+          RED_ShowStatusText{t$}
+          Gosub goterr
 
-          log2PED{"eval result: " + t$}
+        Case #DEVENT_EVALRESULT                      ; EVAL result
+          If execrequest = #_newtypewindow
+            PopItem objwins()
+            objwins()\typepointer = 0
+            objwins()\maxobject   = 1
+            execrequest           = 0
+            objectbusy            = 0
+            RefreshTypeWindow{}
+          Else
+            t$ = d_e()\s
 
-          lasteval$ = t$
-          If FLen(t$) < 11
-            t$ = t$ + " $" + Hex$(Val(t$)) + " %" + Bin$(Val(t$))
+            log2PED{"eval result: " + t$}
+
+            lasteval$ = t$
+            If FLen(t$) < 11
+              t$ = t$ + " $" + Hex$(Val(t$)) + " %" + Bin$(Val(t$))
+            EndIf
+
+            Gosub EVALHandle ; print eval result
+
+            Delay_ 1
+
+            If part$ <> ""
+              evalstr$ = t$
+              Gosub printbubble
+            EndIf
+
+           RED_ShowStatusText{t$}
           EndIf
 
-          Gosub EVALHandle ; print eval result
-
-          Delay_ 1
-
-          If part$ <> ""
-            evalstr$ = t$
-            Gosub printbubble
+        Case #DEVENT_TRACELINE                       ; dump code baby!
+          log2PED{"DEVENT: Trace current line!"}
+          If execrequest = #_newtypewindow
+            PopItem objwins()
+            execrequest           = 0
+            objwins()\typepointer = objwins()\objbaseadr
+            t$                    = ""
+            SetPropInfo objwins()\winnum,#OBJ_SGAD,1,objwins()\maxobject,0
+            Redraw objwins()\winnum,#OBJ_SGAD
+            Use Window objwins()\winnum
+            WTitle "Newtype: "+objwins()\t+" #"+Str$(objwins()\tracenum)+"/"+Str$(objwins()\maxobject-1)
+            RefreshTypeWindow{}
+            objectbusy = 0
+          EndIf
+          If execrequest = #_viewblitz
+            Enable #_winControl,10
+            execrequest = 0
           EndIf
 
-         RED_ShowStatusText{t$}
-        EndIf
+          cb.l = d_e()\i
+          *pcInfo = Peek.l(buffmem + cb)
+          log2PED{"Info cb: " + Hex$(cb)}
+          log2PED{"Info pcInfo: " + Hex$(*pcInfo)}
+          !log2PED_HexDump{*pcInfo,32}
+          !log2PED_HexDump{Peek.l(*pcInfo),32}
 
-      Case 3 ; dump code baby!
-        If execrequest = #_newtypewindow
-          PopItem objwins()
-          execrequest           = 0
-          objwins()\typepointer = objwins()\objbaseadr
-          t$                    = ""
-          SetPropInfo objwins()\winnum,#OBJ_SGAD,1,objwins()\maxobject,0
-          Redraw objwins()\winnum,#OBJ_SGAD
-          Use Window objwins()\winnum
-          WTitle "Newtype: "+objwins()\t+" #"+Str$(objwins()\tracenum)+"/"+Str$(objwins()\maxobject-1)
-          RefreshTypeWindow{}
-          objectbusy = 0
-        EndIf
-        If execrequest = #_viewblitz
-          Enable #_winControl,10
-          execrequest = 0
-        EndIf
-
-        log2PED{"got a new pcInfo!"}
-        cb.l = d_e()\i
-        *pcInfo = Peek.l(buffmem + cb)
-        log2PED{"Info cb: " + Hex$(cb)}
-        log2PED{"Info pcInfo: " + Hex$(*pcInfo)}
-        !log2PED_HexDump{*pcInfo,32}
-
-        If disasmlockpf$ <> ""
-          ad = PFEvaluate(disasmlockpf$) ; update disasm
-          If ad <> disasm_ad
-            disasm_ad = ad
-            If winstatus(#_winDisAsm) Then UpdateDisAsm{}
+          If disasmlockpf$ <> ""
+            ad = PFEvaluate(disasmlockpf$) ; update disasm
+            If ad <> disasm_ad
+              disasm_ad = ad
+              If winstatus(#_winDisAsm) Then UpdateDisAsm{}
+            EndIf
           EndIf
-        EndIf
 
-        pb = 0 : RED_UpdateSourceWindow{*pcInfo}
-        Signal_ task,signalset
+          pb = 0 : RED_UpdateSourceWindow{*pcInfo}
+          Signal_ task,signalset
 
-      Case 4 ; QUIT - outa-here
-        exitflag = 1
+        Case #DEVENT_END                             ; QUIT - outa-here
+          exitflag = 1
 
-    End Select
-    MaxLen d_e()\s = 0 : KillItem d_e()
-  Wend
-
+      End Select
+      MaxLen d_e()\s = 0 : KillItem d_e()
+    Wend
+    log2PED{"** all events handled."}
+  EndIf
 Return
 
 
@@ -5960,13 +5968,12 @@ Even
 
 
 
-goterr:
+.goterr:
   ShowScreen 0
-  If Peek.l(Addr Window(0))
-    Activate 0
-  EndIf
+  If Peek.l(Addr Window(0)) Then Activate 0
   MOVE.w  #0,proccount
   If winstatus(#_winArray) Then RedrawArray{0}
+  log2PED{"goterr finished."}
 Return
 
 
