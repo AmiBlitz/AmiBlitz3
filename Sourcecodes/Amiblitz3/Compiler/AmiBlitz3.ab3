@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.10
-; NumberOfBuilds  = 486
+; NumberOfBuilds  = 488
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 10325
-; CursorColumn    = 1
-; LabelSearch     = "putreg"
+; CursorLine      = 1926
+; CursorColumn    = 43
+; LabelSearch     = "environm"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -143,6 +143,20 @@ Macro DPrint
   !stack2regs
 ;  MOVE.l (a7)+,d0
 End Macro
+
+NEWTYPE.environment
+  *exeTask.Task
+  lock_CurrentDir.l
+  lock_ExePath.l
+  signalBitNum.l     ;panicbit
+  signalPanic.l       ;panicmask
+  ;
+  _noCLI.b
+  _noPED.b
+  ;
+  _runerror.b
+End NEWTYPE
+DEFTYPE.environment environment
 
 NEWTYPE.configuration
   localization.b
@@ -951,15 +965,16 @@ End Function
   ; new >
   !asm
   MOVEA.l _execbase,A6
+
   MOVEM.l d0/a0,-(a7)
 
+  ;-- init chartab
   MOVEQ #127,d0
   LEA chartab,a0
  'l12
     MOVE.b #1,128(a0)
     CLR.b (a0)+
   DBF d0,'l12
-
   LEA chartab,a0
   MOVE.b #1,(a0)
   MOVE.b #1,","(a0)
@@ -988,23 +1003,21 @@ End Function
   MOVE.b #1,$7e(a0)
   MOVE.w #$0101,1(a0)
 
+  ;-- init instrtab
   LEA instrtab,a0
   MOVE.l #labelhash-instrtab,d0
-  ASR.l #2,d0
-  SUBQ.l #1,d0
-
+  ASR.l #2,d0 : SUBQ.l #1,d0
  'l10
    CLR.l (a0)+
    SUBQ.l #1,d0
   BNE 'l10
 
+  ;-- init allowtab
   LEA allowtab,a0
   MOVE.l #255,d0
-
  'la1
     CLR.b (a0)+
   DBF d0,'la1
-
   LEA allowtab,a0
   MOVE.b #1,$7d(a0)   ; }
   MOVE.b #1,$7c(a0)   ; pipe
@@ -1018,29 +1031,23 @@ End Function
   MOVE.b #1,$cd(a0)
   MOVEQ #0,d0
 
-  ;MOVEA.l _execbase,a6
-  ;MOVE.l #$10000,d0
-  ;MOVE.l #80000,d1
-  ;MOVE.l d1,d2
-  ;JSR _CreatePool(a6)                                      ; alloc memory for own stuff
-  ;MOVE.l d0,mempool
-  !basic
-  Poke.l ?mempool, CreatePool_(#MEMF_CLEAR,80000,80000)
-  !asm
-
   MOVEM.l (a7)+,d0/a0
-
-  TST.l mempool
-  BEQ shutdown_compiler
 
   !basic
   *eb.ExecBase = execbase
   *compilerTask.Task = *eb\ThisTask
-  !asm
-  BSR.w open_doslibrary
-  BEQ.w shutdown_compiler
 
-  ;MOVE.l D2,stacksize
+  Poke.l ?mempool, CreatePool_(#MEMF_CLEAR,80000,80000)
+  If Peek.l(?mempool) = 0 Then Goto shutdown_compiler
+
+  Poke.l ?_dosbase, OldOpenLibrary_("dos.library")
+  If Peek.l(?_dosbase) = 0 Then Goto shutdown_compiler
+
+  Poke.l ?_mathffpbase, OldOpenLibrary("mathffp.library")
+  If Peek.l(?_mathffpbase) = 0 Then Goto freemem_and_quit4
+
+  !asm
+
   MOVE.l #MIN_STACKSIZE,stacksize
 
   ; --
@@ -1058,17 +1065,11 @@ End Function
 
   JSR make_AssemblerTable
 
-  MOVE.w #$FFFF,returncode_org
-
-  BSR.w open_mathlibrary
-  BEQ.w freemem_and_quit4
-
   MOVE.l constmaxpc,D0
   MOVEQ.l #$02,D1                                          ;chipmem            ;01 org source
   MOVEA.l _execbase,A6
   JSR _AllocMem(A6)                                        ;mem for branch routine
-  MOVE.l D0,constpcat
-  BEQ.w freemem_and_quit3
+  MOVE.l D0,constpcat : BEQ.w freemem_and_quit3
   ADD.l constmaxpc,D0
   MOVE.l D0,constlibat
 
@@ -1087,8 +1088,7 @@ End Function
   MOVE.l macrobuffer_size,(a0)+
   MOVE.l a0,d0
 
-  MOVE.l D0,ptr_macrobuffer_begin
-  BEQ.w freemem_and_quit2
+  MOVE.l D0,ptr_macrobuffer_begin : BEQ.w freemem_and_quit2
   ADD.l macrobuffer_size,D0
   MOVE.l D0,ptr_macrobuffer_end
   ;
@@ -1100,16 +1100,14 @@ End Function
     GetReg D0,succ
     ;GetD0 succ
     !asm
-    TST.l d0
-    BEQ freemem_and_quit
+    TST.l d0 : BEQ freemem_and_quit
     BRA skip_ped
  .load_ped:
     !basic
     config\ptr_seg_ped = LoadSeg_(config\pedfile)
     GetReg D0,config\ptr_seg_ped
     !asm
-    TST.l D0
-    BEQ.w cant_load_PED
+    TST.l D0 : BEQ.w cant_load_PED
     ; --
     ; -- calculate entryaddress for starting segment (BPTR)
     MOVEA.l D0,A2
@@ -1178,13 +1176,12 @@ End Function
 
   ; added by tomsmart1 for setcliargswin in PED 2013 12 02
   !ComData_SetL{comPtr_CLIArgumentsString       ,#str_cliarguments}
-  CLR.w returncode_org
 
   !basic
   log2PED{"Loading Blitzlibs...",3}
 
   ; --
-  ; -- load all baselibs, utillibs and userlibs
+  ; -- load all baselibs, utillibs, cslibs and userlibs
   !asm
   MOVE.l #$FFFFffff,linenumat   ; was -1
   !basic
@@ -1196,23 +1193,16 @@ End Function
   !basic
 
   ;--
-  ;-- grab a panic bit
+  ;-- grab a panic bit for a signal mask
   ;--
-  !asm
-  MOVEQ.l #-$01,D0
-  MOVEA.l _execbase,A6
-  JSR _AllocSignal(A6)
-  MOVE.l D0,signalNum
-  MOVEQ.l #$00,D1
-  BSET D0,D1              ; set the bit with number D0 in D1
-  MOVE.l D1,signals
+  environment\signalBitNum = AllocSignal_(-1)   ; -1 no preference for a special signal bit
+  environment\signalPanic = 1 LSL environment\signalBitNum
 
   ; --
   ; -- load_debugger:
   ; --
   ; -- loadseg default debugger (blitz2:dhandler)
   ;
-  !basic
   log2PED{"loading debugger start module."}
   config\ptr_seg_debugger = LoadSeg_(config\default_debugger)
   If config\ptr_seg_debugger = 0
@@ -1321,9 +1311,9 @@ End Function
         If running Then Delay_ 50
         ;NPrint "Runnign flag: ",running
       Until running=False
-      If Peek.l(?_runerror)
+      If environment\_runerror
         log2PED{"\\1b[1m*** ERROR: Unable to run compiled program!\\1b[0m"}
-        err=True
+        err = True
       End If
     End If
   End If
@@ -1354,7 +1344,7 @@ End Function
 
 .terminate_ab3             ; was 'skip
   !basic
-  FreeSignal_ Peek.l(?signalNum)
+  FreeSignal_ environment\signalBitNum
   If config\ptr_seg_debugger > 0 Then UnLoadSeg_ config\ptr_seg_debugger
   !asm
 
@@ -1392,55 +1382,21 @@ freemem_and_quit:         ; was fail2a
   JSR _FreeMem(A6)
 
 freemem_and_quit2:         ; was fail2
-
-  ;MOVEA.l _dosbase,A1
-  ;MOVEA.l _execbase,A6
-  ;JSR _CloseLibrary(A6)
-
-  ;MOVEA.l constpcat,A1
-  ;MOVE.l constmaxpc,D0
-  ;MOVEA.l _execbase,A6
-  ;JSR _FreeMem(A6)
   !basic
   CloseLibrary_ Peek.l(?_dosbase)
   FreeMem_ Peek.l(?constpcat), Peek.l(?constmaxpc)
   !asm
 
 freemem_and_quit3:         ; was failme
-  ;MOVEA.l _mathffpbase,A1
-  ;MOVEA.l _execbase,A6
-  ;JSR _CloseLibrary(A6)
   !basic
-  If Peek.l(?_mathffpbase) CloseLibrary_ Peek.l(?_mathffpbase)
-  !asm
+  If Peek.l(?_mathffpbase) Then CloseLibrary_ Peek.l(?_mathffpbase)
+
 
 freemem_and_quit4:         ; was fail0
-  ; new >                           ; added delete of mempool2  tomsmart1
-  ;TST.l mempool2                    ; test if mempool2 is allocated
-  ;BEQ shutdown_compiler             ; no jump
-  ;  MOVEA.l _execbase,A6            ; yes delete it to free the memory
-  ;  MOVE.l mempool2,a0
-  ;  JSR _DeletePool(a6)
-  ;  CLR.l mempool2
-  !basic
-  If Peek.l(?mempool2)
-    DeletePool_ Peek.l(?mempool2)
-  EndIf
-  !asm
+  If Peek.l(?mempool2) Then DeletePool_ Peek.l(?mempool2)
 
 shutdown_compiler:
-  ;TST.l mempool
-  ;BEQ skip_freemempool
-  ;  MOVEA.l _execbase,A6
-  ;  MOVE.l mempool,a0
-  ;  JSR _DeletePool(a6)
-  ;skip_freemempool:
-
-  ; < new
-  !basic
-  If Peek.l(?mempool)
-    DeletePool_ Peek.l(?mempool)
-  EndIf
+  If Peek.l(?mempool) Then DeletePool_ Peek.l(?mempool)
   !asm
   CLR.l mempool
   CLR.l pushat
@@ -1480,17 +1436,7 @@ End
 ; ------------------------------------------ END OF MAINPORGRAM --------------------------------
 
 
-str_doslibrary:     Dc.b "dos.library",0 : Even
 _dosbase:           Ds.l 1
-
-
-.open_doslibrary:
-  MOVEA.l _execbase,A6
-  LEA str_doslibrary,A1
-  JSR _OldOpenLibrary(A6)
-  MOVE.l D0,_dosbase
-RTS
-
 
 .open_mathlibrary:
   MOVEA.l #str_mathffpname,A1
@@ -1740,12 +1686,16 @@ RTS
 
 
 .do_CloseEd:
-  MOVE.w #-1,flag_noPED
+  !basic
+  environment\_noPED = True
+  !asm
 RTS
 
 
 .do_NoCli:
-  MOVE.w #-1,flag_noCLI
+  !basic
+  environment\_noCLI = True
+  !asm
 RTS
 
 ; new >
@@ -1849,10 +1799,6 @@ RTS
 
 word_WriteDebugFileNow: Dc.w 0
 ; < new
-
-
-flag_noPED:  Ds.w 1                                        ;closeed org source
-flag_noCLI:  Ds.w 1                                        ;nocli org source
 
 
 check_FunctionReturnType:           ; copy of sizespec2
@@ -1965,8 +1911,10 @@ RTS
 .menu_compile_run:                ;compile/run
   ADD.l #1,number_of_builds
   CLR.w debugversion
-  CLR.w flag_noPED
-  CLR.w flag_noCLI
+  !basic
+  environment\_noPED = False
+  environment\_noCLI = False
+  !asm
 
  'l1
     MOVE.w #0,makeexec                                     ;MOVE.w #$FFFF,debugversion
@@ -1976,18 +1924,30 @@ RTS
   ; < new
 
 .menu_run:                                                   ; run the last compiled source
-  TST.w anyerrs
-  BNE.w dontrun
+  !basic
+  If Peek.w(?anyerrs) = 0
+    Pop If
+    !asm
+    RTS
+  EndIf
 
-  JSR check_fpu_before_run                                  ; check if compiled with FPU-optimizations
-  TST.w d0                                                  ; if optimized but no FPU present, prevent execution
-  BNE.w dontrun
+  check_fpu_mode.b = Peek.b(?fpu) AND $2
+  If check_fpu_mode
+    If ProcessorFPU = 0
+      error{"The generated code has been optimized to use FPU-features,\\nbut no FPU is present on this system.\\n\\nExecution is not possible."}
+      Pop If : Pop If
+      !asm
+      MOVEQ #1,d0
+      RTS
+    End If
+  End If
 
-  MOVE.w flag_noPED(PC),D1                                  ; close IDE if option is set
-  BEQ.w 'noclose
+  If environment\_noPED
+    !asm
     !ComData_JSR{comFunc_CloseGUI}
-    BRA.b 'runprogram
- 'noclose
+    !basic
+  Else
+    !asm
     BSR compilerequester
     !basic
     comstatusstr  = !TRANS{"Running executable..."} ;default settings
@@ -1996,117 +1956,85 @@ RTS
     GetReg D0,&calcpro      : !ComData_SetL{comPtr_CompileCalcProLong ,d0}  ; set pointer of calcpro long for gui tomsmart1 2012 05 12
     !asm
     !ComData_JSR{comFunc_UpdateCompileStatusWin}          ; jsr to the gui updateroutine  tomsmart1 2012 05 12 ;no extra check needed for CLImode because without PED the function only has a RTS
- 'runprogram                                                ; was 'nopanic org source
-
-  ;-- find current dir...
-  ;MOVEA.l _dosbase,A6
-  ; new >
-  ;LEA exepath,a0
-  ;MOVE.l a0,d1
-  ;MOVEQ #-2,d2
-  ;JSR _Lock(a6)                                            ;lock
-  ;MOVE.l d0,lock_exepath
-  ; < new
-  ;MOVE.l #0,d1
-  ;JSR _CurrentDir(A6)
-  ;MOVE.l D0,lock_currentdir
-  ;MOVE.l D0,D1
-  ;JSR _CurrentDir(A6)
-
-  ; lock the current path or the set executable
-  !basic
-  Poke.l ?lock_exepath, Lock_(?exepath,#ACCESS_READ)
-  If Peek.l(?lock_exepath) = 0
-    error{"Could not lock the given Exepath ["+ Peek.s(?exepath) + "]"}
+    !basic
   EndIf
-  Poke.l ?lock_currentdir, CurrentDir_(0)
-  CurrentDir_ Peek.l(?lock_currentdir)
-  ;!asm
 
-  ;CLR.l ptr_exetask
-  ;MOVE.l #str_process_name,D1
-  ;MOVEQ.l #$00,D2
-  ;MOVE.l #proc_seglist,D3 : LSR.l #2,D3
-  ;MOVE.l stacksize,D4
-  ;MOVEA.l _dosbase,A6
-  ;JSR _CreateProc(A6)                                      ;runtask
-  ;TST.l D0
-  ;BEQ ErrorRunningProg
-  ;!basic
-  *exeTask.Task = Null
-  process_name.s = "AmiBlitz3 Program Process"
-  process_seglist.l = (?proc_seglist) LSR 2
+  ;-- lock the current path or the set executable
+  log2PED{"locking current directory: " + Peek.s(?exepath)}
+  environment\lock_ExePath = Lock_(?exepath,#ACCESS_READ)
+  If environment\lock_ExePath = 0
+    log2PED{"Could not lock the given Exepath ["+ Peek.s(?exepath) + "], using currentdir ..."}
+    environment\lock_CurrentDir = CurrentDir_(0)
+    CurrentDir_ environment\lock_CurrentDir
+  EndIf
 
-  log2PED{"running the prog as [" + process_name + "] with stack " + Str$(Peek.l(?stacksize)),3}
-
-  *processMsgPort.l = CreateProc_(&process_name,0,process_seglist,Peek.l(?stacksize))
-  If *processMsgPort = 0
-    Pop If
+  environment\_runerror = 0
+  processName.s = "AmiBlitz3 Program Process"
+  log2PED{"running the prog as [" + processName + "] with stack " + Str$(Peek.l(?stacksize)),3}
+  *processMsgPort.l = CreateNewProc_(Tags(#NP_Entry,?processStart,@@
+                                          #NP_Name,&processName,@@
+                                          #NP_StackSize,Peek.l(?stacksize),@@
+                                          #TAG_END,0))
+  If *processMsgPort
+    *exeTask.Task = Null ; will be set within process in a few moments
+    GetReg D0,*processMsgPort : MOVE.l d0,-(a7)
     !asm
-    BRA ErrorRunningProg
+    MOVE.l (a7)+,D0
+    !ComData_SetB{comByte_RunningFlag,#1}   ; this should be done here, straigt after it is clear that
+                                            ; the program task is running
+    !basic
+    ;-- OK, task should be running here! see If we Get a panic!
+    log2PED{"program is runnung..."}
+
+    ;-- wait for a panicsignal is removed ??
+
+    If environment\_noPED = False
+      !asm
+      BSR.w close_compilewin
+      !basic
+    EndIf
+  Else
+    environment\_runerror = 1
   EndIf
-  GetReg D0,*processMsgPort : MOVE.l d0,-(a7)
-  !asm
-  MOVE.l (a7)+,D0
-  ;OK, task should be running here! see If we Get a panic!
-  !ComData_SetB{comByte_RunningFlag,#1}   ; this should be done here, straigt after it is clear that
-                                          ; the program task is running
- 'notpanic
-  TST.w flag_noPED
-  BNE.b fatal
-    BSR.w close_compilewin
-  fatal:
+
   CLR.l firstlocal
   CLR.l firstglob
 
-  MOVE.w flag_noPED(PC),D1
-  BEQ.w 'noopen
+  If environment\_noPED
+    !asm
     !ComData_JSR{comFunc_CreateGUI}
- 'noopen
+    !basic
+  EndIf
+  !asm
+RTS
 
-  dontrun:
-  RTS
-
-  ErrorRunningProg:
-  MOVE.l #1,_runerror
-BRA fatal
-
-
-_runerror:          Dc.l 0
-lock_currentdir:    Ds.l 1                                          ;tasklock org source
-;ptr_exetask:        Ds.l 1                                          ;panictask org source
-signalNum:          Ds.l 1                                          ;panicbit org source
-signals:            Ds.l 1                                          ;panicmask org source
-;str_process_name:   Dc.b "Blitz ][ Program Proc",0 : Even           ;procname org source
-;                    Ds.b 5                                          ;cnop 0,4 :dc.l 0   ;length org source
-Even4
-
-;ptr_ThisTask:       Ds.l 1                                          ;length
-.proc_seglist:      Ds.l 1                                          ;procstart org source ;next
-
-
-runtheprog:                                                        ;??looks like label not used??
+.processStart:                                                      ; begin of executable program
   ;MOVEA.l $4,A0
   ;MOVE.l  $114(A0),ptr_exetask
 
   !basic
-  *exeTask.Task  = *eb\ThisTask
+  *exeTask.Task  = *eb\ThisTask                                     ; getting this task via execbase
 
-  If Peek.l(?lock_exepath) then CurrentDir_ Peek.l(?lock_exepath)
+  If environment\lock_ExePath
+    log2PED{"setting currentdir for exetask..."}
+    CurrentDir_ environment\lock_ExePath
+  EndIf
 
   If Peek.l(?stacksize) < #MIN_STACKSIZE
     error{"The stacksize is to low: " + Str$(Peek.l(?stacksize))}
   EndIf
-  !asm
 
   ; -- set the running flag for IDE
+  !asm
   !ComData_SetB{comByte_RunningFlag,#1}
+  !basic
 
   ; -- optionally open the console
-  MOVE.w flag_noCLI(PC),D1
-  BNE.b skip_openconsole
+  If environment\_noCLI = False
+    !asm
     !ComData_JSR{comFunc_OpenConsole}
-  skip_openconsole:
+    !basic
+  EndIf
 
   ;BSR.w calculate_VBR
   ;MOVEA.l vbr,A0
@@ -2134,54 +2062,22 @@ runtheprog:                                                        ;??looks like
   CLR.l firstglob
   CLR.l firstlocal
 
-  !basic
-  If Peek.l(?lock_exepath) Then UnLock_ Peek.l(?lock_exepath)
-  !asm
-
   !ComData_SetB{comByte_RunningFlag,#0}
+  !basic
+  If environment\lock_ExePath Then UnLock_ environment\lock_ExePath
 
   ; -- optionally close the console and bring ide to front
-  MOVE.w flag_noCLI(PC),D1
-  BNE.b 'skip_closeconsole
+  If environment\_noCLI = False
+    !asm
     !ComData_JSR{comFunc_CloseConsole}
- 'skip_closeconsole
+    !basic
+  EndIf
 
-  ;MOVE.w #$0001,stopit      ;ended OK!
-  ;MOVE.l signals(PC),D0
-  ;MOVEA.l ptr_ThisTask,A1
-  ;MOVEA.l _execbase,A6
-  ;JSR _Signal(A6)
-  !basic
+  ;-- send compilertask the signal that the task has stopped
   Poke.w ?stopit, 1
-  ;Signal_ Peek.l(?ptr_ThisTask),Peek.l(?signals)
-  Signal_ *compilerTask,Peek.l(?signals)
+  Signal_ *compilerTask,environment\signalPanic
   !asm
 RTS
-
-
-;.calculate_VBR:             ; may be replaced by cr_vbr / environmentlib
-;  MOVEA.l _execbase,A6
-;  MOVE.w $128(A6),D0        ; execbase\AttnFlags
-;  MOVEQ.l #$00,D1
-;  ANDI.w #$F,D0
-;
-; 'loop
-;    BEQ.b 'skip
-;    ADDQ.w #1,D1
-;    LSR.w #1,D0
-;  BRA.b 'loop
-; 'skip
-;
-;  MOVEQ.l #$00,D2
-;  CMP.w #$2,D1
-;  BCS.b 'skip2
-;    MOVEA.l _execbase,A6
-;    JSR _SuperState(A6)
-;    Dc.l $4E7A2801                                           ;movec vbr,D2
-;    JSR _UserState(A6)
-; 'skip2
-;  MOVE.l D2,vbr
-;RTS
 
 
 .menu_reload_userlibs:      ; was menu8 org source
@@ -3621,7 +3517,6 @@ RTS
 
 ;stopbit:   Ds.w 1
 stopit:     Ds.w 1
-clrreq:     Ds.w 1
 
 ;stopcode:                  ; was only used by the old openstopreq
 ;  MOVE.w stopit(PC),D1
@@ -3632,7 +3527,7 @@ clrreq:     Ds.w 1
 ;  ;MOVE.w #-1,stopit
 ;  ;
 ;  MOVEM.l D0/A6,-(A7)
-;  MOVE.l signals(PC),D0
+;  MOVE.l signalPanic(PC),D0
 ;  MOVEA.l ptr_ThisTask,A1
 ;  MOVEA.l _execbase,A6
 ;  JSR _Signal(A6)
@@ -3643,19 +3538,10 @@ clrreq:     Ds.w 1
 
 
 .close_compilewin:         ; was endstop  org source
-  MOVE.w clrreq(PC),D0
-  BEQ.w 'skip
-    ;removed call to close window because is now closed by the GUI (PED)
-    LEA clrreq,a0
-    NOT.w (a0)                                               ;reass
-    ;MOVEA.l ptr_ThisTask,A0
-    ;CLR.l $1E(A0)
-    ;CLR.l $2A(A0)
-    !basic
-    *compilerTask\tc_SigExcept = 0
-    *compilerTask\tc_ExceptCode = 0
-    !asm
- 'skip
+  !basic
+  *compilerTask\tc_SigExcept = 0
+  *compilerTask\tc_ExceptCode = 0
+  !asm
 RTS
 
 
@@ -3703,8 +3589,6 @@ debugmode:  Ds.w 1                                         ;debugga org source ;
 
 
 .compilerequester:           ; was openstopreq org source
-  LEA  clrreq,a1
-  MOVE.w #2000,(a1)
   !basic
   comstatusstr  = !TRANS{"Initializing Compiler..."} ;default settings
   calcpro       = 0
@@ -22363,27 +22247,24 @@ closeinc:
 RTS
 
 
-; new >
 .free_unusedfunctions:
   MOVE.l unusedfunc,d0
   BEQ 'noclear
-  MOVEM.l d0-d2/a0-a1/a6,-(a7)
+    MOVEM.l d0-d2/a0-a1/a6,-(a7)
 
- 'f1
-    MOVE.l d0,a1
-    MOVE.l 4(a1),d0
-    MOVE.l (a1),d2
-    MOVE.l _execbase,a6
-    JSR _FreeMem(a6)
-    MOVE.l d2,d0
-  BNE 'f1
-  CLR.l unusedfunc
-  MOVEM.l (a7)+,a0-a1/a6/d0-d2
+   'f1
+      MOVE.l d0,a1
+      MOVE.l 4(a1),d0
+      MOVE.l (a1),d2
+      MOVE.l _execbase,a6
+      JSR _FreeMem(a6)
+      MOVE.l d2,d0
+    BNE 'f1
+    CLR.l unusedfunc
 
+    MOVEM.l (a7)+,a0-a1/a6/d0-d2
  'noclear
 RTS
-; < new
-
 
 freexincs:
   MOVEA.l xinclude_base,A2
@@ -31629,7 +31510,6 @@ globalvarpointer:          Ds.w 1                          ;varoff org source
 locvaroff:                 Ds.w 1
 firstitem_:                Ds.l 1
 numlines_org:              Ds.w 1                          ;numlines org source
-returncode_org:            Ds.w 1                          ;returncode org source
 firstiff:                  Ds.l 1                          ;firstif org source
 str_mathffpname:           Dc.b "mathffp.library",0 : Even ;mathsname org source
 str_tempfilename:          Ds.b #MAX_STRINGSIZE
@@ -31895,9 +31775,6 @@ RTS
 ;RTS
 
 Even
-lock_exepath              Ds.l 1
-
-
 
 includesourceline    Dc.l 0
 linenum              Ds.l 1
