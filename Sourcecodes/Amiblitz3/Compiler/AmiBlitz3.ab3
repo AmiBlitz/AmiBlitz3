@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.10
-; NumberOfBuilds  = 489
+; NumberOfBuilds  = 490
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 967
-; CursorColumn    = 40
+; CursorLine      = 1003
+; CursorColumn    = 48
 ; LabelSearch     = "environm"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -217,6 +217,7 @@ XINCLUDE "/Shared/common.ab3"
 XINCLUDE "/Shared/preprocessor.include.ab3"
 XINCLUDE "/Shared/ted.include.ab3"
 
+XINCLUDE "translation.include.ab3"
 XINCLUDE "dos.include.ab3"
 XINCLUDE "file.include.ab3"
 XINCLUDE "asl.include.ab3"
@@ -304,13 +305,12 @@ If config\blitz3assign <> ""
   dos_CreateDir{config\path_system}
 EndIf
 
-
-XINCLUDE "translation.include.ab3"
 XINCLUDE "CLIModeSupport.ab3"
 If dos_FromCLI{}
   CLIMode.l = True
   error_SetFlags{#error_stdout}
 End If
+
 
 ; -- check, if there is an alternative PED-executable set via Tooltype
 config\pedfile = dos_GetToolString{"EDITOR",dos_AddPart{config\path_system,"PED"}}
@@ -641,6 +641,15 @@ Poke.l ?CLIMode,CLIMode
 ; --
 ; -- Macro definitions
 .MACROS
+
+Macro clear_instructionTable
+  LEA instructionTable,a0
+  MOVE.l #labelhash-instructionTable,d0 : ASR.l #2,d0 : SUBQ.l #1,d0
+ 'l10
+    CLR.l (a0)+
+    SUBQ.l #1,d0
+  BNE 'l10
+End Macro
 
 Macro hashalgo                                             ;d1 currentchar d0 hashvalue
   MULS.w #5,d0                                             ;important for fast hash speed
@@ -1003,14 +1012,8 @@ End Function
   MOVE.b #1,$7e(a0)
   MOVE.w #$0101,1(a0)
 
-  ;-- init instrtab
-  LEA instrtab,a0
-  MOVE.l #labelhash-instrtab,d0
-  ASR.l #2,d0 : SUBQ.l #1,d0
- 'l10
-   CLR.l (a0)+
-   SUBQ.l #1,d0
-  BNE 'l10
+  ;-- init instructionTable
+  !clear_instructionTable
 
   ;-- init allowtab
   LEA allowtab,a0
@@ -1078,53 +1081,51 @@ End Function
   Poke.l ?ptr_macrobuffer_begin, tmpL + 4
   Poke.l ?ptr_macrobuffer_end  , tmpL + 4 + Peek.l(?macrobuffer_size)
 
-  ;
-  ; new >
-  !asm
-  TST.l CLIMode
-  BEQ load_ped                                               ;/* Emulate PED Environment */
-    !basic
+
+  If CLIMode
     succ.l = InitEmulatedPED{}
-    GetReg D0,succ
-    ;GetD0 succ
-    !asm
-    TST.l d0 : BEQ freemem_and_quit
-    BRA skip_ped
- .load_ped:
-    !basic
+    If succ = False Then Goto shutdown_compiler
+  Else
     config\ptr_seg_ped = LoadSeg_(config\pedfile)
-    GetReg D0,config\ptr_seg_ped
-    !asm
-    TST.l D0 : BEQ.w cant_load_PED
+    If config\ptr_seg_ped = 0
+      error{!TRANS{"Can't load the Editor:\\n"} + pedfile$ + !TRANS{"\\nProgram will quit now."} }
+      Goto shutdown_compiler
+    EndIf
+
     ; --
     ; -- calculate entryaddress for starting segment (BPTR)
-    MOVEA.l D0,A2
-    ADDA.l A2,A2
-    ADDA.l A2,A2
-
+    ; --
+    GetRegD0 config\ptr_seg_ped
+    !asm
+    MOVEA.l D0,A2 : ADDA.l A2,A2 : ADDA.l A2,A2
     LEA teddata,A1
     MOVE.l #"TEDY",D1 : JSR 4(A2)                            ; Run PED, TODO: use Basic "Call"
-
     MOVE.l A0,ped_startup_addr                               ; PED returns address of routine "startup_code"
     MOVE.l A1,comdata                                        ; PED returns address of comdata-area in A1
+    !basic
 
-    !ComData_GetW{comWord_PEDIsAvailable,D0}                 ; if PED_IsAvailable=0, quit AmiBlitz
-    BEQ.w unload_ped
+    !ComData_GetW{comWord_PEDIsAvailable,D0} : tmpL.l = PutRegD0
+    If tmpL = 0 Then Goto shutdown_compiler
 
-    CMP.w ##ComDataVersionID,d0                              ; test if it the Ped version matched the compiler version
-    BNE old_version_of_PED                                   ; no, than exit
+    If tmpL <> #ComDataVersionID
+      error{!TRANS{"Old version of the Editor found at:\\n"} + pedfile$ + !TRANS{"\\nProgram will quit now."} }
+      Goto shutdown_compiler
+    EndIf
+  EndIf
+  !ComData_GetL{comData_Magic,D0} : tmpL.l = PutRegD0        ;"~::~",D0    ; replace with a constant  tomsmart1 2012 03 09
+  If tmpL <> #MagicIdentifier_Long
+    Goto shutdown_compiler
+  EndIf
 
- .skip_ped:
-  !ComData_GetL{comData_Magic,D0}
-  CMP.l ##MagicIdentifier_Long,D0                          ;"~::~",D0    ; replace with a constant  tomsmart1 2012 03 09
-  BNE unload_ped
-
+  ; --
   ; -- extent_comdatas:
+  ; --
+  !asm
   !ComData_SetL{comPtr_Trap15            ,#directTrap15}
   !ComData_SetL{comPtr_DirectBuffer      ,#directbuffer}
   !ComData_SetL{comPtr_MacroBase         ,#macrobase}
   !ComData_SetL{comPtr_VarBase           ,#varbase}
-  !ComData_SetL{comPtr_InstrBase         ,#instrtab}
+  !ComData_SetL{comPtr_InstrBase         ,#instructionTable}
   !ComData_SetL{comPtr_LibPointer        ,#libpointer}
   !ComData_SetL{comPtr_CompilerVersion   ,#myversion}
   !ComData_SetL{comPtr_VersionInformation,#versioninformation}
@@ -1132,21 +1133,14 @@ End Function
   !ComData_SetL{comFunc_SaveSource       ,#ab3_SaveSource}
   !ComData_SetL{comFunc_LoadSource       ,#ab3_LoadSource}
   !ComData_SetL{comFunc_ClearSource      ,#ab3_ClearSource}
-
-  ; added by tomsmart1 for Calculator window in PED 2012 03 07
   !ComData_SetL{comFunc_CalculatExpression       ,#menu_calculator}
   !ComData_SetL{comPtr_CalculatorExpressionString,#str_calcexpression}
-
-  ; added by tomsmart1 for compilersettingswin in PED 2012 03 22
   !ComData_SetL{comFunc_BackupXtraData           ,#BackupXtraData}
   !ComData_SetL{comFunc_RestoreXtraData          ,#RestoreXtraData}
-
   !ComData_SetL{comFunc_GetObjectEntry           ,#getobjectentry}
   !ComData_SetL{comFunc_StoreMaxObjects          ,#storemaxobjects}
-
   !ComData_SetL{comFunc_ReloadResidentsForPED    ,#ReloadResidentsForPED}
-  !ComData_SetL{comFunc_FreeClearResidentsForPED ,#FreeClearResidentsForPED}    ; add tomsmart1 2012 06 09
-
+  !ComData_SetL{comFunc_FreeClearResidentsForPED ,#FreeClearResidentsForPED}
   !ComData_SetL{comPtr_Residents_Table           ,#residents_table}
   !ComData_SetL{comPtr_StringBuffer_Long         ,#stringbuffer}
   !ComData_SetL{comPtr_Stacksize_Long            ,#stacksize}
@@ -1161,48 +1155,115 @@ End Function
   !ComData_SetL{comPtr_Number_of_Objects_Word    ,#number_of_objects}
   !ComData_SetL{comPtr_MaxObjects_Value_Word     ,#maxobjects_value}
   !ComData_SetL{comPtr_MaxObject_Pos_Word        ,#maxobject_pos}
-
-  ; added by tomsmart1 for setcliargswin in PED 2013 12 02
-  !ComData_SetL{comPtr_CLIArgumentsString       ,#str_cliarguments}
-
+  !ComData_SetL{comPtr_CLIArgumentsString        ,#str_cliarguments}
   !basic
-  log2PED{"Loading Blitzlibs...",3}
 
   ; --
   ; -- load all baselibs, utillibs, cslibs and userlibs
-  !asm
-  MOVE.l #$FFFFffff,linenumat   ; was -1
-  !basic
+  ; --
+  log2PED{"Loading Blitzlibs...",3}
   Gosub scan_for_userlibs
   Gosub load_all_libraries
 
   !asm
+  MOVE.l #$FFFFffff,linenumat   ; was -1
   BSR.w init_buffers
   !basic
 
-  ;--
-  ;-- grab a panic bit for a signal mask
-  ;--
+  ; --
+  ; -- grab a panic bit for a signal mask
+  ; --
   environment\signalBitNum = AllocSignal_(-1)   ; -1 no preference for a special signal bit
   environment\signalPanic = 1 LSL environment\signalBitNum
 
   ; --
-  ; -- load_debugger:
-  ; --
   ; -- loadseg default debugger (blitz2:dhandler)
-  ;
+  ; --
   log2PED{"loading debugger start module."}
   config\ptr_seg_debugger = LoadSeg_(config\default_debugger)
   If config\ptr_seg_debugger = 0
     error{!TRANS{"The Debugexecutor `Defaultdbug` was not found.\\nDebugging is not possible."}}
   EndIf
 
-  ;//////////////////////////////////////////////////////////////////////////////
-  ;/                                                                            /
-  ;/ AmiBlitz3 Command Line Interface                                           /
-  ;/                                                                            /
-  ;//////////////////////////////////////////////////////////////////////////////
-  If CLIMode = False Then Goto run_ped
+  ; --
+  ; -- Pass control to PED or parse cli parameters
+  ; --
+  ; --
+  If CLIMode = False
+    log2PED{"running PED..."}
+    ; -- jump to the address ped returned before and pass a sourcename in A0
+    !asm
+    LEA str_tempfilename,A0
+    MOVEA.l ped_startup_addr,A1 : JSR (A1)
+    !basic
+    ; --
+    ; == wait until PED has been quit !!
+    ; --
+  Else
+    Gosub handle_cli_parameters
+  EndIf
+
+  ; --
+  ; -- tidy up everything and quit
+  ; --
+  ; --
+  !asm
+  BSR.w Aclearallvars
+  BSR.w free_residents
+  BSR.w freeallox
+  !basic
+  Gosub free_blitzlibs
+
+.shutdown_compiler:
+  If config\ptr_seg_debugger Then UnLoadSeg_ config\ptr_seg_debugger
+  If config\ptr_seg_ped Then UnLoadSeg_ config\ptr_seg_ped
+  If Peek.l(?ptr_macrobuffer_begin) Then FreeMem_ Peek.l(?ptr_macrobuffer_begin)-4, Peek.l(Peek.l(?ptr_macrobuffer_begin-4))
+  If Peek.l(?constpcat) Then FreeMem_ Peek.l(?constpcat), Peek.l(?constmaxpc) : Poke.l ?constpcat,0
+  If Peek.l(?mempool2) Then DeletePool_ Peek.l(?mempool2) : Poke.l ?mempool2,0
+  If Peek.l(?mempool) Then DeletePool_ Peek.l(?mempool) : Poke.l ?mempool,0
+  If Peek.l(?_dosbase) Then CloseLibrary_ Peek.l(?_dosbase) : Poke.l ?_dosbase,0
+  If Peek.l(?_mathffpbase) Then CloseLibrary_ Peek.l(?_mathffpbase) : Poke.l ?_mathffpbase,0
+  If environment\signalBitNum Then FreeSignal_ environment\signalBitNum
+  !asm
+  CLR.l pushat
+  JSR free_unusedfunctions
+  !basic
+
+abnormal_exit:
+  If config\blitz3assign  <> ""
+    If *AssignSema
+      ReleaseSemaphore_ *AssignSema
+      If (AttemptSemaphore_ (*AssignSema))                 ; we are the exclusive owner of the sema now!
+        If dos_RemAssign{"LIBS:",dos_AddPart{config\blitz3assign ,"Libs"}}
+          ;If KickVersion < 47                              ; AssignLock_ freezes with OS 3.2.0 !
+            If NOT dos_RemAssign{config\blitz3assign }
+              error{"Could not remove assign: " + config\blitz3assign }
+            EndIf
+          ;EndIf
+        Else
+          error{"Could not remove assign: " + dos_AddPart{config\blitz3assign ,"Libs"}}
+        EndIf
+
+        RemSemaphore_ *AssignSema
+        ReleaseSemaphore_ *AssignSema
+
+        If *AssignSema\ss_Link\ln_Name Then FreeVec_ *AssignSema\ss_Link\ln_Name : *AssignSema\ss_Link\ln_Name = Null
+        FreeVec_ *AssignSema
+        *AssignSema = Null
+      End If
+    End If
+  EndIf
+
+  SetCurrentDir{cli_path}
+  !coutclose
+  MOVEQ #0,D0
+  !exitasm
+End
+; ----------------------------------------------------------------------------------------------
+; ------------------------------------------ END OF MAINPROGRAM --------------------------------
+; ----------------------------------------------------------------------------------------------
+
+.handle_cli_parameters:
   err.l = False
 
   ;//////////////////////////////////////////////////////////////////////////////
@@ -1315,102 +1376,7 @@ End Function
   preproc_Free{*PreProcessor} : *PreProcessor=Null
   log2PED{"Exit AmiBlitz3.",3}
   DeinitEmulatedPED{}
-
-  !asm
-  JMP terminate_ab3
-
-.run_ped
-  log2PED{"running PED..."}
-  !asm
-  ; -- jump to the address ped returned before and pass a sourcename in A0
-  LEA str_tempfilename,A0
-  MOVEA.l ped_startup_addr,A1 : JSR (A1)
-
-  ; --
-  ; == wait until PED has been quit !!
-  ; --
-
-.terminate_ab3             ; was 'skip
-  !basic
-  FreeSignal_ environment\signalBitNum
-  If config\ptr_seg_debugger > 0 Then UnLoadSeg_ config\ptr_seg_debugger
-  !asm
-
-  BSR.w Aclearallvars
-  BSR.w free_residents
-  JSR free_blitzlibs
-
-unload_ped:    ; was fail3 in org source
-  !basic
-  If config\ptr_seg_ped Then UnLoadSeg_ config\ptr_seg_ped
-  !asm
-  BRA freemem_and_quit     ; added by tomsmart1 for Ped errormessage
-
-.old_version_of_PED:
-  !basic
-  error{!TRANS{"Old version of the Editor found at:\\n"} + pedfile$ + !TRANS{"\\nProgram will quit now."} }  ; show error message  tomsmart1
-  !asm
-  BRA freemem_and_quit
-
-.cant_load_PED:
-  !basic
-  error{!TRANS{"Can't load the Editor:\\n"} + pedfile$ + !TRANS{"\\nProgram will quit now."} }  ; show error message  tomsmart1
-  !asm
-
-
-freemem_and_quit:         ; was fail2a
-  BSR.w freeallox
-  !basic
-
-shutdown_compiler:
-  If Peek.l(?ptr_macrobuffer_begin) Then FreeMem_ Peek.l(?ptr_macrobuffer_begin)-4, Peek.l(Peek.l(?ptr_macrobuffer_begin-4))
-  If Peek.l(?constpcat) Then FreeMem_ Peek.l(?constpcat), Peek.l(?constmaxpc) : Poke.l ?constpcat,0
-  If Peek.l(?mempool2) Then DeletePool_ Peek.l(?mempool2) : Poke.l ?mempool2,0
-  If Peek.l(?mempool) Then DeletePool_ Peek.l(?mempool) : Poke.l ?mempool,0
-  If Peek.l(?_dosbase) Then CloseLibrary_ Peek.l(?_dosbase) : Poke.l ?_dosbase,0
-  If Peek.l(?_mathffpbase) Then CloseLibrary_ Peek.l(?_mathffpbase) : Poke.l ?_mathffpbase,0
-  If environment\signalBitNum Then FreeSignal_ environment\signalBitNum
-  !asm
-  CLR.l mempool
-  CLR.l pushat
-  JSR free_unusedfunctions
-  !basic
-
-abnormal_exit:
-  If config\blitz3assign  <> ""
-    If *AssignSema
-      ReleaseSemaphore_ *AssignSema
-      If (AttemptSemaphore_ (*AssignSema))                 ; we are the exclusive owner of the sema now!
-        If dos_RemAssign{"LIBS:",dos_AddPart{config\blitz3assign ,"Libs"}}
-          ;If KickVersion < 47                              ; AssignLock_ freezes with OS 3.2.0 !
-            If NOT dos_RemAssign{config\blitz3assign }
-              error{"Could not remove assign: " + config\blitz3assign }
-            EndIf
-          ;EndIf
-        Else
-          error{"Could not remove assign: " + dos_AddPart{config\blitz3assign ,"Libs"}}
-        EndIf
-
-        RemSemaphore_ *AssignSema
-        ReleaseSemaphore_ *AssignSema
-
-        If *AssignSema\ss_Link\ln_Name Then FreeVec_ *AssignSema\ss_Link\ln_Name : *AssignSema\ss_Link\ln_Name = Null
-        FreeVec_ *AssignSema
-        *AssignSema = Null
-      End If
-    End If
-  EndIf
-
-  SetCurrentDir{cli_path}
-  !coutclose
-  MOVEQ #0,D0
-  !exitasm
-End
-; ------------------------------------------ END OF MAINPORGRAM --------------------------------
-
-
-_dosbase:           Ds.l 1
-
+Return
 
 .ab3_SaveSource:
   !basic
@@ -1519,12 +1485,6 @@ Even
   MOVE.l A7,errstack
   MOVE.l #nodload,errcont
 
-  ;MOVE.l ptr_temp_debugmodule,D1
-  ;MOVEA.l _dosbase(PC),A6
-  ;JSR _LoadSeg(A6)
-  ;MOVE.l D0,D7
-  ;BEQ.w dloaderr
-
   !basic
   temp_ptr.l = LoadSeg_(Peek.s(?ptr_temp_debugmodule))
   If temp_ptr <> 0
@@ -1545,67 +1505,27 @@ exepath:               Ds.l 48                             ;Ds.b #MAX_STRINGSIZE
 exefile:               Ds.l 48                             ;Ds.b #MAX_STRINGSIZE ; Ds.l 48  ;xname  dcb.b 192,0 org source
 ptr_newexefilename:    Dc.l 0                                                               ;execname org
 
-; new >
-.menu_newcreate
+.menu_newcreate:
   !basic
   exepath.s = Peek.s(?exepath)
   exefile.s = Peek.s(?exefile)
   If exefile <> ""                                         ; test if we have a filename
     If exepath <> ""                                       ; yes we have a filename ,test if we have a path
-      If dos_Exist{exepath}= False Then Goto nonexistpath  ; yes we have a path, test if he exist
+      If dos_Exist{exepath} = False                        ; yes we have a path, test if it exists
+        !asm
+        BRA menu_createexecutable
+      EndIf
     EndIf
     exefile.s = dos_AddPart{exepath,exefile}               ; combinat path and filename
-;    error{exepath + " " + exefile}
     Poke.s ?tempspace,exefile
     !asm
-;  LEA exepath,a0
-;  LEA exefilename,a1
-;  TST.b (a1)
-;  BEQ menu_createexecutable
-;
-;  LEA tempspace,a1
-; 'l10
-;  MOVE.b (a0)+,(a1)+
-;  BNE 'l10
-;  SUBQ.l #1,a1
-;  CMP.b #":",-1(a1)
-;  BEQ 'lw1
-;  MOVE.b #"/",(a1)+
+    LEA tempspace,a0 : MOVE.l a0,d0
+    BRA newcreate2                                         ; jump to the compile
+  EndIf                                                    ; we have no filename or no exists path so we need to ask the user
+  !asm
 
-; 'lw1
-;  LEA exefilename,a0
-
-; 'l20
-;  MOVE.b (a0)+,(a1)+
-;  BNE 'l20
-    LEA tempspace,a0
-    MOVE.l a0,d0
-   BRA newcreate2                                         ; jump to the compile
-; < new
-   EndIf                                                  ; we have no filename or no exists path so we need to ask the user
- nonexistpath
-   !asm
-
-.menu_createexecutable:    ;was menu1 org source
-  ;compile/save
-  ;
-  ; new >
+.menu_createexecutable:    ;was menu1 org source          ;compile/save
   !basic
-  ;request_exename.s = Peek.s(?str_request_exename )
-  ;request_exename   = !TRANS{request_exename}
-  ;Getreg D0,&request_exename
-  ;!asm
-  ;MOVE.l D0,A2
-  ; < new
-  ;MOVEA.l comdata,A3
-  ;MOVEA.l $18(A3),A3
-  ;!ComData_GetL{comFunc_ASLFileRequest,A3}
-  ;LEA str_request_exename,A2
-  ;LEA exepath,A0
-  ;LEA exefilename,A1
-  ;JSR (A3)                                                 ;open ped filerequest
-  ;BEQ.w cancel_createexe    ; was 'err
-
   !ComData_GetL{comPtr_pedScreen,D0} : *pedScreen.Screen = PutRegD0
   aslfr_SetRequesterTitle{2,"Name of Executable to Create:","Create","Cancel"}
   aslfr_SetPath {2,Peek.s(?exepath),Peek.s(?exefile),""}
@@ -1620,14 +1540,11 @@ ptr_newexefilename:    Dc.l 0                                                   
   !asm
 
 .newcreate2    ; was 'tryit
-  ; new >
-  ADD.l #1,number_of_builds
-  ; < new
-  ;
   ;O.K.... Now to create it
   MOVE.l D0,ptr_newexefilename
+  ADD.l #1,number_of_builds
   MOVE.w #-1,debugversion
-  ;MOVE.w set_make_smallestcode,-(A7) ; deactivate because it make no sense  tomsmart1
+  ;MOVE.w set_make_smallestcode,-(A7) ; deactivate because it makes no sense  tomsmart1
   ;bset #$7,make_smallestcode        ;make small!                      ;set optimize for create file    ;make small!
 
   ; new >
@@ -1976,9 +1893,6 @@ RTS
 RTS
 
 .processStart:                                                      ; begin of executable program
-  ;MOVEA.l $4,A0
-  ;MOVE.l  $114(A0),ptr_exetask
-
   !basic
   *exeTask.Task  = *eb\ThisTask                                     ; getting this task via execbase
 
@@ -2048,15 +1962,7 @@ RTS
 
 
 .menu_reload_userlibs:      ; was menu8 org source
-  LEA instrtab,a0
-  MOVE.l #labelhash-instrtab,d0
-  ASR.l #2,d0
-  SUBQ.l #1,d0
- 'l10
-    CLR.l (a0)+
-    SUBQ.l #1,d0
-  BNE 'l10
-
+  !clear_instructionTable
   !basic
   Gosub free_userlibs
   Gosub scan_for_userlibs
@@ -2104,137 +2010,6 @@ RTS
   EndIf
 Return
 
-;jumpingjack:
-;  ; --
-;  ; -- search for the userlibs-path
-;  MOVE.l #str_path_userlibs,D1
-;  MOVEQ.l #-$02,D2
-;  MOVEA.l _dosbase,A6
-;  JSR _Lock(A6)
-;  MOVE.l D0,D7
-;  BEQ.w 'done     ;exit_get_libraries
-;
-;  MOVE.l D7,D1
-;  MOVE.l #ptr_parameterstore,D2
-;  JSR _Examine(A6)
-;  TST.l D0
-;  BEQ.w 'done2   ;unlock_and_exit_get_libraries
-;  MOVE.l fib_DirEntryType,D0
-;  BMI.w 'done2   ;unlock_and_exit_get_libraries
-;
-;  ;OK to do exnext on dir...
-;  ;
-;  ; --
-;  ; -- hier wird rekursiv in str_path_userlibs nach libs gesucht ...
-;
-; 'loop    ;scan_libsdrawer:
-;    MOVE.l D7,D1
-;    MOVE.l #ptr_parameterstore,D2
-;    MOVEA.l _dosbase,A6
-;    JSR _ExNext(A6)
-;    TST.l D0
-;    BEQ.w 'ok                                              ; kein weiteres File
-;      MOVE.l fib_DirEntryType,D0                             ; positive for directoies, negative for files
-;      BPL.w 'loop
-;        LEA fib_FileName,A0                                    ; pruefen ob infofile
-;        BSR.w check_for_infoextention
-;        BEQ.w 'loop
-;          MOVEA.l _execbase,A6                                   ; allocate $26 = 38 bytes fuer listeneintrag
-;          MOVEQ.l #$26,D0
-;          MOVEQ.l #$01,D1
-;          MOVE.l mempool,a0
-;          JSR _AllocPooled(a6)
-;          MOVEA.l _dosbase,A6
-;          MOVE.l D0,D6                                           ; sichere speicheradresse in D6
-;          LEA ptr_userlibs_list,A0                               ; pruefe liste
-;         'insloop
-;            MOVE.l (A0),D5
-;            BEQ.w 'here                                          ; kein pointer da? kann springe weiter
-;              MOVEA.l D5,A2
-;              ADDQ.w #6,A2                                       ; 6 bytes weiter gehen, um dateinamen zu speichern
-;              LEA fib_FileName,A1                                ; vergleich, ob Dateiname schon in der liste ist
-;             'comloop
-;                MOVEQ.l #$00,D0
-;                MOVE.b (A1)+,D0
-;                BEQ.w 'here                                      ; dateiname komplett, dann weiter
-;                  MOVEQ.l #$00,D1
-;                  MOVE.b (A2)+,D1
-;                  BEQ.w 'next
-;                    !test_for_letter                                            ;bsr.w tstalpha
-;                    BNE.w 'acskip
-;                      ANDI.w #$DF,D0        ; was 255-32
-;                   'acskip
-;                    EXG.l D0,D1
-;                    !test_for_letter                                            ;bsr.w tstalpha
-;                    BNE.w 'acskip2
-;                      ANDI.w #$DF,D0        ; was 255-32
-;                   'acskip2
-;                    EXG.l D0,D1
-;                    CMP.b D1,D0
-;                    BEQ.w 'comloop
-;                    BCS.w 'here             ;I'm less than
-;                 'next
-;                  MOVEA.l D5,A0
-;          BRA.w 'insloop
-;         'here
-;          MOVEA.l D6,A1                                          ; hier war die adresse des allokierten Speicers drin
-;          MOVE.l (A0),(A1)            ;next of last is next of me
-;          MOVE.l A1,(A0)              ;I am next of last
-;          ADDQ.w #4,A1                                           ; pointer zum naechsten namen ueberspringen
-;          MOVE.w #$FFFF,(A1)+         ; was - 1;set 'Used' flag  ; $FFFF schreiben
-;          MOVEA.l #fib_FileName,A0    ; was #namebuff+8,         ; dateinamen in die liste kopieren
-;         'coploop
-;            MOVE.b (A0)+,(A1)+
-;          BNE.w 'coploop
-;  BRA.w 'loop
-;
-; 'ok    ;exit_scan_libsdrawer:
-;  MOVE.l D7,D1
-;  MOVEA.l _dosbase,A6
-;  JSR _UnLock(A6)
-;  MOVEQ.l #-$01,D0
-;
-; 'done     ;exit_get_libraries:
-;  JSR showme
-;  RTS
-;
-; 'done2     ;unlock_and_exit_get_libraries:
-;  MOVE.l D7,D1
-;  MOVEA.l _dosbase,A6
-;  JSR _UnLock(A6)
-;  MOVEQ.l #$00,D0
-;RTS
-;
-;.showme:
-;!basic
-;!cout{Hex$(Peek.l(?ptr_userlibs_list))}
-;!asm
-;
-;RTS
-
-;
-;.free_userlibslist:           ;free up  the list of loaded userlibs
-;  !basic
-;  ClearList userlibslist()
-;  !asm
-;RTS
-;
-;  MOVEA.l _execbase,A6
-;  MOVEA.l ptr_userlibs_list,A2
-;  CLR.l ptr_userlibs_list
-;
-; 'loop
-;    CMPA.w #$0,A2
-;    BEQ.w 'done
-;      MOVEA.l A2,A1
-;      MOVEQ.l #$26,D0
-;      MOVEA.l (A2),A2
-;      MOVE.l mempool,a0
-;      MOVEA.l _execbase,A6
-;      JSR _FreePooled(A6)
-;  BRA.w 'loop
-; 'done
-;RTS
 
 
 ;-----------main compiler functions!------------;
@@ -4524,23 +4299,17 @@ funcscanskip:    ; was  handlechar   org source
   BSR.w smode
   ;
   ; new <
-  TST.w D0                 ; was behind cmp ... and befor handleascii in org source
-  BMI.w get_tokencode      ; "
+  TST.w D0 : BMI.w get_tokencode               ; was behind cmp ... and befor handleascii in org source
   ; < new
-  CMP.w #$2E,D0            ;'.'
-   BEQ.w handlemouse                                         ;shortlist
-  CMP.w #"#",D0
-   BEQ.w handleconst                                         ;constant found
-  CMP.w #$27,D0            ;'''  ; was #loclabch
-   BEQ.w handlelocal                                            ;local label
-  ;
+  CMP.w #$2E,D0 : BEQ.w handlemouse            ; '.' shortlist
+  CMP.w #"#",D0 : BEQ.w handleconst            ; constant found
+  CMP.w #$27,D0 : BEQ.w handlelocal            ; '''  ; was #loclabch, local label
+
 ;handleascii
   MOVE.l A5,letstart
   JSR getparameter
-  BSR.w reget
-  BEQ.w handle_label                                         ;label found
-  CMP.w #$7B,D0                                              ;'{'
-  BEQ.w handle_statement
+  BSR.w reget :  BEQ.w handle_label            ; label found
+  CMP.w #$7B,D0 : BEQ.w handle_statement       ; '{'
 
   ; new >
   TST.w d0
@@ -4553,49 +4322,49 @@ funcscanskip:    ; was  handlechar   org source
       TST.b 0(a0,d1.w)
       BNE 'll1
         SUBQ.l #2,a5
-        MOVE.w #":",lastchar                                     ;no doublepoint
+        MOVE.w #":",lastchar                    ; no doublepoint
         BRA handle_label
  'll1
-  CMP.l #"equ ",-1(a5)
+
+  CMP.l #"equ ",-1(a5)                          ; handle "EQU"
   BEQ 'll4
     CMP.l #"EQU ",-1(a5)
     BNE 'll2
- 'll4
-  ADDQ.l #2,a5
-  JSR findlabel2
-  BEQ.w 'lf1
-    JSR addlabelhash
-    MOVE.l #$1,$4(A2)
- 'lf1
-  CMPI.l #$1,$4(A2)
-  BNE.w illconerr
-  BSR get1bytemain
-  MOVE.l A2,-(A7)
-     ;cmp.b #$30,d0
-     ;blt 'lnonum
-     ;cmp.b #$39,d0
-     ;bgt 'lnonum
-     ;bra 'lnum
+   'll4
+    ADDQ.l #2,a5
+    JSR findlabel2
+    BEQ.w 'lf1
+      JSR addlabelhash
+      MOVE.l #$1,$4(A2)
+   'lf1
+    CMPI.l #$1,$4(A2) : BNE.w illconerr
 
- 'lnonum
-     ;cmp.b #"#",d0
-     ;beq 'lnum
-     ;move.b #"#",-2(a5)
-  SUBQ.l #1,a5
+    BSR get1bytemain
+    MOVE.l A2,-(A7)
+    ;cmp.b #$30,d0
+    ;blt 'lnonum
+    ;cmp.b #$39,d0
+    ;bgt 'lnonum
+    ;bra 'lnum
 
- 'lnum
-  SUBQ.l #1,a5
-  JSR evalconst2
-  MOVEA.l (A7)+,A2
-  MOVE.l D3,$8(A2)
-  RTS
-  BSR get1bytemain
+   'lnonum
+    ;cmp.b #"#",d0
+    ;beq 'lnum
+    ;move.b #"#",-2(a5)
+    SUBQ.l #1,a5
 
+   'lnum
+    SUBQ.l #1,a5
+    JSR evalconst2
+    MOVEA.l (A7)+,A2
+    MOVE.l D3,$8(A2)
+    RTS
+    BSR get1bytemain
  'll2
-  CMP.l #"SET ",-1(a5)
-  BNE 'll3
- BRA 'll4
 
+  CMP.l #"SET ",-1(a5)            ; handle "SET"
+  BNE 'll3
+    BRA 'll4
  'll3
  ; < new
 JMP dolet2
@@ -4614,16 +4383,13 @@ BRA.w handlelab2
 
 
 handlemouse:
-  BSR.w get1bytemain
-  BEQ.w handleeol     ;syntaxerr
-  CMP.w #"'",D0        ; was #loclabch
-  BEQ.w handlelocal
+  BSR.w get1bytemain : BEQ.w handleeol     ;syntaxerr
+  CMP.w #"'",D0      : BEQ.w handlelocal  ; was #loclabch
   JSR makename2
   ; new >
-   TST.w d0
-   BPL handle_label
-   SUBQ.l #2,a5
-   MOVE.w #":",lastchar
+  TST.w d0           : BPL handle_label
+  SUBQ.l #2,a5
+  MOVE.w #":",lastchar
 BRA handle_label                                              ;????
   ; < new
 
@@ -6146,17 +5912,14 @@ newallox:
 RTS
 
 
-freeallox:
+.freeallox:
   MOVEA.l _execbase,A6
   MOVE.l objlen,D0
   BEQ.w 'skip
     CLR.l objlen
     MOVEA.l destbufferstart,A1
-    ; new >
     MOVE.l mempool,a0
     JMP _FreeVec(A6)
-    ; < new
-    ;jmp freemem(a6)
  'skip
 RTS
 
@@ -6167,20 +5930,17 @@ RTS
   MOVE.l systembuffer,D4
   MOVE.l databuffer,D5
 
-makeallox:
-  ;d2=pc size,d3=lib size,d4=data1,d5=data2
+.makeallox:
+  ; d2=pc size,d3=lib size,d4=data1,d5=data2
   ;
   MOVE.w #$FFFF,anyerrs      ; was -1
   BSR.w freeallox
   ;
-  ;word align blocks
+  ; word align blocks
   ;
-  ADDQ.l #1,D2
-  BCLR #$0,D2
-  ADDQ.l #1,D3
-  BCLR #$0,D3
-  ADDQ.l #1,D4
-  BCLR #$0,D4
+  ADDQ.l #1,D2 :  BCLR #$0,D2
+  ADDQ.l #1,D3 :  BCLR #$0,D3
+  ADDQ.l #1,D4 :  BCLR #$0,D4
   ; new >
   TST.l d5        ; ??? make no sence ??
   BNE 'l1
@@ -6203,31 +5963,24 @@ makeallox:
   MOVE.l mempool,a0
   MOVEA.l _execbase,A6
   JSR _AllocVec(a6)                                        ;alloc mem for objectbuffer
-  ; < new
-  ;jsr do_AllocMem
   TST.l D0
   BEQ.w 'done
-  MOVE.l D6,objlen
-  MOVE.l D2,objectbuffer
-  MOVE.l D3,libsbuffer
-  MOVE.l D4,systembuffer
-  MOVE.l D5,databuffer
-  MOVE.l D0,destbufferstart
-  ; new >
-;  MOVE.l comdata,a0
-;  MOVE.l d0,$1f0(a0)
-  !ComData_SetL{comPtr_DestBufferStart,D0}
-  !ComData_SetL{comLong_DestBufferSize,D6} ; add that the Debugger have the right size of the buffer  tomsmart1 2016 02 06
-  ; < new
-  ADD.l D2,D0
-  MOVE.l D0,destbufferend
-  ADD.l D3,D0
-  MOVE.l D0,data1start
-  ADD.l D4,D0
-  MOVE.l D0,data2at
-  ADD.l D5,D0
-  MOVE.l D0,allat
-
+    MOVE.l D6,objlen
+    MOVE.l D2,objectbuffer
+    MOVE.l D3,libsbuffer
+    MOVE.l D4,systembuffer
+    MOVE.l D5,databuffer
+    MOVE.l D0,destbufferstart
+    ; new >
+    ;  MOVE.l comdata,a0
+    ;  MOVE.l d0,$1f0(a0)
+    !ComData_SetL{comPtr_DestBufferStart,D0}
+    !ComData_SetL{comLong_DestBufferSize,D6} ; add that the Debugger have the right size of the buffer  tomsmart1 2016 02 06
+    ; < new
+    ADD.l D2,D0 : MOVE.l D0,destbufferend
+    ADD.l D3,D0 : MOVE.l D0,data1start
+    ADD.l D4,D0 : MOVE.l D0,data2at
+    ADD.l D5,D0 : MOVE.l D0,allat
  'done
 RTS
 
@@ -6281,38 +6034,25 @@ makelong:                                                  ;put long in d2 into 
 RTS
 
 
-;str_residentrequester:  Dc.b "Name of Resident File to Create",0 : Even        ;restext org source
-;str_residentpath:       Ds.l 48                                                ;respath org source
-;str_residentname:       Ds.l 48                                                ;resname org source
-
-
-.menu_createresidentfile:      ; was menu5
-  ;make resident!
-  ;
+.menu_createresidentfile:      ; was menu5, make a resident!
   MOVE.l macrobase,D0
   BNE.w 'skip
-  MOVE.l newtype_string,D0
-  BNE.w 'skip
-  MOVEA.l labelbase,A2
+    MOVE.l newtype_string,D0
+    BNE.w 'skip
+      MOVEA.l labelbase,A2
+     'loop
+        CMPA.w #$0,A2 : BEQ.w 'err
+        CMPI.l #$1,$4(A2) : BEQ.w 'skip
+        MOVEA.l (A2),A2
+      BRA.w 'loop
+     'err
+      !basic
+      error{!TRANS{"There is no data to be stored in a resident file.\\nTry again to create the resident after one compile pass."}}
+      !asm
+      RTS
+ 'skip
 
- 'loop
-    CMPA.w #$0,A2
-     BEQ.w 'err
-    CMPI.l #$1,$4(A2)
-     BEQ.w 'skip
-    MOVEA.l (A2),A2
-  BRA.w 'loop
-
- 'err
-  !basic
-  error{!TRANS{"There is no data to be stored in a resident file.\\nTry again to create the resident after one compile pass."}}
-  !asm
-  RTS
-
- 'err_cancel
-  RTS
-
- 'skip    ; was 'create_residentfile                                     ;.skip orgk source
+  ; was 'create_residentfile                                     ;.skip orgk source
   !basic
   !ComData_GetL{comPtr_pedScreen,D0} : *pedScreen.Screen = PutRegD0
   aslfr_SetRequesterTitle{2,"Name of Resident File to Create","Create","Cancel"}
@@ -6368,7 +6108,7 @@ RTS
   ;O.K.... Now to create it
   MOVE.l D0,D1
   MOVE.l #HUNK_RELOC_8__MODE_NEWFILE,D2
-  MOVEA.l _dosbase(PC),A6
+  MOVEA.l _dosbase,A6
   JSR _Open(A6)
   MOVE.l D0,D7               ;handle                                ;handle
   BEQ.w 'err
@@ -6389,7 +6129,7 @@ RTS
     error{!TRANS{"Cannot create Resident with develope debug 1"}}
     !asm
     MOVEM.l (a7)+,d2-d7/a0-a6
-    MOVEA.l _dosbase(PC),A6
+    MOVEA.l _dosbase,A6
     MOVE.l d7,d1
     JSR _Close(a6)
     BRA 'err
@@ -6403,7 +6143,7 @@ RTS
   MOVE.l D7,D1
   MOVE.l #tsthead,D2        ;header                               ;header
   MOVEQ.l #$20,D3
-  MOVEA.l _dosbase(PC),A6
+  MOVEA.l _dosbase,A6
   JSR _Write(A6)
   ;
   MOVEQ.l #$00,D6           ;offset from start of file!                               ;offset from start of file!
@@ -10329,7 +10069,7 @@ RTS
   ; new >
   MOVEM.l d0/a2,-(a7)
   MOVEQ #0,d0
-  LEA instrtab+4,a2
+  LEA instructionTable+4,a2
   MOVE.w d1,d0
   ASL.l #3,d0
   MOVE.l 0(a2,d0.l),a1                                     ;*8
@@ -10362,7 +10102,7 @@ searchinstr:        ; was  findtoke org source input: d1=token, return: a2.l=lib
   ; new >
   MOVEM.l d0-d1/a1,-(a7)
   MOVEQ #0,d0
-  LEA instrtab,a1
+  LEA instructionTable,a1
   MOVE.w d1,d0
   ASL.l #3,d0
   MOVE.l 0(a1,d0.l),a3
@@ -10534,155 +10274,6 @@ SHARED ptr_EndOfLibs.l
   EndIf
 End Function
 
-
-
-
-; input  : D0: size,D1: ptr_strname
-; returns: D0: buffer addr
-;.load_libsfile:                                            ;loadlibgroup org source  ;load a group of libraries!
-;;BRA gothere
-;  ;
-;  ;d0=len, d1=name; a3= current libpointer
-;  ;return d0=address
-;  ;
-;  MOVE.l a3,-(a7)
-;  MOVE.l d1,-(a7)
-;  MOVE.l d0,-(a7)
-;  !basic
-;  MOVE.l (a7)+,d0 : putreg d0, libsize.l
-;  MOVE.l (a7)+,d0 : putreg d0, tempd0.l : libname.s = Peek.s(tempd0)
-;  !cout{Str$(libsize) + " : " + libname}
-;  If libsize > 0
-;    filehandle.l = Open_(libname,#HUNK_RELOC_16__MODE_OLDFILE)
-;    If filehandle
-;      tmp_buffer.l = AllocPooled_(Peek.l(?mempool),libsize)
-;      ;!cout{"tmp_buffer:" + Hex$(tmp_buffer)}
-;      tmp_size.l = Read_(filehandle,tmp_buffer,libsize)
-;      If tmp_size > 0
-;        !cout{"read ok "  + Str$(tmp_size)}
-;        !cout{"libpointer: " + Hex$(?libpointer)}
-;        ;-- process loaded libsfile
-;        Getreg D0,tmp_buffer : MOVE.l d0,-(a7)
-;        !asm
-;        MOVE.l (a7)+,A0     ; memory address of loaded libsfile
-;        MOVE.l (a7)+,A3
-;        linkloop:
-;          MOVE.l (A0)+,D0                                    ; naechster Longwert nach DO
-;          BEQ.w linkdone                                    ; wenn <> 0, dann
-;          !regs2stack
-;          MOVE.l d0,-(a7)
-;          !basic
-;          MOVE.l (a7)+, d0 : putreg d0, tmpv.l
-;          !cout{"verarbeite lib mit laenge : " + Str$(tmpv)}
-;          !asm
-;          !stack2regs
-;            LEA $20(A0),A1  ;link in.                        ;   lade inhalt von D0+40bytes nach A1
-;            MOVE.l A1,(A3)                                   ;   kopiere Adresse in A1 zum libpointer
-;            MOVEA.l A1,A3                                    ;   kopiere A1 nach A3
-;            ADDA.l D0,A0                                     ;   addiere inhalt von D0 zu A0 hinzu
-;            ;
-;            ;fix stuff - done by loadalib
-;            ;
-;            MOVE.l -$4(A1),D0    ;number of longwords.       ;   hole die 4bytes vor nach D0
-;            ADD.l D0,D0          ;to bytes...                ;   verdoppele D0
-;            ADD.l D0,D0                                      ;   verdoppele D0 nochmal
-;            MOVE.l D0,$6(A1)     ;fix 1                      ;   schreibe D0 6bytes nach A1
-;            CLR.l $20(A1)        ;no relocs                  ;   loesche D0+40bytes
-;            LEA $C(A1,D0.L),A2   ;reloc info.                ;   lade inhalt von (A1)+D0+$C nach A2
-;            CMPA.l A0,A2         ;is it over?
-;            BCC.w linkloop                                  ; wenn A0=>A2
-;              MOVE.l -$8(A2),$20(A1)  ;number of relocs.     ;
-;              MOVE.l A2,$24(A1)       ;pointer to relocs.    ;
-;          BRA.w linkloop
-;        linkdone:
-;        !basic
-;        !cout{"read done"}
-;
-;      Else
-;        !cout{"could not read libfile " + libname}
-;      EndIf
-;      Close_ filehandle
-;    Else
-;      error{"The libsfile " + libname + " could not be opened."}
-;    EndIf
-;  EndIf
-;  ;-- return memory address in D0
-;  Getreg D0,tmp_buffer : MOVE.l d0,-(a7)
-;  !asm
-;  MOVE.l (a7)+,d0
-;RTS
-
-;gothere:
-;  TST.l D0
-;  BEQ.w _quit
-;    MOVE.l D0,D6                                           ;d6=len
-;    MOVEA.l _dosbase,A6
-;    MOVE.l #HUNK_RELOC_16__MODE_OLDFILE,D2
-;    JSR _Open(A6)
-;    MOVE.l D0,D7
-;    BEQ.w _quit
-;      MOVE.l D6,D0
-;      MOVEQ.l #$01,D1
-;      MOVEA.l _execbase,A6
-;      ;jsr do_AllocMem
-;      ; new >
-;      MOVE.l mempool,a0
-;      JSR _AllocPooled(a6)
-;      ; new >
-;      MOVE.l D0,D5                                         ;start address
-;
-;      MOVE.l D7,D1                                         ; handle
-;      MOVE.l D5,D2                                         ; buffer addr
-;      MOVE.l D6,D3                                         ; size
-;      MOVEA.l _dosbase,A6
-;      JSR _Read(A6)
-;      MOVE.l D7,D1
-;      JSR _Close(A6)
-;      ;
-;      MOVEA.l D5,A0                                        ; buffer addr
-;
-;      ; --
-;      ; -- process loaded acid/utillibs
-;      ; -- (libpointer steht ja in A3)
-;     linkloop2:
-;      TRAP #0
-;      MOVE.l (A0)+,D0                                    ; naechster Longwert nach DO
-;      BEQ.b linkdone2                                    ; wenn <> 0, dann
-;          !regs2stack
-;          MOVE.l d0,-(a7)
-;          !basic
-;          MOVE.l (a7)+, d0 : putreg d0, tmpv.l
-;          !cout{"verarbeite lib: " + Hex$(tmpv)}
-;          !asm
-;          !stack2regs
-;
-;
-;
-;        LEA $20(A0),A1  ;link in.                        ;   lade inhalt von D0+40bytes nach A1
-;        MOVE.l A1,(A3)                                   ;   kopiere Adresse in A1 zum libpointer
-;        MOVEA.l A1,A3                                    ;   kopiere A1 nach A3
-;        ADDA.l D0,A0                                     ;   addiere inhalt von D0 zu A0 hinzu
-;        ;
-;        ;fix stuff - done by loadalib
-;        ;
-;        MOVE.l -$4(A1),D0    ;number of longwords.       ;   hole die 4bytes vor nach D0
-;        ADD.l D0,D0          ;to bytes...                ;   verdoppele D0
-;        ADD.l D0,D0                                      ;   verdoppele D0 nochmal
-;        MOVE.l D0,$6(A1)     ;fix 1                      ;   schreibe D0 6bytes nach A1
-;        CLR.l $20(A1)        ;no relocs                  ;   loesche D0+40bytes
-;        LEA $C(A1,D0.L),A2   ;reloc info.                ;   lade inhalt von (A1)+D0+$C nach A2
-;        CMPA.l A0,A2         ;is it over?
-;        BCC.b linkloop2                                  ; wenn A0=>A2
-;        ;
-;        MOVE.l -$8(A2),$20(A1)  ;number of relocs.     ;
-;        MOVE.l A2,$24(A1)       ;pointer to relocs.    ;
-;      BRA.w linkloop2
-;     linkdone2:
-;      MOVE.l D5,D0
-;_quit:
-;RTS
-
-
 .load_all_libraries:
   tempmapping$ = dos_AddPart{config\path_system,"token_mapping_userlibs.txt"}
   dos_Delete{tempmapping$}
@@ -10821,11 +10412,6 @@ Return
   CLR.w number_of_objects
   MOVEA.l end_of_tokenlist,A3
   MOVEA.l libpointer,A2
-  ;!regs2stack
-  ;!basic
-  ;!cout{"process libs at libpointer: " + Hex$(?libpointer)}
-  ;!asm
-  ;!stack2regs
 
   tokenloop:
     CMPA.w #$0,A2
@@ -10961,100 +10547,33 @@ aligna1:
 RTS
 
 
-.free_userlibs:       ; was freeblitzlibs org source                                      ;freeblitzlibs
-  tmp_current.l = libdata\ptr_userlibs
-  tmp_current = Peek.l(tmp_current) ; this is the begin of the first userlib
-;  !cout{"userlibs beginn here: " + Hex$(tmp_current)}
+.free_userlibs:       ; was freeblitzlibs org source
+  ; -- free all userlibs loaded
+  tmp_current = Peek.l(libdata\ptr_userlibs) ; this is the begin of the first userlib
   While tmp_current <> 0
     tmp_next.l = Peek.l(tmp_current)
     datachunk_size.l = Peek.l(tmp_current + $20)
-    If datachunk_size <> 0
-;      !cout{"delete datachunk_size: " + Hex$(datachunk_size LSL 2) + " at " + Hex$(tmp_current+$24)}
-      FreePooled_ Peek.l(?mempool),Peek.l(tmp_current+$24),datachunk_size LSL 2
-    EndIf
-;    !cout{"delete lib at " + Hex$(tmp_current) + " size " + Hex$(Peek.l(tmp_current + $6))}
+    If datachunk_size <> 0 Then FreePooled_ Peek.l(?mempool),Peek.l(tmp_current+$24),datachunk_size LSL 2
     FreePooled_ Peek.l(?mempool), tmp_current, Peek.l(tmp_current+$6)
 
     tmp_current = tmp_next
   Wend
-
   ClearList userlibslist()
 Return
 
-;  TRAP #0
-;  MOVEA.l _execbase,A6
-;  MOVEA.l ptr_userlibs,A2
-;  MOVE.l (A2),D0
-;  CLR.l (A2)
-;  MOVEA.l D0,A2
-;
-; 'loop
-;    CMPA.w #$0,A2
-;    BEQ.w free_userlibslist   ; and at the end... free the list with all the libnames
-;
-;    MOVE.l $20(A2),D0
-;    BEQ.b 'skip
-;      LSL.l #2,D0
-;      MOVE.l mempool,a0
-;      MOVEA.l $24(A2),A1
-;      JSR _FreePooled(A6)     ; a0=poolheader, a1=memory, d0=memsize
-;   'skip
-;    MOVEA.l A2,A1
-;    MOVE.l $6(A1),D0
-;    MOVE.l mempool,a0
-;    MOVEA.l (A2),A2
-;    MOVEA.l _execbase,A6
-;    JSR _FreePooled(A6)
-;BRA.w 'loop
-
 
 .free_blitzlibs:                                           ;freelibs org source    ;free up all memory used by libs
-  !basic
+  If libdata\size_baselibs Then FreePooled_ Peek.l(?mempool),libdata\ptr_baselibs,libdata\size_baselibs
+  If libdata\size_utillibs Then FreePooled_ Peek.l(?mempool),libdata\ptr_utillibs,libdata\size_utillibs
+  If libdata\size_oslibs Then   FreePooled_ Peek.l(?mempool),libdata\ptr_oslibs,libdata\size_oslibs
+  If libdata\size_cslibs Then   FreePooled_ Peek.l(?mempool),libdata\ptr_cslibs,libdata\size_cslibs
   Gosub free_userlibs
 
   Poke.l ?libpointer, 0
   Poke.l Peek.l(?end_of_tokenlist),0
+Return
 
-  If libdata\size_baselibs Then FreePooled_ Peek.l(?mempool),libdata\ptr_baselibs,libdata\size_baselibs
-  If libdata\size_utillibs Then FreePooled_ Peek.l(?mempool),libdata\ptr_utillibs,libdata\size_utillibs
-
-  !asm
-RTS
-
-
-;  BSR.w free_userlibs
-;  ;
-;  TRAP #0
-;  MOVEA.l _execbase,A6
-;  CLR.l libpointer
-;  MOVEA.l end_of_tokenlist,A0
-;  CLR.l (A0)
-;  ;
-;  MOVE.l size_baselibs,D0
-;  BEQ.b 'acidskip
-;    MOVE.l ptr_baselibs,D1
-;    BEQ.b 'acidskip
-;      CLR.l ptr_baselibs
-;      MOVEA.l D1,A1
-;      MOVE.l mempool,a0
-;      MOVEA.l _execbase,A6
-;      JSR _FreePooled(A6)                                 ; free baselibs
-; 'acidskip
-;
-;  MOVE.l size_utillibs,D0
-;  BEQ.b 'defskip
-;    MOVE.l ptr_utillibs,D1
-;    BEQ.b 'defskip
-;      CLR.l ptr_utillibs                                    ; d0: memorySize
-;      MOVEA.l D1,A1                                        ; a1: memory
-;      MOVE.l mempool,a0                                    ; a0: poolHeader
-;      MOVEA.l _execbase,A6
-;      JSR _FreePooled(A6)                                  ; free utillibs
-; 'defskip
-;RTS
-
-
-free_Macros:
+.free_Macros:
   MOVEA.l currentmacroaddr,A0
   MOVEA.l (A0),A2
   CLR.l (A0)
@@ -31457,6 +30976,7 @@ Even
                            Dc.w  0
 
 .memstackf:   ;
+_dosbase:                  Ds.l 1
 _mathffpbase:              Ds.l 1                           ;maths org source
 regnum:                    Ds.w 1                           ;regat org source       ;register being used!
 typelen:                   Ds.w 1
@@ -31858,10 +31378,9 @@ lastlabel            Ds.l 1
 curtemplabel         Ds.l 1
 sourceline2          Ds.l 1
 chartab              Ds.b 256
-tempspace            Ds.b 384   ; was 120 change because it used as temp exepath save and it can be up to 384 bytes!  tomsmart1
-instrtab             Ds.l 65538*2
-; by every compile pass the content beginning from label labelhash to bssstore are cleared!
-labelhash            Ds.l 8192                             ;-bssstore clear every compile pass
+tempspace            Ds.b 384       ; was 120 change because it used as temp exepath save and it can be up to 384 bytes!  tomsmart1
+instructionTable             Ds.l 65538 * 2 ; by every compile pass the content beginning from label labelhash to bssstore are cleared!
+labelhash            Ds.l 8192      ;-bssstore clear every compile pass
 replacedat           Ds.w 65538
 variablehash         Ds.l 8192
 newinitaddr          Ds.l 1
