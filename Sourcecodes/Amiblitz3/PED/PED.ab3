@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.10
-; NumberOfBuilds  = 3225
+; NumberOfBuilds  = 3229
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 2575
-; CursorColumn    = 1
+; CursorLine      = 2560
+; CursorColumn    = 41
 ; LabelSearch     = "usepreprocessor"
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -2621,37 +2621,37 @@ Function.b PED_CheckForClassicToken{_token.l}
 End Function
 
 
-Function.s PED_ParseText{strLine.s}
-
+Function.s PED_Tokenize_internal{strLine.s}
   If FLen(strLine) > #MAX_Columns
     error{"Cannot past: string to long: " + Str$(FLen(strLine))}
+  Else
+    If FLen(strLine) < #MAX_Columns
+      strLine = strLine + SPACE$(#MAX_Columns - FLen(strLine))
+    EndIf
   EndIf
 
-  GetReg D0,&strLine : MOVE.l D0,-(a7)
+  GetRegD0 &strLine : MOVE.l D0,-(a7)
   !asm
   MOVE.l (a7)+,D2 : MOVE.l D2,A2      ; pointer to String to parse to be in A2
-  MOVEA.l comPtr_CurrentSourceLine,A4 : JSR parse_line
-  ;MOVE.l D5,-(a7)                     ; returns length of string in D5
+  JSR tokenize_line
+  MOVE.l D5,D0                        ; returns length of string in D5
   !basic
-  ;MOVE.l (a7)+,D0 : PutReg d0,tmpd0.l
-  ;MOVE.l comPtr_Temp_TokenString1,D0 : PutReg D0,ptrTokenString1.l
-  ;result.s = Peeks$(Peek.l(ptrTokenString1),tmpd0)
-  result.s = ""
-  Function Return result
+  outputSize.l = PutRegD0 - 1
+  Function Return Peeks$(Peek.l(?comPtr_Temp_TokenString1),outputSize)
 End Function
 
-Function.s PED_TokenizeText{strLine.s}
+Function.s PED_TokenizeText{strLine.s, @usePreProc.b}
+; -- usePreProc is used to disable preprocessor in some contexts as preproc
+; -- is casesensitive, and so cannot process source that has been entered in PED with wrong cases.
 SHARED ped, pedconfig, *preProcessor
-
   If ped\doTokenize
-    MaxLen linebuff$ = 256
-    ;If pedconfig\usePreProcessor
+    If pedconfig\usePreProcessor AND usePreProc
+      MaxLen linebuff$ = 256
       preproc_Tokenize{*preProcessor,&strLine.s, &linebuff$, FLen(strLine)}
       strLine = Peek.s(&linebuff$)
-    ;Else
-    ;  strLine = PED_ParseText{strLine}
-    ;  strLine = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
-    ;EndIf
+    Else
+      strLine = PED_Tokenize_internal{strLine}
+    EndIf
   Else
     log_Print{"PED_TokenizeText: tokenization turned off"}
   EndIf
@@ -2663,9 +2663,10 @@ End Function
 Function.s PED_DetokenizeText{strLine.s}
 SHARED ped, pedconfig, *preProcessor
 
-  _strLen.w = FLen(strLine)
-  If _strLen
-    If ped\doTokenize AND ped\noDetokenizing = 0
+  If ped\doTokenize AND ped\noDetokenizing = 0
+    _strLen.w = FLen(strLine)
+    If _strLen
+
       MaxLen linebuff$ = 256
       If pedconfig\usePreProcessor
         preproc_Detokenize{*preProcessor,&strLine, &linebuff$, FLen(strLine)}
@@ -2688,8 +2689,8 @@ SHARED ped, pedconfig, *preProcessor
         strLine = linebuff$
       EndIf
     EndIf
-    Function Return strLine
   EndIf
+  Function Return strLine
 End Function
 
 Function.s PED_Detokenize{*sourceLine.sourceLine}
@@ -5197,14 +5198,6 @@ readcache\fib = AllocDosObject_ (#DOS_FIB,0)
 *rc_fib.FileInfoBlock = readcache\fib
 
 ; --
-; -- alloc some memory for tokenization
-;tempMemPtr.l = PED_AllocMem{(#MAX_Columns + 2) * 3}
-;If tempMemPtr = 0 Then Goto exit_PED_closelibraries
-;Poke.l ?comPtr_Temp_TokenString1, tempMemPtr + (#MAX_Columns + 2) * 0
-;Poke.l ?comPtr_Temp_TokenString2, tempMemPtr + (#MAX_Columns + 2) * 1 ; obsolete, was needed for asm source converter
-;Poke.l ?comPtr_Temp_TokenString3, tempMemPtr + (#MAX_Columns + 2) * 2 ; not used anymore
-
-; --
 ; -- alloc memory for textbuffer of source editor
 tempMemPtr.l = PED_AllocMem{(#MAX_Columns + 4) * 2}
 If tempMemPtr = 0 Then Goto exit_PED_closelibraries
@@ -5282,7 +5275,6 @@ End If
 ;log_Print{"Constantbase= " + Hex$(*constantbase)}
 ;log_Print{"Macrobase   = " + Hex$(*macrobase)}
 ;log_Print{"Varbase     = " + Hex$(*varbase)}
-;log_Print{"allocated Buffer for TokenString1 at " + Hex$(?comPtr_Temp_TokenString1)}
 
 ; ------------------------------------------------------------------------------------
 ; AUSWERTEN DER TOOLTYPES
@@ -5785,8 +5777,7 @@ End
       ; -- parse the current line
       newline$ = Peeks$(lineaddr,#MAX_Columns)
       newline$ = StripTrail$(newline$,@" ")
-      newline$ = PED_ParseText{newline$}
-      newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+      newline$ = PED_TokenizeText{newline$, False}
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
       PED_ReplaceCurrentSourceLine{*newLine}
 
@@ -7236,10 +7227,7 @@ Return
 
     If tmpLine <> "NoCOntenTwasDelivered"
       If ped\doTokenize AND (ex <> "bb2" AND ex <> "bb")
-
-        tmpLine = PED_ParseText{tmpLine}
-        tmpLine = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
-
+        tmpLine = PED_TokenizeText{tmpLine}
       Else
         ;-- replace TAB with space
         tmpLine = Replace$(tmpLine,Chr$(9)," ")
@@ -7874,9 +7862,7 @@ Return
     strline$ = ";" + strline$
     ;log_Print{">> " + strline$}
 
-    newline$ = PED_ParseText{strline$}
-    newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
-
+    newline$ = PED_TokenizeText{strline$}
     *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
     PED_ReplaceCurrentSourceLine{*newLine}
 
@@ -7915,8 +7901,7 @@ Return
       strline$ = StripLead$(strline$,@" ")
       If Left$(strline$,1) = ";"
         strline$ = UnRight$(strline$,1)
-        newline$ = PED_ParseText{strline$}
-        newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+        newline$ = PED_TokenizeText{strline$}
         *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
         PED_ReplaceCurrentSourceLine{*newLine}
       EndIf
@@ -7953,9 +7938,7 @@ Return
     EndIf
 
     strline$ = SPACE$(pedconfig\tabSize) + strline$
-    newline$ = PED_ParseText{strline$}
-    newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
-
+    newline$ = PED_TokenizeText{strline$}
     *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
     PED_ReplaceCurrentSourceLine{*newLine}
 
@@ -7992,9 +7975,7 @@ Return
       For runner.w = 1 To pedconfig\tabSize
         If Left$(strline$,1) = " " Then strline$ = UnRight$(strline$,1)
       Next runner
-      ;strline$ + SPACE$(#MAX_Columns - FLen(strline$))
-      newline$ = PED_ParseText{strline$}
-      newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+      newline$ = PED_TokenizeText{strline$}
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
       PED_ReplaceCurrentSourceLine{*newLine}
     EndIf
@@ -8519,8 +8500,7 @@ USEPATH ped\ptrCurrentSourceData
   EndIf
 
   strline$ + StripTrail$(PED_Detokenize{*nextLine},@" ")
-  strline$ = PED_ParseText{strline$}
-  strline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+  strline$ = PED_TokenizeText{strline$}
   *newLine.sourceLine = PED_CreateNewSourceLine{strline$}
   PED_ReplaceCurrentSourceLine{*newLine}
   If PED_CutSourceLine{*nextLine}
@@ -8576,15 +8556,13 @@ Return
 
   ;-- update current line
   strline$ = StripTrail$(Peeks$(lineaddr,#MAX_Columns),@" ")
-  strline$ = PED_ParseText{strline$}
-  strline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+  strline$ = PED_TokenizeText{strline$}
   *newLine.sourceLine = PED_CreateNewSourceLine{strline$}
   PED_ReplaceCurrentSourceLine{*newLine}
 
   ;-- append rest of line as new line
   restString = StripTrail$(restString,@" ")
-  newline$ = PED_ParseText{restString}
-  newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+  newline$ = PED_TokenizeText{restString}
   ;log_Print{"new line *" + newline$ + "*"}
   *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
   PED_AppendSourceLine{\CurrentSourceLine,*newLine}
@@ -9456,8 +9434,7 @@ Return
   If PED_CheckLabelRelevance{beginString} Then ped\labelListChanged = True
 
   ;-- replace line with current one
-  newline$ = PED_ParseText{beginString}
-  newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+  newline$ = PED_TokenizeText{beginString}
   *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
   PED_ReplaceCurrentSourceLine{*newLine}
 
@@ -9478,8 +9455,7 @@ Return
       Else
         pasteString = tmpLine
       EndIf
-      newline$ = PED_ParseText{pasteString}
-      newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+      newline$ = PED_TokenizeText{pasteString}
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
 
       PED_AppendSourceLine{ped\ptrCurrentSourceData\CurrentSourceLine, *newLine}
@@ -9494,14 +9470,12 @@ Return
   ;-- add the rest to an new line or append to pasted text
   If FLen(restString) > 0
     If morelines
-      newline$ = PED_ParseText{restString}
-      newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+      newline$ = PED_TokenizeText{restString}
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
       PED_AppendSourceLine{ped\ptrCurrentSourceData\CurrentSourceLine,*newLine}
     Else
       restString = beginString + pasteString + restString
-      newline$ = PED_ParseText{restString}
-      newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+      newline$ = PED_TokenizeText{restString}
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
       PED_ReplaceCurrentSourceLine{*newLine}
       storeCurrentSourceLine = *newLine
@@ -10190,7 +10164,7 @@ RTS
 RTS
 
 
-.com_debugTrap:
+.com_debugTrap:     ; tokenizes String in A0 and returns detokenized string in A1
   MOVEA.l A0,A2
 
   MOVEQ.l #$00,D1   ; check length of string in A0
@@ -10297,7 +10271,7 @@ Function.b FAST IsLetter{c.b}
   EndIf
 End Function
 
-Function.s PED_ParseText2{strLine.s}
+Function.s PED_TokenizeText2{strLine.s}
 SHARED ped, tmpTokeStr
 
   If ped\doTokenize = 0
@@ -10352,9 +10326,10 @@ SHARED ped, tmpTokeStr
   Function Return tmpTokeStr
 End Function
 
-.parse_line:                         ; input A2: textstring, results: comPtr_Temp_TokenString1 = parsed string, D5: length of string
+.tokenize_line:                        ; input A2: textstring to parse, string has to have the length MAX_Columns!
+                                       ; results: comPtr_Temp_TokenString1 = parsed string, D5: length of string
   MOVEA.l comPtr_Temp_TokenString1,A1
-  MOVE.l A1,-(A7)
+  MOVE.l A1,-(A7)                      ; put address pointer A1 on stack to calc processed characters at exitParsing
   MOVE.w #MAX_Columns,D1 : SUBQ.w #1,D1
 
   MOVE.w comWord_DoTokenize,D0
@@ -10376,24 +10351,22 @@ End Function
       RTS
 
   tokenizeToA1:                        ; A1 string to parse
-    MOVE.l A1,-(A7)
+    MOVE.l A1,-(A7)                    ; put address pointer A1 on stack to calc processed characters at exitParsing
   BRA.w JL_0_5F72
 
-  JL_0_5F68:
+  JL_0_5F68:                           ; tokenize string with pointer in A2 to string buffer in A1
   CMPI.b #$20,$0(A2,D1.W)              ; -------  check spaces from right to left
   BNE.w JL_0_5F7E
     JL_0_5F72:
     SUBQ.w #1,D1
     BPL.b JL_0_5F68
-      ADDQ.w #4,A7                     ; Stack richten
+      ADDQ.w #4,A7                     ; Stack richten, weil da A1 drin stand
       CLR.b (A1)
       MOVEQ.l #$01,D5                  ; only spaces in string, so return length 1 as we dont store only 1 space
       RTS
   JL_0_5F7E:
 
-
-
-  MOVE.l A4,-(A7)                      ; currentLine to Stack
+  MOVE.l A4,-(A7)                      ; save A4
   MOVEQ.l #$00,D0
   MOVE.w D0,comWord__QuoteFlag
   CLR.b instring2
@@ -10440,7 +10413,7 @@ End Function
 
     CMP.b #"\",D2 :    BEQ.w JL_0_6066 ; "\"
 
-    CMP.b comByte_SemicolonIdentifier,D2
+    CMP.b comByte_CommentIdentifier,D2 ; comment found
     BNE.w JL_0_5FDC
       JL_0_5FD0:
         JSR copyD2toA1
@@ -10464,20 +10437,13 @@ End Function
         BNE 'l10
           BRA JL_0_5FE4
        'l10
-        CMP.b #"_",d2
-        BEQ JL_0_5FE4
-        CMP.b #"0",D2
-        BCS.w JL_0_6018
-        CMP.b #"z",D2                  ;f
-        BHI.w JL_0_6018
-        CMP.b #"9",D2
-        BLS.b JL_0_5FE4
-        CMP.b #"A",D2
-        BCS.w JL_0_6018
-        CMP.b #"a",D2
-        BCC.b JL_0_5FE4
-        CMP.b #"Z",D2                  ;F
-      BLS.b JL_0_5FE4
+        CMP.b #"_",d2 : BEQ JL_0_5FE4
+        CMP.b #"0",D2 : BCS.w JL_0_6018
+        CMP.b #"z",D2 : BHI.w JL_0_6018
+        CMP.b #"9",D2 : BLS.b JL_0_5FE4
+        CMP.b #"A",D2 : BCS.w JL_0_6018
+        CMP.b #"a",D2 : BCC.b JL_0_5FE4
+        CMP.b #"Z",D2 : BLS.b JL_0_5FE4
     JL_0_6018:
 
     JSR copyD2toA1
@@ -10551,7 +10517,7 @@ End Function
     JSR checkD2ForLetter
     BEQ.b JL_0_6054
 
-    CMP.b #$30,d2            ;number 0-9
+    CMP.b #$30,d2                     ; number  0-9
     BLT 'l10
       CMP.b #$39,d2
       BGT 'l10
@@ -10560,7 +10526,7 @@ End Function
     CMP.b #"_",D2
     BEQ.b JL_0_6054
 
-    MOVEA.l (A7)+,A3        ; copy token word to destination string
+    MOVEA.l (A7)+,A3                  ; copy token word to destination string
     ADDQ.w #4,A3
     MOVE.b (A3)+,(A1)
     BSET #$7,(A1)+
@@ -10568,7 +10534,7 @@ End Function
     MOVE.l A4,D4
     SUB.l A2,D4
     ADD.w D4,D0
-    CMP.w D1,D0             ; d1: maxcolumns - 1
+    CMP.w D1,D0                       ; d1: maxcolumns - 1
     BHI.w leaveParsing
     MOVEA.l A4,A2
   BRA.w JL_0_5F88
@@ -10583,7 +10549,7 @@ End Function
   ADDQ.w #4,A7
 
   leaveParsing:
-  MOVEA.l (A7)+,A4
+  MOVEA.l (A7)+,A4                    ; restore A4
 BRA.w exitParsing
 
 
@@ -16602,8 +16568,7 @@ Return
   EndIf
 
   pasteString.s = Peeks$(ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset,#MAX_Columns)
-  newline$ = PED_ParseText{pasteString}
-  newline$ = Peek.s(Peek.l(?comPtr_Temp_TokenString1))
+  newline$ = PED_TokenizeText{pasteString}
   *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
   PED_ReplaceCurrentSourceLine{*newLine}
 
@@ -17642,5 +17607,5 @@ wzgui:                IncBin "ped.wizard"
 
 BSS
 Even
-instring2             Dc.b 0                ; > parse_line
+instring2             Dc.b 0                ; > tokenize_line
 str_tempfilename:     Ds.b #MAX_STRINGSIZE  ; > compiler can put filename here at startup
