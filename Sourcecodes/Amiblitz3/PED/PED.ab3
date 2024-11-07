@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.10
-; NumberOfBuilds  = 3235
+; NumberOfBuilds  = 3237
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 10672
-; CursorColumn    = 18
+; CursorLine      = 2604
+; CursorColumn    = 49
 ; LabelSearch     = "ped_show"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -891,6 +891,8 @@ loadcheckchanged.b = False
 
 messageErrorWriteFile.s = "Error writing file!"
 
+MaxLen linebuff$          = 256
+
 MaxLen tsourcedir$        = 192
 MaxLen tincludedir$       = 192
 MaxLen thelpdir$          = 192
@@ -1567,7 +1569,7 @@ End Function
 Function.b PED_ReadClipboard{}
 SHARED ped,readcache
 
-  ;log_Print{"read from clipboard"}
+  ;log_Print{"read from clipboard", #log_debug}
   readcache\mode = $FF : readcache\cb_eol = False
   readcache\chunklen = -1
   readcache\bufferoffset = 0
@@ -2647,34 +2649,39 @@ End Function
 Function.s PED_TokenizeText{strLine.s, @usePreProc.b}
 ; -- usePreProc is used to disable preprocessor in some contexts as preproc
 ; -- is casesensitive, and so cannot process source that has been entered in PED with wrong cases.
-SHARED ped, pedconfig, *preProcessor
+; -- above that, preprocessor cannot process already tokenized source
+SHARED ped, pedconfig, *preProcessor, linebuff$
+
+  If FLen(strLine) = 0 Then Function Return ""
+
   If ped\doTokenize
     If pedconfig\usePreProcessor AND usePreProc
-      MaxLen linebuff$ = 256
-      preproc_Tokenize{*preProcessor,&strLine.s, &linebuff$, FLen(strLine)}
-      strLine = Peek.s(&linebuff$)
+      log_Print{"PED_TokenizeText: using preprocessor [" + strLine + "]", #log_debug}
+      byteLength.l = preproc_Tokenize{*preProcessor,&strLine.s, &linebuff$, FLen(strLine)}
+      strLine = Peeks$(&linebuff$, byteLength)
     Else
+      log_Print{"PED_TokenizeText: using internal tokenization [" + strLine + "]",#log_debug}
       strLine = PED_Tokenize_internal{strLine}
     EndIf
   Else
-    log_Print{"PED_TokenizeText: tokenization turned off"}
+    log_Print{"PED_TokenizeText: tokenization turned off",#log_debug}
   EndIf
+
+  ;log_Print{"tokenized output >" + strLine + "<"}
 
   Function Return strLine
 End Function
 
 
 Function.s PED_DetokenizeText{strLine.s}
-SHARED ped, pedconfig, *preProcessor
+SHARED ped, pedconfig, *preProcessor, linebuff$
 
   If ped\doTokenize AND ped\noDetokenizing = 0
     _strLen.w = FLen(strLine)
     If _strLen
-
-      MaxLen linebuff$ = 256
       If pedconfig\usePreProcessor
-        preproc_Detokenize{*preProcessor,&strLine, &linebuff$, FLen(strLine)}
-        strLine = Peek.s(&linebuff$)
+        byteLength.l = preproc_Detokenize{*preProcessor,&strLine, &linebuff$, FLen(strLine)}
+        strLine = Peeks$(&linebuff$, byteLength)
       Else
         ped\inString = False
         linebuff$ = ""
@@ -4153,8 +4160,7 @@ SHARED ped,sourceWindow
     strline.s = Peek.s(*currentLine + 9)
     strline = PED_DetokenizeText{strline}
     replacedline.s = Replace$(strline, search, replacement)
-    ;log_Print{">> " + replacedline}
-    replacedline.s = PED_TokenizeText{replacedline}
+    replacedline.s = PED_TokenizeText{replacedline, False}
     If FLen(replacedline) > #MAX_Columns Then replacedline = Left$(replacedline,#MAX_Columns)
 
     *previousLine.sourceLine = *currentLine\previousLine
@@ -5773,7 +5779,7 @@ End
     EndIf
 
     If ped\ptrCurrentSourceData\KeyBeforeReturn
-      ;log_Print{"** parse the line after event, lastkey = " + Hexw$(ped\ptrCurrentSourceData\KeyBeforeReturn)}
+      log_Print{"** parse the line after event, lastkey = " + Hexw$(ped\ptrCurrentSourceData\KeyBeforeReturn)}
 
       ; --- get address of actual source line ---
       sourceWindow\lastEditedLine = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
@@ -5788,7 +5794,7 @@ End
       newline$ = PED_TokenizeText{newline$, False}
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
       PED_ReplaceCurrentSourceLine{*newLine}
-
+   
       ; --- draw block mark if existing
       !PED_CursorOff
   ;    SF comByte_StateBlockMark
@@ -7235,7 +7241,7 @@ Return
 
     If tmpLine <> "NoCOntenTwasDelivered"
       If ped\doTokenize AND (ex <> "bb2" AND ex <> "bb")
-        tmpLine = PED_TokenizeText{tmpLine}
+        tmpLine = PED_TokenizeText{tmpLine, False}
       Else
         ;-- replace TAB with space
         tmpLine = Replace$(tmpLine,Chr$(9)," ")
@@ -8493,23 +8499,17 @@ USEPATH ped\ptrCurrentSourceData
   EndIf
 
   ; -- adjust blockmark
-  ; TODO: currently not necessary, as the blockmark ist resetted after each key event
+  ; TODO: currently not necessary, as the blockmark is resetted after each key event
 
   ; -- get end of line in textbuffer
   lineaddr.l = ped\ptrTextbuffer + \TextBufferOffset
-  strline$ = ""
-  runner.w = #MAX_Columns
-  Repeat
-    runner - 1
-    actbyte.b = Peek.b(lineaddr + runner)
-  Until actbyte <> $20 OR runner = 0
-  If runner
-    runner + 1
-    strline$ = Peeks$(lineaddr,runner)
-  EndIf
+  strline1$ = StripTrail$(Peeks$(lineaddr,#MAX_Columns-1),@" ")
+  strline2$ = StripTrail$(PED_Detokenize{*nextLine},@" ")
 
-  strline$ + StripTrail$(PED_Detokenize{*nextLine},@" ")
-  strline$ = PED_TokenizeText{strline$}
+  log_Print{"erste Zeile : " + strline1$}
+  log_Print{"zweite Zeile: " + strline2$}
+
+  strline$ = PED_TokenizeText{strline1$ + strline2$, False}
   *newLine.sourceLine = PED_CreateNewSourceLine{strline$}
   PED_ReplaceCurrentSourceLine{*newLine}
   If PED_CutSourceLine{*nextLine}
@@ -8534,7 +8534,7 @@ Return
       \Column + 1
     Wend
     If \Column = #MAX_Columns Then \Column = 0   ; OR \Column = tmpColumn
-  EndIf
+  EndIf 
   ;log_Print{"cursor column is " + Str$(tmpColumn) + ", indent next line to column: " + Str$(\Column)}
 
   ;-- calculate ColumnsOffset
@@ -8558,21 +8558,22 @@ Return
   If pedconfig\auto_indent AND \Column <> 0 Then restString.s = SPACE$(\Column)
 
   ;-- save rest of line and remove from current line
-  For tcol.w = tmpColumn To #MAX_Columns-1
+  For tcol.w = tmpColumn To #MAX_Columns - 1
     restString + Chr$(Peek.b(lineaddr + tcol))    ; copy rest of line to parsebuffer
     Poke.b lineaddr + tcol, $20                   ; remove rest of Line from textbuffer
   Next tcol
+  restString = StripTrail$(restString, @" ")
 
-  ;-- update current line
+  ;-- update current line, that means break the line at cursor position
+  ;-- and move the text right of the cursor into a new line right behinde the current one
   strline$ = StripTrail$(Peeks$(lineaddr,#MAX_Columns),@" ")
-  strline$ = PED_TokenizeText{strline$}
+  strline$ = PED_TokenizeText{strline$, False}
   *newLine.sourceLine = PED_CreateNewSourceLine{strline$}
   PED_ReplaceCurrentSourceLine{*newLine}
 
+
   ;-- append rest of line as new line
-  restString = StripTrail$(restString,@" ")
-  newline$ = PED_TokenizeText{restString}
-  ;log_Print{"new line *" + newline$ + "*"}
+  newline$ = PED_TokenizeText{restString, False}
   *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
   PED_AppendSourceLine{\CurrentSourceLine,*newLine}
 
@@ -9443,7 +9444,7 @@ Return
   If PED_CheckLabelRelevance{beginString} Then ped\labelListChanged = True
 
   ;-- replace line with current one
-  newline$ = PED_TokenizeText{beginString}
+  newline$ = PED_TokenizeText{beginString, False}
   *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
   PED_ReplaceCurrentSourceLine{*newLine}
 
@@ -9464,7 +9465,7 @@ Return
       Else
         pasteString = tmpLine
       EndIf
-      newline$ = PED_TokenizeText{pasteString}
+      newline$ = PED_TokenizeText{pasteString, False}
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
 
       PED_AppendSourceLine{ped\ptrCurrentSourceData\CurrentSourceLine, *newLine}
@@ -9479,12 +9480,12 @@ Return
   ;-- add the rest to an new line or append to pasted text
   If FLen(restString) > 0
     If morelines
-      newline$ = PED_TokenizeText{restString}
+      newline$ = PED_TokenizeText{restString, False}
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
       PED_AppendSourceLine{ped\ptrCurrentSourceData\CurrentSourceLine,*newLine}
     Else
       restString = beginString + pasteString + restString
-      newline$ = PED_TokenizeText{restString}
+      newline$ = PED_TokenizeText{restString, False}
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
       PED_ReplaceCurrentSourceLine{*newLine}
       storeCurrentSourceLine = *newLine
@@ -12039,6 +12040,7 @@ RTS
   PED_UpdateStatusArea{#STATUS_REDRAW}
   PED_ShowMessage{""}
   PED_ClearTextbuffer{}
+  log_Print{"clear source window done."}
 Return
 
 .ScrollDelay:
@@ -13619,7 +13621,7 @@ Return
           ; find last character in previous line
           lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
           tempOffset.w = #MAX_Columns - 1
-          While Peek.b(lineaddr+tempOffset) = $20 AND tempOffset>-1
+          While Peek.b(lineaddr +tempOffset) = $20 AND tempOffset>-1
             tempOffset - 1
           Wend
           tempOffset + 1
@@ -16576,7 +16578,7 @@ Return
   EndIf
 
   pasteString.s = Peeks$(ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset,#MAX_Columns)
-  newline$ = PED_TokenizeText{pasteString}
+  newline$ = PED_TokenizeText{pasteString, False}
   *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
   PED_ReplaceCurrentSourceLine{*newLine}
 
