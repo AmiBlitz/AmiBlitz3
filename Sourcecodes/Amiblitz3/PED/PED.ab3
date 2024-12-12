@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.11
-; NumberOfBuilds  = 3251
+; NumberOfBuilds  = 3299
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,11 +30,11 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 3175
-; CursorColumn    = 118
-; LabelSearch     = "ped_"
+; CursorLine      = 9492
+; CursorColumn    = 48
+; LabelSearch     = "ped_rect"
 ; LabelRemark     = 0
-; LabelAll        = 0
+; LabelAll        = 1
 ; LabelCase       = 0
 ; LabelPosition   = 0
 ; 
@@ -132,6 +132,7 @@ DEBUG
 ; -- for gotoline
 #LINE_START = 1
 #LINE_END = 2
+#LINE_NOCHANGE = 3
 
 ; -- for slider gadgets
 #GID_XPROP  =900
@@ -380,6 +381,23 @@ DEFTYPE.l
 
 Macro IsIllegalChar
   Peek.b(ped\illegalCharTable + `1)
+End Macro
+
+Macro removeTokenbits
+  ;-- clear token bit info but dont trash strings
+  ma_nostring.b = 0
+  For i.l = `1 To `1 + `2
+    If ma_nostring = 0
+      Poke.b i,Peek.b(i) AND $7f
+      If Peek.b(i) = $22 Then ma_nostring = 1
+    Else
+      If Peek.b(i) = $22 Then ma_nostring = 0
+    End If
+    ; workaround:
+    ; sometimes there is a 0 in a linestring perhaps due to a wrong lineaddr
+    ; the 0 is been replaced by a space
+    If Peek.b(i) = 0 Then Poke.b i,32
+  Next
 End Macro
 
 Macro mul48f
@@ -660,7 +678,12 @@ NEWTYPE.sourceWindow
   BoxWidth.w
   BoxHeight.w
 
+  cursorEnabled.b
   cursorState.b
+  cursorX1.w
+  cursorY1.w
+  cursorX2.w
+  cursorY2.w
   ColumnsOffsetStore.w
 
   lastEditedLine.l
@@ -679,6 +702,7 @@ NEWTYPE.bmark
   xMax.w
   yMax.l
 End NEWTYPE
+
 DEFTYPE.bmark bmark
 ;DEFTYPE.bmark BlockDims
 DEFTYPE.bmark oldBlockDims
@@ -961,17 +985,39 @@ Macro PED_RestoreCursorPosition
   \TextBufferOffset = \StoreTextBufferOffset
 End Macro
 
-Macro PED_IncreaseDisplayLine
-  ped\ptrCurrentSourceData\DisplayLine + 1
-  ped\ptrCurrentSourceData\TextBufferOffset + #MAX_Columns
-End Macro
+Function.b PED_IncreaseDisplayLine{}
+; return 1 if the sourcewindow has to be scrolled because there is a new line to be displayed at the bottom
+; returns -1 if the cursor has been moved without any change of the text view
+  SHARED ped, sourceWindow
+  USEPATH ped\ptrCurrentSourceData
+   If sourceWindow\visibleLines > (\DisplayLine + 1 + sourceWindow\boundLinesY)
+    \DisplayLine + 1
+    !PED_UpdateTextBufferOffset
+    Function Return True    
+  Else
+    \DisplayLineOffset + 1
+    !PED_UpdateTextBufferOffset    
+    Function Return 1
+  EndIf
+End Function
 
-Macro PED_DecreaseDisplayLine
-  ped\ptrCurrentSourceData\DisplayLine - 1
-  ped\ptrCurrentSourceData\TextBufferOffset - #MAX_Columns
-End Macro
+Function.b PED_DecreaseDisplayLine{}
+; return 1 if the sourcewindow has to be scrolled because there is a new line to be displayed at the top
+; returns -1 if the cursor has been moved without any change of the text view
+SHARED ped, sourceWindow
+USEPATH ped\ptrCurrentSourceData
+  If \DisplayLineOffset = 0 OR (\DisplayLine - 1 > sourceWindow\boundLinesY)
+    \DisplayLine - 1
+    !PED_UpdateTextBufferOffset
+    Function Return True
+  Else
+    \DisplayLineOffset - 1
+    !PED_UpdateTextBufferOffset
+    Function Return 1
+  EndIf
+End Function
 
-Macro updateBlockMark ;{d1 = currentLine, d0 = currentColumn}
+Macro updateStateBlockMark ;{d1 = currentLine, d0 = currentColumn}
   ped\ptrCurrentSourceData\StateBlockMark = False
 
   If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
@@ -984,11 +1030,20 @@ Macro updateBlockMark ;{d1 = currentLine, d0 = currentColumn}
 End Macro
 
 Macro PED_CursorOn
-  If sourceWindow\cursorState = False Then PED_SwitchCursor{}
+  If sourceWindow\cursorEnabled
+    log_Print{"CURSOR: double ON!"}
+  Else
+    sourceWindow\cursorEnabled = True
+    PED_SwitchCursor{}
+  EndIf
 End Macro
 
 Macro PED_CursorOff
-  If sourceWindow\cursorState = True Then PED_SwitchCursor{}
+  If NOT sourceWindow\cursorEnabled
+    log_Print{"CURSOR: double OFF!"}
+  EndIf
+  sourceWindow\cursorEnabled = False
+  PED_SwitchCursor{}
 End Macro
 
 
@@ -1293,9 +1348,6 @@ SHARED oldSourceChanged.w
     PED_DrawStatusArea{}
   EndIf
 
-  tmpCurrentLine.l = \DisplayLineOffset + \DisplayLine + 1
-  tmpCurrentColumn.w = \ColumnsOffset + \Column + 1
-
   ;-- update Scrollers
   If !checkOption{statusmode,#STATUS_CURSOR|#STATUS_SCROLLERS}
     ;log_Print{"updating scrollers"}
@@ -1310,22 +1362,27 @@ SHARED oldSourceChanged.w
         slider_total   = #max_slider_res
       EndIf
       SetGadgetAttrsA_ sourceWindow\vertiprop,sourceWindow\win,0,Tags(@@
-                                              #PGA_Total  ,slider_total,@@
-                                              #PGA_Top    ,slider_top,@@
-                                              #PGA_Visible,slider_visible)
+                                              #PGA_Total,   slider_total,@@
+                                              #PGA_Top,     slider_top,@@
+                                              #PGA_Visible, slider_visible,@@
+                                              #TAG_END,0)
     EndIf
 
-    SetGadgetAttrsA_ sourceWindow\horizprop,sourceWindow\win,0,Tags(#PGA_VertPot,-1,@@
-                                              #PGA_VertBody,1,@@
-                                              #PGA_HorizPot,\Column,@@
-                                              #PGA_HorizBody,sourceWindow\visibleColumns / #MAX_Columns,@@
-                                              #PGA_Top,tmpCurrentColumn,@@
-                                              #PGA_Total,#MAX_Columns,@@
+    SetGadgetAttrsA_ sourceWindow\horizprop,sourceWindow\win,0,Tags(@@
+                                              #PGA_VertPot,   -1,@@
+                                              #PGA_VertBody,  1,@@
+                                              #PGA_HorizPot,  \Column,@@
+                                              #PGA_HorizBody, sourceWindow\visibleColumns / #MAX_Columns,@@
+                                              #PGA_Top,       \ColumnsOffset + \Column,@@
+                                              #PGA_Total,     #MAX_Columns,@@
                                               #TAG_END,0)
   EndIf
 
   ;-- print current cursorposition
   If !checkOption{statusmode,#STATUS_CURSOR|#STATUS_SCROLLERS}
+    tmpCurrentLine.l = \DisplayLineOffset + \DisplayLine + 1
+    tmpCurrentColumn.w = \ColumnsOffset + \Column + 1
+
     Format "000000"
     formatstr.s = Right$(Str$(tmpCurrentLine), 6) : PED_PrintStatus{formatstr,18}
     Format "000"
@@ -1349,7 +1406,7 @@ SHARED oldSourceChanged.w
   If !checkOption{statusmode,#STATUS_ADDITIONAL}
     If ped\debugMode Then info.s = "  Debug: On " Else info = "  Debug: Off"
     If ped\doTokenize Then info + "  Tokenize: On " Else info + "  Tokenize: Off"
-    PED_PrintStatus{info,74,2}
+    PED_PrintStatus{info,FLen(info) + FLen(availmem) + 2,2}
   EndIf
 End Statement
 
@@ -1359,43 +1416,58 @@ Statement PED_SwitchCursor{}
 SHARED sourceWindow, ped, pedconfig, AB3Pen()
 USEPATH sourceWindow
 
-  \cursorState = NOT \cursorState
+  ;-- if cursor is disabled and the cursor state is on,
+  ;-- we shall be able to remove the cursor but do not paint it anymore
+  If \cursorEnabled OR (\cursorEnabled = False AND \cursorState = On)
 
-  If ped\ptrCurrentSourceData\DisplayLine > sourceWindow\visibleLines-1
-    ped\ptrCurrentSourceData\DisplayLine = sourceWindow\visibleLines-1
-  EndIf
+    ;-- maybe obsolete?
+    If ped\ptrCurrentSourceData\DisplayLine > sourceWindow\visibleLines-1
+      ped\ptrCurrentSourceData\DisplayLine = sourceWindow\visibleLines-1
+    EndIf
 
-  Select pedconfig\cursorStyle
-  Case #AB3_cursorStyle_line
-    xmin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
-    ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine
-    xmax.w = xmin + 1
-    ymax.w = ymin + \font\tf_YSize - 1
+    ;-- set the style of the cursor
+    Select pedconfig\cursorStyle
+    Case #AB3_cursorStyle_line
+      xmin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
+      ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine
+      xmax.w = xmin + 1
+      ymax.w = ymin + \font\tf_YSize - 1
 
-  Case #AB3_cursorStyle_underline
-    xmin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
-    ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine  + \font\tf_YSize - 1  - 1
-    xmax.w = xmin + \font\tf_XSize - 1
-    ymax.w = ymin + 1
+    Case #AB3_cursorStyle_underline
+      xmin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
+      ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine  + \font\tf_YSize - 1  - 1
+      xmax.w = xmin + \font\tf_XSize - 1
+      ymax.w = ymin + 1
 
-  Default
-    xmin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
-    ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine
-    xmax.w = xmin + \font\tf_XSize - 1
-    ymax.w = ymin + \font\tf_YSize - 1
-  End Select
+    Default
+      xmin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
+      ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine
+      xmax.w = xmin + \font\tf_XSize - 1
+      ymax.w = ymin + \font\tf_YSize - 1
+    End Select
 
-  If (xmax => xmin) AND (ymax => ymin)
-    SetAPen_ \win\RPort, AB3Pen(#AB3_screenshine)
-    ;SetBPen_ \win\RPort, AB3Pen(#AB3_cbackground)
-    ;SetAPen_ *sourcerp, AB3Pen(#AB3_screenfill)
-    ;SetBPen_ *sourcerp, AB3Pen(#AB3_cbackground)
-    ;SetDrMd_ *sourcerp,#COMPLEMENT
-    \rp\Mask = %11
-    RectFill_ \rp, xmin, ymin, xmax, ymax
-    ;log_Print{"update cursor " + Str$(sourceWindow\cursorState)}
-  Else
-    log_Print{"illegal area for draw cursor",#log_error}
+    \cursorState = NOT \cursorState
+    If \cursorState = On
+      \cursorX1 = xmin
+      \cursorY1 = ymin
+      \cursorX2 = xmax
+      \cursorY2 = ymax
+    Else
+      xmin = \cursorX1
+      ymin = \cursorY1
+      xmax = \cursorX2
+      ymax = \cursorY2
+    EndIf
+
+    ;-- switch the cursorstate, if dimensions are valid
+    If (xmax > xmin) AND (ymax > ymin)
+      SetAPen_ \win\RPort, AB3Pen(#AB3_screenshine)
+      \rp\Mask = %1
+      RectFill_ \rp, xmin, ymin, xmax, ymax
+      \rp\Mask = -1      
+    Else
+      log_Print{"illegal area for draw cursor",#log_error}
+    EndIf
   EndIf
 End Statement
 
@@ -1722,30 +1794,41 @@ SHARED ped
 End Function
 
 
-Function.b PED_ReplaceCurrentSourceLine{*newLine.sourceLine}
+Function.l PED_ReplaceSourceLine{*oldLine.sourceLine, *newLine.sourceLine}
 SHARED ped
-  *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  If *currentLine = 0
-    log_Print{"ReplaceCurrentSourceLine: currentLine is NULL!",#log_error}
-    Function Return False
+  If *oldLine = 0
+    log_Print{"ReplaceSourceLine: oldLine is NULL!", #log_error}
+    Function Return 0
   EndIf
 
-  *previousLine.sourceLine = *currentLine\previousLine
+  *previousLine.sourceLine = *oldLine\previousLine
   If *previousLine
     *previousLine\nextLine = *newLine
     *newLine\previousLine = *previousLine
   EndIf
-  *nextLine.sourceLine = *currentLine\nextLine
+  *nextLine.sourceLine = *oldLine\nextLine
   If *nextLine
     *nextLine\previousLine = *newLine
   EndIf
   *newLine\nextLine = *nextLine
 
-  PED_DeleteSourceLine{*currentLine}
-  If *currentLine = ped\ptrCurrentSourceData\FirstSourceLine Then ped\ptrCurrentSourceData\FirstSourceLine = *newLine
-  If *currentLine = ped\ptrCurrentSourceData\LastSourceLine Then ped\ptrCurrentSourceData\LastSourceLine = *newLine
-  ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
+  If ped\ptrCurrentSourceData\FirstSourceLine = *oldLine Then ped\ptrCurrentSourceData\FirstSourceLine = *newLine
+  If ped\ptrCurrentSourceData\LastSourceLine = *oldLine Then ped\ptrCurrentSourceData\LastSourceLine = *newLine
+  PED_DeleteSourceLine{*oldLine}
   ped\ptrCurrentSourceData\SourceChanged = $FFFF
+  Function Return *newLine
+End Function
+
+Function.b PED_ReplaceCurrentSourceLine{*newLine.sourceLine}
+SHARED ped
+  *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+  *currentLine = PED_ReplaceSourceLine{*currentLine, *newLine}
+  If *currentLine
+    ped\ptrCurrentSourceData\CurrentSourceLine = *currentLine
+    Function Return True
+  Else
+    Function Return False
+  EndIf
 End Function
 
 Function PED_InsertSourceLine{*newLine.sourceLine}
@@ -1786,14 +1869,15 @@ SHARED ped
     *prevLine.sourceLine = *sl\previousLine
     *nextLine.sourceLine = *sl\nextLine
     If (*prevLine = 0) AND (*nextLine = 0)
+      log_Print{"The sourceline could not been cut!",#log_error}
       Function Return False
     End If
 
-    ; clear old references to other lines
+    ;-- clear old references to other lines
     *sl\previousLine = 0
     *sl\nextLine = 0
 
-    ; connect previous and next line to cut current line off and update firstline if the firstline has been cut
+    ;-- connect previous and next line to cut current line off and update firstline if the firstline has been cut
     If *prevLine <> 0
       *prevLine\nextLine = *nextLine
     Else
@@ -1807,38 +1891,32 @@ SHARED ped
     Function Return True
 End Function
 
-Function.b PED_AppendSourceLine{*afterLine.sourceLine, *appendLine.sourceLine}
+Function.b PED_AppendSourceLine{*workLine.sourceLine, *appendLine.sourceLine}
 SHARED ped
-  ; insert a new line into the linked list, previous/nextLine of *appendLine is null
+  ;-- insert a new line into the linked list, previous/nextLine of *appendLine is null
 
-  ; afterLine:  the line to append the appendLine to
-  ; appendLine  :  the line to append after the afterLine
+  ;-- workLine : the line to append the appendLine to
+  ;-- appendLine: the line to append after the workLine
 
-  If *afterLine = 0
-    log_Print{"appendLine: The given current line does not exist!",#log_error}
-    Function Return False
-  EndIf
-
-  ;If *afterLine\previousLine = 0
-  ;  log_Print{"the given current line has no previousline, setting appendline as first sourceline"}
-  ;
-  ;  *exfirstLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
-  ;  *exfirstLine\previousLine = *appendLine
-  ;  *appendLine\nextLine = *exfirstLine
-  ;
-  ;  ped\ptrCurrentSourceData\FirstSourceLine = *appendLine
-  ;
-  ;Else
-    *oldnextLine.sourceLine = *afterLine\nextLine        ; get the old nextline
+  If *workLine = 0
+    log_Print{"the given workline has no previousline, setting appendline as first sourceline", #log_warning}
+  
+    *firstLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
+    *appendLine\previousLine = 0
+    *appendLine\nextLine = *firstLine
+    *firstLine\previousLine = *appendLine
+    ped\ptrCurrentSourceData\FirstSourceLine = *appendLine
+  Else 
+    *oldnextLine.sourceLine = *workLine\nextLine        ; get the old nextline
     If *oldnextLine
       *oldnextLine\previousLine = *appendLine
       *appendLine\nextLine = *oldnextLine
     Else
       ped\ptrCurrentSourceData\LastSourceLine = *appendLine
     EndIf
-    *appendLine\previousLine = *afterLine
-    *afterLine\nextLine = *appendLine
-  ;EndIf
+    *appendLine\previousLine = *workLine
+    *workLine\nextLine = *appendLine
+  EndIf
 
   ped\ptrCurrentSourceData\TotalLines + 1
   ped\ptrCurrentSourceData\SourceChanged = $FFFF
@@ -1846,9 +1924,21 @@ SHARED ped
   Function Return True
 End Statement
 
+Function.b PED_SetCurrentSourceLine{@currentLine.l}
+SHARED ped
 
+  If currentLine = -1 
+    currentLine.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
+  EndIf
 
+  *currentSourceLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
+  While currentLine > 0
+    *currentSourceLine = *currentSourceLine\nextLine
+    currentLine - 1
+  Wend
 
+  ped\ptrCurrentSourceData\CurrentSourceLine = *currentSourceLine
+End Function
 
 
 Function.l PED_GetBlockStartSourceLine{}
@@ -2712,7 +2802,7 @@ Function.s PED_Detokenize{*sourceLine.sourceLine}
   Function Return PED_DetokenizeText{Peek.s(*sourceLine + 9)}
 End Function
 
-Function.b PED_Detokenize2Textbuffer{ptrOrgString.l}
+Function.b PED_Detokenize2Printbuffer{ptrOrgString.l}
 SHARED ped
 
   _strLen.w = Len(Peek.s(ptrOrgString))
@@ -2721,7 +2811,7 @@ SHARED ped
 
     If ped\noDetokenizing
       For i.w = 0 To _strLen - 1
-        Poke.b ped\ptrTextbufferPrint + i, Peek.b(ptrOrgString + i)
+        Poke.b ped\ptrTextbufferPrint + i, Peek.b(ptrOrgString + i);  BitClr 7
       Next i
       runnerP.w = i + 1
     Else
@@ -2748,6 +2838,45 @@ SHARED ped
 
   Function Return True
 End Function
+
+Statement PED_CopyPrintbuffer2Textbuffer{}
+SHARED ped, sourceWindow
+
+  ;-- copy current printed line to textbuffer
+  tmpColumn.w = ped\ptrCurrentSourceData\Column                           ; save Columnpos as it is changed for process_highlighting
+
+  char.b = Peek.b(ped\ptrTextbufferPrint)
+  If char <> 0
+    tmpD2.w = 0
+    tmpD3.w = 0
+    textBufferPos.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
+    If char <> ped\labelIdentifier Then Goto jump_into_it
+    Gosub copy_to_textBuffer
+    Repeat
+      tmpD2 + 1
+      char = Peek.b(ped\ptrTextbufferPrint + tmpD2)
+      If char <> 0
+jump_into_it:
+        Gosub copy_to_textBuffer
+      End If
+    Until char = 0
+  EndIf
+
+  ;-- restore Columnposition
+  ped\ptrCurrentSourceData\Column = tmpColumn
+  Statement Return
+
+.copy_to_textBuffer:
+  Poke.b textBufferPos + tmpD2, char
+  ;If tmpD2 <= ped\ptrCurrentSourceData\ColumnsOffset
+  ;  If tmpD3 <= sourceWindow\visibleColumns
+  ;    ped\ptrCurrentSourceData\Column = tmpD3
+  ;    tmpD3 + 1
+  ;  EndIf
+  ;EndIf
+  Return
+End Statement
+
 
 
 NEWTYPE .HelpIndexCacheItem
@@ -2958,8 +3087,7 @@ Statement FAST PED_PrintText{textaddr.l, xPos.w, yPos.w, textlen.w, @textcolor.w
 SHARED ped,sourceWindow,AB3Pen()
 
   ; -- clip text to visible columns
-  xPos = xPos - ped\ptrCurrentSourceData\ColumnsOffset
-  If (textlen + xPos) > sourceWindow\visibleColumns
+  If (xPos + textlen) > sourceWindow\visibleColumns
     textlen = sourceWindow\visibleColumns - xPos
   EndIf
 
@@ -2995,8 +3123,11 @@ USEPATH sourceWindow
   tmpString1.s = Peeks$(*textaddr,#MAX_Columns - 1)
 
   ;-- detokenize it but keep token indicator (bit7)
-  PED_Detokenize2Textbuffer{&tmpString1}
+  PED_Detokenize2Printbuffer{&tmpString1}
   tmpString2.s = Peek.s(ped\ptrTextbufferPrint)
+
+;  If tposy = 0 Then log_Print{">>" + Left$(tmpString1,20)}
+;  If tposy = 0 Then log_Print{">>" + Left$(tmpString2,20)}
 
   ;-- check if source left of display start position has an opened string literal
   If ped\keepString = 0
@@ -3013,8 +3144,9 @@ USEPATH sourceWindow
   ;log_Print{"we are in a string: " + Str$(chkString)}
 
   tmpPrint.s = UnRight$(tmpString2, ped\ptrCurrentSourceData\ColumnsOffsetTmp)
-  ;lastVisibleChar$ = Mid$(tmpPrint,\visibleColumns,1)
   tmpPrint = Left$(tmpPrint,\visibleColumns)
+  ;log_Print{">>" + Left$(tmpPrint,20)}
+
   tposx = tposx / \font\tf_XSize
   runner.w = -1
 
@@ -3095,7 +3227,7 @@ USEPATH ped\ptrCurrentSourceData
   ;-- check if cursor in block
   If \BlockEndY <> $ffffFFFF
     currentLine.l = \DisplayLine + \DisplayLineOffset
-    !updateBlockMark{currentLine, currentColumn}
+    !updateStateBlockMark{currentLine, currentColumn}
   EndIf
 
   ; -- print entered character to source window
@@ -3130,18 +3262,19 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   If NOT pedconfig\highlighting Then Statement Return
 
   lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-  ;log_Print{"process highlighting -  textbufferaddr: " + Hex$(lineaddr)}
+  
+  ;log_Print{"process highlighting line #" + Str$(ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset+1)}
   ;log_Print{Peeks$(lineaddr,20)}
+
   ped\inString = False
   runner.w = 0 : exit_highlight.b = False
   Repeat
     textlen.w = 0
     curChar.b = Peek.b(lineaddr + runner)
-    If curChar = $22 Then ped\inString = NOT ped\inString
 
-    Select Peek.b(lineaddr + runner)
+    Select curChar
     Case @";" ;-------- comments
-      If (AB3Pen(#AB3_cremarkforeground) <> AB3Pen(#AB3_cother)) OR (AB3Pen(#AB3_cremarkbackground) <> AB3Pen(#AB3_cbackground)) AND NOT ped\inString
+      If (AB3Pen(#AB3_cremarkforeground) <> AB3Pen(#AB3_cother)) OR (AB3Pen(#AB3_cremarkbackground) <> AB3Pen(#AB3_cbackground))
         If Peeks$(lineaddr + runner + 1,2) <> ":@"
 
           If pedconfig\italic_remarks
@@ -3164,7 +3297,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
     Case $22 ;-------- strings
       If AB3Pen(#AB3_cstring) <> AB3Pen(#AB3_cother)
         ;log_Print { "search string [" + Peeks$(lineaddr + runner + 1,40) + "]"}
-        textlen = Instr(Peek.s(lineaddr + runner + 1),Chr$($22))   ; search for second string mark
+        textlen = Instr(Peek.s(lineaddr + runner + 1), Chr$($22))   ; search for second string mark
         If textlen
           textlen + 1
           PED_PrintText{lineaddr + runner, runner, ped\ptrCurrentSourceData\DisplayLine, textlen, AB3Pen(#AB3_cstring)}
@@ -3196,7 +3329,6 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
           Next i
         EndIf
         Exit_function:
-        ped\inString = False
         textlen = 0
       EndIf
 
@@ -3217,45 +3349,34 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
       If AB3Pen(#AB3_cconstant) <> AB3Pen(#AB3_cother)
         For i.w = runner + 1 To #MAX_Columns - 1
           checkchr.b = Peek.b(lineaddr + i)
-          If checkchr = $22 Then ped\inString = NOT ped\inString
-
-          If ped\inString = False
-            ;log_Print{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
-            If checkchr <> @"$" AND checkchr <> @"%"; OR checkchr = @"-"
-              If !IsIllegalChar{Peek.b(lineaddr + i)}
-                textlen = i - runner
-                PED_PrintText{lineaddr + runner, runner, ped\ptrCurrentSourceData\DisplayLine, textlen, AB3Pen(#AB3_cconstant)}
-                Pop For : Pop If : Pop If : Pop If
-                Goto Exit_constant
-              EndIf
+          ;log_Print{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
+          If checkchr <> @"$" AND checkchr <> @"%"; OR checkchr = @"-"
+            If !IsIllegalChar{Peek.b(lineaddr + i)}
+              textlen = i - runner
+              PED_PrintText{lineaddr + runner, runner, ped\ptrCurrentSourceData\DisplayLine, textlen, AB3Pen(#AB3_cconstant)}
+              Pop For : Pop If : Pop If : Pop If
+              Goto Exit_constant
             EndIf
           EndIf
         Next i
         Exit_constant:
-        ped\inString = False
       EndIf
 
     Case @"\" ;-------- newtypes
       If AB3Pen(#AB3_cnewtype) <> AB3Pen(#AB3_cother)
         For i.w = runner + 1 To #MAX_Columns - 1
           checkchr.b = Peek.b(lineaddr + i)
-
-          If checkchr = $22 Then ped\inString = NOT ped\inString
-
-          If ped\inString = False
-            ;log_Print{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
-            If checkchr <> @"\"
-              If !IsIllegalChar{Peek.b(lineaddr + i)}
-                textlen = i - runner
-                PED_PrintText{lineaddr + runner, runner, ped\ptrCurrentSourceData\DisplayLine, textlen, AB3Pen(#AB3_cnewtype)}
-                Pop For : Pop If : Pop If : Pop If
-                Goto Exit_newtype
-              EndIf
+          ;log_Print{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
+          If checkchr <> @"\"
+            If !IsIllegalChar{Peek.b(lineaddr + i)}
+              textlen = i - runner
+              PED_PrintText{lineaddr + runner, runner, ped\ptrCurrentSourceData\DisplayLine, textlen, AB3Pen(#AB3_cnewtype)}
+              Pop For : Pop If : Pop If : Pop If
+              Goto Exit_newtype
             EndIf
           EndIf
         Next i
         Exit_newtype:
-        ped\inString = False
        EndIf
     End Select
 
@@ -3284,9 +3405,6 @@ SHARED sourceWindow, ped, AB3Pen()
     PED_PrintText{*textaddr, tposx, tposy, textlen, AB3Pen(#AB3_cother), AB3Pen(#AB3_cbackground)}    
   EndIf
   
-  ;-- do syntax highlighting is activated
-  PED_PrintSyntaxHighlighting{}  
-
   ;-- clear end of line
   If clearEndOfLine = True
     USEPATH sourceWindow
@@ -3308,6 +3426,10 @@ SHARED sourceWindow, ped, AB3Pen()
       log_Print{Str$(recty) + ", " + Str$(recth)}
     EndIf
   EndIf
+
+  ;-- do syntax highlighting is activated
+  PED_PrintSyntaxHighlighting{}  
+
 End Statement
 
 Statement PED_PrintLineNumber{}
@@ -3377,9 +3499,15 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
 
   If ped\ptrCurrentSourceData\CurrentSourceLine = 0 Then Statement Return
 
+  ;-- clear current line in textBuffer
+  For i.w = 0 To #MAX_Columns/4-1 Step 4
+    Poke.l  ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset + i, $20202020
+  Next i
+
   If Peek.b(ped\ptrCurrentSourceData\CurrentSourceLine + 9) <> 0   ; first character of text
     ped\ptrCurrentSourceData\ColumnsOffsetTmp = ped\ptrCurrentSourceData\ColumnsOffset
     PED_PrintSourceText{ped\ptrCurrentSourceData\CurrentSourceLine + 9,0,ped\ptrCurrentSourceData\DisplayLine, clearEndOfLine}
+    PED_CopyPrintbuffer2Textbuffer{}
   Else
     USEPATH sourceWindow
     SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
@@ -3397,33 +3525,10 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
 
     ;-- move cursor to next line
     Move_ \win\RPort, 0, ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize + \font\tf_YSize 
-
-    Poke.l ped\ptrTextbufferPrint,0
   EndIf                                                                                                                                                                                                                                                ;
 
-
-  ;-- copy current printed line to textbuffer
-  tmpColumn.w = ped\ptrCurrentSourceData\Column                           ; save Columnpos as it is changed for process_highlighting
-
-  char.b = Peek.b(ped\ptrTextbufferPrint)
-  If char <> 0
-    tmpD2.w = 0
-    tmpD3.w = 0
-    textBufferPos.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-    If char <> ped\labelIdentifier Then Goto jump_into_it
-    Gosub copy_to_textBuffer
-    Repeat
-      tmpD2 + 1
-      char = Peek.b(ped\ptrTextbufferPrint + tmpD2)
-      If char <> 0
-jump_into_it:
-        Gosub copy_to_textBuffer
-      End If
-    Until char = 0
-  EndIf
-
   ; -- handle blockmark - seems useless ?
-  ;If ped\ptrCurrentSourceData\BlockEndY<> $ffffFFFF
+  ;If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
   ;  If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine > ped\ptrCurrentSourceData\BlockStartY
   ;    If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine < ped\ptrCurrentSourceData\BlockEndY
   ;      While tmpD3 <= \visibleColumns
@@ -3435,42 +3540,43 @@ jump_into_it:
   ;    EndIf
   ;  EndIf
   ;EndIf
-
-  ;-- restore Columnposition
-  ped\ptrCurrentSourceData\Column = tmpColumn
-  Statement Return
-
-.copy_to_textBuffer:
-  Poke.b textBufferPos + tmpD2, char
-  If tmpD2 <= ped\ptrCurrentSourceData\ColumnsOffset
-    If tmpD3 <= sourceWindow\visibleColumns
-      ped\ptrCurrentSourceData\Column = tmpD3
-      tmpD3 + 1
-    EndIf
-  EndIf
-Return
-
 End Statement
 
 
+Macro PED_RectFill ; (xMin, yMin, xMax, yMax, [Color, [Mask]])
+CNIF `0 < 5
+    CERR "Not enough parameters!"
+CEND
+CNIF `0 >= 5
+    sourceWindow\rp\Mask = `5
+CEND
+CNIF `0 = 6
+    ;SetDrMd_ sourceWindow\rp, #JAM1
+    SetAPen_ sourceWindow\rp,`6
+CEND
+    If (`3 >= `1) AND (`4 >= `2)
+      RectFill_ sourceWindow\rp, sourceWindow\BoxLeft + `1,sourceWindow\BoxTop + `2, sourceWindow\BoxLeft + `3, sourceWindow\BoxTop + `4
+    Else
+      log_Print{"illegal area for Macro Rectfill"}
+    EndIf
+CNIF `0 >= 5
+    sourceWindow\rp\Mask = -1    
+    ;SetDrMd_ sourceWindow\rp, #COMPLEMENT
+CEND
+End Macro
+
 Statement PED_AbsBlockDimensions{}
 SHARED ped
+USEPATH ped\ptrCurrentSourceData
   ;  log_Print{"abs blockdims"}
-  tempD0.w = ped\ptrCurrentSourceData\BlockStartX
-  tempD1.l = ped\ptrCurrentSourceData\BlockStartY
-  tempD2.w = ped\ptrCurrentSourceData\BlockEndX
-  tempD3.l = ped\ptrCurrentSourceData\BlockEndY
-  If tempD1 >= tempD3
-    If tempD1 <> tempD3
+
+  If \BlockStartY >= \BlockEndY
+    If \BlockStartY <> \BlockEndY
       absloop:
-      Exchange tempD0, tempD2
-      Exchange tempD1, tempD3
-      ped\ptrCurrentSourceData\BlockStartX = tempD0
-      ped\ptrCurrentSourceData\BlockStartY = tempD1
-      ped\ptrCurrentSourceData\BlockEndX   = tempD2
-      ped\ptrCurrentSourceData\BlockEndY   = tempD3
+      Exchange \BlockStartX, \BlockEndX
+      Exchange \BlockStartY, \BlockEndY
     EndIf
-    If tempD0 > tempD2
+    If \BlockStartX > \BlockEndX
       Goto absloop
     EndIf
   EndIf
@@ -3478,77 +3584,67 @@ End Statement
 
 Statement PED_DrawBlock{*bmark.bmark} ;xMin.w,yMin.w, xMax.w, yMax.w, absolute.b}
 SHARED ped, sourceWindow
+USEPATH sourceWindow
+  CopyType *bmark, bm.bmark
 
-  CopyType *bmark,bm.bmark
-  ;msg$ = "PED_DrawBlock() 1 called: "
-  ;msg$ + Str$(bmark\xMin) + ", " + Str$(bmark\yMin) + " - "
-  ;msg$ + Str$(bmark\xMax) + ", " + Str$(bmark\yMax)
-  ;log_Print{msg$}
+  bm\xMin - ped\ptrCurrentSourceData\ColumnsOffset
+  bm\xMax - ped\ptrCurrentSourceData\ColumnsOffset
 
   If bm\xMin < 0 Then bm\xMin = 0
-  If bm\xMax < 0 Then bm\xMax = 0 : Else : bm\xMax + 1
+  If bm\xMax < 0 Then bm\xMax = 0
   If bm\yMin < 0 Then bm\yMin = 0
   If bm\yMax < 0 Then bm\yMax = 0
 
-  bm\xMax - ped\ptrCurrentSourceData\ColumnsOffset
-  bm\xMin - ped\ptrCurrentSourceData\ColumnsOffset
+  If bm\xMax > \visibleColumns - 1 Then bm\xMax = \visibleColumns - 1
+  If bm\yMax > \visibleLines Then bm\yMax = \visibleLines
+  If bm\yMin > \visibleLines Then bm\yMin = \visibleLines
 
-  If bm\xMax > \visibleColumns Then bm\xMax = \visibleColumns
-  If bm\yMax > \visibleLines - 1 Then bm\yMax = \visibleLines - 1
-  If bm\yMin > \visibleLines - 1 Then bm\yMin = \visibleLines - 1
-
-  bm\xMin * \font\tf_XSize
-  bm\yMin * \font\tf_YSize
-  bm\xMax * \font\tf_XSize
-  bm\yMax * \font\tf_YSize
-
-  If bm\yMin > bm\yMax Then Exchange bm\yMax,bm\yMin
-  If bm\xMin > bm\xMax Then Exchange bm\xMax,bm\xMin
-
-  If bm\yMin = bm\yMax
-    bm\yMax = bm\yMax + \font\tf_YSize - 1
-    Gosub rectfill2
-  Else
-    ; draw three parts of the block: first line, block of full marked lines, last line
-    DEFTYPE.bmark bmOld
-    CopyType bm, bmOld
-
-    bm\yMax = bm\yMin + \font\tf_YSize - 1
-    bm\xMax = \visibleColumns * \font\tf_XSize
-    Gosub rectfill2
-
-    CopyType bmOld, bm
-
-    bm\yMin = bm\yMin + \font\tf_YSize
-    If bm\yMin < bm\yMax
-        CopyType bm, bmOld
-        bm\xMin = 0
-        bm\xMax = \visibleColumns * \font\tf_XSize
-        bm\yMax - 1
-        Gosub rectfill2
-
-        CopyType bmOld,bm
-        bm\xMin = 0
-        bm\yMin = bm\yMax
-    EndIf
-
-    bm\xMin = 0
-    bm\yMax + \font\tf_YSize - 1
-    Gosub rectfill2
+  If (bm\xMin > bm\xMax) AND (bm\yMin = bm\yMax) 
+    log_Print{"PED_DrawBlock(): xMin > xMax!!"}
+    Exchange bm\xMin, bm\xMax
+  EndIf
+  If bm\yMin > bm\yMax 
+    error{"PED_DrawBlock(): yMin > yMax!!"}
   EndIf
 
-  ;msg$ = "PED_DrawBlock() 2 called: "
-  ;msg$ + Str$(bm\xMin) + ", " + Str$(bm\yMin) + " - "
-  ;msg$ + Str$(bm\xMax) + ", " + Str$(bm\yMax)
-  ;log_Print{msg$}
+  VWait 1
+  If bm\yMin = bm\yMax
+    Gosub rectfill2                       ; draw block in a single line
+  Else
+    DEFTYPE.bmark bmStore
+    CopyType bm, bmStore
+
+    bm\xMax = \visibleColumns - 1
+    bm\yMax = bm\yMin
+    col.b = 1
+    Gosub rectfill2                       ; draw firstline of block
+
+    CopyType bmStore, bm
+
+    If bm\yMax - bm\yMin > 1
+        bm\xMin = 0
+        bm\yMin = bm\yMin + 1
+        bm\xMax = \visibleColumns - 1
+        bm\yMax = bm\yMax - 1
+        col = 2
+        Gosub rectfill2                   ; draw middle part of block
+        CopyType bmStore,bm
+    EndIf
+    bm\xMin = 0
+    bm\yMin = bm\yMax
+    col = 3
+    Gosub rectfill2                       ; draw lastline of block
+  EndIf
 
   Statement Return
 
   rectfill2:
-  If (bm\xMax >= bm\xMin) AND (bm\yMax >= bm\yMin)
-    sourceWindow\rp\Mask = %1111
-    RectFill_ sourceWindow\rp, sourceWindow\BoxLeft + bm\xMin, sourceWindow\BoxTop + bm\yMin, sourceWindow\BoxLeft + bm\xMax - 1, sourceWindow\BoxTop + bm\yMax
-  EndIf
+    bm\xMin * \font\tf_XSize
+    bm\yMin * \font\tf_YSize
+    bm\xMax * \font\tf_XSize + \font\tf_XSize
+    bm\yMax * \font\tf_YSize + \font\tf_YSize
+    ;log_Print{Str$(col) + ": " + Str$(bm\xMin) + ", " + Str$(bm\yMin) + " - " + Str$(bm\xMax) + ", " + Str$(bm\yMax)}
+    !PED_RectFill{bm\xMin, bm\yMin, bm\xMax - 1, bm\yMax - 1, %101}
   Return
 End Statement
 
@@ -3564,25 +3660,192 @@ SHARED ped
   EndIf
 End Statement
 
+Statement PED_UpdateScrollBlockmark{direction.b}
+SHARED ped,sourceWindow
+USEPATH ped\ptrCurrentSourceData
+  ; SCROLL_LEFT : add blockparts at the right side of the source window
+  ; SCROLL_RIGHT: add blockparts at the left side of the source window  
+
+  ;-- check if we have a Blockmark, if not, just leave
+  If \BlockEndY = $ffffFFFF Then Statement Return
+
+  DEFTYPE.bmark bm
+  If direction = #SCROLL_LEFT
+    bm\xMin = \ColumnsOffset + sourceWindow\visibleColumns - sourceWindow\scrollSize
+  Else
+    bm\xMin = \ColumnsOffset
+  EndIf
+  bm\yMin = \DisplayLineOffset
+  bm\xMax = 0
+  bm\yMax = bm\yMin + sourceWindow\visibleLines
 
 
+  If (bm\yMin <= \BlockEndY) AND (bm\yMax >= \BlockStartY)
+    If \BlockStartY = \BlockEndY
+      If (bm\xMin >= \BlockStartX) AND (bm\xMin <= \BlockEndX)
+        Gosub update_one_line         ; -- the block is just one line
+      EndIf
+    Else
+      DEFTYPE.bmark bmStore
+      If bm\xMin >= \BlockStartX
+        CopyType bm, bmStore
+        Gosub update_first_blockline  ; -- draw missing blockmark in first line while scrolling left
+        CopyType bmStore, bm
+      EndIf
 
-Statement PED_RedrawSource{@onlyBlock.b}
+      bm\yMin = \BlockStartY - \DisplayLineOffset + 1
+      bm\yMax = \BlockEndY - \DisplayLineOffset - 1
+      If bm\yMax > sourceWindow\visibleLines Then bm\yMax = sourceWindow\visibleLines
+
+      If bm\xMin <= \BlockEndX
+        CopyType bm, bmStore
+        Gosub update_last_blockline
+        CopyType bmStore, bm
+      EndIf     
+
+      If bm\yMax => bm\yMin
+        Gosub update_middle_blocklines
+      EndIf
+    EndIf
+  EndIf
+
+  Statement Return
+
+  update_one_line:
+    If direction = #SCROLL_LEFT
+      xMax_temp.w = \BlockEndX - bm\xMin + 1
+      If xMax_temp > sourceWindow\scrollSize Then xMax_temp = sourceWindow\scrollSize
+
+      bm\xMin = bm\xMin - \ColumnsOffset
+      bm\xMax = bm\xMin + xMax_temp
+    Else
+      xMax_temp.w = \BlockEndX - \ColumnsOffset + 1
+      If xMax_temp < sourceWindow\scrollSize Then xMax_temp = sourceWindow\scrollSize
+
+      bm\xMin = 0
+      bm\xMax = bm\xMin + xMax_temp
+    EndIf
+    bm\yMin = \BlockStartY - \DisplayLineOffset
+    bm\yMax = bm\yMin
+
+    Gosub rectfill3
+  Return
+
+  update_first_blockline:  
+    If direction = #SCROLL_LEFT
+      bm\xMin = bm\xMin - \ColumnsOffset
+      bm\xMax = bm\xMin + sourceWindow\scrollSize
+    Else
+      bm\xMin = 0
+      bm\xMax = sourceWindow\scrollSize
+    EndIf
+    bm\yMin = \BlockStartY - \DisplayLineOffset
+    bm\yMax = bm\yMin    
+    Gosub rectfill3
+  Return
+
+  update_last_blockline:
+    If direction = #SCROLL_LEFT
+      xMax_temp.w = \BlockEndX - bm\xMin + sourceWindow\scrollSize
+      If xMax_temp > sourceWindow\scrollSize Then xMax_temp = sourceWindow\scrollSize
+
+      bm\xMin = bm\xMin - \ColumnsOffset
+      bm\xMax = bm\xMin + xMax_temp - 1
+    Else
+      xMax_temp.w = \BlockEndX - \ColumnsOffset + 1
+      If xMax_temp < sourceWindow\scrollSize Then xMax_temp = sourceWindow\scrollSize
+      
+      bm\xMin = 0    
+      bm\xMax = bm\xMin + xMax_temp
+    EndIf
+    bm\yMin = \BlockEndY - \DisplayLineOffset
+    bm\yMax = bm\yMin
+    Gosub rectfill3
+  Return
+
+  update_middle_blocklines:
+    If direction = #SCROLL_LEFT
+      ;-- draw right blockparts while scrolling rightside except first and last line
+      bm\xMin = bm\xMin - \ColumnsOffset
+      bm\xMax = bm\xMin + sourceWindow\scrollSize
+      bm\yMin = bm\yMin
+      bm\yMax = bm\yMax
+      log_Print{Str$(sourceWindow\BoxLeft + bm\xMin) + ", " + Str$(sourceWindow\BoxTop + bm\yMin) + ", " + Str$(sourceWindow\BoxLeft + bm\xMax) + ", " + Str$(sourceWindow\BoxTop + bm\yMax)}      
+    Else
+      ;-- draw left blockparts while scrolling leftside except first and last line
+      bm\xMin = 0
+      bm\xMax = bm\xMin + sourceWindow\scrollSize
+      bm\yMin = \BlockStartY - \DisplayLineOffset + 1
+      bm\yMax = \BlockEndY - \DisplayLineOffset
+      If bm\yMax > sourceWindow\visibleLines Then bm\yMax = sourceWindow\visibleLines
+    EndIf
+    Gosub rectfill3
+  Return
+
+  rectfill3:
+    bm\xMin * sourceWindow\font\tf_XSize
+    bm\yMin * sourceWindow\font\tf_YSize
+    bm\xMax * sourceWindow\font\tf_XSize + sourceWindow\font\tf_XSize
+    bm\yMax * sourceWindow\font\tf_YSize + sourceWindow\font\tf_YSize
+    !PED_RectFill{bm\xMin, bm\yMin, bm\xMax - 1, bm\yMax - 1, %101}
+  Return
+End Statement
+
+Statement PED_RedrawBlock{}
+SHARED ped, sourceWindow
+
+  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF Then Statement Return
+
+  log_Print{"RedrawBlock"}
+
+  ;-- draw the block, but only the parts in the visible area
+  DEFTYPE.bmark bmark
+  bmark\xMin = ped\ptrCurrentSourceData\BlockStartX
+  bmark\yMin = ped\ptrCurrentSourceData\BlockStartY
+  bmark\xMax = ped\ptrCurrentSourceData\BlockEndX
+  bmark\yMax = ped\ptrCurrentSourceData\BlockEndY      
+
+  If (bmark\yMax >= ped\ptrCurrentSourceData\DisplayLineOffset)
+    bmark\xMin - ped\ptrCurrentSourceData\ColumnsOffset
+    If bmark\xMin < 0 Then bmark\xMin = 0
+
+    bmark\yMin - ped\ptrCurrentSourceData\DisplayLineOffset
+    If bmark\yMin < 0
+      bmark\xMin = 0
+      bmark\yMin = 0
+    EndIf
+
+    If bmark\yMin < sourceWindow\visibleLines
+      bmark\xMax - ped\ptrCurrentSourceData\ColumnsOffset
+      If bmark\xMax < 0 Then bmark\xMax = 0
+
+      bmark\yMax - ped\ptrCurrentSourceData\DisplayLineOffset
+      If bmark\yMax < 0 Then bmark\yMax = 0
+
+      If bmark\xMax > sourceWindow\visibleColumns
+        bmark\xMax = sourceWindow\visibleColumns
+      EndIf
+      If bmark\yMax > sourceWindow\visibleLines - 1
+        bmark\yMax = sourceWindow\visibleLines - 1
+      EndIf
+      bmark\xMin + ped\ptrCurrentSourceData\ColumnsOffset
+      bmark\xMax + ped\ptrCurrentSourceData\ColumnsOffset
+      PED_AbsBlockDimensions{}
+      PED_DrawBlock{bmark}
+    EndIf
+  EndIf
+End Statement
+
+
+Statement PED_RedrawSource{}
 SHARED pedconfig, ped, sourceWindow, AB3Pen()
-  ;log_Print{"redraw, displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine)
-
-  If onlyBlock = 0 then Goto draw_block_after_refresh
+  log_Print{"RedrawSource, current displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
 
   *tmpcsl.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
   If *tmpcsl = 0 Then Statement Return
 
-  ;log_Print{"displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
-  ;log_Print{"csl : " + Hex$(ped\ptrCurrentSourceData\CurrentSourceLine)}
-  ;log_Print{"fsl : " + Hex$(ped\ptrCurrentSourceData\FirstSourceLine)}
-
   *storeCurrentSourceLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  storeBlockEndY.l = ped\ptrCurrentSourceData\BlockEndY
-  ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
+
   !PED_storeCursorPosition
   PED_ClearTextbuffer{}
 
@@ -3655,8 +3918,9 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
     If ped\ptrCurrentSourceData\CurrentSourceLine
       ;log_Print{"redraw: next line at displayline " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
       PED_PrintCurrentSourceLine{True}
-      !PED_IncreaseDisplayLine
       *tmpcsl = *tmpcsl\nextLine
+      ped\ptrCurrentSourceData\DisplayLine + 1
+      ped\ptrCurrentSourceData\TextBufferOffset + #MAX_Columns
     ;Else
       ;log_Print{"redraw: no next line at displayline " + Str$(cl),#log_information}
     EndIf
@@ -3690,58 +3954,11 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
 
   ; -- restore saved values
   ped\ptrCurrentSourceData\CurrentSourceLine = *storeCurrentSourceLine
-  ped\ptrCurrentSourceData\BlockEndY = storeBlockEndY
   !PED_RestoreCursorPosition
 
-  draw_block_after_refresh:
-  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
+  ;-- redraw the blockmark
+  PED_RedrawBlock{}
 
-    ;log_Print{"draw block (after refresh.)"}
-    DEFTYPE.bmark bmark
-    bmark\xMin = ped\ptrCurrentSourceData\BlockStartX
-    bmark\yMin = ped\ptrCurrentSourceData\BlockStartY
-    bmark\xMax = ped\ptrCurrentSourceData\BlockEndX
-    bmark\yMax = ped\ptrCurrentSourceData\BlockEndY
-
-    If bmark\xMin - ped\ptrCurrentSourceData\ColumnsOffset < 0
-      bmark\xMin = 0
-    End If
-
-    If bmark\yMax >= ped\ptrCurrentSourceData\DisplayLineOffset
-      bmark\yMin - ped\ptrCurrentSourceData\DisplayLineOffset
-      If bmark\yMin < 0
-        bmark\xMin = 0
-        bmark\yMin = 0
-      EndIf
-
-      bmark\xMax - ped\ptrCurrentSourceData\ColumnsOffset
-      If bmark\xMax < 0 Then bmark\xMax = 0
-
-      bmark\yMax - ped\ptrCurrentSourceData\DisplayLineOffset
-      If bmark\yMax < 0 Then bmark\yMax = 0
-
-      If bmark\yMin < sourceWindow\visibleLines
-        If bmark\yMax > sourceWindow\visibleLines
-          bmark\yMax = sourceWindow\visibleLines - 1
-        EndIf
-
-        If bmark\xMax > sourceWindow\visibleColumns
-          bmark\xMax = sourceWindow\visibleColumns - 1
-        EndIf
-
-        bmark\xMin + ped\ptrCurrentSourceData\ColumnsOffset
-        bmark\xMax + ped\ptrCurrentSourceData\ColumnsOffset
-
-        ;msg$ = Str$(bmark\xMin) + ", "
-        ;msg$ + Str$(bmark\yMin) + " - "
-        ;msg$ + Str$(bmark\xMax) + ", "
-        ;msg$ + Str$(bmark\yMax)
-        ;log_Print{msg$}
-
-        PED_DrawBlock{bmark}
-      EndIf
-    EndIf
-  EndIf
   !PED_CursorOn
 End Statement
 
@@ -3751,7 +3968,8 @@ SHARED ped
 USEPATH ped\ptrCurrentSourceData
   storeBlockStartX      = \ColumnsOffset + \Column
   \BlockStartDisplayLine = \DisplayLineOffset + \DisplayLine
-  log_Print{"set blockstart to: " + Str$(storeBlockStartX)}
+  log_Print{"set blockstart to: " + Str$(storeBlockStartX) + "," + Str$(\BlockStartDisplayLine)}
+
 End Statement
 
 Statement PED_SetBlockEnd{}
@@ -3761,32 +3979,33 @@ USEPATH ped\ptrCurrentSourceData
     log_Print{"setblockend: no blockstart set!"}
   Else
     log_Print{"setblockend"}
-    newX.l = \ColumnsOffset + \Column
-    \BlockStartX = newX
-    tmpDL.l = \DisplayLineOffset + \DisplayLine
-    If \BlockStartX = storeBlockStartX
-      If \BlockStartDisplayLine = tmpDL
+    endX.w = \ColumnsOffset + \Column
+    endY.l = \DisplayLineOffset + \DisplayLine
+
+    If (endX = storeBlockStartX) AND (endY = \BlockStartDisplayLine)
+        log_Print{"blockstart is equal to blockend position, resetting block"}
         !PED_ResetBlockflag
         PED_RedrawSource{}
         Statement Return
+    EndIf
+    
+    ;-- cursor is most left, so select the whole line ?
+    If (endX = 0) AND (endY > 0)
+      If \BlockStartDisplayLine >= endY
+        ;\BlockStartDisplayLine - 1
+        endX = #MAX_Columns - 1
+      Else
+        endY - 1
+        endX = #MAX_Columns - 1
       EndIf
     EndIf
 
-    If newX = 0
-      If tmpDL
-        If \BlockStartDisplayLine >= tmpDL
-          \BlockStartDisplayLine - 1
-          ;newX = #MAX_Columns
-        Else
-          tmpDL - 1
-          ;newX = #MAX_Columns
-        EndIf
-      EndIf
-    EndIf
-    \BlockEndX = newX
-    \BlockEndY = tmpDL
     \BlockStartX = storeBlockStartX
     \BlockStartY = \BlockStartDisplayLine
+    \BlockEndX = endX
+    \BlockEndY = endY
+
+    log_Print{"Block " + Str$(\BlockStartX) + ", " + Str$(\BlockStartY) + ", " + Str$(\BlockEndX) + ", " + Str$(\BlockEndY)}
     PED_AbsBlockDimensions{}
     PED_RedrawSource{}
   EndIf
@@ -3814,76 +4033,63 @@ Statement PED_GotoLine{lineNum.l, @columnMode.b}
 SHARED ped, sourceWindow
 USEPATH ped\ptrCurrentSourceData
 
-  log_Print{"Gotoline: " + Str$(lineNum) + " totallines:" + Str$(\TotalLines)}
   If lineNum.l < 0 Then lineNum = 0
   If lineNum > \TotalLines - 1 Then lineNum = \TotalLines - 1
 
-  ; same code as in routine mouseclick_in_source
+  ;-- same code as in routine mouseclick_in_source
   *tempLine.sourceLine = \CurrentSourceLine
-  tempY.l = \DisplayLine + \DisplayLineOffset
+  newLinenum.l = \DisplayLine + \DisplayLineOffset
+  log_Print{"Gotoline: " + Str$(lineNum) + " current line:" + Str$(newLinenum+1)}
 
-  log_Print{"Gotoline: " + Str$(lineNum) + " display line:" + Str$(tempY)}
-  While lineNum <> tempY
-    If lineNum > tempY
+  While lineNum <> newLinenum
+    If lineNum > newLinenum
       If *tempLine\nextLine
         *tempLine = *tempLine\nextLine
-        tempY + 1
+        newLinenum + 1
       Else
         log_Print{"GotoLine: no next line!",#log_error}
         error{"GotoLine: no next line!"}
         lineNum = \TotalLines - 1
-        tempY = lineNum
+        newLinenum = lineNum
       EndIf
     Else
       *tempLine = *tempLine\previousLine
-      tempY - 1
+      newLinenum - 1
     EndIf
   Wend
   \CurrentSourceLine = *tempLine
-  ;strline$ = PED_Detokenize{*tempLine}
 
   ;-- adjust the display and offset to match the new current line
   tmpDisplayLineOffset.l = \DisplayLineOffset
 
-  tempY = tempY - sourceWindow\boundLinesY
-  If tempY > 0
-    If \TotalLines > sourceWindow\visibleLines
-      firstrow.l = \TotalLines - sourceWindow\visibleLines + sourceWindow\boundLinesY
-      If lineNum > firstrow
-        firstrow = firstrow - sourceWindow\boundLinesY
-        \DisplayLineOffset = firstrow
-        \DisplayLine       = tempY - firstrow
-      Else
-        \DisplayLineOffset = tempY
-        \DisplayLine       = sourceWindow\boundLinesY
-      EndIf
+  \DisplayLineOffset = 0
+  \DisplayLine       = lineNum
+  If (newLinenum > 0) AND (\TotalLines > sourceWindow\visibleLines)
+    firstrow.l = \TotalLines - sourceWindow\visibleLines
+    If lineNum > firstrow
+      firstrow = firstrow
+      \DisplayLineOffset = firstrow
+      \DisplayLine       = newLinenum - firstrow
     Else
-      \DisplayLineOffset = 0
-      \DisplayLine       = lineNum
-    EndIf
-  Else
-    \DisplayLineOffset = 0
-    \DisplayLine       = lineNum
+      \DisplayLineOffset = newLinenum
+      \DisplayLine       = 0
+    EndIf 
   EndIf
 
-  log_Print{"calculated DisplayLineOffset " + Str$(\DisplayLineOffset)}
-  log_Print{"calculated DisplayLine       " + Str$(\DisplayLine)}
   !PED_UpdateTextBufferOffset
 
-  If tmpDisplayLineOffset <> \DisplayLineOffset Then PED_RedrawSource{}
-
-  !PED_CursorOff
   Select columnMode
   Case #LINE_START
     \ColumnsOffset = 0
     \Column = 0
-    PED_UpdateStatusArea{#STATUS_SCROLLERS}
   Case #LINE_END
     lineaddr.l = ped\ptrTextbuffer + \TextBufferOffset
     \Column = getLineLength{lineaddr}
+  Case #LINE_NOCHANGE  
   End Select
-  !PED_CursorOn
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}
 
+  If tmpDisplayLineOffset <> \DisplayLineOffset Then PED_RedrawSource{}
 End Statement
 
 Function.b PED_GotoLineAddress{ptrSourceLine.l}
@@ -3921,9 +4127,10 @@ SHARED ped
   CEND
 End Statement
 
+
 Statement PED_ScrollHorizontal{direction.b, @scrollMode.b}
-  SHARED sourceWindow, ped
-  USEPATH sourceWindow
+SHARED sourceWindow, ped
+USEPATH sourceWindow
 
   If scrollMode = #SCROLL_CURRENT_LINE
     dx.w = direction * \font\tf_XSize
@@ -3933,7 +4140,6 @@ Statement PED_ScrollHorizontal{direction.b, @scrollMode.b}
     xMax.w = \BoxLeft + \visibleColumns * \font\tf_XSize - 1
     yMax.w = yMin + \font\tf_YSize - 1
   Else
-    ; WIP: shall replace gosub scroll_left/right for whole screen
     dx.w = direction * (\font\tf_XSize * \scrollSize)
     dy.w = 0
     xMin.w = \BoxLeft
@@ -3942,14 +4148,72 @@ Statement PED_ScrollHorizontal{direction.b, @scrollMode.b}
     yMax.w = \BoxTop  + sourceWindow\visibleLines * \font\tf_YSize - 1
   EndIf
   ScrollRaster_ \win\RPort,dx,dy,xMin,yMin,xMax,yMax
+  PED_ScrollDelay{}
+
+  If scrollMode = #SCROLL_CURRENT_LINE Then Statement Return
+
+  ;--------------------------------------------
+  ;-- draw the new lines after scrolling left or right
+  !PED_storeCursorPosition
+
+  ped\noDetokenizing = 1
+  ped\keepString = 1
+
+  ped\ptrCurrentSourceData\TextBufferOffset = 0
+  ped\ptrCurrentSourceData\ColumnsOffsetTmp = 0  
+  ped\ptrCurrentSourceData\DisplayLine = 0  
+  If direction = #SCROLL_LEFT
+    ped\ptrCurrentSourceData\Column = sourceWindow\visibleColumns - sourceWindow\scrollSize
+  Else
+    ped\ptrCurrentSourceData\Column = 0
+  EndIf
+  
+  For curY.w = 0 To sourceWindow\visibleLines - 1    
+    lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
+    If direction = #SCROLL_LEFT
+      newChars.s = Peeks$(lineaddr + ped\ptrCurrentSourceData\ColumnsOffset + ped\ptrCurrentSourceData\Column, sourceWindow\scrollSize)
+    Else
+      newChars.s = Peeks$(lineaddr + ped\ptrCurrentSourceData\ColumnsOffset, sourceWindow\scrollSize)
+    EndIf
+
+    ; -- check if we are in a string
+    Poke.b ?instring2, 0
+    tmpRunner.w = 0
+    If direction = #SCROLL_LEFT
+      tmpColumnsOffset.w = ped\ptrCurrentSourceData\ColumnsOffset + sourceWindow\visibleColumns - 1
+    Else
+      tmpColumnsOffset.w = ped\ptrCurrentSourceData\ColumnsOffset
+    EndIf
+    While Peek.b(lineaddr + tmpRunner) <> 0 AND (tmpRunner < tmpColumnsOffset)
+      If Peek.b(lineaddr + tmpRunner) = $22 Then NOT.b instring2
+      tmpRunner + 1
+    Wend
+
+    ; -- print the characters
+    curX.w = ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize
+    PED_PrintSourceText{&newChars, curX, curY, False}
+
+    ; -- increase text line
+    ped\ptrCurrentSourceData\DisplayLine + 1    
+    ped\ptrCurrentSourceData\TextBufferOffset + #MAX_Columns
+  Next curY
+  ped\keepString = 0
+  ped\noDetokenizing = 0
+
+  PED_UpdateScrollBlockmark{direction}
+
+  !PED_RestoreCursorPosition
 End Statement
 
 Statement PED_ScrollVertical{direction.b, @yStart.w}
 SHARED sourceWindow,ped
 USEPATH sourceWindow
-
+  ;-- yStart optionally sets the line where to start to scroll up or down 
+  ;-- e.g. yStart=6 means scrolling starts at line 6
+  ;-- #MAX_Colums is 250 atm
   If yStart = -1 Then yStart = 0
 
+  ;----------------------------- scroll screen
   dx.w = 0
   dy.w = direction * \font\tf_YSize
   xMin.w = 0
@@ -3959,43 +4223,62 @@ USEPATH sourceWindow
   ScrollRaster_ \win\RPort,dx,dy,xMin,yMin,xMax,yMax
   PED_ScrollDelay{}
 
-  ; "scroll" the textbuffer one line
-  If direction = #SCROLL_DOWN
-    temp.l = sourceWindow\visibleLines - yStart - 1
-    If temp <> 0
-      bytes.l = #MAX_Columns * sourceWindow\visibleLines
-      textAddr.l = ped\ptrTextbuffer + bytes - 2
-      textAddr2.l = textAddr - #MAX_Columns
-      count.l = temp * #MAX_Columns
-      For i.l = 2 To count Step 2
-        Poke.w textAddr - i, Peek.w(textAddr2 - i)
-      Next i
-    EndIf
-    textAddr.l = ped\ptrTextbuffer + (yStart * #MAX_Columns)
-  Else
-    temp.l = sourceWindow\visibleLines - yStart - 1
-    If temp <> 0
-      bytes.l = #MAX_Columns * yStart
-      textAddr.l = ped\ptrTextbuffer + bytes
-      textAddr2.l = textAddr + #MAX_Columns
-      count.l = temp * #MAX_Columns
-      For i.l = 0 To count Step 2
-        Poke.w textAddr + i, Peek.w(textAddr2 + i)
-      Next i
-    EndIf
-    textAddr.l = ped\ptrTextbuffer + (sourceWindow\visibleLines-1)*#MAX_Columns
+  ;----------------------------- "scroll" the textbuffer one line
+  If direction = #SCROLL_DOWN 
+    destAddr.l = ped\ptrTextbuffer + (#MAX_Columns * (sourceWindow\visibleLines-1))
+  Else 
+    destAddr.l = ped\ptrTextbuffer + (#MAX_Columns * yStart)
   EndIf
+  startAddr.l = destAddr + (#MAX_Columns * direction)
 
-  ; fill the last line with spaces
-  For i.l = 0 To #MAX_Columns Step 2
-    Poke.w textAddr + i,$2020
-  Next i
+  numberofRows2Copy.l = (sourceWindow\visibleLines) - 1 - yStart
+  For r.w = 1 To numberofRows2Copy
+    CopyMem_ startAddr, destAddr, #MAX_Columns
+    destAddr + (#MAX_Columns * direction)
+    startAddr + (#MAX_Columns * direction)
+  Next r
 
+  ;-- prepare the new displayed line with spaces    
+  FillMem destAddr, #MAX_Columns, @" "
+
+  ;--------------------------------------------
+  ;-- draw the new lines after scrolling at top or bottom
+  !PED_storeCursorPosition 
+  storeCurrentSourceLine.l = \CurrentSourceLine
+
+  If direction = #SCROLL_DOWN
+    ;-- get the new sourceline that has to be displayed at the top
+    Repeat 
+      If \DisplayLine > 0
+        \DisplayLine + direction
+        \CurrentSourceLine = \CurrentSourceLine\previousLine
+
+        If \CurrentSourceLine = 0
+          Pop If : Pop Repeat : Goto no_line
+        EndIf
+      End If
+    Until \DisplayLine = 0
+    \TextBufferOffset = 0 ; we print at the first line into the textbuffer
+  Else
+    ;-- get the new sourceline that has to be displayed at the bottom
+    Repeat
+      If \DisplayLine < (sourceWindow\visibleLines-1)
+        \DisplayLine + direction
+        \CurrentSourceLine = \CurrentSourceLine\nextLine
+
+        If \CurrentSourceLine = 0
+          Pop If : Pop Repeat : Goto no_line
+        EndIf
+      EndIf
+    Until \DisplayLine = (sourceWindow\visibleLines-1)
+    \TextBufferOffset = #MAX_Columns * (sourceWindow\visibleLines-1) ; we print at the last line into the textbuffer
+  EndIf
+  ;-- display the calculated source line at the displayline
+  PED_PrintCurrentSourceLine{False}
+  no_line:
+  \CurrentSourceLine = storeCurrentSourceLine
+  !PED_RestoreCursorPosition
 End Statement
-
-
-
-
 
 
 Statement PED_GetMousePos{*mp.mousePos}
@@ -4012,7 +4295,7 @@ Statement PED_GetMousePos{*mp.mousePos}
     If *mp\textX < 0 Then *mp\textX = 0
     *mp\textX = *mp\textX / \font\tf_XSize
   Else
-    *mp\textX = 0
+    *mp\textX = -1
   EndIf
 
   If (*mp\Y > \BoxTop) AND (*mp\Y < \statusAreaY)
@@ -4031,13 +4314,19 @@ End Statement
 
 
 Statement AbsDimensions{*bm.bmark}
-
   If *bm\yMin < *bm\yMax Then Statement Return
-
-  If (*bm\yMin = *bm\yMax) OR (*bm\xMin > *bm\xMax)
+  
+  If (*bm\yMin > *bm\yMax) OR ((*bm\yMin = *bm\yMax) AND (*bm\xMin > *bm\xMax))
     Exchange *bm\xMin,*bm\xMax
     Exchange *bm\yMin,*bm\yMax
   EndIf
+End Statement
+
+Statement AbsDimensionsBlock{*bm.bmark}
+  If *bm\yMin < *bm\yMax Then Statement Return
+  
+  If (*bm\yMin > *bm\yMax) Then Exchange *bm\yMin, *bm\yMax
+  If (*bm\xMin > *bm\xMax) THen Exchange *bm\xMin, *bm\xMax
 End Statement
 
 
@@ -4084,7 +4373,7 @@ SHARED ped,sourceWindow
       *newLine.sourceLine = PED_CreateNewSourceLine{replacedline}
       PED_AppendSourceLine{*previousLine,*newLine}
       ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
-      PED_FreeMem{*currentLine}
+      PED_DeleteSourceLine{*currentLine}
       success = True
     Else
       error{"Could not replace the current source line"}
@@ -4140,19 +4429,8 @@ Function.w PED_PreparseTextLine{lineaddr.l}
 
   ;--  clear token flags but dont trash strings
   If (lineaddr & $1) <> 0 Then error{"alert: odd address " + Hex$(lineaddr)}
-  nostring.b = 0
-  For i.l = lineaddr To lineaddr + #MAX_Columns
-    If nostring = 0
-      Poke.b i, Peek.b(i) AND $7f
-    Else
-      If Peek.b(i) = $22 Then nostring = 0
-    End If
-    If Peek.b(i) = $22 Then nostring = 1
-    ; workaround:
-    ; sometimes there is a 0 in a linestring perhaps due to a wrong lineaddr
-    ; the 0 is been replaced by a space
-    If Peek.b(i) = 0 Then Poke.b i,32
-  Next
+
+  !removeTokenbits{lineaddr, #MAX_Columns}
 
   strg$ = Peeks$(lineaddr,#MAX_Columns)
   absColumnPos.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
@@ -5764,6 +6042,7 @@ End
   ;        JSR _redrawBlock
   ;        MOVEM.l (A7)+,D0-D3/D7/A0-A2
   ;    JL_0_CC6:
+      !PED_CursorOn
     EndIf
 
     ; -- check if an executable is running and prevent IDE from doing things
@@ -6562,9 +6841,8 @@ Return
        Goto exit_PED_closeall
      EndIf
 
-     ;Gosub allocate_textbuffer   ; its done in open_sourcewindow
-     Gosub set_pointer_normal
      WindowToFront_ Peek.l(Addr Window(WZID("WIN_SETTINGS")))
+     Gosub set_pointer_normal     
    Else
      log_Print{"just redraw source"}
      PED_RedrawSource{}
@@ -7778,8 +8056,7 @@ Return
     Pop If: Return
   EndIf
 
-  Gosub update_currsourceline
- 
+  PED_SetCurrentSourceLine{}
   \CurrentSourceLine = PED_GetBlockStartSourceLine{}
   startY.l = \BlockStartY
   log_Print{"startY: " + Str$(\BlockStartY)}
@@ -7791,9 +8068,8 @@ Return
     Else
       strline$ = Peek.s(\CurrentSourceLine + 9)
     EndIf
-    strline$ = ";" + strline$
-    ;log_Print{">> " + strline$}
 
+    strline$ = ";" + strline$
     newline$ = PED_TokenizeText{strline$}
     *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
     PED_ReplaceCurrentSourceLine{*newLine}
@@ -7802,7 +8078,7 @@ Return
     startY + 1
   Until startY = \BlockEndY + 1
   
-  Gosub update_currsourceline
+  PED_SetCurrentSourceLine{}
   PED_RedrawSource{}
 Return
 
@@ -7815,8 +8091,7 @@ Return
     Pop If: Return
   EndIf
 
-  Gosub update_currsourceline
-
+  PED_SetCurrentSourceLine{}
   \CurrentSourceLine = PED_GetBlockStartSourceLine{}
   startY.l = \BlockStartY
   log_Print{"startY: " + Str$(\BlockStartY)}
@@ -7843,20 +8118,23 @@ Return
     startY + 1
   Until startY = \BlockEndY + 1
   
-  Gosub update_currsourceline
+  PED_SetCurrentSourceLine{}
+
   PED_RedrawSource{}
 Return
 
 .menu_blocktab:
+
+
   log_Print{"menu blocktab called."}
+
   If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
     log_Print{"no block selected."}
     Gosub set_pointer_normal
     Pop If: Return
   EndIf
 
-  Gosub update_currsourceline
-
+  PED_SetCurrentSourceLine{}
   \CurrentSourceLine = PED_GetBlockStartSourceLine{}
   startY.l = \BlockStartY
   log_Print{"startY: " + Str$(\BlockStartY)}
@@ -7878,7 +8156,7 @@ Return
     startY + 1
   Until startY = \BlockEndY + 1
 
-  Gosub update_currsourceline
+  PED_SetCurrentSourceLine{}
   PED_RedrawSource{}
 Return
 
@@ -7891,7 +8169,8 @@ Return
     Pop If: Return
   EndIf
 
-  Gosub update_currsourceline
+  PED_SetCurrentSourceLine{}
+  \CurrentSourceLine = PED_GetBlockStartSourceLine{}
   startY.l = \BlockStartY
   log_Print{"startY: " + Str$(\BlockStartY)}
   log_Print{"endY: "  + Str$(\BlockEndY)}
@@ -7916,7 +8195,8 @@ Return
     startY + 1
   Until startY = \BlockEndY + 1
 
-  Gosub update_currsourceline
+  PED_SetCurrentSourceLine{}
+
   PED_RedrawSource{}
   log_Print{"menu blockuntab done."}
 Return
@@ -7958,107 +8238,6 @@ Return
   EndIf
 Return
 
-.movelinedown:
-  *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  *prevLine.sourceLine = *currentLine\previousLine
-  *nextLine.sourceLine = *currentLine\nextLine
-  tmpCurrentLine.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
-  tmpTotalLines.l = ped\ptrCurrentSourceData\TotalLines
-  log_Print{"current " + Str$(tmpCurrentLine) + "   total " + Str$(tmpTotalLines)}
-;  log_Print{Hex$(*prevLine)}
-;  log_Print{Hex$(*currentLine)}
-;  log_Print{Hex$(*nextLine)}
-  If (tmpCurrentLine < tmpTotalLines) AND (*nextLine <> 0) ; if no nextline, we cannot move down
-    If PED_CutSourceLine{*currentLine}
-      PED_AppendSourceLine{*nextLine, *currentLine}
-
-      ped\ptrCurrentSourceData\CurrentSourceLine = *currentLine
-
-      If *currentLine\nextLine = *currentLine
-        log_Print{"=========================== PONG"}
-        log_Print{Hex$(*prevLine) + Peeks$(*prevLine+9,32)}
-        log_Print{Hex$(*currentLine) + Peeks$(*currentLine+9,32)}
-        log_Print{Hex$(*nextLine) + Peeks$(*nextLine+9,32)}
-      EndIf
-
-      ; check if text is scrolled
-      tmpDisplayLine.l = ped\ptrCurrentSourceData\DisplayLine
-      tmpDisplayLineOffset.l = ped\ptrCurrentSourceData\DisplayLineOffset
-      tmpVisibleLines.l = sourceWindow\visibleLines
-      If tmpDisplayLineOffset + tmpVisibleLines > tmpTotalLines
-        log_Print{"increase displayline, current: " + Str$(tmpDisplayLine)}
-        !PED_IncreaseDisplayLine
-        PED_RedrawSource{}
-      Else
-        If tmpVisibleLines > (tmpDisplayLine + 1 + sourceWindow\boundLinesY)
-          !PED_IncreaseDisplayLine
-          PED_RedrawSource{}
-        Else
-          ped\ptrCurrentSourceData\DisplayLineOffset + 1
-          PED_ScrollVertical{#SCROLL_UP}
-          Gosub print_new_sourceline_bottom
-          PED_RedrawSource{}
-        EndIf
-      EndIf
-    Else
-      log_Print{"*** cut not successfull ***"}
-    EndIf
-  Else
-    log_Print{"no alt-cursor down available."}
-  EndIf
-Return
-
-
-.movecursorlinedown:
-  !PED_CursorOff
-  Gosub handle_blockmark
-
-  *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  *nextLine.sourceLine = *currentLine\nextLine
-
-  If Peeks$(*currentLine+9,4)=";@@1"
-    tmpDLO.l = ped\ptrCurrentSourceData\DisplayLineOffset
-    *_next.sourceLine = *nextLine
-    While *_next
-      ped\ptrCurrentSourceData\DisplayLineOffset + 1
-      If Peeks$(*_next + 9,4) <> ";@@1"
-        If Peeks$(*_next + 9,4) = ";@@0"
-          ped\ptrCurrentSourceData\CurrentSourceLine = *_next
-          PED_RedrawSource{}
-          Return
-        EndIf
-      EndIf
-      *_next = *_next\nextLine
-    Wend
-    ped\ptrCurrentSourceData\DisplayLineOffset = tmpDLO
-  EndIf
-
-  If *nextLine = 0
-    !PED_CursorOn
-    Gosub set_pointer_normal
-  Else
-    ped\ptrCurrentSourceData\CurrentSourceLine = *nextLine
-    Gosub update_sourcewindow_bottom
-  EndIf
-Return
-
-.update_sourcewindow_bottom:
-  If ped\ptrCurrentSourceData\TotalLines >= ped\ptrCurrentSourceData\DisplayLineOffset + sourceWindow\visibleLines
-    If ped\ptrCurrentSourceData\DisplayLine + 1 + sourceWindow\boundLinesY => sourceWindow\visibleLines
-      ped\ptrCurrentSourceData\DisplayLineOffset + 1
-      PED_ScrollVertical{#SCROLL_UP}
-      Gosub print_new_sourceline_bottom
-      Return
-    EndIf
-  EndIf
-
-  !PED_IncreaseDisplayLine
-
-  ;-- update linenumbers from here --> not necessary as it is updated in print_new_sourceline_bottom
-  ;PED_UpdateLinenumbers{}
-
-  !PED_CursorOn
-Return
 
 .selectblockdown:
   If ped\ptrCurrentSourceData\BlockEndY = $FFFFffff Then PED_SetBlockStart{}
@@ -8084,41 +8263,67 @@ Return
   PED_SetBlockEnd{}
 Return
 
+.movelinedown: ; move the current source line down, not just the cursor
+  *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+  *nextLine.sourceLine = *currentLine\nextLine
+  
+  tmpCurrentLine.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
+  tmpTotalLines.l = ped\ptrCurrentSourceData\TotalLines
 
-.movelineup:
+  If (tmpCurrentLine < tmpTotalLines) AND (*nextLine <> 0) ; if no nextline, we cannot move down
+    If PED_CutSourceLine{*currentLine}
+      If PED_AppendSourceLine{*nextLine, *currentLine}
+        f1.s = PED_Detokenize{ped\ptrCurrentSourceData\FirstSourceLine}
+        log_Print{"f1: " + Left$(f1,20)}
+
+        !PED_CursorOff
+        ;-- print the line that has to be moved up
+        ped\ptrCurrentSourceData\CurrentSourceLine = *currentLine\previousLine
+        PED_PrintCurrentSourceLine{True}
+
+        ;-- print the current line one line down
+        ped\ptrCurrentSourceData\CurrentSourceLine = *currentLine
+        If PED_IncreaseDisplayLine{} = 1 ;-- check if text is has to be scrolled      
+          PED_ScrollVertical{#SCROLL_UP}
+        EndIf
+        PED_PrintCurrentSourceLine{True}
+        !PED_CursorOn
+        PED_UpdateStatusArea{#STATUS_SCROLLERS}
+      Else
+        log_Print{"*** append not successfull ***"}      
+      EndIf
+    Else
+      log_Print{"*** cut not successfull ***"}
+    EndIf
+  Else
+    log_Print{"no alt-cursor down available."}
+  EndIf
+Return
+
+.movelineup: ; move the current source line up, not just the cursor
   *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
   *prevLine.sourceLine = *currentLine\previousLine
-  *nextLine.sourceLine = *currentLine\nextLine
+
   tmpCurrentLine.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
-;  log_Print{"current " + Str$(tmpCurrentLine) + "dl " + Str$(ped\ptrCurrentSourceData\DisplayLine) + "prevline " + Hex$(*prevLine)}
-;  log_Print{Hex$(*prevLine) + Peeks$(*prevLine+9,32)}
-;  log_Print{Hex$(*currentLine) + Peeks$(*currentLine+9,32)}
-;  log_Print{Hex$(*nextLine) + Peeks$(*nextLine+9,32)}
- 
+
   If (tmpCurrentLine > 0) AND (*prevLine <> 0) ; if no previousline, we cannot move up
     If PED_CutSourceLine{*currentLine}
-      PED_AppendSourceLine{*prevLine\previousLine, *currentLine}
+      If PED_AppendSourceLine{*prevLine\previousLine, *currentLine}
+        !PED_CursorOff
+        ;-- print the line that has to be moved down
+        ped\ptrCurrentSourceData\CurrentSourceLine = *currentLine\nextLine
+        PED_PrintCurrentSourceLine{True}
 
-      ped\ptrCurrentSourceData\CurrentSourceLine = *currentLine
-
-      If *currentLine\nextLine = *currentLine
-        log_Print{"=========================== PING"}
-        log_Print{Hex$(*prevLine) + Peeks$(*prevLine+9,32)}
-        log_Print{Hex$(*currentLine) + Peeks$(*currentLine+9,32)}
-        log_Print{Hex$(*nextLine) + Peeks$(*nextLine+9,32)}
-      EndIf
-
-      ; check if text is scrolled
-      If ped\ptrCurrentSourceData\DisplayLineOffset = 0 OR (ped\ptrCurrentSourceData\DisplayLine > sourceWindow\boundLinesY)
-        log_Print{"decrease displayline, current: " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
-        !PED_DecreaseDisplayLine
-        PED_RedrawSource{}
+        ;-- print the current line one line up
+        ped\ptrCurrentSourceData\CurrentSourceLine = *currentLine
+        If PED_DecreaseDisplayLine{} = 1 ;-- check if text is has to be scrolled      
+          PED_ScrollVertical{#SCROLL_DOWN}
+        EndIf
+        PED_PrintCurrentSourceLine{True}
+        !PED_CursorOn
+        PED_UpdateStatusArea{#STATUS_SCROLLERS}  
       Else
-        ped\ptrCurrentSourceData\DisplayLineOffset - 1
-        log_Print{"fullscrollup"}
-        PED_ScrollVertical{#SCROLL_DOWN}
-        Gosub print_new_sourceline_top
-        PED_RedrawSource{}
+        log_Print{"*** append not successfull ***"}
       EndIf
     Else
       log_Print{"*** cut not successfull ***"}
@@ -8185,12 +8390,13 @@ End Function
 
 
 .movecursorlineup:
-  !PED_CursorOff
   Gosub handle_blockmark
 
   *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
   *prevLine.sourceLine = *currentLine\previousLine
 
+  ;tmps.s = PED_Detokenize{\CurrentSourceLine}
+  ;log_Print{"current: " + Str$(\DisplayLine+\DisplayLineOffset+1) + " | " +Str$(\DisplayLine)+"-" + Str$(\DisplayLineOffset) + " >> " + Left$(tmps,20)}
   If Peeks$(*currentLine + 9,4) = ";@@0"
     log_Print{"jump marker found, searching corresponding previous marker."}
     *_prev.sourceLine = *currentLine
@@ -8207,24 +8413,112 @@ End Function
     EndIf
   EndIf
 
+  ;log_Print{"--- begin of scrolling---"}
+  ;lineaddr = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
+  ;textlen.w = getLineLength{lineaddr}
+  ;!removeTokenbits{lineaddr, textlen}
+  ;log_Print{"textbuffer at offset " + Str$(ped\ptrCurrentSourceData\TextBufferOffset) + ": " + Peeks$(lineaddr,textlen)}
+
   If *prevLine = 0
-    !PED_CursorOn
+    log_Print{"there is no previous line."}
     Gosub set_pointer_normal
   Else
-    ped\ptrCurrentSourceData\CurrentSourceLine = *prevLine
+    !PED_CursorOff
+    ped\ptrCurrentSourceData\CurrentSourceLine = *prevLine    
+    If PED_DecreaseDisplayLine{} = 1 ;-- check if we have to scroll the source window
+      ;lineaddr = ped\ptrTextbuffer
+      ;textlen.w = getLineLength{lineaddr}
+      ;!removeTokenbits{lineaddr, textlen}
+      ;log_Print{"before scroll: " + Peeks$(lineaddr,textlen)}
 
-    If ped\ptrCurrentSourceData\DisplayLineOffset > 0
-      If ped\ptrCurrentSourceData\DisplayLine <= sourceWindow\boundLinesY
-        ped\ptrCurrentSourceData\DisplayLineOffset - 1        ; otherwise scroll whole text one line up
-        PED_ScrollVertical{#SCROLL_DOWN}
-        Gosub print_new_sourceline_top
-        Return
-      EndIf
+      PED_ScrollVertical{#SCROLL_DOWN}
+
+      ;lineaddr = ped\ptrTextbuffer
+      ;textlen.w = getLineLength{lineaddr}
+      ;!removeTokenbits{lineaddr, textlen}
+      ;og_Print{"after scroll: " + Peeks$(lineaddr,textlen)}
+
+      PED_UpdateStatusArea{#STATUS_SCROLLERS}
     EndIf
-    !PED_DecreaseDisplayLine
     !PED_CursorOn
   EndIf
+
+  ;tmps.s = PED_Detokenize{\CurrentSourceLine}
+  ;log_Print{"after move: " + Str$(\DisplayLine+\DisplayLineOffset+1) + " >> " + Left$(tmps,20)}
+
+  ;lineaddr = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
+  ;textlen.w = getLineLength{lineaddr}
+  ;!removeTokenbits{lineaddr, textlen}
+  ;log_Print{"textbuffer at offset " + Str$(ped\ptrCurrentSourceData\TextBufferOffset) + ": " + Peeks$(lineaddr,textlen)}
 Return
+
+
+.movecursorlinedown:
+  Gosub handle_blockmark
+
+  *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+  *nextLine.sourceLine = *currentLine\nextLine
+
+  ;tmps.s = PED_Detokenize{\CurrentSourceLine}
+  ;log_Print{"current: " + Str$(\DisplayLine+\DisplayLineOffset+1) + " | " +Str$(\DisplayLine)+"-" + Str$(\DisplayLineOffset) + " >> " + Left$(tmps,20)}
+
+  If Peeks$(*currentLine + 9, 4) = ";@@1"
+    log_Print{"jump marker found, searching corresponding next marker."}
+    tmpDLO.l = ped\ptrCurrentSourceData\DisplayLineOffset
+    *_next.sourceLine = *nextLine
+    While *_next
+      ped\ptrCurrentSourceData\DisplayLineOffset + 1
+      If Peeks$(*_next + 9,4) <> ";@@1"
+        If Peeks$(*_next + 9,4) = ";@@0"
+          ped\ptrCurrentSourceData\CurrentSourceLine = *_next
+          PED_RedrawSource{}
+          Return
+        EndIf
+      EndIf
+      *_next = *_next\nextLine
+    Wend
+    ped\ptrCurrentSourceData\DisplayLineOffset = tmpDLO
+  EndIf
+
+  If *nextLine = 0
+    log_Print{"there is no next line."}
+    Gosub set_pointer_normal
+  Else
+    !PED_CursorOff
+    ped\ptrCurrentSourceData\CurrentSourceLine = *nextLine
+    If PED_IncreaseDisplayLine{} = 1
+      PED_ScrollVertical{#SCROLL_UP}
+      PED_UpdateStatusArea{#STATUS_SCROLLERS}        
+    EndIf
+    !PED_CursorOn
+  EndIf
+
+  ;tmps.s = PED_Detokenize{\CurrentSourceLine}
+  ;log_Print{"after move: " + Str$(\DisplayLine+\DisplayLineOffset+1) + " | " +Str$(\DisplayLine)+"-" + Str$(\DisplayLineOffset) + " >> " + Left$(tmps,20)}
+Return
+
+;.update_sourcewindow_top:
+;  USEPATH ped\ptrCurrentSourceData
+;  
+;  ;-- check if we have to scroll the source window
+;  If (\DisplayLine <= sourceWindow\boundLinesY) AND (\DisplayLineOffset > 0)
+;    PED_ScrollVertical{#SCROLL_DOWN}
+;    PED_UpdateStatusArea{#STATUS_SCROLLERS}  
+;  EndIf
+;Return
+;
+;.update_sourcewindow_bottom:
+;  USEPATH ped\ptrCurrentSourceData
+;
+;  ;-- check if we have to scroll the source window
+;  If \TotalLines >= \DisplayLineOffset + sourceWindow\visibleLines
+;    If \DisplayLine + 1 + sourceWindow\boundLinesY => sourceWindow\visibleLines
+;      PED_ScrollVertical{#SCROLL_UP}
+;      PED_UpdateStatusArea{#STATUS_SCROLLERS}  
+;      Return
+;    EndIf
+;  EndIf
+;Return
 
 
 .menu_markindent:
@@ -8294,7 +8588,7 @@ Return
         If pedconfig\no_display_beep = False Then DisplayBeep_ sourceWindow\pedScreen
       Else
         ; for blockmarkRemovalMode = 1 only remove blockmark
-        Poke.l ?comLong_BlockEndY,$ffffFFFF
+        !PED_ResetBlockflag
         sourceWindow\deleteMode = True
         PED_RedrawSource{}
       EndIf
@@ -8305,14 +8599,30 @@ Return
 
 
 .menu_insertline:  ; insertStr may come from menu_undeleteline...
-  If insertStr.s = "" Then insertStr = "leere Zeile"
+  ;If insertStr.s = "" Then insertStr = "leere Zeile"
   *newLine.sourceLine = PED_CreateNewSourceLine{insertStr.s}
   If *newLine <> 0
+    ;-- if autoindent, align cursor for line
+    If NOT pedconfig\auto_indent
+      log_Print{"auto-indent is OFF"}
+      \Column = 0
+    Else
+      \Column = -1
+      Repeat
+        \Column + 1
+      Until Peek.b(\CurrentSourceLine + 9 + \Column) <> $20
+      log_Print{"indent after return: " + Str$(\Column)}
+    EndIf
+
     PED_UpdateBlockPosY{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine}
+    
     If PED_InsertSourceLine{*newLine}
+      !PED_CursorOff        
       PED_ScrollVertical{#SCROLL_DOWN, ped\ptrCurrentSourceData\DisplayLine}
       PED_PrintCurrentSourceLine{False}
       PED_UpdateLinenumbers{}
+      PED_UpdateStatusArea{#STATUS_SCROLLERS}
+      !PED_CursorOn
     Else
       error{"Couldn't insert sourceline!"}
     EndIf
@@ -8340,7 +8650,7 @@ Return
   log_Print{"menu deleteline called"}
 
   ;-- update the blockmark if set
-  If ped\ptrCurrentSourceData\BlockEndY<> $ffffFFFF
+  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
     If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine > ped\ptrCurrentSourceData\BlockStartY
       If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine < ped\ptrCurrentSourceData\BlockEndY
         ped\ptrCurrentSourceData\BlockEndY - 1
@@ -8362,10 +8672,9 @@ Return
       PED_StoreSourceLine{*currentLine}
       PED_DeleteSourceLine{*currentLine}
       ped\ptrCurrentSourceData\CurrentSourceLine = *nextLine
-      ;!PED_DecreaseDisplayLine
-      ;PED_ScrollVertical{#SCROLL_UP, ped\ptrCurrentSourceData\DisplayLine}
-      ;PED_UpdateLinenumbers{#FULL}
-      PED_RedrawSource{}
+      PED_ScrollVertical{#SCROLL_UP, ped\ptrCurrentSourceData\DisplayLine}
+      PED_UpdateStatusArea{#STATUS_SCROLLERS}
+      PED_UpdateLinenumbers{#FULL}
     EndIf
   Else
     If *prevLine <> 0
@@ -8374,19 +8683,9 @@ Return
         PED_DeleteSourceLine{*currentLine}
         ped\ptrCurrentSourceData\CurrentSourceLine = *prevLine
         ped\ptrCurrentSourceData\LastSourceLine = *prevLine
-        If ped\ptrCurrentSourceData\DisplayLineOffset
-          log_Print{"scroll up after delete"}
-          ped\ptrCurrentSourceData\DisplayLineOffset - 1
-          ;PED_ScrollVertical{#SCROLL_UP,ped\ptrCurrentSourceData\DisplayLine}
-          ;Gosub print_new_sourceline_bottom
-          ;PED_UpdateLinenumbers{#FULL}
-        Else
-          PED_ScrollVertical{#SCROLL_UP, ped\ptrCurrentSourceData\DisplayLine}
-          !PED_DecreaseDisplayLine
-          ;Gosub update_sourcewindow_bottom
-          ;PED_UpdateLinenumbers{#FULL}
-        EndIf
-        PED_RedrawSource{}
+        PED_ScrollVertical{#SCROLL_UP, ped\ptrCurrentSourceData\DisplayLine}
+        PED_UpdateStatusArea{#STATUS_SCROLLERS}
+        PED_UpdateLinenumbers{#FULL}
       EndIf
     Else
       PED_StoreSourceLine{*currentLine}
@@ -8401,10 +8700,10 @@ Return
   log_Print{"menu deleteline finished"}
 Return
 
-.menu_joinline:
+.menu_joinlines:
 USEPATH ped\ptrCurrentSourceData
-
   log_Print{"menu joinlines called."}
+
   *currLine.sourceLine = \CurrentSourceLine
   If *currLine\nextLine = 0
     log_Print{"no next line to join."}
@@ -8420,24 +8719,35 @@ USEPATH ped\ptrCurrentSourceData
 
   ; -- get end of line in textbuffer
   lineaddr.l = ped\ptrTextbuffer + \TextBufferOffset
-  strline1$ = StripTrail$(Peeks$(lineaddr,#MAX_Columns-1),@" ")
+  strline1$ = StripTrail$(PED_Detokenize{*currLine},@" ")
   strline2$ = StripTrail$(PED_Detokenize{*nextLine},@" ")
 
-  log_Print{"erste Zeile : " + strline1$}
-  log_Print{"zweite Zeile: " + strline2$}
+  log_Print{"first row: " + strline1$}
+  log_Print{"second row: " + strline2$}
 
   strline$ = PED_TokenizeText{strline1$ + strline2$}
   *newLine.sourceLine = PED_CreateNewSourceLine{strline$}
   PED_ReplaceCurrentSourceLine{*newLine}
   If PED_CutSourceLine{*nextLine}
     PED_DeleteSourceLine{*nextLine}
+  Else
+    log_Print{"could not cut the current line."}
   EndIf
-  PED_RedrawSource{}
+
+  ;-- update the source
+  !PED_CursorOff
+  PED_ScrollVertical{#SCROLL_UP, \DisplayLine}  
+  PED_PrintCurrentSourceLine{True}
+  PED_UpdateLinenumbers{}
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}
+  !PED_CursorOn
+  log_Print{"menu joinlines finished."}
 Return
 
 
 .splitlines:
   USEPATH ped\ptrCurrentSourceData
+  log_Print{"splitlines"}
 
   tmpColumn.w = \ColumnsOffset + \Column
   lineaddr.l = ped\ptrTextbuffer + \TextBufferOffset
@@ -8488,38 +8798,73 @@ Return
   *newLine.sourceLine = PED_CreateNewSourceLine{strline$}
   PED_ReplaceCurrentSourceLine{*newLine}
 
-
   ;-- append rest of line as new line
   newline$ = PED_TokenizeText{restString}
   *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
   PED_AppendSourceLine{\CurrentSourceLine,*newLine}
 
+  !PED_CursorOff
+  PED_ScrollVertical{#SCROLL_DOWN, ped\ptrCurrentSourceData\DisplayLine}
+  PED_PrintCurrentSourceLine{True}
   Gosub movecursorlinedown
-  PED_RedrawSource{}
+  !PED_CursorOff
+  PED_PrintCurrentSourceLine{True}
+  !PED_CursorOn
+  PED_UpdateLinenumbers{#FULL}  
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}  
 Return
 
-.insertline:
+.appendline:
   ;-- don't split the current line but insert a new line after it!
 
-  ;-- if autoindent, align cursor for line
-  If NOT pedconfig\auto_indent
-    log_Print{"auto-indent is OFF"}
-    \Column = 0
-  Else
-    \Column = -1
-    Repeat
-      \Column + 1
-    Until Peek.b(\CurrentSourceLine + 9 + \Column) <> $20
-    log_Print{"indent after return: " + Str$(\Column)}
-  EndIf
-
   *newLine.sourceLine = PED_CreateNewSourceLine{""}
-  If *newLine = 0
+  If *newLine 
+    ;-- if autoindent, align cursor for line
+    If NOT pedconfig\auto_indent
+      log_Print{"auto-indent is OFF"}
+      \Column = 0
+    Else
+      \Column = -1
+      Repeat
+        \Column + 1
+      Until Peek.b(\CurrentSourceLine + 9 + \Column) <> $20
+      log_Print{"indent after return: " + Str$(\Column)}
+    EndIf
+
+    PED_UpdateBlockPosY{\DisplayLineOffset + \DisplayLine}
+
+    If PED_AppendSourceLine{\CurrentSourceLine, *newLine}
+      ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
+      If PED_IncreaseDisplayLine{}
+      
+        If \ColumnsOffset > 0
+          log_Print{"reset columnsoffset, redraw with offset"}
+          \ColumnsOffset = 0
+          Gosub redrawTextbuffer
+        EndIf
+
+        !PED_CursorOff
+        PED_ScrollVertical{#SCROLL_DOWN,\DisplayLine}
+        PED_PrintCurrentSourceLine{False}
+        PED_UpdateLinenumbers{#FULL}  
+        PED_UpdateStatusArea{#STATUS_SCROLLERS}
+        !PED_CursorOn
+      EndIf
+
+      ;-- if cursor is in block mark, redraw everything
+      tmpCurrentColumn.w = 0
+      tmpCurrentLine.l = \DisplayLine + \DisplayLineOffset
+      !updateStateBlockMark{tmpCurrentLine, tmpCurrentColumn}
+      If \StateBlockMark Then PED_RedrawSource{}
+    Else
+      error{"Couldn't append sourceline!"}
+    EndIf
+  Else
     Pop If
     Goto memAlert_CloseSource
   EndIf
-  PED_AppendSourceLine{\CurrentSourceLine\previousLine,*newLine}; : \CurrentSourceLine = *newLine
 Return
+
 
 .insertreturn:
   USEPATH ped\ptrCurrentSourceData
@@ -8529,45 +8874,14 @@ Return
   EndIf
 
   sourceWindow\redrawFlag = True
-  !PED_CursorOff
 
-  ; SHIFT pressed as well ? if pressed, do notsplit current line at cursor pos but insert a new line before the current line!
-  If (\QualifierStore AND 3) = 0
+  ;-- SHIFT pressed as well ? 
+  If (\QualifierStore AND 3) <> 0
+    ;-- if pressed, do not split current line at cursor pos but insert a new line before the current line!
+    Gosub appendline
+  Else
     ;log_Print{"split current line at column position, BlockEndY = " + Hex$(\BlockEndY)}
-    Goto splitlines
-  Else
-    Gosub insertline
-  EndIf
-
-  PED_UpdateBlockPosY{\DisplayLineOffset + \DisplayLine}
-
-  If \ColumnsOffset > 0
-    log_Print{"reset columnsoffset, redraw with offset"}
-    \ColumnsOffset = 0
-    Gosub redrawWithOffset
-  EndIf
-
-  PED_UpdateStatusArea{#STATUS_SCROLLERS}
-
-  If sourceWindow\visibleLines <= \DisplayLine + 1 + sourceWindow\boundLinesY
-    log_Print{"scroll up"}
-    Gosub update_sourcewindow_bottom
-
-    tmpCurrentColumn.w = 0
-    tmpCurrentLine.l = \DisplayLine + \DisplayLineOffset
-    !updateBlockMark{tmpCurrentLine, tmpCurrentColumn}
-    If \StateBlockMark Then PED_RedrawSource{}
-  Else
-    log_Print{"scroll down"}
-    ;-- scroll rest of source downwarts
-    PED_ScrollVertical{#SCROLL_DOWN,\DisplayLine + 1}
-    Gosub update_sourcewindow_bottom
-
-    tmpCurrentColumn.w = 0
-    tmpCurrentLine.l = \DisplayLine + \DisplayLineOffset
-    !updateBlockMark{tmpCurrentLine, tmpCurrentColumn}
-    If \StateBlockMark Then Gosub redrawWithOffset
-    PED_RedrawSource{}
+    Gosub splitlines
   EndIf
 Return
 
@@ -9030,7 +9344,7 @@ Return
 
 .menu_copy:
   log_Print{"menu copy called."}
-  If ped\ptrCurrentSourceData\BlockEndY = -1 Then Return
+  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF Then Return
 
   Gosub getCountOfMarkedLines
   strline$ = PED_Detokenize{*tempLine.sourceLine}
@@ -9173,41 +9487,70 @@ Return
 
 .menu_kill:
   log_Print{"menu Kill called."}
+  If ped\ptrCurrentSourceData\BlockEndY = $FFFFffff Then Return
 
-  If ped\ptrCurrentSourceData\BlockEndY = $FFFFffff
-    log_Print{"no block selected."}
-    Return
-  EndIf
-
+  killedRows.l = 0
   Gosub getCountOfMarkedLines
   log_Print{"marked Lines: " + Str$(getCountOfMarkedLines)}
   strline$ = PED_Detokenize{*tempLine}
   log_Print{"source of first blockline: " + Left$(strline$,20)}
-  *previousLine.sourceLine = *tempLine\previousLine
 
-  For si.w = 1 To getCountOfMarkedLines
-    strline$ = PED_Detokenize{*tempLine}
-    log_Print{Str$(si) + " deleting " + Left$(strline$, 20)}
-
-    ptr_line.l = *tempLine
-    *tempLine = *tempLine\nextLine
-    PED_FreeMem{ptr_line}
-
-    ped\ptrCurrentSourceData\TotalLines - 1
-  Next si
-
-  If *tempLine
-    *previousLine\nextLine = *tempLine          ; set templine as next line of line before block
-    *tempLine\previousLine = *previousLine      ; set line after block as nextline of line before block
+  If getCountOfMarkedLines = 1
+    If (\BlockEndX - \BlockStartX + 1) < #MAX_Columns
+      strline$ = PED_Detokenize{*tempLine}
+      strline$ = Left$(strline$,\BlockStartX) + UnRight$(strline$,\BlockEndX + 1)
+      log_Print{"changing line to: " + strline$}              
+      newline$ = PED_TokenizeText{strline$}
+      *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+      *tempLine = PED_ReplaceSourceLine{*tempLine, *newLine}
+      If *tempLine = 0
+        log_Print{"Could not cut selected block."}
+      EndIf
+    Else
+      If PED_CutSourceLine{*tempLine} Then PED_DeleteSourceLine{*tempLine}
+    EndIf
   Else
-    *previousLine\nextLine = 0
-    ped\ptrCurrentSourceData\LastSourceLine = *newLine
+    For si.w = 1 To getCountOfMarkedLines
+      ;-- check first line
+      If si = 1 AND (\BlockStartX > 0)
+        strline$ = PED_Detokenize{*tempLine}
+        strline$ = Left$(strline$,\BlockStartX)
+        log_Print{"changing first line to: " + strline$}        
+        newline$ = PED_TokenizeText{strline$}
+        *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+        *tempLine = PED_ReplaceSourceLine{*tempLine, *newLine}
+        If *tempLine = 0
+          log_Print{"Could not cut selected block."}          
+        EndIf
+        Goto skip_killofline
+      EndIf    
+
+      ;-- check last line
+      If si = getCountOfMarkedLines AND (\BlockEndX + 1 < #MAX_Columns)
+        strline$ = PED_Detokenize{*tempLine}
+        strline$ = UnRight$(strline$,\BlockEndX + 1)
+        log_Print{"changing last line to: " + strline$}
+        newline$ = PED_TokenizeText{strline$}
+        *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+        *tempLine = PED_ReplaceSourceLine{*tempLine, *newLine}
+        If *tempLine = 0
+          log_Print{"Could not cut selected block."}
+        EndIf
+        Goto skip_killofline
+      EndIf
+
+      ;-- remove the sourceline
+      strline$ = PED_Detokenize{*tempLine}
+      log_Print{Str$(si) + " deleting " + Left$(strline$, 20)}
+      *nextLine.sourceLine = *tempLine\nextLine
+      If PED_CutSourceLine{*tempLine} Then PED_DeleteSourceLine{*tempLine}
+      killedRows + 1 
+      skip_killofline:
+      *tempLine = *nextLine
+    Next si
+    ped\ptrCurrentSourceData\CurrentSourceLine = *tempLine
+    ped\ptrCurrentSourceData\SourceChanged = $FFFF
   EndIf
-
-  ped\ptrCurrentSourceData\CurrentSourceLine = *previousLine
-  ped\ptrCurrentSourceData\SourceChanged = $FFFF
-
-  !PED_ResetBlockflag
 
   If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine > ped\ptrCurrentSourceData\TotalLines
     ped\ptrCurrentSourceData\TotalLines - 1
@@ -9216,87 +9559,94 @@ Return
     ped\ptrCurrentSourceData\DisplayLine = 0
 
     ped\ptrCurrentSourceData\Column = ped\ptrCurrentSourceData\BlockStartX
-    Gosub update_currsourceline
+    PED_SetCurrentSourceLine{}
+    !PED_ResetBlockflag
     PED_RedrawSource{}
     PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset}
   Else
     ped\ptrCurrentSourceData\Column = ped\ptrCurrentSourceData\BlockStartX
-    Gosub update_currsourceline
+    ped\ptrCurrentSourceData\DisplayLine - killedRows
+    If ped\ptrCurrentSourceData\DisplayLine < 0
+        ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
+        ped\ptrCurrentSourceData\DisplayLine = 0
+    EndIf
+    PED_SetCurrentSourceLine{}
+    !PED_ResetBlockflag    
     PED_RedrawSource{}
   EndIf
 Return
 
 .menu_saveblockas:
-  If ped\ptrCurrentSourceData\BlockEndY > -1
-    blockfn$ = PED_RequestFile{"","","Name to save block as","(#?.info)", False}
-    If blockfn$ <> ""
-      *write_fh.l = Open_(&blockfn$, #HUNK_RELOC_8__MODE_NEWFILE)
-      If *write_fh <> 0
-        Gosub set_pointer_busy
-        Gosub getCountOfMarkedLines
-        strline$ = PED_Detokenize{*tempLine}
-        strlng.w = FLen(strline$)
-
-        If getCountOfMarkedLines.l < 2
-          If strlng >= ped\ptrCurrentSourceData\BlockEndX
-            strlng = ped\ptrCurrentSourceData\BlockEndX - ped\ptrCurrentSourceData\BlockStartX + 2
-          EndIf
-          strlng = strlng - 1
-          strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX, strlng) ;+ Chr$(10)
-          ;log_Print{">>" + strline$}
-          Write_ *write_fh,&strline$,FLen(strline$)
-        Else
-          If strlng <= ped\ptrCurrentSourceData\BlockStartX
-            ;-- end of String...
-            strline$ = Chr$(10)
-            WriteChunkBytes_ *write_fh, &strline$,1
-          EndIf
-
-           ;-- copy first line
-           strlng = strlng - ped\ptrCurrentSourceData\BlockStartX
-           strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX, strlng) + Chr$(10)
-           Write_ *write_fh, &strline$, Len(strline$)
-
-           ;-- copy most lines
-           For si.w = 1 To getCountOfMarkedLines - 2
-             If *tempLine\nextLine
-               *tempLine = *tempLine\nextLine
-               strline$ = PED_Detokenize{*tempLine}
-               strlng.w = FLen(strline$)
-               If ped\verticalCopyMode <> 0 AND (strlng > ped\ptrCurrentSourceData\BlockStartX)
-                 strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX, strlng - ped\ptrCurrentSourceData\BlockStartX) + Chr$(10)
-               Else
-                 strline$ = Left$(strline$, strlng) + Chr$(10)
-               EndIf
-               Write_ *write_fh,&strline$,FLen(strline$)
-             Else
-               error{"Error copying to clipboard: no next line!",#log_error}
-             EndIf
-           Next si
-
-           ;-- copy last selected Line
-           *tempLine = *tempLine\nextLine
-           If *tempLine
-             strline$ = PED_Detokenize{*tempLine}
-             strline$ = Left$(strline$,ped\ptrCurrentSourceData\BlockEndX)
-             strlng = Len(strline$)
-             If ped\verticalCopyMode <> 0 AND (strlng > ped\ptrCurrentSourceData\BlockStartX)
-               strline$ = UnRight$(strline$,ped\ptrCurrentSourceData\BlockStartX-1) + Chr$(10)
-             Else
-               strline$ = strline$ + Chr$(10)
-             EndIf
-             Write_ *write_fh, &strline$, Len(strline$)
-           EndIf
-        EndIf
-        Close_ *write_fh
-        Gosub set_pointer_normal
-      Else
-        dummy.l = ask{!TRANS{messageErrorWriteFile},!TRANS{"OK"},"Error!"}
-      End If
-    End If
-  Else
+  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
     log_Print{"no block marked."}
-  EndIf
+  EndIf  
+
+  blockfn$ = PED_RequestFile{"","","Name to save block as","(#?.info)", False}
+  If blockfn$ <> ""
+    *write_fh.l = Open_(&blockfn$, #HUNK_RELOC_8__MODE_NEWFILE)
+    If *write_fh <> 0
+      Gosub set_pointer_busy
+      Gosub getCountOfMarkedLines
+      strline$ = PED_Detokenize{*tempLine}
+      strlng.w = FLen(strline$)
+
+      If getCountOfMarkedLines.l < 2
+        If strlng >= ped\ptrCurrentSourceData\BlockEndX
+          strlng = ped\ptrCurrentSourceData\BlockEndX - ped\ptrCurrentSourceData\BlockStartX + 2
+        EndIf
+        strlng = strlng - 1
+        strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX, strlng) ;+ Chr$(10)
+        ;log_Print{">>" + strline$}
+        Write_ *write_fh,&strline$,FLen(strline$)
+      Else
+        If strlng <= ped\ptrCurrentSourceData\BlockStartX
+          ;-- end of String...
+          strline$ = Chr$(10)
+          WriteChunkBytes_ *write_fh, &strline$,1
+        EndIf
+
+          ;-- copy first line
+          strlng = strlng - ped\ptrCurrentSourceData\BlockStartX
+          strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX, strlng) + Chr$(10)
+          Write_ *write_fh, &strline$, Len(strline$)
+
+          ;-- copy most lines
+          For si.w = 1 To getCountOfMarkedLines - 2
+            If *tempLine\nextLine
+              *tempLine = *tempLine\nextLine
+              strline$ = PED_Detokenize{*tempLine}
+              strlng.w = FLen(strline$)
+              If ped\verticalCopyMode <> 0 AND (strlng > ped\ptrCurrentSourceData\BlockStartX)
+                strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX, strlng - ped\ptrCurrentSourceData\BlockStartX) + Chr$(10)
+              Else
+                strline$ = Left$(strline$, strlng) + Chr$(10)
+              EndIf
+              Write_ *write_fh,&strline$,FLen(strline$)
+            Else
+              error{"Error copying to clipboard: no next line!",#log_error}
+            EndIf
+          Next si
+
+          ;-- copy last selected Line
+          *tempLine = *tempLine\nextLine
+          If *tempLine
+            strline$ = PED_Detokenize{*tempLine}
+            strline$ = Left$(strline$,ped\ptrCurrentSourceData\BlockEndX)
+            strlng = Len(strline$)
+            If ped\verticalCopyMode <> 0 AND (strlng > ped\ptrCurrentSourceData\BlockStartX)
+              strline$ = UnRight$(strline$,ped\ptrCurrentSourceData\BlockStartX-1) + Chr$(10)
+            Else
+              strline$ = strline$ + Chr$(10)
+            EndIf
+            Write_ *write_fh, &strline$, Len(strline$)
+          EndIf
+      EndIf
+      Close_ *write_fh
+      Gosub set_pointer_normal
+    Else
+      dummy.l = ask{!TRANS{messageErrorWriteFile},!TRANS{"OK"},"Error!"}
+    End If
+  End If
 Return
 
 
@@ -9450,41 +9800,43 @@ Return
 Return
 
 .event_leftmousebutton:
-;  log_Print{"event left mousebutton"}
+USEPATH ped\ptrCurrentSourceData
+  log_Print{"event left mousebutton"}
   PED_GetMousePos{mousePos}
-  If (mousePos\textY < 0) OR (mousePos\textY + ped\ptrCurrentSourceData\DisplayLineOffset > ped\ptrCurrentSourceData\TotalLines)
+  If (mousePos\textY < 0) OR (mousePos\textY + \DisplayLineOffset > \TotalLines)
+    ;-- mouse is outside of source area
     Return
   EndIf
 
-  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF     ; if blockmark is set, clear the block
-    !PED_ResetBlockflag
-    PED_RedrawSource{}
-  EndIf
-  oldBlockDims\xMin = ped\ptrCurrentSourceData\BlockStartX ; why store the old block ?? it has been killed with the clause above
-  oldBlockDims\yMin = ped\ptrCurrentSourceData\BlockStartY
-  oldBlockDims\xMax = ped\ptrCurrentSourceData\BlockEndX
-  oldBlockDims\yMax = ped\ptrCurrentSourceData\BlockEndY
-
   !PED_CursorOff
 
-  ped\ptrCurrentSourceData\LinePosStartX = mousePos\textX + ped\ptrCurrentSourceData\ColumnsOffset
-  If mousePos\textY + ped\ptrCurrentSourceData\DisplayLineOffset < ped\ptrCurrentSourceData\TotalLines
-    ped\ptrCurrentSourceData\LinePosStartY = mousePos\textY + ped\ptrCurrentSourceData\DisplayLineOffset
-  Else
-    ped\ptrCurrentSourceData\LinePosStartY = ped\ptrCurrentSourceData\TotalLines - 1
+  If \BlockEndY <> $ffffFFFF     ; if blockmark is set, clear the block
+    PED_RedrawBlock{}
+    !PED_ResetBlockflag    
   EndIf
-  ped\ptrCurrentSourceData\LinePosEndX = ped\ptrCurrentSourceData\LinePosStartX
-  ped\ptrCurrentSourceData\LinePosEndY = ped\ptrCurrentSourceData\LinePosStartY
+
+  oldBlockDims\xMin = \BlockStartX ; why store the old block ?? it has been killed with the clause above
+  oldBlockDims\yMin = \BlockStartY
+  oldBlockDims\xMax = \BlockEndX
+  oldBlockDims\yMax = \BlockEndY
+
+  \LinePosStartX = mousePos\textX + \ColumnsOffset
+  If mousePos\textY + \DisplayLineOffset < \TotalLines
+    \LinePosStartY = mousePos\textY + \DisplayLineOffset
+  Else
+    \LinePosStartY = \TotalLines - 1
+  EndIf
+  \LinePosEndX = \LinePosStartX
+  \LinePosEndY = \LinePosStartY
 
   PED_UpdateStatusArea{#STATUS_SCROLLERS}
 
-  storeDisplayLineOffset.l = ped\ptrCurrentSourceData\DisplayLineOffset
-  storeColumnsOffset.w = ped\ptrCurrentSourceData\ColumnsOffset
-  storeCurrentSourceLine.l = ped\ptrCurrentSourceData\CurrentSourceLine
+  storeDisplayLineOffset.l = \DisplayLineOffset
+  storeColumnsOffset.w = \ColumnsOffset
+  storeCurrentSourceLine.l = \CurrentSourceLine
 
-  ;log_Print{"initial block draw"}
-  Poke.w ?comWord__QuoteFlag, 0
-  storeX.w = mousePos\textX + ped\ptrCurrentSourceData\ColumnsOffset
+  log_Print{"initial block draw"}
+  storeX.w = mousePos\textX + \ColumnsOffset
   storeY.l = mousePos\textY
 
   bmark\xMin = storeX
@@ -9494,6 +9846,7 @@ Return
   AbsDimensions{bmark}
   PED_DrawBlock{bmark}
 
+  ;-- loop while mousebutton is pressed and block marking is in progress
   exit_mouse_loop.b = False
   Repeat
     PED_GetIntuiMessage{True}
@@ -9513,7 +9866,7 @@ Return
           If mousePos\Y <= sourceWindow\BoxTop
             Gosub mouse_scrollup
           Else
-            If sourceWindow\visibleLines + ped\ptrCurrentSourceData\DisplayLineOffset <= ped\ptrCurrentSourceData\TotalLines
+            If sourceWindow\visibleLines + \DisplayLineOffset <= \TotalLines
               Gosub mouse_scrolldown
             EndIf
           EndIf
@@ -9527,22 +9880,23 @@ Return
 
 
 .mouse_scrolldown:
+USEPATH ped\ptrCurrentSourceData
   ;log_Print{"scroll down"}
-  tmpX.w = #MAX_Columns               ;D2
-  tmpY.l = sourceWindow\visibleLines - 1 ;D3
+  tmpX.w = #MAX_Columns
+  tmpY.l = sourceWindow\visibleLines - 1
 
-  If ped\ptrCurrentSourceData\DisplayLineOffset + sourceWindow\visibleLines <= ped\ptrCurrentSourceData\TotalLines
+  If \DisplayLineOffset + sourceWindow\visibleLines <= \TotalLines
     PED_ScrollVertical{#SCROLL_UP}
 
-    *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-    ped\ptrCurrentSourceData\CurrentSourceLine = *currentLine\nextLine
-    ped\ptrCurrentSourceData\DisplayLineOffset + 1
+    *currentLine.sourceLine = \CurrentSourceLine
+    \CurrentSourceLine = *currentLine\nextLine
+    \DisplayLineOffset + 1
 
     Gosub print_new_sourceline_bottom
 
     storeY - 1
 
-    If tmpY + ped\ptrCurrentSourceData\DisplayLineOffset <= ped\ptrCurrentSourceData\LinePosStartY
+    If tmpY + \DisplayLineOffset <= \LinePosStartY
       bmark\xMin = #MAX_Columns
       bmark\yMin = sourceWindow\visibleLines - 2
       bmark\xMax = storeX
@@ -9550,8 +9904,8 @@ Return
       PED_DrawBlock{bmark}
       storeX = #MAX_Columns
       storeY = sourceWindow\visibleLines - 1
-      If tmpY + ped\ptrCurrentSourceData\DisplayLineOffset = ped\ptrCurrentSourceData\LinePosStartY
-        storeX = ped\ptrCurrentSourceData\LinePosStartX - 1
+      If tmpY + \DisplayLineOffset = \LinePosStartY
+        storeX = \LinePosStartX - 1
       EndIf
       tmpX = -1
       tmpY = storeY
@@ -9564,22 +9918,23 @@ Return
 Return
 
 .mouse_scrollup:
+USEPATH ped\ptrCurrentSourceData
   ;log_Print{"scroll up"}
-  tmpX.w = 0  ;D2
-  tmpY.l = 0  ;D3
+  tmpX.w = 0
+  tmpY.l = 0
 
-  If ped\ptrCurrentSourceData\DisplayLineOffset > 0
+  If \DisplayLineOffset > 0
     PED_ScrollVertical{#SCROLL_DOWN}
 
-    *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-    ped\ptrCurrentSourceData\CurrentSourceLine = *currentLine\previousLine
-    ped\ptrCurrentSourceData\DisplayLineOffset - 1
+    *currentLine.sourceLine = \CurrentSourceLine
+    \CurrentSourceLine = *currentLine\previousLine
+    \DisplayLineOffset - 1
 
     Gosub print_new_sourceline_top
 
     storeY + 1
 
-    If ped\ptrCurrentSourceData\DisplayLineOffset >= ped\ptrCurrentSourceData\LinePosStartY
+    If \DisplayLineOffset >= \LinePosStartY
       bmark\xMin = 0
       bmark\yMin = 1
       bmark\xMax = storeX
@@ -9589,8 +9944,8 @@ Return
       tmpY = 0
       storeX = -1
       storeY = 0
-      If ped\ptrCurrentSourceData\DisplayLineOffset = ped\ptrCurrentSourceData\LinePosStartY
-        storeX = ped\ptrCurrentSourceData\LinePosStartX - 1
+      If \DisplayLineOffset = \LinePosStartY
+        storeX = \LinePosStartX - 1
       EndIf
 
     EndIf
@@ -9601,46 +9956,50 @@ Return
 Return
 
 .mouse_scrollno:
-;  log_Print{"scroll no"}
-  tmpX = mousePos\textX + ped\ptrCurrentSourceData\ColumnsOffset     ; >D2
-  tmpY = mousePos\textY ; >D3
-  If tmpY + ped\ptrCurrentSourceData\DisplayLineOffset > ped\ptrCurrentSourceData\TotalLines
-    tmpY = ped\ptrCurrentSourceData\TotalLines - ped\ptrCurrentSourceData\DisplayLineOffset - 1
+USEPATH ped\ptrCurrentSourceData
+  tmpX = mousePos\textX + \ColumnsOffset
+  tmpY = mousePos\textY
+  If tmpY + \DisplayLineOffset > \TotalLines
+    tmpY = \TotalLines - \DisplayLineOffset - 1
   EndIf
+  ;log_Print{"scroll no, mx " + Str$(mousePos\X) + " tmpx "  + Str$(tmpX)}
 
-  If mousePos\X = 0        ; mouse is left of source, scroll to right if not at column 1
-    tmpX - 1
-    If ped\ptrCurrentSourceData\ColumnsOffset > 0
-      tmpX - 1
-      ped\ptrCurrentSourceData\LinePosEndX = storeX
-      ped\ptrCurrentSourceData\LinePosEndY = storeY + ped\ptrCurrentSourceData\DisplayLineOffset ; mousePos\textY
+  If mousePos\textX < 0
+    ;-- mouse is left of source, scroll to right if there is a ColumnsOffset
+    If \ColumnsOffset > 0
+      \LinePosEndX = storeX
+      \LinePosEndY = storeY + \DisplayLineOffset
 
-      ped\ptrCurrentSourceData\BlockStartX = ped\ptrCurrentSourceData\LinePosStartX
-      ped\ptrCurrentSourceData\BlockStartY = ped\ptrCurrentSourceData\LinePosStartY
-      ped\ptrCurrentSourceData\BlockEndX   = ped\ptrCurrentSourceData\LinePosEndX
-      ped\ptrCurrentSourceData\BlockEndY   = ped\ptrCurrentSourceData\LinePosEndY
+      \BlockStartX = \LinePosStartX
+      \BlockStartY = \LinePosStartY
+      \BlockEndX   = \LinePosEndX
+      \BlockEndY   = \LinePosEndY
       PED_AbsBlockDimensions{}
 
-      ped\ptrCurrentSourceData\ColumnsOffset - sourceWindow\scrollSize
-      Gosub scroll_right
-      !PED_ResetBlockflag
+      \ColumnsOffset - sourceWindow\scrollSize
+      PED_ScrollHorizontal{#SCROLL_RIGHT}
+;      !PED_ResetBlockflag
+Return
     EndIf
-  Else            ; scroll to left if where are not at the rightmost column
-    If (mousePos\textX - ped\ptrCurrentSourceData\ColumnsOffset) => sourceWindow\visibleColumns
-      tmpX = ped\ptrCurrentSourceData\ColumnsOffset + sourceWindow\visibleColumns
+  Else            
+    ;-- scroll to left if we are not at the rightmost column  
+    If (mousePos\textX - \ColumnsOffset) => sourceWindow\visibleColumns
+      tmpX = \ColumnsOffset + sourceWindow\visibleColumns
       If tmpX < #MAX_Columns
         tmpX + 1
-        ped\ptrCurrentSourceData\LinePosEndX = mousePos\textX
-        ped\ptrCurrentSourceData\LinePosEndY = mousePos\textY + ped\ptrCurrentSourceData\DisplayLineOffset
-        ped\ptrCurrentSourceData\BlockStartX = ped\ptrCurrentSourceData\LinePosStartX
-        ped\ptrCurrentSourceData\BlockStartY = ped\ptrCurrentSourceData\LinePosStartY
-        ped\ptrCurrentSourceData\BlockEndX   = ped\ptrCurrentSourceData\LinePosEndX
-        ped\ptrCurrentSourceData\BlockEndY   = ped\ptrCurrentSourceData\LinePosEndY
+        \LinePosEndX = mousePos\textX
+        \LinePosEndY = mousePos\textY + \DisplayLineOffset
+
+        \BlockStartX = \LinePosStartX
+        \BlockStartY = \LinePosStartY
+        \BlockEndX   = \LinePosEndX
+        \BlockEndY   = \LinePosEndY
         PED_AbsBlockDimensions{}
 
-        ped\ptrCurrentSourceData\ColumnsOffset + sourceWindow\scrollSize
-        Gosub scroll_left
-        !PED_ResetBlockflag
+        \ColumnsOffset + sourceWindow\scrollSize
+        PED_ScrollHorizontal{#SCROLL_LEFT}
+;        !PED_ResetBlockflag
+Return
       EndIf
     EndIf
   EndIf
@@ -9649,100 +10008,82 @@ Return
 Return
 
 .update_blockmark:
-      If (storeX = mousePos\textX) AND (storeY = mousePos\textY)
-        Return
-      EndIf
-      ;log_Print{"update block ..."}
+  USEPATH ped\ptrCurrentSourceData
+  ;-- check if mouse position has been changed
+  If (storeX = mousePos\textX) AND (storeY = mousePos\textY) Then Return
+  
+  \LinePosEndX = tmpX
+  If tmpY + \DisplayLineOffset < \TotalLines
+    \LinePosEndY = tmpY + \DisplayLineOffset
+  EndIf
 
-      PED_UpdateStatusArea{#STATUS_SCROLLERS}
+  bmark\xMin = storeX
+  bmark\yMin = storeY
+  bmark\xMax = tmpX
+  bmark\yMax = tmpY
+  AbsDimensions{bmark}  
 
-      ;msg$ = "tmpX: " + Str$(tmpX) + ", tmpY: " + Str$(tmpY)
-      ;log_Print{msg$}
-      ped\ptrCurrentSourceData\LinePosEndX = tmpX
-      If tmpY + ped\ptrCurrentSourceData\DisplayLineOffset < ped\ptrCurrentSourceData\TotalLines
-        ped\ptrCurrentSourceData\LinePosEndY = tmpY + ped\ptrCurrentSourceData\DisplayLineOffset
-      EndIf
+  ;-- adjust blockpart if necessary
+  If \LinePosEndY > \LinePosStartY  
+    ; mouse moved into next line, so we have to fill the rest of the current line with a block
+    ;log_Print{"adjust 1"}
+    bmark\xMin + 1
+  Else
+    If (\LinePosEndX => \LinePosStartX) OR (\LinePosEndY = \LinePosStartY)
+      ; we are in a oneliner
+      ;log_Print{"adjust 2"}
+      bmark\xMin + 1
+    Else
+      ;log_Print{"adjust 3"}
+      bmark\xMax - 1
+    EndIf
+  EndIf
  
-      If ped\ptrCurrentSourceData\LinePosEndY <= ped\ptrCurrentSourceData\LinePosStartY
-        ;log_Print{"lineposendy < lineposstarty " + Str$(storeY)}
-        If (ped\ptrCurrentSourceData\LinePosEndX => ped\ptrCurrentSourceData\LinePosStartX) OR (ped\ptrCurrentSourceData\LinePosEndY = ped\ptrCurrentSourceData\LinePosStartY)
-          If Peek.w(?comWord__QuoteFlag) = 0
-            bmark\xMin = storeX
-            bmark\yMin = storeY
-            bmark\xMax = tmpX
-            bmark\yMax = tmpY
-            storeX = tmpX
-            storeY = tmpY
-            AbsDimensions{bmark}
-            bmark\xMin + 1
-            PED_DrawBlock{bmark}
-            Return
-          EndIf
-        Else
-          Goto other_path
-        EndIf
-      Else
-        other_path:
-        ;log_Print{"lineposendy > lineposstarty"}
-        If Peek.w(?comWord__QuoteFlag) = 0
-          bmark\xMin = storeX
-          bmark\yMin = storeY
-          bmark\xMax = tmpX
-          bmark\yMax = tmpY
-          storeX = tmpX
-          storeY = tmpY
-          AbsDimensions{bmark}
-          bmark\xMax - 1
-          PED_DrawBlock{bmark}
-          Return
-        EndIf
-      EndIf
+  ;log_Print{"updating block, tmpX: " + Str$(tmpX) + ", tmpY: " + Str$(tmpY) + " | xMin " + Str$(bmark\xMin) + ", yMin "+ Str$(bmark\yMin)+", xMax "+ Str$(bmark\xMax)+", yMax "+ Str$(bmark\yMax)}  
+  PED_DrawBlock{bmark}
 
-      ;------------------------------------------------------------------------
-      log_Print{"mouseclick in same line"}
-      Poke.w ?comWord__QuoteFlag, NOT Peek.w(?comWord__QuoteFlag)
+  storeX = tmpX
+  storeY = tmpY
 
-      bmark\xMax = storeX
-      bmark\yMax = storeY
-      bmark\xMin = ped\ptrCurrentSourceData\LinePosStartX
-      bmark\yMin = ped\ptrCurrentSourceData\LinePosStartY - ped\ptrCurrentSourceData\DisplayLineOffset
-      If bmark\yMin < 0
-        bmark\xMin = 0
-        bmark\yMin = 0
-      Else
-        If bmark\yMin >= sourceWindow\visibleLines
-          bmark\yMin = sourceWindow\visibleLines - 1
-          bmark\xMin = #MAX_Columns - 1
-        EndIf
-      EndIf
-      ;obx.w = bmark\xMin
-      ;oby.l = bmark\yMin
-      PED_DrawBlock{bmark}
-
-      ;bmark\xMin = obx
-      ;bmark\yMin = oby
-      bmark\xMax = tmpX
-      bmark\yMax = tmpY
-      PED_DrawBlock{bmark}
-
-      storeX = tmpX
-      storeY = tmpY
+  PED_UpdateStatusArea{#STATUS_SCROLLERS}
 Return
 
 
 .mouseclick_in_source:
-;  log_Print{"mousebutton released in source, qualifier: " + Hex$(mqualifier) }
-  ped\ptrCurrentSourceData\DisplayLineOffset = storeDisplayLineOffset
-  ped\ptrCurrentSourceData\ColumnsOffset = storeColumnsOffset
-  ped\ptrCurrentSourceData\CurrentSourceLine = storeCurrentSourceLine
+USEPATH ped\ptrCurrentSourceData
+  log_Print{"mousebutton released in source, qualifier: " + Hex$(mqualifier) }
 
-  ped\ptrCurrentSourceData\DisplayLineOffsetStore = ped\ptrCurrentSourceData\DisplayLineOffset
-  sourceWindow\ColumnsOffsetStore = ped\ptrCurrentSourceData\ColumnsOffset
+  \DisplayLineOffset = storeDisplayLineOffset
+  \ColumnsOffset = storeColumnsOffset
+  \CurrentSourceLine = storeCurrentSourceLine
 
-  tempX.w = ped\ptrCurrentSourceData\LinePosEndX
+  ;-- store old values to check if cursorposition has changed
+  \DisplayLineOffsetStore = \DisplayLineOffset
+  sourceWindow\ColumnsOffsetStore = \ColumnsOffset
+
+  ;-- todo: add hardfold support (compare with old asm code at this place!
+  ped\foldNumber = 0
+
+  ;-- set y-position: sourceline to last selected line
+  lineNum.l = \LinePosEndY - \DisplayLineOffset
+  *tempLine.sourceLine = \CurrentSourceLine
+  While lineNum <> \DisplayLine
+    If lineNum > \DisplayLine
+      *tempLine = *tempLine\nextLine
+      \DisplayLine + 1
+    Else
+      *tempLine = *tempLine\previousLine
+      \DisplayLine - 1
+    EndIf
+  Wend
+  \CurrentSourceLine = *tempLine
+  !PED_UpdateTextBufferOffset
+
+  ;-- set x-position of blockend
+  tempX.w = \LinePosEndX
   If tempX < 1
-    If ped\ptrCurrentSourceData\LinePosEndY > ped\ptrCurrentSourceData\LinePosStartY
-      ped\ptrCurrentSourceData\LinePosEndY - 1
+    If \LinePosEndY > \LinePosStartY
+      \LinePosEndY - 1
       Goto jump_crude
     Else
       tempX = 0
@@ -9752,64 +10093,31 @@ Return
     jump_crude:
     tempX = #MAX_Columns - 1
   EndIf
-  ped\ptrCurrentSourceData\LinePosEndX = tempX
-
-  ;msg$ = "LinePosStartX " + Str$(ped\ptrCurrentSourceData\LinePosStartX) + ", "
-  ;msg$ + Str$(ped\ptrCurrentSourceData\LinePosStartY)  + " - "
-  ;msg$ + Str$(ped\ptrCurrentSourceData\LinePosEndX) + ", "
-  ;msg$ + Str$(ped\ptrCurrentSourceData\LinePosEndY)
-  ;log_Print{msg$}
-
-  ;-- todo: add hardfold support (compare with old asm code at this place!
-  ped\foldNumber = 0
+  \LinePosEndX = tempX
 
   ;-- set cursor position to beginning of block mark
-  ped\ptrCurrentSourceData\Column = ped\ptrCurrentSourceData\LinePosStartX - ped\ptrCurrentSourceData\ColumnsOffset
+  \Column = \LinePosEndX - \ColumnsOffset
 
-  *tempLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  tempY.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
-  While ped\ptrCurrentSourceData\LinePosStartY <> tempY
-    If ped\ptrCurrentSourceData\LinePosStartY > tempY
-      *tempLine = *tempLine\nextLine
-      tempY + 1
-    Else
-      *tempLine = *tempLine\previousLine
-      tempY - 1
-    EndIf
-  Wend
-  tempY = tempY - ped\ptrCurrentSourceData\DisplayLineOffset
-  ped\ptrCurrentSourceData\DisplayLine = tempY
-  ped\ptrCurrentSourceData\CurrentSourceLine = *tempLine
-  !PED_UpdateTextBufferOffset
+  ;-- if a block is marked, then quit routine
+  If (\LinePosStartX <> \LinePosEndX) OR (\LinePosStartY <> \LinePosEndY)
+      log_Print{"End of block selection"}
 
-
-  ; if a block is marked, then quit routine
-  If (ped\ptrCurrentSourceData\LinePosStartX <> ped\ptrCurrentSourceData\LinePosEndX) OR (ped\ptrCurrentSourceData\LinePosStartY <> ped\ptrCurrentSourceData\LinePosEndY)
-      ;log_Print{"LinePosEnd  equals not LinePosStart"}
-
-      ped\ptrCurrentSourceData\BlockStartX = ped\ptrCurrentSourceData\LinePosStartX
-      ped\ptrCurrentSourceData\BlockStartY = ped\ptrCurrentSourceData\LinePosStartY
-      ped\ptrCurrentSourceData\BlockEndX = ped\ptrCurrentSourceData\LinePosEndX
-      ped\ptrCurrentSourceData\BlockEndY = ped\ptrCurrentSourceData\LinePosEndY
+      \BlockStartX = \LinePosStartX
+      \BlockStartY = \LinePosStartY
+      \BlockEndX = \LinePosEndX
+      \BlockEndY = \LinePosEndY
       PED_AbsBlockDimensions{}
       PED_UpdateStatusArea{#STATUS_SCROLLERS}
       PED_RedrawSource{}
       Return
   EndIf
 
-  ; it was just a click...
+  ;-- it was just a click...
   ; log_Print{"just a click, no block marked."}
-  ped\ptrCurrentSourceData\BlockStartX = oldBlockDims\xMin
-  ped\ptrCurrentSourceData\BlockStartY = oldBlockDims\yMin
-  ped\ptrCurrentSourceData\BlockEndX   = oldBlockDims\xMax
-  ped\ptrCurrentSourceData\BlockEndY   = oldBlockDims\yMax
-
-;  msg$ = "Blockdimensions:" + Chr$(10)
-;  msg$ + Str$(ped\ptrCurrentSourceData\BlockStartX) + ", "
-;  msg$ + Str$(ped\ptrCurrentSourceData\BlockStartY)  + " - "
-;  msg$ + Str$(ped\ptrCurrentSourceData\BlockEndX) + ", "
-;  msg$ + Str$(ped\ptrCurrentSourceData\BlockEndY)
-;  log_Print{msg$}
+  \BlockStartX = oldBlockDims\xMin
+  \BlockStartY = oldBlockDims\yMin
+  \BlockEndX   = oldBlockDims\xMax
+  \BlockEndY   = oldBlockDims\yMax
 
   ; -- check if some keys are pressed aswell
   If mqualifier AND #IEQUALIFIER_LSHIFT                 ; lshift or rshift
@@ -9817,21 +10125,21 @@ Return
     ped\blockmarkRemovalMode = 1 : Gosub handle_blockmark
 
     ;-- whatfor is this ? the block is deleting right one line up!
-    ;If ped\ptrCurrentSourceData\BlockStartY <= ped\ptrCurrentSourceData\LinePosStartY
-    ;  If ped\ptrCurrentSourceData\BlockEndY => ped\ptrCurrentSourceData\LinePosStartY
-    ;    If ped\ptrCurrentSourceData\BlockStartY = ped\ptrCurrentSourceData\LinePosStartY AND ped\ptrCurrentSourceData\BlockStartX <= ped\ptrCurrentSourceData\LinePosStartX
-    ;      If ped\ptrCurrentSourceData\BlockEndY = ped\ptrCurrentSourceData\LinePosStartY AND ped\ptrCurrentSourceData\BlockEndX <= ped\ptrCurrentSourceData\LinePosStartX
+    ;If \BlockStartY <= \LinePosStartY
+    ;  If \BlockEndY => \LinePosStartY
+    ;    If \BlockStartY = \LinePosStartY AND \BlockStartX <= \LinePosStartX
+    ;      If \BlockEndY = \LinePosStartY AND \BlockEndX <= \LinePosStartX
     ;        Poke.l ?comLong_BlockEndY, $ffffFFFF
     ;      EndIf
     ;    EndIf
     ; EndIf
     ;EndIf
   Else                                                  ; enhance the block
-    ped\ptrCurrentSourceData\BlockEndX   = ped\ptrCurrentSourceData\LinePosEndX
-    ped\ptrCurrentSourceData\BlockStartY = ped\ptrCurrentSourceData\LinePosStartY
+    \BlockEndX   = \LinePosEndX
+    \BlockStartY = \LinePosStartY
   EndIf
 
-  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
+  If \BlockEndY <> $ffffFFFF
     If mqualifier AND #IEQUALIFIER_LALT                ; LeftAlt or RightAlt
  ;     log_Print{">> ALT pressed aswell!"}
       Gosub jump_onclick
@@ -9839,10 +10147,10 @@ Return
       PED_RedrawSource{}
     EndIf
   Else
-    If ped\ptrCurrentSourceData\DisplayLineOffset <> ped\ptrCurrentSourceData\DisplayLineOffsetStore
+    If \DisplayLineOffset <> \DisplayLineOffsetStore
       PED_RedrawSource{}
     Else
-      If ped\ptrCurrentSourceData\ColumnsOffset <> sourceWindow\ColumnsOffsetStore
+      If \ColumnsOffset <> sourceWindow\ColumnsOffsetStore
         PED_RedrawSource{}
       Else
         If mqualifier AND #IEQUALIFIER_LALT ;$30
@@ -10538,7 +10846,7 @@ Return
   ;eclock_Open{1000}
   ;eclock_Start{1000}
 
-  ;log_Print{"updating labellist, search string [" + LabelListSearchString + "]"}
+  log_Print{"updating labellist, search string [" + LabelListSearchString + "]"}
 
   ped\labelSearchMode = 0
   If LabelListSearchString <> ""
@@ -10678,13 +10986,17 @@ Return
   Select ped\labelSearchMode
   Case 0
     addok = True
+
   Case 1
       If Instr(labelCaption, LabelListSearchString) Then addok = True
   Case 2
     If Instr(labelCaption, labelWord1)
-      If Instr(labelCaption, labelWord2) Then addok = True
+      If Instr(labelCaption, labelWord2) Then  addok = True
     EndIf
   End Select
+
+  ;-- add breakpoint in every case
+  If ped\labelEntryType = #TOKEN_Stop Then addok = True
 
   If addok
     ;If ped\labelEntryType
@@ -10837,70 +11149,82 @@ Return
   ;EndIf
 Return
 
-
-.update_currsourceline:
-  *currentSourceLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
-  currentLine.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
-  If currentLine > 0
-    Repeat
-      *currentSourceLine = *currentSourceLine\nextLine
-      currentLine - 1
-    Until currentLine = 0
-  EndIf
-
-  ped\ptrCurrentSourceData\CurrentSourceLine = *currentSourceLine
-Return
-
 .print_new_sourceline_top:
-  ;log_Print{"print 1 line up from line " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
+  USEPATH ped\ptrCurrentSourceData
 
-  !PED_storeCursorPosition
+  log_Print{"current textbuffer: " + Peeks$(ped\ptrTextbuffer + \TextBufferOffset,20)}
+  !PED_storeCursorPosition 
+  storeCurrentSourceLine = \CurrentSourceLine
 
-  *currentline.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  ped\ptrCurrentSourceData\TextBufferOffset = 0
-  tmpDL.l = ped\ptrCurrentSourceData\DisplayLine
-  While tmpDL > 0
-    *currentline = *currentline\previousLine
-    If *currentline = 0
-      Pop If : Pop While : Goto no_prev_line
-    EndIf
-    tmpDL - 1
-  Wend
-  ped\ptrCurrentSourceData\DisplayLine = tmpDL
+  ;tmps.s = PED_Detokenize{\CurrentSourceLine}
+  ;log_Print{Str$(\DisplayLine+\DisplayLineOffset + 1) +" >>" + tmps}
+
+  ;-- get the new sourceline that has to be displayed at the top
+  Repeat 
+    If \DisplayLine > 0
+      \DisplayLine - 1      
+      \CurrentSourceLine = \CurrentSourceLine\previousLine
+
+      ;tmps.s = PED_Detokenize{\CurrentSourceLine}
+      ;log_Print{Str$(\DisplayLine+\DisplayLineOffset + 1) +" >>" + tmps}
+
+      If \CurrentSourceLine = 0
+        Pop If : Pop While : Goto no_prev_line2
+      EndIf
+    End If
+  Until \DisplayLine = 0
+  ;-- display the calculated source line at the displayline
   PED_PrintCurrentSourceLine{False}
-  no_prev_line:
+  no_prev_line2:
 
+  \CurrentSourceLine = storeCurrentSourceLine
   !PED_RestoreCursorPosition
+  log_Print{"current textbuffer: " + Peeks$(ped\ptrTextbuffer + \TextBufferOffset,20)}
 Return
 
 .print_new_sourceline_bottom:
-  ;log_Print{"print 1 line down from line " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
+  USEPATH ped\ptrCurrentSourceData
 
   !PED_storeCursorPosition
+  storeCurrentSourceLine = \CurrentSourceLine
 
-  *currentline.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  While sourceWindow\visibleLines > (ped\ptrCurrentSourceData\DisplayLine + 1)
-    *currentline = *currentline\nextLine
-    If *currentline = 0
-      Pop If : Pop While : Goto no_next_line
+  ;tmps.s = PED_Detokenize{\CurrentSourceLine}
+  ;log_Print{Str$(\DisplayLine+\DisplayLineOffset + 1) +" >>" + tmps}
+
+  ;-- get the new sourceline that has to be displayed at the bottom
+  Repeat
+    If \DisplayLine < (sourceWindow\visibleLines-1)
+      \DisplayLine + 1
+      \CurrentSourceLine = \CurrentSourceLine\nextLine
+
+      ;tmps.s = PED_Detokenize{\CurrentSourceLine}
+      ;log_Print{Str$(\DisplayLine+\DisplayLineOffset + 1) +" >>" + tmps}
+
+      If \CurrentSourceLine = 0
+        Pop If : Pop While : Goto no_prev_line2
+      EndIf
     EndIf
-    !PED_IncreaseDisplayLine
-  Wend
+  Until \DisplayLine = (sourceWindow\visibleLines-1)
+  ;-- display the calculated source line at the displayline
   PED_PrintCurrentSourceLine{False}
-  no_next_line:
+  no_next_line2:
 
+  \CurrentSourceLine = storeCurrentSourceLine
   !PED_RestoreCursorPosition
+  log_Print{"current textbuffer: " + Peeks$(ped\ptrTextbuffer + \TextBufferOffset,20)}  
 Return
 
 
-.scroll_rest_of_line_left:
+.scroll_rest_of_line_left: ; obsolete ???
   USEPATH ped\ptrCurrentSourceData
-  xPos.w = \Column + \ColumnsOffset
-  yPos.l = \DisplayLine + \DisplayLineOffset
-  ;log_Print{"scroll line to left xpos "+ Str$(xPos)+  ", ypos " + Str$(yPos) + " BlockEndY " +Str$(\BlockEndY)}
 
   ;-- scroll block
-  If \BlockEndY <> -1
+  If \BlockEndY = $ffffFFFF
+    PED_ScrollHorizontal{#SCROLL_LEFT,  #SCROLL_CURRENT_LINE}  
+  Else
+    xPos.w = \Column + \ColumnsOffset
+    yPos.l = \DisplayLine + \DisplayLineOffset
+
     If (yPos <= \BlockEndY) AND (yPos >= \BlockStartY)
       If yPos = \BlockStartY
         If xPos <= \BlockStartX Then \BlockStartX - 1
@@ -10915,356 +11239,11 @@ Return
             PED_ScrollHorizontal{#SCROLL_LEFT,  #SCROLL_CURRENT_LINE}
           EndIf
         EndIf
-        USEPATH sourceWindow
-        SetBPen_ \win\RPort,3
-      EndIf
-    EndIf
-  EndIf
-
-  PED_ScrollHorizontal{#SCROLL_LEFT,  #SCROLL_CURRENT_LINE}
-Return
-
-
-.update_blockmark_left:
-  If ped\ptrCurrentSourceData\BlockEndY > -1
-    xMin.w = ped\ptrCurrentSourceData\ColumnsOffset
-    yMin.w = ped\ptrCurrentSourceData\DisplayLineOffset
-    yMax.w = yMin + sourceWindow\visibleLines
-    If (yMin <= ped\ptrCurrentSourceData\BlockEndY) AND (yMax >= ped\ptrCurrentSourceData\BlockStartY)
-      If ped\ptrCurrentSourceData\BlockStartY = ped\ptrCurrentSourceData\BlockEndY
-        Gosub JL_0_66F2
-        Pop If
-        Return
-      EndIf
-      Gosub JL_0_6658   ; draw missing blockmark in first line while scrollin left
-
-      yMin = ped\ptrCurrentSourceData\BlockStartY - ped\ptrCurrentSourceData\DisplayLineOffset + 1
-      yMax = ped\ptrCurrentSourceData\BlockEndY - ped\ptrCurrentSourceData\DisplayLineOffset
-      If yMax > sourceWindow\visibleLines Then yMax = sourceWindow\visibleLines
-
-      If yMax <= yMin
-        Gosub JL_0_669A ; update missing blockmark in last line
-        Pop If
-        Return
-      EndIf
-      Gosub JL_0_669A
-
-      ;-- draw left blockparts while scrolling leftside except first and last line
-      xMin = 0
-      yMin = (ped\ptrCurrentSourceData\BlockStartY-ped\ptrCurrentSourceData\DisplayLineOffset + 1) * \font\tf_YSize
-
-      yMax =  ped\ptrCurrentSourceData\BlockEndY - ped\ptrCurrentSourceData\DisplayLineOffset
-      If yMax > sourceWindow\visibleLines Then yMax = sourceWindow\visibleLines
-      xMax.w = xMin + \font\tf_YSize * 2 - 1  ; we scroll always 2 lines
-      yMax = yMax * \font\tf_YSize - 1
-      If (xMax => xMin) AND (yMax => yMin)
-         RectFill_ *sourcerp,sourceWindow\BoxLeft + xMin,sourceWindow\BoxTop + yMin,sourceWindow\BoxLeft + xMax,sourceWindow\BoxTop + yMax
-      Else
-        log_Print{"illegal area for update blockmark left"}
-      EndIf
-      ;    SetAPen_ *sourcerp,5
-      ;    SetDrMd_ *sourcerp,#JAM1
-      ;    Move_ *sourcerp,sourceWindow\BoxLeft + xMin,yMin
-      ;    Draw_ *sourcerp,sourceWindow\BoxLeft + xMax,yMax
-      ;    SetDrMd_ *sourcerp,#COMPLEMENT
-    EndIf
-  EndIf
-Return
-
-
-JL_0_6658:      ; draw missing blockparts in first line when scrolling left
-  If xMin >= ped\ptrCurrentSourceData\BlockStartX
-    yMaxold.w = yMax : xMaxold.w = xMax : yMinold.w = yMin : xMinold.w = xMin
-
-    xMin = 0
-    xMax = xMin + \font\tf_XSize * 2 - 1
-    yMin = (ped\ptrCurrentSourceData\BlockStartY-ped\ptrCurrentSourceData\DisplayLineOffset) * \font\tf_YSize
-    yMax = yMin + \font\tf_YSize - 1
-    If (xMax => xMin) AND (yMax => yMin)
-      RectFill_ *sourcerp,sourceWindow\BoxLeft + xMin,sourceWindow\BoxTop + yMin,sourceWindow\BoxLeft + xMax,sourceWindow\BoxTop + yMax
-    Else
-      log_Print{"illegal area for JL_0_6658"}
-    EndIf
-
-    yMax = yMaxold : xMax = xMaxold : yMin = yMinold : xMin = xMinold
-  EndIf
-Return
-
-
-JL_0_669A:  ; update missing blockmark in last line
-  If xMin <= ped\ptrCurrentSourceData\BlockEndX
-    ;yMaxold = yMax : xMaxold = xMax : yMinold = yMin : xMinold = xMin
-    xMin      = 0
-    xmax_temp.w = (ped\ptrCurrentSourceData\BlockEndX-ped\ptrCurrentSourceData\ColumnsOffset+1) * \font\tf_XSize - 1
-    If xmax_temp < 2 Then xmax_temp = 2
-    xmax_temp = xmax_temp * \font\tf_XSize - 1
-    xMax      = xMin + xmax_temp
-    yMin      = (ped\ptrCurrentSourceData\BlockEndY-ped\ptrCurrentSourceData\DisplayLineOffset) * \font\tf_YSize
-    yMax      = yMin + \font\tf_YSize - 1
-    If (xMax => xMin) AND (yMax => yMin)
-      RectFill_ *sourcerp,sourceWindow\BoxLeft + xMin,sourceWindow\BoxTop + yMin,sourceWindow\BoxLeft + xMax,sourceWindow\BoxTop + yMax
-    Else
-      log_Print{"illegal area for JL_0669A"}
-    EndIf
-    ;yMax = yMaxold : xMax = xMaxold : yMin = yMinold : xMin = xMinold
-  EndIf
-Return
-
-JL_0_66F2:
-  If (xMin >= ped\ptrCurrentSourceData\BlockStartX) AND (xMin <= ped\ptrCurrentSourceData\BlockEndX)
-    ;yMaxold = yMax : xMaxold = xMax : yMinold = yMin : xMinold = xMin
-
-    xMin      = 0
-    xmax_temp.w = (ped\ptrCurrentSourceData\BlockEndX-ped\ptrCurrentSourceData\ColumnsOffset+1) * \font\tf_XSize - 1
-    If xmax_temp < $2 Then xmax_temp = $2
-    xmax_temp = xmax_temp * \font\tf_XSize - 1
-    xMax      = xMin + xmax_temp
-    yMin      = (ped\ptrCurrentSourceData\BlockStartY-ped\ptrCurrentSourceData\DisplayLineOffset) * \font\tf_YSize
-    yMax      = yMin + \font\tf_YSize - 1
-    If (xMax => xMin) AND (yMax => yMin)
-      RectFill_ *sourcerp,sourceWindow\BoxLeft + xMin,sourceWindow\BoxTop + yMin,sourceWindow\BoxLeft + xMax,sourceWindow\BoxTop + yMax
-    Else
-      log_Print{"illegal area for JL_0_66F2"}
-    EndIf
-    ;yMax = yMaxold : xMax = xMaxold : yMin = yMinold : xMin = xMinold
-  EndIf
-Return
-
-
-.draw_new_columns_right:
-  log_Print{"draw_new_columns_right"}
-  !PED_storeCursorPosition
-
-  ped\noDetokenizing = 1
-  ped\keepString = 1
-
-  ped\ptrCurrentSourceData\ColumnsOffsetTmp = 0
-  ped\ptrCurrentSourceData\TextBufferOffset = 0
-  ped\ptrCurrentSourceData\DisplayLine = 0
-
-  ped\ptrCurrentSourceData\Column = sourceWindow\visibleColumns - 2
-  lineAddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\ColumnsOffset + ped\ptrCurrentSourceData\Column
-  tmpVisibleLines = sourceWindow\visibleLines - 1
-  Repeat
-    newChars.s = Peeks$(lineAddr,2)
-
-    ; -- check if we are in a string
-    lineAddr2.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-    Poke.b ?instring2, 0
-    tmpRunner.w = 0
-    tmpColumnsOffset.w = ped\ptrCurrentSourceData\ColumnsOffset + sourceWindow\visibleColumns - 1
-    While Peek.b(lineAddr2 + tmpRunner) <> 0 AND (tmpRunner < tmpColumnsOffset)
-      If Peek.b(lineAddr2 + tmpRunner) = $22 Then NOT.b instring2
-      tmpRunner + 1
-    Wend
-
-    ; -- print the characters
-    PED_PrintSourceText{&newChars, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, False}
-
-    ; -- increase text line
-    lineAddr + #MAX_Columns
-    ped\ptrCurrentSourceData\TextBufferOffset + #MAX_Columns
-    ped\ptrCurrentSourceData\DisplayLine + 1
-
-    tmpVisibleLines - 1
-  Until tmpVisibleLines = 0
-
-  ped\keepString = 0
-  ped\noDetokenizing = 0
-
-  !PED_RestoreCursorPosition
-Return
-
-.draw_new_columns_left:
-  log_Print{"draw_new_columns_left"}
-
-  !PED_storeCursorPosition
-
-  ped\noDetokenizing = 1
-  ped\keepString = 1
-
-  ped\ptrCurrentSourceData\ColumnsOffsetTmp = 0 
-  ped\ptrCurrentSourceData\Column = 0 
-  ped\ptrCurrentSourceData\DisplayLine = 0 
-  ped\ptrCurrentSourceData\TextBufferOffset = 0 
-
-  lineAddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\ColumnsOffset
-  tmpVisibleLines = sourceWindow\visibleLines - 1
-  Repeat
-    newChars.s = Peeks$(lineAddr,2)
-
-    ; -- check if we are in a string
-    lineAddr2.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-    Poke.b ?instring2, 0
-    tmpRunner.w = 0
-    tmpColumnsOffset.w = ped\ptrCurrentSourceData\ColumnsOffset
-    While Peek.b(lineAddr2 + tmpRunner) <> 0 AND (tmpRunner < tmpColumnsOffset)
-      If Peek.b(lineAddr2 + tmpRunner) = $22 Then NOT.b instring2
-      tmpRunner + 1
-    Wend
-
-    ; -- print the characters
-    PED_PrintSourceText{&newChars, ped\ptrCurrentSourceData\Column * sourceWindow\font\tf_XSize, ped\ptrCurrentSourceData\DisplayLine, False}
-
-    ; -- increase text line
-    lineAddr + #MAX_Columns
-    ped\ptrCurrentSourceData\TextBufferOffset + #MAX_Columns
-    ped\ptrCurrentSourceData\DisplayLine + 1
-
-    tmpVisibleLines - 1
-  Until tmpVisibleLines = 0
-  ped\keepString = 0
-  ped\noDetokenizing = 0
-
-  !PED_RestoreCursorPosition
-Return
-
-.scroll_right:
-  !PED_CursorOff
-  USEPATH sourceWindow
-  dx.w = -(\font\tf_XSize * \scrollSize)
-  dy.w = 0
-  xMin.w = \BoxLeft
-  yMin.w = \BoxTop
-  xMax.w = \BoxLeft + \visibleColumns * \font\tf_XSize - 1
-  yMax.w = \BoxTop + sourceWindow\visibleLines * \font\tf_YSize - 1
-  ScrollRaster_ \win\RPort,dx,dy,xMin,yMin,xMax,yMax
-
-  Gosub ScrollDelay
-  Gosub draw_new_columns_left          ; draw text after scroll
-  Gosub update_blockmark_left          ; blockmark selected text after scrolling
-  !PED_CursorOn
-Return
-
-.scroll_left:
-  ;!PED_CursorOff
-  USEPATH sourceWindow
-  dx.w = \font\tf_XSize * \scrollSize
-  dy.w = 0
-  xMin.w = \BoxLeft
-  xMax.w = \BoxLeft + \visibleColumns * \font\tf_XSize - 1
-  yMin.w = \BoxTop
-  yMax.w = \BoxTop + sourceWindow\visibleLines * \font\tf_YSize - 1
-  ScrollRaster_ \win\RPort,dx,dy,xMin,yMin,xMax,yMax
-
-  Gosub ScrollDelay
-  Gosub draw_new_columns_right
-  Gosub update_blockmark_right
-  ;!PED_CursorOn
-Return
-
-
-.update_blockmark_right:
-  If ped\ptrCurrentSourceData\BlockEndY > -1            ; check if we have a Blockmark
-    xMin = ped\ptrCurrentSourceData\ColumnsOffset + \visibleColumns - 2 ;d0
-    yMin = ped\ptrCurrentSourceData\DisplayLineOffset       ;d1
-    yMax = yMin + sourceWindow\visibleLines            ;d2
-
-    ;log_Print{"blockstartX: " + Str$(ped\ptrCurrentSourceData\BlockStartX)}
-    ;log_Print{"blockstartY: " + Str$(ped\ptrCurrentSourceData\BlockStartY)}
-    ;log_Print{"blockendX: " + Str$(ped\ptrCurrentSourceData\BlockEndX)}
-    ;log_Print{"blockendY: " + Str$(ped\ptrCurrentSourceData\BlockEndY)}
-    ;log_Print{"xmin:" + Str$(xMin)+" yMin:" + Str$(yMin)+ " yMax: " + Str$(yMax)}
-    If (yMin <= ped\ptrCurrentSourceData\BlockEndY) AND (yMax >= ped\ptrCurrentSourceData\BlockStartY)
-      If ped\ptrCurrentSourceData\BlockStartY = ped\ptrCurrentSourceData\BlockEndY
-        Gosub JL_0_695E
-      Else
-        Gosub JL_0_68C4
-        yMin = ped\ptrCurrentSourceData\BlockStartY - ped\ptrCurrentSourceData\DisplayLineOffset + 1
-        yMax = ped\ptrCurrentSourceData\BlockEndY - ped\ptrCurrentSourceData\DisplayLineOffset
-        If yMax > sourceWindow\visibleLines Then yMax = sourceWindow\visibleLines
-
-        If yMax < yMin      ; when does that happen???
-          Gosub JL_0_6906   ; update missing block last line
-          Pop If : Return
-        EndIf
-        Gosub JL_0_6906 ;update missing block last line
-
-        ; add missing block on the right except first and last line
-        ;xMin = Peek.w(?source_BoxLeft) + xMin * \font\tf_XSize
-        xMin = (xMin - ped\ptrCurrentSourceData\ColumnsOffset) * \font\tf_XSize
-        xMax = xMin + \font\tf_XSize * 2 - 1
-        yMin = yMin * \font\tf_YSize
-        yMax = yMax * \font\tf_YSize - 1
-        If (xMax => xMin) AND (yMax => yMin)
-          RectFill_ *sourcerp, sourceWindow\BoxLeft + xMin, sourceWindow\BoxTop + yMin,sourceWindow\BoxLeft + xMax, sourceWindow\BoxTop + yMax
-        Else
-          log_Print{"illegal area for update_blockmark right"}
-        EndIf
       EndIf
     EndIf
   EndIf
 Return
 
-.JL_0_68C4:
-  If xMin >= ped\ptrCurrentSourceData\BlockStartX
-    yMaxold.w = yMax : xMaxold.w = xMax : yMinold.w = yMin : xMinold.w = xMin
-
-    xMin = (xMin - ped\ptrCurrentSourceData\ColumnsOffset) * \font\tf_XSize
-    xMax = xMin + \font\tf_XSize * 2 - 1
-    yMin = ped\ptrCurrentSourceData\BlockStartY - ped\ptrCurrentSourceData\DisplayLineOffset
-    yMin = yMin * \font\tf_YSize
-    yMax = yMin + \font\tf_YSize-1
-    If (xMax => xMin) AND (yMax => yMin)
-      RectFill_ *sourcerp, sourceWindow\BoxLeft + xMin, sourceWindow\BoxTop + yMin, sourceWindow\BoxLeft + xMax, sourceWindow\BoxTop + yMax
-    Else
-      log_Print{"illegal area for JL_0_68C4"}
-    EndIf
-
-    yMax = yMaxold : xMax = xMaxold : yMin = yMinold : xMin = xMinold
-  EndIf
-Return
-
-.JL_0_6906: ; update mission block last line
-  If xMin <= ped\ptrCurrentSourceData\BlockEndX + 1
-    yMaxold.w = yMax : xMaxold.w = xMax : yMinold.w = yMin : xMinold.w = xMin
-
-    d4.l = ped\ptrCurrentSourceData\BlockEndX - xMin + 1 + 2
-    If d4 > 2 Then d4 = 2     ; we scroll always 2 characters
-    d4 = d4 * \font\tf_XSize
-
-    xMin = xMin - ped\ptrCurrentSourceData\ColumnsOffset
-    xMin = xMin * \font\tf_XSize
-    xMax = xMin + d4 - 1
-    yMin = ped\ptrCurrentSourceData\BlockEndY - ped\ptrCurrentSourceData\DisplayLineOffset
-    yMin = yMin * \font\tf_YSize
-    yMax = yMin + \font\tf_YSize - 1
-    ;log_Print{"d4: " +Str$(d4) + " blockendX: " + Str$(ped\ptrCurrentSourceData\BlockEndX)}
-    ;log_Print{"d4: " +Str$(d4) + " blockendy: " + Str$(ped\ptrCurrentSourceData\BlockEndY)}
-    ;log_Print{"d4: " +Str$(d4) + " blockstartX: " + Str$(ped\ptrCurrentSourceData\BlockStartX)}
-    ;log_Print{">> xMin:"+Str$(xMin) + " ymin:"+Str$(yMin) + " xMax:"+Str$(xMax) + " ymax:"+Str$(yMax)}
-    If (xMax => xMin) AND (yMax => yMin)
-      RectFill_ *sourcerp, sourceWindow\BoxLeft + xMin, yMin, sourceWindow\BoxTop + sourceWindow\BoxLeft + xMax, sourceWindow\BoxTop + yMax
-    Else
-      log_Print{"illegal area for JL_0_6906"}
-    EndIf
-
-
-    yMax = yMaxold : xMax = xMaxold : yMin = yMinold : xMin = xMinold
-  EndIf
-Return
-
-.JL_0_695E: ; all in the same line
-  If (xMin >= ped\ptrCurrentSourceData\BlockStartX) AND (xMin <= ped\ptrCurrentSourceData\BlockEndX)
-    log_Print{"JL_0_695E"}
-    d4.l = ped\ptrCurrentSourceData\BlockEndX - xMin + 1
-    If d4 > 2 Then d4 = 2
-    d4 = d4 * \font\tf_XSize
-
-    xMin = xMin - ped\ptrCurrentSourceData\ColumnsOffset
-    xMin = xMin * \font\tf_XSize
-    xMax = xMin + d4
-    yMin = ped\ptrCurrentSourceData\BlockStartY - ped\ptrCurrentSourceData\DisplayLineOffset
-    yMax = yMin * \font\tf_YSize * 2 - 1
-    yMin = yMin * \font\tf_YSize
-    If (xMax => xMin) AND (yMax => yMin)
-      RectFill_ *sourcerp, sourceWindow\BoxLeft + xMin, sourceWindow\BoxTop + yMin, sourceWindow\BoxLeft + xMax, sourceWindow\BoxTop + yMax
-    Else
-      log_Print{"illegal area for JL_0_695E"}
-    EndIf
-
-  EndIf
-Return
 
 .clear_sourcebuffer:
   !PED_ResetBlockflag
@@ -11795,8 +11774,8 @@ Return
   \visibleLines - 2                        ; subtract two lines for status area
   \statusAreaY = \BoxTop + \visibleLines * \font\tf_YSize + 1
   \visibleColumns = (\BoxWidth - \BoxLeft) / \font\tf_XSize
-  \boundLinesX = 0 ; does not work atm
-  \boundLinesY = 0 ; does not work atm
+  \boundLinesX = 2
+  \boundLinesY = 2
   \scrollSize = 1
 Return
 
@@ -11805,11 +11784,13 @@ Return
 
   Gosub free_textbuffer
 
-  ped\ptrTextbuffer = PED_AllocMem{#MAX_Columns * sourceWindow\visibleLines + 2}
+  ped\ptrTextbuffer = PED_AllocMem{#MAX_Columns * sourceWindow\visibleLines}
   If ped\ptrTextbuffer = 0
     dummy.l = ask{!TRANS{"Unable to allocate memory for text buffer!"},!TRANS{"Ok"},!TRANS{"Error"}}
     Pop If : Goto exit_PED_closeall
   EndIf
+
+  log_Print{"textbuffer at " + Hex$(ped\ptrTextbuffer)}
 Return
 
 .free_textbuffer:
@@ -11955,29 +11936,20 @@ Return
   ;log_Print{"clear source window done."}
 Return
 
-.ScrollDelay:
-  CNIF #slowdown <> 0
-    If ped\no_scrollrate
-      Delay_ 1
-    Else
-      vvblank_Wait{}
-      vvblank_WaitSync{1}
-      vvblank_ResetSync{}
-    EndIf
-  CEND
-Return
+.redrawTextbuffer:
+  ;log_Print{"redrawTextbuffer column: " + Str$(ped\ptrCurrentSourceData\ColumnsOffset) + "-" + Str$(ped\ptrCurrentSourceData\Column)}
+  ;lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
+  ;log_Print{"first line of textbufferoffset [" + Peeks$(lineaddr,30) + "]"}
 
-.redrawWithOffset:
-  log_Print{"redrawWithOffset"}
-  !PED_storeCursorPosition;
+  !PED_storeCursorPosition
 
-  ped\ptrCurrentSourceData\TextBufferOffset = 0
-  ped\ptrCurrentSourceData\DisplayLine = 0
-  ped\ptrCurrentSourceData\Column = 0
-  ped\ptrCurrentSourceData\ColumnsOffsetTmp = 0
-  
   ped\noDetokenizing = 1
   ped\keepString = 1
+
+  ped\ptrCurrentSourceData\TextBufferOffset = 0
+  ped\ptrCurrentSourceData\ColumnsOffsetTmp = ped\ptrCurrentSourceData\ColumnsOffset
+  ped\ptrCurrentSourceData\DisplayLine = 0
+  ped\ptrCurrentSourceData\Column = 0
 
   For curY.w = 0 To sourceWindow\visibleLines - 1    
     lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
@@ -11986,6 +11958,7 @@ Return
     ;If Len(StripTrail$(Peeks$(lineaddr, #MAX_Columns),@" ")) > 0
 
     If Peek.b(lineaddr) <> 0
+
       ;-- check for open string left of cursor
       CLR.b instring2
       tmpd2.l = 0
@@ -11996,7 +11969,10 @@ Return
         tmpd2 = tmpd2 + 1
       Wend
 
-      PED_PrintSourceText{lineaddr + ped\ptrCurrentSourceData\ColumnsOffset, 0, curY, True}
+      ; -- print the source line
+      PED_PrintSourceText{lineaddr, 0, curY, True}
+    Else
+      log_Print{"line starts with 0-byte will be ignored"}
     EndIf
 
     ped\ptrCurrentSourceData\DisplayLine + 1
@@ -12005,10 +11981,12 @@ Return
   
   ped\keepString = 0
   ped\noDetokenizing = 0
-   
+
+  ;-- redraw the block
+  PED_RedrawBlock{}   
+
   !PED_RestoreCursorPosition
 Return
-
 
 Macro checkBeforeBlockStartX
   `1 = False
@@ -12068,7 +12046,7 @@ Return
   exit_eventloop.b = False
 
   While exit_eventloop = False
-    ;Gosub handle_blockmark      ; if new editmode, delete a marked block if insertchar or deletechar happens
+    ;Gosub handle_blockmark      ; if new editmode, delete a marked block if insertchar or deleteCharFromTextbuffer happens
 
     ;-- handle Window events
     If sourceWindow\win <> 0
@@ -12127,7 +12105,7 @@ Return
   If \BlockEndY <> $ffffFFFF
     currentColumn = \Column + \ColumnsOffset
     currentLine.l = \DisplayLine + \DisplayLineOffset
-    !updateBlockMark{currentLine, currentColumn}
+    !updateStateBlockMark{currentLine, currentColumn}
 
     If \BlockStartY <> currentLine AND \BlockEndY <> currentLine
       If \BlockStartX > currentColumn
@@ -12155,78 +12133,56 @@ Return
 Return
 
 
-
 .moveCursorToBeginOfWord:
-  ; get lineaddress in textbuffer (detokenized text!)
+  ;-- get lineaddress in textbuffer (detokenized text!)
   lineaddr = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-  ; get length of source line
+  ;-- get length of source line
   textlen.w = getLineLength{lineaddr}
 
-  ;clear highlight info but dont trash strings
-  nostring.b = 0
-  For i.l = lineaddr To lineaddr + textlen
-    If nostring = 0
-      Poke.b i,Peek.b(i) AND $7f
-      If Peek.b(i) = $22 Then nostring = 1
-    Else
-      If Peek.b(i) = $22 Then nostring = 0
-    End If
-  Next
+  !removeTokenbits{lineaddr, textlen}
 
   cursorpos.w = ped\ptrCurrentSourceData\Column
   If cursorpos > 1
     cursorpos - 1
     skip_spaces.b = False
-    If Peek.b(lineaddr+cursorpos) = 32 Then skip_spaces = True ; check if current char is a space
+    If Peek.b(lineaddr + cursorpos) = 32 Then skip_spaces = True ; check if current char is a space
 
     exit_loop.b = False
     Repeat
       cursorpos - 1
-      char.b = Peek.b(lineaddr+cursorpos)
-      log_Print{Peeks$(lineaddr,textlen)}
-      log_Print{Str$(char) + "  " + Chr$(char) + "  "+Str$(cursorpos)}
+      char.b = Peek.b(lineaddr + cursorpos)
       If skip_spaces
         If char <> 32 Then skip_spaces = False
       Else
         If (char < 48) OR (char = Asc("{")) OR (char = Asc("}"))
+          cursorpos + 1 ; cursor should be *at* the first character
           exit_loop = True
         EndIf
       EndIf
     Until exit_loop OR (cursorpos < 1)
-
   EndIf
-  ;GetD0 cursorpos
-RTS
-
+  newColumn.w = cursorpos : Gosub moveCursorToX
+Return
 
 .moveCursorToEndOfWord:
-  ; get lineaddress in textbuffer (detokenized text!)
+  ;-- get lineaddress in textbuffer (detokenized text!)
   lineaddr = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-  ; get length of source line
+  ;-- get length of source line
   textlen.w = getLineLength{lineaddr}
 
-  ;clear highlight (token) info but dont trash strings
-  nostring.b = 0
-  For i.l = lineaddr To lineaddr + textlen
-    If nostring = 0
-      Poke.b i,Peek.b(i) AND $7f
-      If Peek.b(i) = $22 Then nostring = 1
-    Else
-      If Peek.b(i) = $22 Then nostring = 0
-    End If
-  Next
+  !removeTokenbits{lineaddr, textlen}
+  log_Print{">>" + Peeks$(lineaddr, 30)}
 
   cursorpos.w = ped\ptrCurrentSourceData\Column
   If cursorpos < textlen
     cursorpos + 1
     skip_spaces.b = False
-    If Peek.b(lineaddr+cursorpos) = 32 Then skip_spaces = True ; check if current char is a space
+    If Peek.b(lineaddr + cursorpos) = 32 Then skip_spaces = True ; check if current char is a space
 
     exit_loop.b = False
     Repeat
       cursorpos + 1
-      char.b = Peek.b(lineaddr+cursorpos)
-
+      char.b = Peek.b(lineaddr + cursorpos)
       If skip_spaces
         If char <> 32 Then skip_spaces = False
       Else
@@ -12235,7 +12191,6 @@ RTS
         EndIf
       EndIf
     Until exit_loop OR (cursorpos => textlen)
-    ;If cursorpos > 1 Then cursorpos - 1     ; internal counter starts at 0!
   EndIf
   newColumn.w = cursorpos : Gosub moveCursorToX
 Return
@@ -12526,22 +12481,20 @@ Return
   Gosub set_pointer_normal
 Return
 
-.deletechar:
-  ped\blockmarkRemovalMode = 1
-  lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-  Gosub scroll_rest_of_line_left
+.deleteCharFromTextbuffer:
+  storcol.w = ped\ptrCurrentSourceData\Column
 
+  lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
   currentColumn.w =  ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
   For cupos.w = currentColumn + 1 To #MAX_Columns-1
     Poke.b lineaddr + cupos - 1, Peek.b(lineaddr + cupos)
   Next cupos
   Poke.b lineaddr + #MAX_Columns-1, $20 ; add space at the end (overwriting last character)
 
-  ; check for "" in line and prevent parsing of instructions
-  quotation.b = 0
-  storcol.w = ped\ptrCurrentSourceData\Column
+  ;-- check for "" in line and prevent parsing of instructions
   ped\ptrCurrentSourceData\Column = \visibleColumns - 1
   newcol.w = \visibleColumns + ped\ptrCurrentSourceData\ColumnsOffset - 1
+  quotation.b = 0
   For cupos.w = newcol To 0 Step -1
     If Peek.b(lineaddr + cupos) = $22 Then quotation + 1
   Next cupos
@@ -12554,22 +12507,19 @@ Return
   EndIf
 
   ped\ptrCurrentSourceData\Column = storcol
-
-  Gosub deletekey
 Return
 
 .updateSourceLine:        ; CursorXTarget: new Cursorposition
   log_Print{"update sourceline and moving cursor to x:" + Str$(CursorXTarget)}
   !PED_CursorOff
 
-  lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
   storcol.w = ped\ptrCurrentSourceData\Column
-  ped\ptrCurrentSourceData\Column = 0
-  For cupos.w = 0 To \visibleColumns - 1
-    enteredChar.b = Peek.b(lineaddr + ped\ptrCurrentSourceData\ColumnsOffset + cupos)
+  lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset 
+  lineaddr   + ped\ptrCurrentSourceData\ColumnsOffset
+  For ped\ptrCurrentSourceData\Column = 0 To \visibleColumns - 1
+    enteredChar.b = Peek.b(lineaddr + ped\ptrCurrentSourceData\Column)
     PED_PrintChar{enteredChar}
-    ADDQ.w #1,comWord_Column
-  Next cupos
+  Next
   ped\ptrCurrentSourceData\Column = storcol
 
   newColumn.w = CursorXTarget : Gosub moveCursorToX
@@ -12579,41 +12529,17 @@ Return
 
 
 .deletekey:
-  ;log_Print{"deletekey, mode= " + Str$(sourceWindow\deleteMode)}
+  log_Print{"deletekey, mode= " + Str$(sourceWindow\deleteMode)}
+
   ped\blockmarkRemovalMode = 2
   ped\ptrCurrentSourceData\KeyBeforeReturn = last_vankey
 
   If sourceWindow\deleteMode = False
     ; -- scroll to left by 1
     !PED_CursorOff
-    Gosub scroll_rest_of_line_left
+    PED_ScrollHorizontal{#SCROLL_LEFT,  #SCROLL_CURRENT_LINE}
 
-    ; -- move textbuffer left by 1 and append a space
-    lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-    currentColumn.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
-
-    For cupos.w = currentColumn + 1 To #MAX_Columns-1
-      Poke.b lineaddr + cupos - 1, Peek.b(lineaddr + cupos)
-    Next cupos
-    Poke.b lineaddr + #MAX_Columns-1, $20 ; add space at the end (overwriting last character)
-
-    ; -- check for "" in line and prevent parsing of instructions
-    storcol.w = ped\ptrCurrentSourceData\Column
-    ped\ptrCurrentSourceData\Column = \visibleColumns - 1
-    newcol.w = \visibleColumns - 1 + ped\ptrCurrentSourceData\ColumnsOffset
-    quotation.b = 0
-    For cupos.w = newcol To 0 Step -1
-      If Peek.b(lineaddr + cupos) = $22 Then quotation + 1
-    Next cupos
-
-    ; -- show character that comes visible at the right if line is longer than visiblecolumns
-    If NOT (quotation AND 1)
-      PED_PrintChar{Peek.b(lineaddr + newcol),1}
-    Else
-      PED_PrintChar{Peek.b(lineaddr + newcol)}
-    EndIf
-
-    ped\ptrCurrentSourceData\Column = storcol
+    Gosub deleteCharFromTextbuffer
 
     ; -- check if shift is pressed as well
     If ped\ptrCurrentSourceData\Column > 0 OR ped\ptrCurrentSourceData\ColumnsOffset > 0
@@ -12633,14 +12559,13 @@ Return
         Return
       EndIf
     EndIf
-    Gosub redrawWithOffset ; horizontal scroll
   EndIf
   delete_mode = 0
 Return
 
 .moveCursorToX:     ; newColumn: new X-Position
   !PED_CursorOff
-  log_Print{"move cursor to column: "  + Str$(newColumn.w)}
+  ;log_Print{"move cursor to column: "  + Str$(newColumn.w)}
   oldColumnsOffset.w = ped\ptrCurrentSourceData\ColumnsOffset
 
   If newColumn <= sourceWindow\visibleColumns - sourceWindow\boundLinesX
@@ -12648,23 +12573,26 @@ Return
     ped\ptrCurrentSourceData\Column = newColumn
   Else
     tmpvisColumns.w = sourceWindow\visibleColumns - 1
-    newCursorPosX.w = newColumn - tmpvisColumns
-    offColumns.w = #MAX_Columns - sourceWindow\visibleColumns
-    If newCursorPosX < offColumns
-      If newCursorPosX BitTst 0
-        newCursorPosX + 1
-        tmpvisColumns - 1
-      EndIf
-      ped\ptrCurrentSourceData\ColumnsOffset = newCursorPosX
-      ped\ptrCurrentSourceData\Column = tmpvisColumns
-    Else
-      ped\ptrCurrentSourceData\ColumnsOffset = offColumns
-      ped\ptrCurrentSourceData\Column = newColumn - offColumns
-    EndIf
+    ;newCursorPosX.w = newColumn - tmpvisColumns
+    ;offColumns.w = #MAX_Columns - sourceWindow\visibleColumns
+    ;If newCursorPosX < offColumns
+    ;  If newCursorPosX BitTst 0
+    ;    newCursorPosX + 1
+    ;    tmpvisColumns - 1
+    ;  EndIf
+    ;  ped\ptrCurrentSourceData\ColumnsOffset = newCursorPosX
+    ;  ped\ptrCurrentSourceData\Column = tmpvisColumns
+    ;Else
+    ;  ped\ptrCurrentSourceData\ColumnsOffset = offColumns
+    ;  ped\ptrCurrentSourceData\Column = newColumn - offColumns
+    ;End If
+    ped\ptrCurrentSourceData\ColumnsOffset = newColumn - tmpvisColumns
+    ped\ptrCurrentSourceData\Column = newColumn - ped\ptrCurrentSourceData\ColumnsOffset
+    log_Print{"cursor out of visible area, calculating offset to " + Str$(ped\ptrCurrentSourceData\ColumnsOffset)}
   EndIf
 
   If ped\ptrCurrentSourceData\ColumnsOffset <> oldColumnsOffset
-    Gosub redrawWithOffset
+    Gosub redrawTextbuffer
   EndIf
 
   !PED_CursorOn
@@ -12674,21 +12602,19 @@ Return
   !PED_CursorOff
   If ped\ptrCurrentSourceData\Column > \boundLinesX
     ped\ptrCurrentSourceData\Column - 1
-    Goto exit_cursorleft
-  EndIf
-
-  If ped\ptrCurrentSourceData\ColumnsOffset > 1
-    ped\ptrCurrentSourceData\ColumnsOffset - \scrollSize
-    Gosub scroll_right
-    ;ped\ptrCurrentSourceData\Column + 1
   Else
-    If ped\ptrCurrentSourceData\ColumnsOffset = 1
-      ped\ptrCurrentSourceData\ColumnsOffset = 0
-      Gosub scroll_right
-      PED_RedrawSource{}
+    If ped\ptrCurrentSourceData\ColumnsOffset > 1
+      ped\ptrCurrentSourceData\ColumnsOffset - \scrollSize
+      PED_ScrollHorizontal{#SCROLL_RIGHT}
+      ;ped\ptrCurrentSourceData\Column + 1
     Else
-      If ped\ptrCurrentSourceData\Column > 0
-        ped\ptrCurrentSourceData\Column - 1
+      If ped\ptrCurrentSourceData\ColumnsOffset = 1
+        ped\ptrCurrentSourceData\ColumnsOffset = 0
+        PED_ScrollHorizontal{#SCROLL_RIGHT}
+      Else
+        If ped\ptrCurrentSourceData\Column > 0
+          ped\ptrCurrentSourceData\Column - 1
+        EndIf
       EndIf
     EndIf
   EndIf
@@ -12707,7 +12633,7 @@ Return
     If \boundLinesX <= ped\ptrCurrentSourceData\Column
       If ped\ptrCurrentSourceData\Column > \visibleColumns - \boundLinesX
         ped\ptrCurrentSourceData\ColumnsOffset + \scrollSize
-        Gosub scroll_left
+        PED_ScrollHorizontal{#SCROLL_LEFT}
         ;ped\ptrCurrentSourceData\Column - 1
         Goto exit_cursorright
       EndIf
@@ -12735,7 +12661,6 @@ Return
 
 .resize_sourcewindow:
   !PED_CursorOff
-  ;Gosub free_textbuffer ;is fone in allocate_textbuffer
   Gosub calc_SourceWindowDimensions
   Gosub allocate_textbuffer
   Gosub clear_sourcewindow
@@ -12900,10 +12825,9 @@ Return
 .handle_event_intuiticks:
   ; ------------ cursor blinking
   blinkcount.b + 1
-  If pedconfig\blinkrate > 0
+  If pedconfig\blinkrate > 0 AND sourceWindow\cursorEnabled
     If blinkcount >= pedconfig\blinkrate
       blinkcount = 0
-      ;log_Print{"blink " + Str$(Peek.b(?state_of_cursor))}
       PED_SwitchCursor{}
     EndIf
   EndIf
@@ -13055,7 +12979,6 @@ Return
           If pedMessage\_Class <> #IDCMP_GADGETUP
             GetAttr_ #PGA_Top, sourceWindow\horizprop, &pos_hprop                                                                                                                                                                                        
             newColumn.w = pos_hprop : Gosub moveCursorToX
-            ;!PED_CursorOn
             PED_UpdateStatusArea{#STATUS_CURSOR|#STATUS_SCROLLERS}                                                                                                                                                                                       
           Else
             *g.Gadget = pedMessage\_IAddress
@@ -13085,8 +13008,8 @@ Return
               EndIf
               realline + ped\ptrCurrentSourceData\DisplayLine
 
-              If Peek.l(?comWord_LinePosStartX) <> realline
-                Poke.l ?comWord_LinePosStartX, realline
+              If ped\ptrCurrentSourceData\LinePosStartX <> realline
+                ped\ptrCurrentSourceData\LinePosStartX = realline
                 PED_GotoLine{realline}
                 PED_UpdateStatusArea{#STATUS_CURSOR|#STATUS_SCROLLERS}
               EndIf
@@ -13294,8 +13217,7 @@ Return
         !PED_CursorOff
         Gosub menu_blockuntab
       Else
-        Gosub moveCursorToBeginOfWord
-        newColumn.w = cursorpos : Gosub moveCursorToX
+        Gosub moveCursorToBeginOfWord        
       EndIf
 
     Default
@@ -13531,7 +13453,7 @@ Return
     log_Print{"SHIFT"}
     ped\ptrCurrentSourceData\KeyBeforeReturn = last_vankey       ; save keycode
     CursorXTarget.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
-    ; delete all until end of line (replace with spaces)
+    ;-- delete all charecters until end of line (replace with spaces)
     lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
     For cupos.w = CursorXTarget To #MAX_Columns-1
       Poke.b lineaddr + cupos, $20
@@ -13558,20 +13480,20 @@ Return
       Else
         actualLine.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
         If actualLine > 0
-          log_Print{"join lines!"}
+          log_Print{"backspace at line start, so join lines!"}
+
           Gosub storeline
           Gosub movecursorlineup
-          ; find last character in previous line
+
+          ;-- find last character in previous line to set new cursor column
           lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
           tempOffset.w = #MAX_Columns - 1
-          While Peek.b(lineaddr +tempOffset) = $20 AND tempOffset>-1
+          While Peek.b(lineaddr + tempOffset) = $20 AND tempOffset > -1
             tempOffset - 1
           Wend
-          tempOffset + 1
-          ;log_Print{"calculated column: " + Str$(tempOffset)}
+          ped\ptrCurrentSourceData\Column = tempOffset + 1
 
-          ped\ptrCurrentSourceData\Column = tempOffset
-          Gosub menu_joinline
+          Gosub menu_joinlines
         EndIf
       EndIf
   EndIf
@@ -14193,7 +14115,7 @@ Even
   Dc.l #MENU_INSERTLINE,      0, menu_insertline
   Dc.l #MENU_DELETELINE,      0, menu_deleteline
   Dc.l #MENU_UNDELETELINE,    0, menu_undeleteline
-  Dc.l #MENU_JOINLINES,       0, menu_joinline
+  Dc.l #MENU_JOINLINES,       0, menu_joinlines
   Dc.l #MENU_BLOCKTAB,        1, menu_blocktab
   Dc.l #MENU_BLOCKUNTAB,      1, menu_blockuntab
   Dc.l #MENU_BLOCKCOMMENT,    1, menu_blockcomment
@@ -15493,22 +15415,8 @@ RTS
 
         Case "add" ;add to code
           a$ = Trim$(bstr$)
-          If a$<>""
-           log_Print{"adding to code: " + a$}
-            lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-            lineaddr + ped\ptrCurrentSourceData\ColumnsOffset + ped\ptrCurrentSourceData\Column
-            log_Print{"current source area: [" + Peek$(lineaddr) + "]"}
-            tempph.w = 0
-            If Peek.b(lineaddr-tempph) = $20
-              While Peek.b(lineaddr-tempph) = $20
-                tempph + 1
-              Wend
-              log_Print{Str$(tempph) + " spaces after last char"}
-              !PED_CursorOff
-              For i = 1 To tempph
-                Gosub deletechar
-              Next i
-            EndIf
+          If a$ <> ""
+            log_Print{"adding to code: " + a$}
             Gosub insertstring
             Gosub activatesourcewindow
           EndIf
@@ -16170,25 +16078,6 @@ Return
             tmpColumn.w = ped\ptrCurrentSourceData\Column
             tmpColumnsOffset.w = ped\ptrCurrentSourceData\ColumnsOffset
 
-            ped\ptrCurrentSourceData\Column = diag_addcodepos
-            ped\ptrCurrentSourceData\ColumnsOffset = 0
-            ;MOVE.l diag_addcodepos@(a5),a0 : SUB.l textbufferaddr,a0 : SUB.w comWord_TextBufferOffset,a0
-            ;MOVE.w a0,comWord_Column
-            ;CLR.w comWord_ColumnsOffset
-
-            ; remove code to be replaced by diag code
-            If diag_addcodesize > 1 Then t$ = Peeks$(diag_addcodepos,diag_addcodesize) : Else t$ = ""
-            t$ = StripLead$(t$,32) : i = FLen(t$)
-            If i > 0
-              ped\ptrCurrentSourceData\Column = diag_addcodepos
-              ; MOVE.l diag_addcodepos@(a5),a0 : SUB.l textbufferaddr,a0 : SUB.w comWord_TextBufferOffset,a0
-              ; MOVE.w a0,comWord_Column
-              For i2 = 1 To i - 1
-                Gosub deletechar
-              Next
-            End If
-
-            ; insert new code
             Gosub insertstring
 
             ped\ptrCurrentSourceData\ColumnsOffset = tmpColumnsOffset
@@ -16497,9 +16386,9 @@ Return
 
   !PED_CursorOff
 
-  ; -- draw selecting block if existing
+  ; -- remove part of the selected block if existing and the currentline is inside of the block
   ped\ptrCurrentSourceData\StateBlockMark = False
-  If ped\ptrCurrentSourceData\BlockEndY >= 0
+  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
     log_Print{"storeline, erasing block"}
     displayline.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
     If ped\ptrCurrentSourceData\BlockStartY =< displayline
@@ -16524,16 +16413,16 @@ Return
   newline$ = PED_TokenizeText{pasteString}
   *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
   PED_ReplaceCurrentSourceLine{*newLine}
+  PED_PrintCurrentSourceLine{False}
 
-  If ped\doTokenize
-    PED_PrintCurrentSourceLine{False}
-
-    If ped\ptrCurrentSourceData\StateBlockMark
-      log_Print{"storeline: redrawing blockmark"}
-      AbsDimensions{bmark}
-      PED_DrawBlock{bmark}
-    EndIf
+  ;-- redraw only  block part of that line after updating the line
+  If ped\ptrCurrentSourceData\StateBlockMark
+    log_Print{"storeline: redrawing blockmark"}
+    AbsDimensions{bmark}
+    PED_DrawBlock{bmark}
   EndIf
+
+  !PED_CursorOn
 
   ped\ptrCurrentSourceData\KeyBeforeReturn = 0
 Return
@@ -17031,7 +16920,7 @@ Return
               !PED_CursorOff
               Gosub set_pointer_busy
               Gosub menu_replaceall
-              Gosub update_currsourceline
+              PED_SetCurrentSourceLine{}
               PED_RedrawSource{}
               !PED_CursorOn
               Gosub set_pointer_normal
