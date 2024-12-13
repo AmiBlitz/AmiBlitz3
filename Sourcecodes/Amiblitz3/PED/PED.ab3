@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.11
-; NumberOfBuilds  = 3300
+; NumberOfBuilds  = 3306
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 9464
-; CursorColumn    = 22
-; LabelSearch     = "ped_rect"
+; CursorLine      = 8508
+; CursorColumn    = 10
+; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -658,8 +658,7 @@ NEWTYPE.sourceWindow
   *fontB.TextFont
 
   redrawFlag.b
-  deleteMode.b
-
+  
   statusAreaY.w
   visibleLines.l
   visibleColumns.w
@@ -702,10 +701,7 @@ NEWTYPE.bmark
   xMax.w
   yMax.l
 End NEWTYPE
-
 DEFTYPE.bmark bmark
-;DEFTYPE.bmark BlockDims
-DEFTYPE.bmark oldBlockDims
 
 NEWTYPE.mousePos
   X.w
@@ -1017,17 +1013,17 @@ USEPATH ped\ptrCurrentSourceData
   EndIf
 End Function
 
-Macro updateStateBlockMark ;{d1 = currentLine, d0 = currentColumn}
-  ped\ptrCurrentSourceData\StateBlockMark = False
 
+Function.b PED_CursorInBlockmark{currentLine.l, currentColumn.w}
+SHARED ped
   If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-    If (ped\ptrCurrentSourceData\BlockStartY < `1) OR (ped\ptrCurrentSourceData\BlockStartY = `1 AND ped\ptrCurrentSourceData\BlockStartX <= `2)
-      If (ped\ptrCurrentSourceData\BlockEndY > `1) OR (ped\ptrCurrentSourceData\BlockEndY = `1 AND ped\ptrCurrentSourceData\BlockEndX <= `2)
-        ped\ptrCurrentSourceData\StateBlockMark = True
+    If (ped\ptrCurrentSourceData\BlockStartY < currentLine) OR (ped\ptrCurrentSourceData\BlockStartY = currentLine AND ped\ptrCurrentSourceData\BlockStartX <= currentColumn)
+      If (ped\ptrCurrentSourceData\BlockEndY > currentLine) OR (ped\ptrCurrentSourceData\BlockEndY = currentLine AND ped\ptrCurrentSourceData\BlockEndX <= currentColumn)
+        Function Return True
       EndIf
     EndIf
   EndIf
-End Macro
+End Function
 
 Macro PED_CursorOn
   If sourceWindow\cursorEnabled
@@ -3219,38 +3215,39 @@ SHARED sourceWindow,ped,AB3Pen()
 USEPATH ped\ptrCurrentSourceData
 
   currentColumn.w = \Column + \ColumnsOffset
+  currentLine.l = \DisplayLine + \DisplayLineOffset
 
   ;-- write character to textbuffer
   plineaddr.l = ped\ptrTextbuffer + \TextBufferOffset + currentColumn
-  Poke.b plineaddr,enteredChar
-
-  ;-- check if cursor in block
-  If \BlockEndY <> $ffffFFFF
-    currentLine.l = \DisplayLine + \DisplayLineOffset
-    !updateStateBlockMark{currentLine, currentColumn}
-  EndIf
+  Poke.b plineaddr, enteredChar
 
   ; -- print entered character to source window
   \ColumnsOffsetTmp = 0
 
-  tposx.w = \Column
-  tposy.w = \DisplayLine
-  textaddr.l = &enteredChar ;?comByte_EnteredCharacter
+  tcolor.w = AB3Pen(#AB3_cother)
+  textaddr.l = &enteredChar
 
-  If \StateBlockMark
-    log_Print{"cursor in block, routine called."}
-     ; --- print actual character with blockbackgroundcolor
-     PED_PrintText{textaddr,tposx,tposy,1,AB3Pen(#AB3_cother),3}
-  Else
-    If Peek.b(textaddr) > 0
-      ;log_Print{"Print ["  + Chr$(enteredChar) + "] at " + Str$(tposx) + ", " + Str$(tposy) + " - offset " + Str$(\ColumnsOffset)}
-      PED_PrintText{textaddr, tposx, tposy, 1, AB3Pen(#AB3_cother)}
-    Else
-      If instru <> -1 ;tokenbit in textbuffer is set!
-        log_Print{"printing an instruction?",#log_warning}
-        Poke.b textaddr, Peek.l(textaddr) BitClr 7
-      EndIf
-      PED_PrintText{textaddr,tposx,tposy,1,AB3Pen(#AB3_cclassic)}
+  If Peek.b(textaddr) < 0
+    If instru <> -1 ; tokenbit in textbuffer is set!
+      log_Print{"printing an instruction? removing token bit in testbuffer.", #log_warning}
+      Poke.b textaddr, Peek.l(textaddr) BitClr 7
+    EndIf
+    tcolor.w = AB3Pen(#AB3_cclassic)
+  EndIf
+
+  If Peek.b(textaddr) > 0
+    tposx.w = \Column
+    tposy.w = \DisplayLine
+    
+    ;log_Print{"Print ["  + Chr$(enteredChar) + "] at " + Str$(tposx) + ", " + Str$(tposy) + " - offset " + Str$(\ColumnsOffset)}
+    PED_PrintText{textaddr, tposx, tposy, 1, AB3Pen(#AB3_cother)}
+    ; --- print actual character with blockbackgroundcolor  
+    If PED_CursorInBlockmark{currentLine, currentColumn}
+      log_Print{"cursor in block, blockmarking printed character."}
+      DEFTYPE.bmark bmark
+      bmark\xMin = tposx, tposy, tposx, tposy
+      ;PED_DrawBlock{bmark}
+      log_Print{"TODO: update blockmark for cursor"}
     EndIf
   EndIf
 End Function
@@ -3543,6 +3540,44 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
 End Statement
 
 
+Statement PED_UpdateBlockPosY{y.l}
+SHARED ped
+  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
+    If y <= ped\ptrCurrentSourceData\BlockEndY
+      ped\ptrCurrentSourceData\BlockEndY + 1
+      If y <= ped\ptrCurrentSourceData\BlockStartY
+        ped\ptrCurrentSourceData\BlockStartY + 1
+      EndIf
+    EndIf
+  EndIf
+End Statement
+
+Statement AbsDimensions{*bm.bmark}
+
+End Statement
+
+Statement PED_NormalizeBlockmarkDimensions{@*bm.bmark}
+SHARED ped
+USEPATH ped\ptrCurrentSourceData
+
+  If *bm <> - 1
+    If *bm\yMin < *bm\yMax Then Statement Return
+    
+    If (*bm\yMin > *bm\yMax) OR ((*bm\yMin = *bm\yMax) AND (*bm\xMin > *bm\xMax))
+      Exchange *bm\xMin,*bm\xMax
+      Exchange *bm\yMin,*bm\yMax
+    EndIf  
+  Else
+    If (\BlockStartY > \BlockEndY) OR (\BlockStartY = \BlockEndY AND \BlockStartX > \BlockEndX)
+      Exchange \BlockStartX, \BlockEndX
+      Exchange \BlockStartY, \BlockEndY
+      log_Print{"corrected block dims: " + Str$(\BlockStartX) + "," + Str$(\BlockStartY) + "," +Str$(\BlockEndX) + "," +Str$(\BlockEndY)}
+    EndIf
+  EndIf
+
+End Statement
+
+
 Macro PED_RectFill ; (xMin, yMin, xMax, yMax, [Color, [Mask]])
 CNIF `0 < 5
     CERR "Not enough parameters!"
@@ -3565,23 +3600,6 @@ CNIF `0 >= 5
 CEND
 End Macro
 
-Statement PED_AbsBlockDimensions{}
-SHARED ped
-USEPATH ped\ptrCurrentSourceData
-  ;  log_Print{"abs blockdims"}
-
-  If \BlockStartY >= \BlockEndY
-    If \BlockStartY <> \BlockEndY
-      absloop:
-      Exchange \BlockStartX, \BlockEndX
-      Exchange \BlockStartY, \BlockEndY
-    EndIf
-    If \BlockStartX > \BlockEndX
-      Goto absloop
-    EndIf
-  EndIf
-End Statement
-
 Statement PED_DrawBlock{*bmark.bmark} ;xMin.w,yMin.w, xMax.w, yMax.w, absolute.b}
 SHARED ped, sourceWindow
 USEPATH sourceWindow
@@ -3596,15 +3614,16 @@ USEPATH sourceWindow
   If bm\yMax < 0 Then bm\yMax = 0
 
   If bm\xMax > \visibleColumns - 1 Then bm\xMax = \visibleColumns - 1
-  If bm\yMax > \visibleLines Then bm\yMax = \visibleLines
-  If bm\yMin > \visibleLines Then bm\yMin = \visibleLines
+  If bm\yMax > \visibleLines Then bm\yMax = \visibleLines - 1 
+  If bm\yMin > \visibleLines Then bm\yMin = \visibleLines - 1
 
   If (bm\xMin > bm\xMax) AND (bm\yMin = bm\yMax) 
-    log_Print{"PED_DrawBlock(): xMin > xMax!!"}
+    log_Print{"PED_DrawBlock(): xMin > xMax!!", #log_warning}
     Exchange bm\xMin, bm\xMax
   EndIf
   If bm\yMin > bm\yMax 
-    error{"PED_DrawBlock(): yMin > yMax!!"}
+    log_Print{"PED_DrawBlock(): yMin > yMax!!", #log_warning}
+    Exchange bm\yMin, bm\yMax
   EndIf
 
   VWait 1
@@ -3643,21 +3662,8 @@ USEPATH sourceWindow
     bm\yMin * \font\tf_YSize
     bm\xMax * \font\tf_XSize + \font\tf_XSize
     bm\yMax * \font\tf_YSize + \font\tf_YSize
-    ;log_Print{Str$(col) + ": " + Str$(bm\xMin) + ", " + Str$(bm\yMin) + " - " + Str$(bm\xMax) + ", " + Str$(bm\yMax)}
     !PED_RectFill{bm\xMin, bm\yMin, bm\xMax - 1, bm\yMax - 1, %101}
   Return
-End Statement
-
-Statement PED_UpdateBlockPosY{y.l}
-SHARED ped
-  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-    If y <= ped\ptrCurrentSourceData\BlockEndY
-      ped\ptrCurrentSourceData\BlockEndY + 1
-      If y <= ped\ptrCurrentSourceData\BlockStartY
-        ped\ptrCurrentSourceData\BlockStartY + 1
-      EndIf
-    EndIf
-  EndIf
 End Statement
 
 Statement PED_UpdateScrollBlockmark{direction.b}
@@ -3791,46 +3797,46 @@ USEPATH ped\ptrCurrentSourceData
   Return
 End Statement
 
-Statement PED_RedrawBlock{}
+Statement PED_DrawBlockmark{}
 SHARED ped, sourceWindow
+USEPATH ped\ptrCurrentSourceData
 
-  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF Then Statement Return
+  If \BlockEndY = $ffffFFFF Then Statement Return
 
-  log_Print{"RedrawBlock"}
 
   ;-- draw the block, but only the parts in the visible area
   DEFTYPE.bmark bmark
-  bmark\xMin = ped\ptrCurrentSourceData\BlockStartX
-  bmark\yMin = ped\ptrCurrentSourceData\BlockStartY
-  bmark\xMax = ped\ptrCurrentSourceData\BlockEndX
-  bmark\yMax = ped\ptrCurrentSourceData\BlockEndY      
-
-  If (bmark\yMax >= ped\ptrCurrentSourceData\DisplayLineOffset)
-    bmark\xMin - ped\ptrCurrentSourceData\ColumnsOffset
+  bmark\xMin = \BlockStartX, \BlockStartY, \BlockEndX, \BlockEndY      
+  log_Print{"DrawBlockmark: " + Str$(bmark\xMin) + ", " + Str$(bmark\yMin) + " - " + Str$(bmark\xMax) + ", " + Str$(bmark\yMax)}
+  
+  If (bmark\yMax >= \DisplayLineOffset)
+    bmark\xMin - \ColumnsOffset
     If bmark\xMin < 0 Then bmark\xMin = 0
 
-    bmark\yMin - ped\ptrCurrentSourceData\DisplayLineOffset
+    bmark\yMin - \DisplayLineOffset
     If bmark\yMin < 0
       bmark\xMin = 0
       bmark\yMin = 0
     EndIf
 
     If bmark\yMin < sourceWindow\visibleLines
-      bmark\xMax - ped\ptrCurrentSourceData\ColumnsOffset
+      bmark\xMax - \ColumnsOffset
       If bmark\xMax < 0 Then bmark\xMax = 0
 
-      bmark\yMax - ped\ptrCurrentSourceData\DisplayLineOffset
+      bmark\yMax - \DisplayLineOffset
       If bmark\yMax < 0 Then bmark\yMax = 0
 
-      If bmark\xMax > sourceWindow\visibleColumns
-        bmark\xMax = sourceWindow\visibleColumns
+      If bmark\xMax > sourceWindow\visibleColumns - 1
+        bmark\xMax = sourceWindow\visibleColumns - 1
       EndIf
+
+      ;-- if the block is larger than the visible lines, then cut the block
       If bmark\yMax > sourceWindow\visibleLines - 1
         bmark\yMax = sourceWindow\visibleLines - 1
+        bmark\xMax = sourceWindow\visibleColumns - 1
       EndIf
-      bmark\xMin + ped\ptrCurrentSourceData\ColumnsOffset
-      bmark\xMax + ped\ptrCurrentSourceData\ColumnsOffset
-      PED_AbsBlockDimensions{}
+      bmark\xMin + \ColumnsOffset
+      bmark\xMax + \ColumnsOffset
       PED_DrawBlock{bmark}
     EndIf
   EndIf
@@ -3957,7 +3963,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   !PED_RestoreCursorPosition
 
   ;-- redraw the blockmark
-  PED_RedrawBlock{}
+  PED_DrawBlockmark{}
 
   !PED_CursorOn
 End Statement
@@ -3979,13 +3985,15 @@ USEPATH ped\ptrCurrentSourceData
     log_Print{"setblockend: no blockstart set!"}
   Else
     log_Print{"setblockend"}
+
+    ;-- remove old blockselection
+    PED_DrawBlockmark{}
+
     endX.w = \ColumnsOffset + \Column
     endY.l = \DisplayLineOffset + \DisplayLine
-
     If (endX = storeBlockStartX) AND (endY = \BlockStartDisplayLine)
         log_Print{"blockstart is equal to blockend position, resetting block"}
         !PED_ResetBlockflag
-        PED_RedrawSource{}
         Statement Return
     EndIf
     
@@ -4004,10 +4012,10 @@ USEPATH ped\ptrCurrentSourceData
     \BlockStartY = \BlockStartDisplayLine
     \BlockEndX = endX
     \BlockEndY = endY
+    PED_NormalizeBlockmarkDimensions{}
 
-    log_Print{"Block " + Str$(\BlockStartX) + ", " + Str$(\BlockStartY) + ", " + Str$(\BlockEndX) + ", " + Str$(\BlockEndY)}
-    PED_AbsBlockDimensions{}
-    PED_RedrawSource{}
+    ;-- draw updated blockselection    
+    PED_DrawBlockmark{}
   EndIf
 End Statement
 
@@ -4077,6 +4085,7 @@ USEPATH ped\ptrCurrentSourceData
   EndIf
 
   !PED_UpdateTextBufferOffset
+  If tmpDisplayLineOffset <> \DisplayLineOffset Then PED_RedrawSource{}
 
   Select columnMode
   Case #LINE_START
@@ -4085,11 +4094,11 @@ USEPATH ped\ptrCurrentSourceData
   Case #LINE_END
     lineaddr.l = ped\ptrTextbuffer + \TextBufferOffset
     \Column = getLineLength{lineaddr}
+    log_Print{"setting new cursor column: " + Str$(\Column)}
   Case #LINE_NOCHANGE  
   End Select
+  
   PED_UpdateStatusArea{#STATUS_SCROLLERS}
-
-  If tmpDisplayLineOffset <> \DisplayLineOffset Then PED_RedrawSource{}
 End Statement
 
 Function.b PED_GotoLineAddress{ptrSourceLine.l}
@@ -4311,24 +4320,6 @@ Statement PED_GetMousePos{*mp.mousePos}
   ;msg$ + " / storeXY: " + Str$(storeX.w) + ", " + Str$(storeY.l)
   ;PED_ShowMessage{msg$}
 End Statement
-
-
-Statement AbsDimensions{*bm.bmark}
-  If *bm\yMin < *bm\yMax Then Statement Return
-  
-  If (*bm\yMin > *bm\yMax) OR ((*bm\yMin = *bm\yMax) AND (*bm\xMin > *bm\xMax))
-    Exchange *bm\xMin,*bm\xMax
-    Exchange *bm\yMin,*bm\yMax
-  EndIf
-End Statement
-
-Statement AbsDimensionsBlock{*bm.bmark}
-  If *bm\yMin < *bm\yMax Then Statement Return
-  
-  If (*bm\yMin > *bm\yMax) Then Exchange *bm\yMin, *bm\yMax
-  If (*bm\xMin > *bm\xMax) THen Exchange *bm\xMin, *bm\xMax
-End Statement
-
 
 Statement PED_HistoryAddEntry{}
 SHARED ped
@@ -5992,7 +5983,7 @@ End
    
       ; --- draw block mark if existing
       !PED_CursorOff
-  ;    SF comByte_StateBlockMark
+  ;    SF comByte_StateBlockmark
   ;    TST.l comLong_BlockEndY
   ;    BMI.w exit_updateblock
   ;      MOVEM.l D0-D3/A0-A2,-(A7)
@@ -6017,14 +6008,14 @@ End
   ;          SUB.l comLong_DisplayLineOffset,D3
   ;          SUB.l comLong_DisplayLineOffset,D1
   ;          JSR _redrawBlock
-  ;          ST comByte_StateBlockMark
+  ;          ST comByte_StateBlockmark
   ;      JL_0_C66:
   ;      MOVEM.l (A7)+,D0-D3/A0-A2
   ;    exit_updateblock:
 
       If ped\doTokenize Then PED_PrintCurrentSourceLine{False}
   ;
-  ;      TST.b comByte_StateBlockMark
+  ;      TST.b comByte_StateBlockmark
   ;      BEQ.w JL_0_CC6
   ;        MOVEM.l D0-D3/D7/A0-A2,-(A7)
   ;        MOVE.w comWord_BlockStartX,D0
@@ -8124,8 +8115,6 @@ Return
 Return
 
 .menu_blocktab:
-
-
   log_Print{"menu blocktab called."}
 
   If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
@@ -8136,10 +8125,10 @@ Return
 
   PED_SetCurrentSourceLine{}
   \CurrentSourceLine = PED_GetBlockStartSourceLine{}
-  startY.l = \BlockStartY
   log_Print{"startY: " + Str$(\BlockStartY)}
   log_Print{"endY: "  + Str$(\BlockEndY)}
 
+  startY.l = \BlockStartY
   Repeat
     If ped\doTokenize
       strline$ = PED_Detokenize{\CurrentSourceLine}
@@ -8158,6 +8147,7 @@ Return
 
   PED_SetCurrentSourceLine{}
   PED_RedrawSource{}
+  log_Print{"menu blocktab done."}
 Return
 
 
@@ -8171,10 +8161,10 @@ Return
 
   PED_SetCurrentSourceLine{}
   \CurrentSourceLine = PED_GetBlockStartSourceLine{}
-  startY.l = \BlockStartY
   log_Print{"startY: " + Str$(\BlockStartY)}
   log_Print{"endY: "  + Str$(\BlockEndY)}
 
+  startY.l = \BlockStartY
   Repeat
     If ped\doTokenize
       strline$ = PED_Detokenize{\CurrentSourceLine}
@@ -8566,7 +8556,7 @@ Return
     Wend
     exit_lowerindent:
 
-    ; draw the blockmark
+    ;-- draw the blockmark
     ped\ptrCurrentSourceData\BlockStartY = indentBegin
     ped\ptrCurrentSourceData\BlockStartX = 0
     ped\ptrCurrentSourceData\BlockEndY   = indentEnd
@@ -8579,7 +8569,6 @@ Return
 
 .handle_blockmark:
   ;log_Print{"handle blockmark"}
-  sourceWindow\deleteMode = 0
 
   If ped\blockmarkRemovalMode <> 0
     If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
@@ -8588,9 +8577,8 @@ Return
         If pedconfig\no_display_beep = False Then DisplayBeep_ sourceWindow\pedScreen
       Else
         ; for blockmarkRemovalMode = 1 only remove blockmark
+        PED_DrawBlockmark{}
         !PED_ResetBlockflag
-        sourceWindow\deleteMode = True
-        PED_RedrawSource{}
       EndIf
     EndIf
     ped\blockmarkRemovalMode = 0
@@ -8852,10 +8840,9 @@ Return
       EndIf
 
       ;-- if cursor is in block mark, redraw everything
-      tmpCurrentColumn.w = 0
-      tmpCurrentLine.l = \DisplayLine + \DisplayLineOffset
-      !updateStateBlockMark{tmpCurrentLine, tmpCurrentColumn}
-      If \StateBlockMark Then PED_RedrawSource{}
+      If PED_CursorInBlockmark{\DisplayLine + \DisplayLineOffset, 0}
+        PED_RedrawSource{}
+      EndIf
     Else
       error{"Couldn't append sourceline!"}
     EndIf
@@ -9486,8 +9473,9 @@ Return
 
 
 .menu_kill:
+USEPATH ped\ptrCurrentSourceData
   log_Print{"menu Kill called."}
-  If ped\ptrCurrentSourceData\BlockEndY = $FFFFffff Then Return
+  If \BlockEndY = $FFFFffff Then Return
 
   killedRows.l = 0
   Gosub getCountOfMarkedLines
@@ -9512,7 +9500,7 @@ Return
   Else
     *tmpfirstLine.sourceLine = 0
     For si.w = 1 To getCountOfMarkedLines
-
+      *nextLine.sourceLine = *tempLine\nextLine
       ;-- check first line
       If si = 1 AND (\BlockStartX > 0)
         strline$ = PED_Detokenize{*tempLine}
@@ -9539,57 +9527,64 @@ Return
 
         strline2$ = PED_Detokenize{*tempLine}
         strline$ = strline1$ + UnRight$(strline2$,\BlockEndX + 1)
-        log_Print{"changing last line to: " + strline$}
 
         newline$ = PED_TokenizeText{strline$}
         *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
         If *tmpfirstLine <> 0
+          log_Print{"joining first and last line to: " + strline$}
           *tmpfirstLine = PED_ReplaceSourceLine{*tmpfirstLine, *newLine}
+          If *tmpfirstLine = 0
+            log_Print{"Could not cut selected block."}
+          EndIf          
           killedRows - 1 ; we kill one line less in this case
         Else
+          log_Print{"changing last line to: " + strline$}
           *tempLine = PED_ReplaceSourceLine{*tempLine, *newLine}
+          If *tempLine = 0
+            log_Print{"Could not cut selected block."}
+          EndIf
           Goto skip_killofline
-        EndIf
-        If *tempLine = 0
-          log_Print{"Could not cut selected block."}
         EndIf
       EndIf
 
-      ;-- remove the sourceline
-      strline$ = PED_Detokenize{*tempLine}
-      log_Print{Str$(si) + " deleting " + Left$(strline$, 20)}
-      *nextLine.sourceLine = *tempLine\nextLine
-      If PED_CutSourceLine{*tempLine} Then PED_DeleteSourceLine{*tempLine}
-      killedRows + 1 
-      skip_killofline:
+      ;-- remove the sourcelines
+      If *tempLine
+        strline$ = PED_Detokenize{*tempLine}
+        log_Print{Str$(si) + " deleting " + Left$(strline$, 20)}
+        If PED_CutSourceLine{*tempLine} Then PED_DeleteSourceLine{*tempLine}
+        killedRows + 1 
+        skip_killofline: 
+      Else
+        log_Print{"no linepointer to delete!", #log_error}
+      EndIf
       *tempLine = *nextLine
     Next si
-    ped\ptrCurrentSourceData\CurrentSourceLine = *tempLine
-    ped\ptrCurrentSourceData\SourceChanged = $FFFF
-  EndIf
+    \CurrentSourceLine = *tempLine
+    \SourceChanged = $FFFF
+  EndIf 
 
-  If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine > ped\ptrCurrentSourceData\TotalLines
-    ped\ptrCurrentSourceData\TotalLines - 1
+  ;-- remove block selection
+  PED_DrawBlockmark{}
+  !PED_ResetBlockflag
 
-    ped\ptrCurrentSourceData\DisplayLineOffset = ped\ptrCurrentSourceData\TotalLines
-    ped\ptrCurrentSourceData\DisplayLine = 0
-
-    ped\ptrCurrentSourceData\Column = ped\ptrCurrentSourceData\BlockStartX
-    PED_SetCurrentSourceLine{}
-    !PED_ResetBlockflag
-    PED_RedrawSource{}
-    PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset}
+  ;-- adjust the display
+  If \DisplayLineOffset + \DisplayLine > \TotalLines
+    \TotalLines - 1
+    \DisplayLineOffset = \TotalLines
+    \DisplayLine = 0
+    \Column = \BlockStartX
   Else
-    ped\ptrCurrentSourceData\Column = ped\ptrCurrentSourceData\BlockStartX
-    ped\ptrCurrentSourceData\DisplayLine - killedRows
-    If ped\ptrCurrentSourceData\DisplayLine < 0
-        ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
-        ped\ptrCurrentSourceData\DisplayLine = 0
+    \Column = \BlockStartX
+    \DisplayLine - killedRows
+    log_Print{"move cursor " + Str$(killedRows) + " lines up."}
+    If \DisplayLine < 0
+        \DisplayLineOffset + \DisplayLine
+        \DisplayLine = 0
     EndIf
-    PED_SetCurrentSourceLine{}
-    !PED_ResetBlockflag    
-    PED_RedrawSource{}
   EndIf
+  PED_SetCurrentSourceLine{}
+  PED_RedrawSource{}    
+
 Return
 
 .menu_saveblockas:
@@ -9826,16 +9821,14 @@ USEPATH ped\ptrCurrentSourceData
 
   !PED_CursorOff
 
-  If \BlockEndY <> $ffffFFFF     ; if blockmark is set, clear the block
-    PED_RedrawBlock{}
+  ;-- if a blockmark is set, clear the block
+  If \BlockEndY <> $FFFFffff
+    log_Print{"remove block from source area."}
+    PED_DrawBlockmark{}
     !PED_ResetBlockflag    
   EndIf
 
-  oldBlockDims\xMin = \BlockStartX ; why store the old block ?? it has been killed with the clause above
-  oldBlockDims\yMin = \BlockStartY
-  oldBlockDims\xMax = \BlockEndX
-  oldBlockDims\yMax = \BlockEndY
-
+  ;-- set initial blockdimensions
   \LinePosStartX = mousePos\textX + \ColumnsOffset
   If mousePos\textY + \DisplayLineOffset < \TotalLines
     \LinePosStartY = mousePos\textY + \DisplayLineOffset
@@ -9845,22 +9838,18 @@ USEPATH ped\ptrCurrentSourceData
   \LinePosEndX = \LinePosStartX
   \LinePosEndY = \LinePosStartY
 
-  PED_UpdateStatusArea{#STATUS_SCROLLERS}
 
   storeDisplayLineOffset.l = \DisplayLineOffset
   storeColumnsOffset.w = \ColumnsOffset
   storeCurrentSourceLine.l = \CurrentSourceLine
 
-  log_Print{"initial block draw"}
   storeX.w = mousePos\textX + \ColumnsOffset
   storeY.l = mousePos\textY
 
-  bmark\xMin = storeX
-  bmark\yMin = storeY
-  bmark\xMax = storeX
-  bmark\yMax = storeY
-  AbsDimensions{bmark}
+  ; -- draw initial blockmark
+  bmark\xMin = storeX, storeY, storeX, storeY
   PED_DrawBlock{bmark}
+  log_Print{"initial block draw at " + Str$(storeX) + ", " + Str$(storeY)}
 
   ;-- loop while mousebutton is pressed and block marking is in progress
   exit_mouse_loop.b = False
@@ -9877,7 +9866,23 @@ USEPATH ped\ptrCurrentSourceData
         PED_GetMousePos{mousePos}
 
         If mousePos\textY => 0
-          Gosub mouse_scrollno
+          tmpX.w = mousePos\textX + \ColumnsOffset
+          tmpY.l = mousePos\textY
+          If tmpY + \DisplayLineOffset > \TotalLines
+            tmpY = \TotalLines - \DisplayLineOffset - 1
+          EndIf
+
+          If mousePos\textX < 0
+            ;-- mouse is left of source, scroll to right if there is a ColumnsOffset
+            Gosub mouse_scrollright
+            Goto skip_blockupdate            
+          Else            
+            ;-- scroll to left if we are not at the rightmost column  
+            If (mousePos\textX - \ColumnsOffset) => sourceWindow\visibleColumns
+              Gosub mouse_scrollleft
+              Goto skip_blockupdate
+            EndIf
+          EndIf
         Else
           If mousePos\Y <= sourceWindow\BoxTop
             Gosub mouse_scrollup
@@ -9885,52 +9890,17 @@ USEPATH ped\ptrCurrentSourceData
             If sourceWindow\visibleLines + \DisplayLineOffset <= \TotalLines
               Gosub mouse_scrolldown
             EndIf
-          EndIf
+          EndIf          
         EndIf
+        Gosub update_blockmark
+        skip_blockupdate:
       EndIf
     EndIf
   Until exit_mouse_loop
 
   Gosub mouseclick_in_source
-Return
 
-
-.mouse_scrolldown:
-USEPATH ped\ptrCurrentSourceData
-  ;log_Print{"scroll down"}
-  tmpX.w = #MAX_Columns
-  tmpY.l = sourceWindow\visibleLines - 1
-
-  If \DisplayLineOffset + sourceWindow\visibleLines <= \TotalLines
-    PED_ScrollVertical{#SCROLL_UP}
-
-    *currentLine.sourceLine = \CurrentSourceLine
-    \CurrentSourceLine = *currentLine\nextLine
-    \DisplayLineOffset + 1
-
-    Gosub print_new_sourceline_bottom
-
-    storeY - 1
-
-    If tmpY + \DisplayLineOffset <= \LinePosStartY
-      bmark\xMin = #MAX_Columns
-      bmark\yMin = sourceWindow\visibleLines - 2
-      bmark\xMax = storeX
-      bmark\yMax = storeY
-      PED_DrawBlock{bmark}
-      storeX = #MAX_Columns
-      storeY = sourceWindow\visibleLines - 1
-      If tmpY + \DisplayLineOffset = \LinePosStartY
-        storeX = \LinePosStartX - 1
-      EndIf
-      tmpX = -1
-      tmpY = storeY
-
-    EndIf
-
-  EndIf
-
-  Gosub update_blockmark
+  !PED_CursorOn
 Return
 
 .mouse_scrollup:
@@ -9963,73 +9933,89 @@ USEPATH ped\ptrCurrentSourceData
       If \DisplayLineOffset = \LinePosStartY
         storeX = \LinePosStartX - 1
       EndIf
-
     EndIf
-
   EndIf
-
-  Gosub update_blockmark
 Return
 
-.mouse_scrollno:
+.mouse_scrolldown:
 USEPATH ped\ptrCurrentSourceData
-  tmpX = mousePos\textX + \ColumnsOffset
-  tmpY = mousePos\textY
-  If tmpY + \DisplayLineOffset > \TotalLines
-    tmpY = \TotalLines - \DisplayLineOffset - 1
-  EndIf
-  ;log_Print{"scroll no, mx " + Str$(mousePos\X) + " tmpx "  + Str$(tmpX)}
+  ;log_Print{"scroll down"}
+  tmpX.w = #MAX_Columns - 1
+  tmpY.l = sourceWindow\visibleLines - 1
 
-  If mousePos\textX < 0
-    ;-- mouse is left of source, scroll to right if there is a ColumnsOffset
-    If \ColumnsOffset > 0
-      \LinePosEndX = storeX
-      \LinePosEndY = storeY + \DisplayLineOffset
+  If \DisplayLineOffset + sourceWindow\visibleLines <= \TotalLines
+    PED_ScrollVertical{#SCROLL_UP}
 
-      \BlockStartX = \LinePosStartX
-      \BlockStartY = \LinePosStartY
-      \BlockEndX   = \LinePosEndX
-      \BlockEndY   = \LinePosEndY
-      PED_AbsBlockDimensions{}
+    *currentLine.sourceLine = \CurrentSourceLine
+    \CurrentSourceLine = *currentLine\nextLine
+    \DisplayLineOffset + 1
 
-      \ColumnsOffset - sourceWindow\scrollSize
-      PED_ScrollHorizontal{#SCROLL_RIGHT}
-;      !PED_ResetBlockflag
-Return
-    EndIf
-  Else            
-    ;-- scroll to left if we are not at the rightmost column  
-    If (mousePos\textX - \ColumnsOffset) => sourceWindow\visibleColumns
-      tmpX = \ColumnsOffset + sourceWindow\visibleColumns
-      If tmpX < #MAX_Columns
-        tmpX + 1
-        \LinePosEndX = mousePos\textX
-        \LinePosEndY = mousePos\textY + \DisplayLineOffset
+    Gosub print_new_sourceline_bottom
 
-        \BlockStartX = \LinePosStartX
-        \BlockStartY = \LinePosStartY
-        \BlockEndX   = \LinePosEndX
-        \BlockEndY   = \LinePosEndY
-        PED_AbsBlockDimensions{}
+    storeY - 1
 
-        \ColumnsOffset + sourceWindow\scrollSize
-        PED_ScrollHorizontal{#SCROLL_LEFT}
-;        !PED_ResetBlockflag
-Return
+    If tmpY + \DisplayLineOffset <= \LinePosStartY
+      bmark\xMin = 0
+      bmark\yMin = sourceWindow\visibleLines - 1
+      bmark\xMax = storeX
+      bmark\yMax = storeY
+      log_Print{"doing stuff."}
+      VWait 25
+      PED_DrawBlock{bmark}
+      storeX = #MAX_Columns
+      storeY = sourceWindow\visibleLines - 1
+      If tmpY + \DisplayLineOffset = \LinePosStartY
+        storeX = \LinePosStartX - 1
       EndIf
+      tmpX = -1
+      tmpY = storeY
     EndIf
   EndIf
+Return
 
-  Gosub update_blockmark
+.mouse_scrollleft:
+USEPATH ped\ptrCurrentSourceData
+  tmpX = \ColumnsOffset + sourceWindow\visibleColumns
+  If tmpX < #MAX_Columns
+    tmpX + 1
+    \LinePosEndX = mousePos\textX
+    \LinePosEndY = mousePos\textY + \DisplayLineOffset
+
+    \BlockStartX = \LinePosStartX
+    \BlockStartY = \LinePosStartY
+    \BlockEndX   = \LinePosEndX
+    \BlockEndY   = \LinePosEndY
+    PED_NormalizeBlockmarkDimensions{}
+
+    \ColumnsOffset + sourceWindow\scrollSize
+    PED_ScrollHorizontal{#SCROLL_LEFT}
+  EndIf
+Return
+
+.mouse_scrollright:
+USEPATH ped\ptrCurrentSourceData
+  If \ColumnsOffset > 0
+    \LinePosEndX = storeX
+    \LinePosEndY = storeY + \DisplayLineOffset
+
+    \BlockStartX = \LinePosStartX
+    \BlockStartY = \LinePosStartY
+    \BlockEndX   = \LinePosEndX
+    \BlockEndY   = \LinePosEndY
+    PED_NormalizeBlockmarkDimensions{}
+
+    \ColumnsOffset - sourceWindow\scrollSize
+    PED_ScrollHorizontal{#SCROLL_RIGHT}
+  EndIf
 Return
 
 .update_blockmark:
   USEPATH ped\ptrCurrentSourceData
   ;-- check if mouse position has been changed
   If (storeX = mousePos\textX) AND (storeY = mousePos\textY) Then Return
-  
+
   \LinePosEndX = tmpX
-  If tmpY + \DisplayLineOffset < \TotalLines
+  If tmpY + \DisplayLineOffset < \TotalLines - 1
     \LinePosEndY = tmpY + \DisplayLineOffset
   EndIf
 
@@ -10037,8 +10023,7 @@ Return
   bmark\yMin = storeY
   bmark\xMax = tmpX
   bmark\yMax = tmpY
-  AbsDimensions{bmark}  
-
+  PED_NormalizeBlockmarkDimensions{bmark}
   ;-- adjust blockpart if necessary
   If \LinePosEndY > \LinePosStartY  
     ; mouse moved into next line, so we have to fill the rest of the current line with a block
@@ -10055,7 +10040,7 @@ Return
     EndIf
   EndIf
  
-  ;log_Print{"updating block, tmpX: " + Str$(tmpX) + ", tmpY: " + Str$(tmpY) + " | xMin " + Str$(bmark\xMin) + ", yMin "+ Str$(bmark\yMin)+", xMax "+ Str$(bmark\xMax)+", yMax "+ Str$(bmark\yMax)}  
+  log_Print{"updating block, tmpX: " + Str$(tmpX) + ", tmpY: " + Str$(tmpY) + " | xMin " + Str$(bmark\xMin) + ", yMin "+ Str$(bmark\yMin)+", xMax "+ Str$(bmark\xMax)+", yMax "+ Str$(bmark\yMax)}  
   PED_DrawBlock{bmark}
 
   storeX = tmpX
@@ -10068,6 +10053,7 @@ Return
 .mouseclick_in_source:
 USEPATH ped\ptrCurrentSourceData
   log_Print{"mousebutton released in source, qualifier: " + Hex$(mqualifier) }
+  log_Print{"EndX: " + Str$(\LinePosEndX)+ " EndY: " + Str$(\LinePosEndY)}
 
   \DisplayLineOffset = storeDisplayLineOffset
   \ColumnsOffset = storeColumnsOffset
@@ -10096,20 +10082,18 @@ USEPATH ped\ptrCurrentSourceData
   !PED_UpdateTextBufferOffset
 
   ;-- set x-position of blockend
-  tempX.w = \LinePosEndX
-  If tempX < 1
+  If \LinePosEndX < 1
+    ;-- if the mousepointer is mostleft, then set the end of block to the end of the previous line
     If \LinePosEndY > \LinePosStartY
       \LinePosEndY - 1
-      Goto jump_crude
+      \LinePosEndX = #MAX_Columns - 1
     Else
-      tempX = 0
+      \LinePosEndX = 0
     EndIf
   EndIf
-  If tempX > #MAX_Columns
-    jump_crude:
-    tempX = #MAX_Columns - 1
+  If \LinePosEndX > #MAX_Columns - 1
+    \LinePosEndX = #MAX_Columns - 1
   EndIf
-  \LinePosEndX = tempX
 
   ;-- set cursor position to beginning of block mark
   \Column = \LinePosEndX - \ColumnsOffset
@@ -10122,60 +10106,18 @@ USEPATH ped\ptrCurrentSourceData
       \BlockStartY = \LinePosStartY
       \BlockEndX = \LinePosEndX
       \BlockEndY = \LinePosEndY
-      PED_AbsBlockDimensions{}
+      PED_NormalizeBlockmarkDimensions{}
       PED_UpdateStatusArea{#STATUS_SCROLLERS}
       PED_RedrawSource{}
-      Return
-  EndIf
-
-  ;-- it was just a click...
-  ; log_Print{"just a click, no block marked."}
-  \BlockStartX = oldBlockDims\xMin
-  \BlockStartY = oldBlockDims\yMin
-  \BlockEndX   = oldBlockDims\xMax
-  \BlockEndY   = oldBlockDims\yMax
-
-  ; -- check if some keys are pressed aswell
-  If mqualifier AND #IEQUALIFIER_LSHIFT                 ; lshift or rshift
-;    log_Print{">> SHIFT pressed aswell!"}
-    ped\blockmarkRemovalMode = 1 : Gosub handle_blockmark
-
-    ;-- whatfor is this ? the block is deleting right one line up!
-    ;If \BlockStartY <= \LinePosStartY
-    ;  If \BlockEndY => \LinePosStartY
-    ;    If \BlockStartY = \LinePosStartY AND \BlockStartX <= \LinePosStartX
-    ;      If \BlockEndY = \LinePosStartY AND \BlockEndX <= \LinePosStartX
-    ;        Poke.l ?comLong_BlockEndY, $ffffFFFF
-    ;      EndIf
-    ;    EndIf
-    ; EndIf
-    ;EndIf
-  Else                                                  ; enhance the block
-    \BlockEndX   = \LinePosEndX
-    \BlockStartY = \LinePosStartY
-  EndIf
-
-  If \BlockEndY <> $ffffFFFF
-    If mqualifier AND #IEQUALIFIER_LALT                ; LeftAlt or RightAlt
- ;     log_Print{">> ALT pressed aswell!"}
-      Gosub jump_onclick
-    Else
-      PED_RedrawSource{}
-    EndIf
   Else
-    If \DisplayLineOffset <> \DisplayLineOffsetStore
-      PED_RedrawSource{}
-    Else
-      If \ColumnsOffset <> sourceWindow\ColumnsOffsetStore
-        PED_RedrawSource{}
-      Else
-        If mqualifier AND #IEQUALIFIER_LALT ;$30
-          Gosub jump_onclick
-        Else
-          PED_RedrawSource{}
-        EndIf
-      EndIf
+    ;-- it was just a click, so remove the start blockmark and restore 
+    PED_DrawBlock{bmark}
+    !PED_ResetBlockflag
+
+    If mqualifier AND #IEQUALIFIER_LALT ;$30
+      Gosub jump_onclick
     EndIf
+
   EndIf
 Return
 
@@ -11999,63 +11941,10 @@ Return
   ped\noDetokenizing = 0
 
   ;-- redraw the block
-  PED_RedrawBlock{}   
+  PED_DrawBlockmark{}   
 
   !PED_RestoreCursorPosition
 Return
-
-Macro checkBeforeBlockStartX
-  `1 = False
-  If ped\ptrCurrentSourceData\BlockStartY = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
-    If ped\ptrCurrentSourceData\BlockStartX > ped\ptrCurrentSourceData\ColumnsOffset + ped\ptrCurrentSourceData\Column
-      `1 = True
-    EndIf
-  EndIf
-End Macro
-
-Macro checkBeforeBlockEndX
-  `1 = False
-  If ped\ptrCurrentSourceData\BlockEndY = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
-    If ped\ptrCurrentSourceData\BlockEndX > ped\ptrCurrentSourceData\ColumnsOffset + ped\ptrCurrentSourceData\Column
-      `1 = True
-    EndIf
-  EndIf
-
-End Macro
-
-.adjustBlockPosition:
-  If ped\ptrCurrentSourceData\BlockStartX >= #MAX_Columns
-    ped\ptrCurrentSourceData\BlockStartX = 0
-    ped\ptrCurrentSourceData\BlockStartY + 1
-    If ped\ptrCurrentSourceData\BlockStartY > ped\ptrCurrentSourceData\BlockEndY
-      !PED_ResetBlockflag
-      Return
-    EndIf
-  EndIf
-
-  If ped\ptrCurrentSourceData\BlockEndX > ped\ptrCurrentSourceData\BlockStartX
-    ped\ptrCurrentSourceData\BlockEndX = #MAX_Columns-1
-    ped\ptrCurrentSourceData\BlockStartY - 1
-    If ped\ptrCurrentSourceData\BlockStartY <= ped\ptrCurrentSourceData\BlockEndY
-      Return
-    Else
-      !PED_ResetBlockflag
-      Return
-    EndIf
-  EndIf
-
-  If ped\ptrCurrentSourceData\BlockStartY = ped\ptrCurrentSourceData\BlockEndY
-    If ped\ptrCurrentSourceData\BlockEndX <= ped\ptrCurrentSourceData\BlockStartX
-      !PED_ResetBlockflag
-      Return
-    EndIf
-  EndIf
-
-  If ped\ptrCurrentSourceData\BlockEndX >= #MAX_Columns
-    ped\ptrCurrentSourceData\BlockEndX = #MAX_Columns-1
-  EndIf
-Return
-
 
 .handlePedEvents:
   ped\ptrCurrentSourceData\KeyBeforeReturn = 0
@@ -12114,37 +12003,10 @@ Return
   Wend
 
   !PED_CursorOff
-
   PED_ScrollHorizontal{#SCROLL_RIGHT, #SCROLL_CURRENT_LINE}
-
-  ;-- update blockmarking
-  If \BlockEndY <> $ffffFFFF
-    currentColumn = \Column + \ColumnsOffset
-    currentLine.l = \DisplayLine + \DisplayLineOffset
-    !updateStateBlockMark{currentLine, currentColumn}
-
-    If \BlockStartY <> currentLine AND \BlockEndY <> currentLine
-      If \BlockStartX > currentColumn
-        If \StateBlockMark <> 0
-          \BlockEndX + 1
-          If \BlockEndX > #MAX_Columns-1
-            \BlockEndX = #MAX_Columns-1
-          EndIf
-        EndIf
-      EndIf
-      If \BlockEndX < currentColumn
-        \BlockEndX + 1
-        If \BlockEndX > #MAX_Columns-1
-          \BlockEndX = #MAX_Columns-1
-        EndIf
-      EndIf
-
-      \BlockStartX = (\BlockStartX + 1) AND $7F
-      \BlockEndX = (\BlockEndX + 1) AND $7F
-    EndIf
-  EndIf
-  ;--
   PED_PrintChar{\KeyBeforeReturn}
+  !PED_CursorOn
+
   Gosub moveCursorRight
 Return
 
@@ -12152,6 +12014,7 @@ Return
 .moveCursorToBeginOfWord:
   ;-- get lineaddress in textbuffer (detokenized text!)
   lineaddr = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
+
   ;-- get length of source line
   textlen.w = getLineLength{lineaddr}
 
@@ -12545,38 +12408,35 @@ Return
 
 
 .deletekey:
-  log_Print{"deletekey, mode= " + Str$(sourceWindow\deleteMode)}
+  log_Print{"deletekey"}
 
   ped\blockmarkRemovalMode = 2
   ped\ptrCurrentSourceData\KeyBeforeReturn = last_vankey
 
-  If sourceWindow\deleteMode = False
-    ; -- scroll to left by 1
-    !PED_CursorOff
-    PED_ScrollHorizontal{#SCROLL_LEFT,  #SCROLL_CURRENT_LINE}
+  ; -- scroll to left by 1
+  !PED_CursorOff
+  PED_ScrollHorizontal{#SCROLL_LEFT,  #SCROLL_CURRENT_LINE}
 
-    Gosub deleteCharFromTextbuffer
+  Gosub deleteCharFromTextbuffer
 
-    ; -- check if shift is pressed as well
-    If ped\ptrCurrentSourceData\Column > 0 OR ped\ptrCurrentSourceData\ColumnsOffset > 0
-      If (mqualifier.w AND #IEQUALIFIER_RSHIFT) OR (mqualifier AND #IEQUALIFIER_LSHIFT)
-        ;log_Print{"shift"}
-        If delete_mode.l = #VANILLAKEY_BACKSPACE
-          If ped\ptrCurrentSourceData\Column > 0
-            ped\ptrCurrentSourceData\Column - 1
-            Goto deletekey
-          EndIf
-          If ped\ptrCurrentSourceData\ColumnsOffset > 0
-            ped\ptrCurrentSourceData\ColumnsOffset - 1
-            Goto deletekey
-          EndIf
+  ; -- check if shift is pressed as well
+  If ped\ptrCurrentSourceData\Column > 0 OR ped\ptrCurrentSourceData\ColumnsOffset > 0
+    If (mqualifier.w AND #IEQUALIFIER_RSHIFT) OR (mqualifier AND #IEQUALIFIER_LSHIFT)
+      ;log_Print{"shift"}
+      If delete_mode.l = #VANILLAKEY_BACKSPACE
+        If ped\ptrCurrentSourceData\Column > 0
+          ped\ptrCurrentSourceData\Column - 1
+          Goto deletekey
         EndIf
-      Else
-        Return
+        If ped\ptrCurrentSourceData\ColumnsOffset > 0
+          ped\ptrCurrentSourceData\ColumnsOffset - 1
+          Goto deletekey
+        EndIf
       EndIf
+    Else
+      Return
     EndIf
   EndIf
-  delete_mode = 0
 Return
 
 .moveCursorToX:     ; newColumn: new X-Position
@@ -13053,25 +12913,20 @@ Return
   If NOT Peek.b(?comByte_RunningFlag)            ; only available when no exe is running
     Gosub check_mouse_in_statusarea
   EndIf
-; exit_Loop_classes:
-;                     Dc.b $FF,$01                  ; VERTICAL SCROLLER      ; -1
-;                     Dc.b $FE,$00                  ; SHORTCUT               ; -2
-;                     Dc.b $FD,$01                  ; L-MOUSEBUTTON          ; -3
-;                     Dc.b $FB,$01                  ; AJL_0_7FCC             ; -4
+
   Select pedMessage\_Code
   Case #SELECTUP
+    ;log_Print{"Mouse-Event SELECTUP",#log_debug}
     If was_selectdown_before.b = True
-;      log_Print{"Mouse-Event SELECTUP",#log_debug}
       was_selectdown_before = False
-      ;exit_loop_class = -4 ; AJL_0_7FCC
-      ;exit_eventloop = True
     EndIf
 
   Case #SELECTDOWN
+    ;log_Print{"Mouse-Event SELECTDOWN",#log_debug}
     was_selectdown_before.b = True
-;    log_Print{"Mouse-Event SELECTDOWN",#log_debug}
     exit_loop_class = -3
-    ; left mb not pressed anymore, check doubleclick
+
+    ;-- left mb not pressed anymore, check doubleclick
     isDoubleClick.b = DoubleClick_(SSeconds.l,SMicros.l,pedMessage\_Seconds,pedMessage\_Micros)
     SSeconds = pedMessage\_Seconds
     SMicros = pedMessage\_Micros
@@ -13538,14 +13393,53 @@ Return
   ;log_Print{"move " + Str$(moveCount) + "  newColumn: " + Str$(newColumn)}
 
   If (newColumn < #MAX_Columns) AND (newColumn >= 0)
-    ; check blockmark
+    ;-- check blockmark
     If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-      result.b = 0
-      !checkBeforeBlockStartX{result}
-      If result Then ped\ptrCurrentSourceData\BlockStartX + moveCount
-      !checkBeforeBlockEndX{result}
-      If result Then ped\ptrCurrentSourceData\BlockEndX + moveCount
-      Gosub adjustBlockPosition
+      ;-- check if cursor is in first blockline and we have to increase the BlockStartX
+      If ped\ptrCurrentSourceData\BlockStartY = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
+        If ped\ptrCurrentSourceData\BlockStartX > ped\ptrCurrentSourceData\ColumnsOffset + ped\ptrCurrentSourceData\Column
+          ped\ptrCurrentSourceData\BlockStartX + moveCount
+        EndIf
+      EndIf
+      ;-- check if cursor is in last blockline and we have to increase the BlockEndX
+      If ped\ptrCurrentSourceData\BlockEndY = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
+        If ped\ptrCurrentSourceData\BlockEndX > ped\ptrCurrentSourceData\ColumnsOffset + ped\ptrCurrentSourceData\Column
+          ped\ptrCurrentSourceData\BlockEndX + moveCount
+        EndIf
+      EndIf
+
+      ;-- adjust BlockPosition
+      If ped\ptrCurrentSourceData\BlockStartX > #MAX_Columns - 1
+        ped\ptrCurrentSourceData\BlockStartX = 0
+        ped\ptrCurrentSourceData\BlockStartY + 1
+        If ped\ptrCurrentSourceData\BlockStartY > ped\ptrCurrentSourceData\BlockEndY
+          !PED_ResetBlockflag
+          Goto skip_adjustblock
+        EndIf
+      EndIf
+
+      If ped\ptrCurrentSourceData\BlockEndX > ped\ptrCurrentSourceData\BlockStartX
+        ped\ptrCurrentSourceData\BlockEndX = #MAX_Columns-1
+        ped\ptrCurrentSourceData\BlockStartY - 1
+        If ped\ptrCurrentSourceData\BlockStartY <= ped\ptrCurrentSourceData\BlockEndY
+          Goto skip_adjustblock
+        Else
+          !PED_ResetBlockflag
+          Goto skip_adjustblock
+        EndIf
+      EndIf
+
+      If ped\ptrCurrentSourceData\BlockStartY = ped\ptrCurrentSourceData\BlockEndY
+        If ped\ptrCurrentSourceData\BlockEndX <= ped\ptrCurrentSourceData\BlockStartX
+          !PED_ResetBlockflag
+          Goto skip_adjustblock
+        EndIf
+      EndIf
+
+      If ped\ptrCurrentSourceData\BlockEndX >= #MAX_Columns
+        ped\ptrCurrentSourceData\BlockEndX = #MAX_Columns-1
+      EndIf
+      skip_adjustblock:
     EndIf
 
     ;-- move rest of line to right or left
@@ -16403,7 +16297,7 @@ Return
   !PED_CursorOff
 
   ; -- remove part of the selected block if existing and the currentline is inside of the block
-  ped\ptrCurrentSourceData\StateBlockMark = False
+  ped\ptrCurrentSourceData\StateBlockmark = False
   If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
     log_Print{"storeline, erasing block"}
     displayline.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
@@ -16418,9 +16312,8 @@ Return
               bmark\xMax = sourceWindow\visibleColumns
             EndIf
           EndIf
-          AbsDimensions{bmark}
           PED_DrawBlock{bmark}
-          ped\ptrCurrentSourceData\StateBlockMark = True
+          ped\ptrCurrentSourceData\StateBlockmark = True
       EndIf
     EndIf
   EndIf
@@ -16432,9 +16325,8 @@ Return
   PED_PrintCurrentSourceLine{False}
 
   ;-- redraw only  block part of that line after updating the line
-  If ped\ptrCurrentSourceData\StateBlockMark
+  If ped\ptrCurrentSourceData\StateBlockmark
     log_Print{"storeline: redrawing blockmark"}
-    AbsDimensions{bmark}
     PED_DrawBlock{bmark}
   EndIf
 
