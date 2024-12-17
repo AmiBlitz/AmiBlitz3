@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.11
-; NumberOfBuilds  = 501
+; NumberOfBuilds  = 503
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 29358
-; CursorColumn    = 1
+; CursorLine      = 9374
+; CursorColumn    = 19
 ; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -9409,23 +9409,24 @@ usevars:                                                  ; was uselib2 in new s
                                                           ; because of the org source routine label uselib2
   MOVE.w #$FFFE,D1       ;#allocvars
 
-.uselib:                                                   ;lib number in d1 - turn it on baby!
+.uselib:                                                  ; lib number in d1 - turn it on baby!
   BSR.w findlib
 
 
-uselib3:
+uselib3:                                                  ; a1: pointer to lib
   TST.w cfetchmode
   BEQ.w 'noconst
-    BTST #$6,$C(A1)
+    BTST #$6,$C(A1)                                           ;
     BNE.w 'constok
-      BRA.w badconerr                                            ;Can't use this Library!
+      BRA.w badconerr                                     ; Can't use this Library!
    'constok
     RTS
  'noconst
+  
   BSET #$7,$C(A1)
-  BNE.w 'skip                                         ;already done....
+  BNE.w 'skip                                             ; already done....
     CMPI.w #-1,$A(A1)
-    BNE.w 'skip                                         ;something already here
+    BNE.w 'skip                                           ; something already here
       ;
       ;o.k. - move in the lib!
       ;
@@ -9441,19 +9442,18 @@ uselib3:
           BCLR #$7,$C(A1)
           BRA.w dirliberr
        'oktouse                                                ;addlibrary
-        ; new >
-        MOVE.b debugmode,-(a7)
-        ;< new
 
-        TST.b log_blitzlibs
+       TST.b log_blitzlibs
         BEQ.b 'skiplog
           TST.w pass
           BNE.b 'skiplog
             TST.l funcscanon
             BNE.b 'skiplog
               !regs2stack
+              MOVE.l A1,D2 ; get libpointer
               !basic
               PutReg D1,libnum2.l
+              PutReg D2,libptr2.l
 
               If Peek.w(?ininclude) > 0
                 codefile.s = dos_FilePart{incdim(Peek.w(?ininclude)-1)}
@@ -9462,27 +9462,27 @@ uselib3:
                 codefile.s = ""
                 codeline.l = Peek.l(?linenumat)
               EndIf
+
+              libaddr.l = Peek.l(libptr2)
+              libsize.l = Peek.l(libaddr + $6) - Peek.l(libaddr + $12)
+              If Peek.b(?debugmode) Then libsize + Peek.l(libaddr + $2C)
+
               GetReg D0,libnum2
               GetReg D1,&codefile
               GetReg D2,codeline
               GetReg D3,Peek.l(?sourceline)
               GetReg D4,Peek.l(?lastsourcepos)
+              GetReg D5,libsize
               GetReg A1,0
               !ComData_JSR{comFunc_LogPrint}
               !asm
               !stack2regs
        'skiplog:
 
+        MOVE.b debugmode,-(a7)
         MOVEM.l D1/A0/A2,-(A7)
-        ;
-        ;is it a maximum type lib....
-        ;if so, create a varoff for it's structs.....
-        ;
-        ; new >
-        ;  BTST #$7,use_debugger
-        ;  SNE d1
-        ;  MOVE.b d1,debugmode
 
+        ; -- check debugmode
         BTST #$7,use_debugger
         BNE 'debugon
           CLR.w D1
@@ -9491,9 +9491,12 @@ uselib3:
           SNE D1
        'debugoff
         MOVE.b d1,debugmode
-        ; < new
-        MOVEA.l A1,A0
-        ADDA.l $12(A1),A0
+
+        ;
+        ;is it a maximum type lib....
+        ;if so, create a varoff for it's structs.....
+        ;
+        MOVEA.l A1,A0 : ADDA.l $12(A1),A0
         TST.w -$2(A0)
         BEQ.w 'notmax
           MOVEM.l A0-A1,-(A7)
@@ -9508,92 +9511,89 @@ uselib3:
           BEQ.w 'notmax
             ADDQ.w #4,globalvarpointer
        'notmax
-        MOVE.l libend,$28(A1)      ;pc of lib
-        MOVEA.l A1,A0
-        ADDA.l $12(A1),A0          ;start of lib
-        ;
-        MOVE.l A1,D1
-        ADD.l $6(A1),D1            ;end of lib
-        TST.l $2C(A1)
+
+        ;-- calculate start and end of code to be copied
+        MOVE.l libend,$28(A1)                    ; pc of lib
+        MOVEA.l A1,A0 : ADDA.l $12(A1),A0        ; start of lib
+        MOVE.l A1,D1 : ADD.l $6(A1),D1           ; end of lib without error check routines
+        TST.l $2C(A1)                            ; check if lib contains error checking code
         BEQ.w 'nor
           TST.b debugmode
-          BNE.w 'nor                ;errs turned on
-            MOVE.l A1,D1
-            ADD.l $2C(A1),D1           ;copy only non-errchks
+          BNE.w 'nor
+            MOVE.l A1,D1 : ADD.l $2C(A1),D1      ; copy errchks as well!
        'nor
-        MOVEA.l libend,A2
 
+        ;-- copy the lib code to destination buffer
+        MOVEA.l libend,A2
        'loop
-        CMPA.l data1start,A2
-        BCS.w 'okp
-          MOVE.w #$FFFF,dontwrite_nomemleft     ; -1
-         'bad
-            ADDQ.w #2,A0
-            ADDQ.w #2,A2
+          CMPA.l data1start,A2
+          BCS.w 'okp
+            MOVE.w #$FFFF,dontwrite_nomemleft
+           'bad
+              ADDQ.w #2,A0
+              ADDQ.w #2,A2
             CMPA.l D1,A0
             BCS.w 'bad
-              BRA.w 'toreloc
-       'okp
-        MOVE.w (A0)+,(A2)+                                       ;copylibcode
+            BRA.w 'toreloc
+         'okp
+          MOVE.w (A0)+,(A2)+ 
         CMPA.l D1,A0
         BCS.w 'loop
-
        'toreloc
         MOVE.l A2,libend
+
+
         MOVE.l $20(A1),D1
         BEQ.w 'noreloc
-        ;
-        MOVEM.l D0/D2-D3,-(A7)
-        MOVEA.l $24(A1),A0         ;start of reloc table
-        MOVEQ.l #$00,D3            ;no tokejsrs (yet!)
+          MOVEM.l D0/D2-D3,-(A7)
+          MOVEA.l $24(A1),A0                              ;start of reloc table
+          MOVEQ.l #$00,D3                                 ;no tokejsrs (yet!)
 
-       'reloop
-        ;
-        ;relocate library code!
-        ;
-        MOVE.l (A0)+,D2
-        TST.l $2C(A1)
-        BEQ.w 'skipr
-          TST.b debugmode
-          BNE.w 'skipr
-            CMP.l $2C(A1),D2
-            BCC.w 'next
-       'skipr
-        TST.w $0(A1,D2.L)
-        BPL.w 'notajsr
-          TST.l D3
-          BNE.w 'notajsr      ;already done...
-            MOVE.l A0,D0
-           MOVE.l D1,D3         ;number left to do!
-       'notajsr
-        SUB.l $12(A1),D2
-        BMI.w 'next
-        ADD.l $28(A1),D2
-        MOVE.l D2,-(A7)
-        SUB.l destbufferstart,D2
-        BSR.w addhunkoffset
-        MOVEA.l (A7)+,A2
+         'reloop
+            ;-- relocate library code!
+            MOVE.l (A0)+,D2
+            TST.l $2C(A1)                                 ; error checks ?
+            BEQ.w 'skipr
+              TST.b debugmode
+              BNE.w 'skipr
+                CMP.l $2C(A1),D2
+                BCC.w 'next
+           'skipr
 
-        TST.w dontwrite_nomemleft
-        BNE.w 'next
-          MOVE.l $28(A1),D2
-          SUB.l $12(A1),D2
-          ADD.l D2,(A2)
-       'next
+            TST.w $0(A1,D2.l)
+            BPL.w 'notajsr
+              TST.l D3
+              BNE.w 'notajsr                              ; already done...
+                MOVE.l A0,D0
+                MOVE.l D1,D3                              ; number left to do!
+           'notajsr
 
-        SUBQ.l #1,D1
-        BNE.w 'reloop
+            SUB.l $12(A1),D2
+            BMI.w 'next
+              ADD.l $28(A1),D2
+              MOVE.l D2,-(A7)
+              SUB.l destbufferstart,D2
+              BSR.w addhunkoffset
+              MOVEA.l (A7)+,A2
 
-        MOVE.l D3,D2
-        BEQ.w 'nohand
-          MOVEA.l D0,A2
-          SUBQ.w #4,A2
-          ;
-          BSR.w handlejsrs
-       'nohand
-        MOVEM.l (A7)+,D0/D2-D3
+              TST.w dontwrite_nomemleft
+              BNE.w 'next
+                MOVE.l $28(A1),D2
+                SUB.l $12(A1),D2
+                ADD.l D2,(A2)
+           'next
+            SUBQ.l #1,D1
+          BNE.w 'reloop
 
+          MOVE.l D3,D2
+          BEQ.w 'nohand
+            MOVEA.l D0,A2
+            SUBQ.w #4,A2
+            BSR.w handlejsrs
+         'nohand
+          MOVEM.l (A7)+,D0/D2-D3
        'noreloc
+
         MOVEM.l (A7)+,D1/A0/A2
         ;
         MOVEM.l D1-D2,-(A7)
@@ -9601,43 +9601,43 @@ uselib3:
         BNE.w 'skip2a
           CLR.w $A(A1)
           BRA.w 'skip2
-      'skip2a
+       'skip2a
         ADDQ.w #1,globalvarpointer
         BCLR #$0,globalvarpointer+1
         MOVE.w globalvarpointer,$A(A1)
         ;
-        CMP.w #-$12D,D1            ; was  #65235,
+        CMP.w #-$12D,D1            ; was  #65235, strings1lib
         BNE.w 'nots1
           MOVE.w $A(A1),movestdn+2
           MOVE.w $A(A1),pusha3+2
           MOVE.w $A(A1),pusha32+2
           MOVE.w $A(A1),pulla3+2
           MOVE.w $A(A1),geta3+2
-
        'nots1
-        CMP.w #-$3E9,D1           ; was #64535,
+
+        CMP.w #-$3E9,D1            ; was #64535, datalib
         BNE.w 'notd
           MOVE.w $A(A1),dataget+2
           MOVE.w $A(A1),dataput+2
           MOVE.w $A(A1),rescode+6
           MOVE.w $A(A1),rescode2+2
-
        'notd
+
         ADDQ.w #2,globalvarpointer
         TST.w $1A(A1)
         BMI.w 'jword
           ADDQ.w #2,globalvarpointer
        'jword
+
         MOVEM.l D1/A1,-(A7)
         BSR.w usevars
         MOVEM.l (A7)+,D1/A1
 
        'skip2
         MOVE.w D1,D2
-        MOVE.l $16(A1),D1
-        BSR.w uselib2
-        MOVE.l $1C(A1),D1
-        BSR.w uselib2
+        MOVE.l $16(A1),D1 : BSR.w uselib2  ;init?
+        MOVE.l $1C(A1),D1 : BSR.w uselib2
+
         MOVEM.l (A7)+,D1-D2
         ;JSR clear_Cache
         MOVE.b (a7)+,debugmode
@@ -9976,6 +9976,7 @@ RTS
   ;
   ; new >
   MOVEM.l d0/a2,-(a7)
+  
   MOVEQ #0,d0
   LEA instructionTable+4,a2
   MOVE.w d1,d0
@@ -9983,122 +9984,102 @@ RTS
   MOVE.l 0(a2,d0.l),a1                                     ;*8
   CMP.l #0,a1
   BNE 'foundb
-  ; < new
-  MOVEA.l libpointer,A1
+    ; < new
+    MOVEA.l libpointer,A1
+   'loop
+      CMPA.w #$0,A1
+      BEQ.w noliberr
 
- 'loop
-    CMPA.w #$0,A1
-  ;
-    BEQ.w noliberr
-  ;
-    CMP.w $4(A1),D1
-    BEQ.w 'found
-   MOVEA.l (A1),A1
- BRA.w 'loop
+      CMP.w $4(A1),D1
+      BEQ.w 'found
 
- 'found
-  ; new >
-  MOVE.l a1,0(a2,d0.l)
-
+      MOVEA.l (A1),A1
+    BRA.w 'loop
+   'found
+    ; new >
+    MOVE.l a1,0(a2,d0.l)
  'foundb
   MOVEM.l (a7)+,d0/a2
   ; < new
 RTS
 
 
-searchinstr:        ; was  findtoke org source input: d1=token, return: a2.l=lib, a3.l=sub
+searchinstr:                  ; was  findtoke org source input: d1=token, return: a2.l=lib, a3.l=sub
   ; new >
   MOVEM.l d0-d1/a1,-(a7)
   MOVEQ #0,d0
-  LEA instructionTable,a1
+  LEA instructionTable,a1     ; search in cache first
   MOVE.w d1,d0
   ASL.l #3,d0
   MOVE.l 0(a1,d0.l),a3
   MOVE.l 4(a1,d0.l),a2
   CMP.l #0,a3
   BNE 'foundb
-  ; < new
-
   MOVEA.l libpointer,A2
 
  'loop
-  CMPA.w #$0,A2
-  BEQ.w notokerr
-  CMP.w $E(A2),D1
-  BCS.w 'next
-  CMP.w $10(A2),D1
-  BCC.w 'next
-  ;
-  ;lib found!
-  ;
-  LEA $30(A2),A3
-  TST.w $4(A2)
-  BPL.w 'userlib
+    CMPA.w #$0,A2   :  BEQ.w notokerr
+    CMP.w $E(A2),D1 :  BCS.w 'next
+    CMP.w $10(A2),D1:  BCC.w 'next
+    ;
+    ;-- lib found!
+    ;
+    LEA $30(A2),A3
+    TST.w $4(A2)
+    BPL.w 'userlib
+  
+   'loop2
+      CMP.w $E(A2),D1
+      BEQ.w 'found
+      SUBQ.w #1,D1
+      MOVEA.l $2(A3),A3
+    BRA.w 'loop2
+  
+   'found
+    ; new >
+    MOVE.l a3,0(a1,d0.l)
+    MOVE.l a2,4(a1,d0.l)
+   'foundb
+    MOVEM.l (a7)+,d0-d1/a1
+  
+    ; < new
+    MOVEM.l D1/A1-a3,-(A7)      ; was  movem.l d1/a1,-(a7)
+    ; new >
+    CMP.w #1,(a3)           : BNE.s 'ex10
+    CMP.l #$12345678,$e(a3) : BNE.s 'ex10
+    CMP.w #$ffff,$16(a3)    : BNE.s 'ex10
+    MOVE.l $12(a3),d1       : BEQ.s 'ex10
+      LEA pluginbase,a3
+      ;move.b #1,newmode
+      JMP 0(a2,d1.l)                        ;plugin
+   'ex10
 
- 'loop2
+    MOVEA.l A2,A1
+    CLR.b newmode
+    MOVE.w $4(A1),D1 : BSR.w uselib3
+    MOVEM.l (A7)+,D1/A1-a3
+    RTS
+  
+    ; new >                               ;??? looks like not used ???
+   'l1                                    ; "
+    MOVE.w globalvarpointer,-(a7)         ; "
+    MOVE.w #$8004,globalvarpointer        ; "
+    BSR.w uselib3                         ; "
+    MOVE.w (a7)+,globalvarpointer         ; "
+    MOVEM.l (A7)+,D1/A1-a3
+    RTS
+    ; < new
+  
+   'userlib
     CMP.w $E(A2),D1
     BEQ.w 'found
-    SUBQ.w #1,D1
-    MOVEA.l $2(A3),A3
- BRA.w 'loop2
-
- 'found
-  ; new >
-  MOVE.l a3,0(a1,d0.l)
-  MOVE.l a2,4(a1,d0.l)
-
- 'foundb
-  MOVEM.l (a7)+,d0-d1/a1
-  ; < new
-  MOVEM.l D1/A1-a3,-(A7)      ; was  movem.l d1/a1,-(a7)
-  ; new >
-  CMP.w #1,(a3)
-  BNE.s 'ex10
-  CMP.l #$12345678,$e(a3)
-  BNE.s 'ex10
-  CMP.w #$ffff,$16(a3)
-  BNE.s 'ex10
-  MOVE.l $12(a3),d1
-  BEQ.s 'ex10
-  LEA pluginbase,a3
-  ;move.b #1,newmode
-  JMP 0(a2,d1.l)                                             ;plugin
-
- 'ex10
-  ; < new
-  MOVEA.l A2,A1
-  ; new >
-  CLR.b newmode
-  ; < new
-  MOVE.w $4(A1),D1       ;set lib#
-  ; new >
-  ;CMP.w #$fed3,d1
-  ;BEQ 'l1
-  ; < new
-  BSR.w uselib3
-  MOVEM.l (A7)+,D1/A1-a3
- RTS
-
-  ; new >                               ;??? looks like not used ???
- 'l1                                    ; "
-  MOVE.w globalvarpointer,-(a7)         ; "
-  MOVE.w #$8004,globalvarpointer        ; "
-  BSR.w uselib3                         ; "
-  MOVE.w (a7)+,globalvarpointer         ; "
-  MOVEM.l (A7)+,D1/A1-a3
- RTS
-  ; < new
-
- 'userlib
-    CMP.w $E(A2),D1
-    BEQ.w 'found
-    SUBQ.w #1,D1
-    MOVEA.l $2(A3),A3
- BRA.w 'userlib
-
- 'next
-  MOVEA.l (A2),A2
-BRA.w 'loop
+      SUBQ.w #1,D1
+      MOVEA.l $2(A3),A3
+    BRA.w 'userlib
+  
+   'next
+    MOVEA.l (A2),A2
+  BRA.w 'loop
 
 ; new >             
 exit:                ; used from do32
@@ -10139,30 +10120,24 @@ SHARED ptr_EndOfLibs.l
         MOVE.l (a7)+,A0     ; memory address of loaded libsfile
         MOVE.l (a7)+,A3     ; libpointer
         linkloop:
-          MOVE.l (A0)+,D0                                  ; naechster Longwert nach DO
-          BEQ.w linkdone                                   ; wenn <> 0, dann
-          !regs2stack
-          MOVE.l d0,-(a7)
-          !basic
-          MOVE.l (a7)+, d0 : PutReg d0,tmpv.l
-          ;!cout{"verarbeite lib mit laenge : " + Str$(tmpv)}
-          !asm
-          !stack2regs
-          LEA $20(A0),A1  ;link in.                        ;   lade inhalt von D0+40bytes nach A1
-          MOVE.l A1,(A3)                                   ;   kopiere Adresse in A1 zum libpointer
-          MOVEA.l A1,A3                                    ;   kopiere A1 nach A3
-          ADDA.l D0,A0                                     ;   addiere inhalt von D0 zu A0 hinzu
+          MOVE.l (A0)+,D0                                  ; get next lib of loaded biglibs
+          BEQ.w linkdone                                   ; exit if there is no next lib to parse
+          ;          
+          LEA $20(A0),A1  ;link in.                        ; get begin of libdata in A1
+          MOVE.l A1,(A3)                                   ; set libptr as nextlib in linked list
+          MOVEA.l A1,A3                                    ; set currentlib as current entry of linked list
+          ADDA.l D0,A0                                     ; move to nextlib in loaded biglibs
           ;
           ;fix stuff - done by loadalib
           ;
-          MOVE.l -$4(A1),D0    ;number of longwords.       ;   hole die 4bytes vor nach D0
-          ADD.l D0,D0          ;to bytes...                ;   verdoppele D0
-          ADD.l D0,D0                                      ;   verdoppele D0 nochmal
-          MOVE.l D0,$6(A1)     ;fix 1                      ;   schreibe D0 6bytes nach A1
-          CLR.l $20(A1)        ;no relocs                  ;   loesche D0+40bytes
-          LEA $C(A1,D0.L),A2   ;reloc info.                ;   lade inhalt von (A1)+D0+$C nach A2
+          MOVE.l -$4(A1),D0    ;number of longwords.       ; get size of blitzlib
+          ADD.l D0,D0          ;to bytes...                ;   
+          ADD.l D0,D0                                      ;   
+          MOVE.l D0,$6(A1)     ;fix 1                      ; write (size * 4) to 6(A1)
+          CLR.l $20(A1)        ;no relocs                  ; clear.l 32(A1)
+          LEA $C(A1,D0.L),A2   ;reloc info.                ; lade inhalt von (A1)+D0+$C nach A2
           CMPA.l A0,A2         ;is it over?
-          BCC.w linkloop                                  ; wenn A0=>A2
+          BCC.w linkloop                                   ; lib needs relocation
             MOVE.l -$8(A2),$20(A1)  ;number of relocs.     ;
             MOVE.l A2,$24(A1)       ;pointer to relocs.    ;
         BRA.w linkloop
@@ -29143,17 +29118,17 @@ JMP exit
   nohunkoffset    Dc.l 0
 
 ;-- data for ted
-teddata:        Dc.l tokens                                                                ; 0 .. 3
-                Dc.l read_xtrafile                                                         ; 4 .. 11
-                Dc.l write_xtrafile                                                        ; 8 .. 15
-                Dc.l call_menuentry                                                        ; 12
-                Dc.b ":"                                                                   ; 16
-                Dc.b 34                                                                    ; 17
-                Dc.b "."                                                                   ; 18
-                Dc.b ";"                                                                   ; 19
-                Dc.l newtypebase                                                           ; 24 .. 35
-realconstbase:  Dc.l labelbase                                                             ; 28 .. 39
-                Dc.l macrobase
+teddata:          Dc.l tokens                                                                ; 0 .. 3
+                  Dc.l read_xtrafile                                                         ; 4 .. 11
+                  Dc.l write_xtrafile                                                        ; 8 .. 15
+                  Dc.l call_menuentry                                                        ; 12
+                  Dc.b ":"                                                                   ; 16
+                  Dc.b 34                                                                    ; 17
+                  Dc.b "."                                                                   ; 18
+                  Dc.b ";"                                                                   ; 19
+                  Dc.l newtypebase                                                           ; 24 .. 35
+realconstbase:    Dc.l labelbase                                                             ; 28 .. 39
+                  Dc.l macrobase
 ptr_deflibfilename: Dc.l 0                                                                 ; 32 .. 43
 ptr_incdirname:     Dc.l 0                                                                 ; 36 .. 47
                 Dc.l 0
