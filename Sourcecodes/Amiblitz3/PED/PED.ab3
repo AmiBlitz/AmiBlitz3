@@ -30,11 +30,11 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 9871
-; CursorColumn    = 73
-; LabelSearch     = ""
+; CursorLine      = 5461
+; CursorColumn    = 49
+; LabelSearch     = "goto immedi"
 ; LabelRemark     = 0
-; LabelAll        = 0
+; LabelAll        = 1
 ; LabelCase       = 0
 ; LabelPosition   = 0
 ; 
@@ -561,6 +561,8 @@ NEWTYPE.ped
 
   *ptrCurrentSourceData.sourceEntry       ; needed as long as comPtr_CurrentSourceLine ist converted
 
+  currentDirLock.l
+  oldDirLock.l
   sourceFileHandle.l
   inString.b
   noDetokenizing.b
@@ -2956,6 +2958,25 @@ Statement PED_WriteHelpIndexCache{HelpIndexCacheFile$}
     CloseFile 1
   End If
 End Statement
+
+
+Function.l PED_SetCurrentDir{}
+SHARED ped
+  log_Print{"old current dir is [" + ped\currentDir + "]"}
+
+  If ped\currentDir = "" Then ped\currentDir = dos_GetCurrentDir{}
+
+  If ped\currentDirLock Then UnLock_ ped\currentDirLock
+
+  ped\currentDirLock = Lock_(&ped\currentDir,#ACCESS_READ)
+  If ped\currentDirLock
+    log_Print{"new current dir is [" + ped\currentDir + "]"}
+    ped\oldDirLock = CurrentDir_ (ped\currentDirLock)
+    Function Return ped\oldDirLock
+  Else
+    log_Print{"could not lock the given dir, error #" + Str$(IoErr_), #log_warning}
+  EndIf
+End Function
 
 
 Statement PED_LoadHelpIndexCache{HelpIndexCacheFile$}
@@ -5530,15 +5551,15 @@ BEQ.w start_up_without_compiler
   RTS                                                     ; <-- return to compiler
 start_up_without_compiler:
 
+
+
+
 ; ########################################################################################
 .MAINPROGRAM: ; --> compiler offers sourcefile in A0 here
 ; ########################################################################################
 MOVE.l A0,-(a7) ; store a0 as it will be destroyed while context switching to !basic
 !basic
 MOVE.l (a7)+,A0 : PutReg A0,ptr_compilersource.l
-If ptr_compilersource = 0
-  error{"NULL Pointer in ptr_compilersource!"}
-End If
 
 !log_AvailMem{"after compiler has given control back"}
 
@@ -5909,13 +5930,13 @@ map_tokens_to_libs{dos_AddPart{pedconfig\systemDir,"token_mapping_userlibs.txt"}
 
 WZ_HideMessage{}
 
+PED_SetCurrentDir{}
+
 .START_GUI
 Gosub open_gui
 Gosub menu_new
 Gosub update_debuggertoggle
 
-Gosub set_CurrentDir
-*flock_defaultDir.l = *flock_currentDir.l
 
 log_Print{"checking lastsource option"}
 If pedconfig\load_last_source <> 0 OR Peek.s(ptr_compilersource) <> ""
@@ -5935,6 +5956,7 @@ If pedconfig\load_last_source <> 0 OR Peek.s(ptr_compilersource) <> ""
     Poke.s ?comStr_SourceName,dos_FilePart{pedconfig\lastSourceFile}
     ;ped\ptrCurrentSourceData\SourceDir = tmp_sourceDir
     ;ped\ptrCurrentSourceData\SourceName = dos_FilePart{pedconfig\lastSourceFile}
+
   EndIf
 EndIf
 
@@ -5987,10 +6009,6 @@ exit_PED_closelibraries:
     Gosub arexx_free
   CEND
 
-  log_Print{"unlocking directory..."}
-  CurrentDir_(*flock_defaultDir)
-  If *flock_currentDir Then UnLock_ *flock_currentDir
-
   log_Print{"freeing caches ..."}
   If *preProcessor
     preproc_Free{*preProcessor}
@@ -6008,6 +6026,10 @@ exit_PED_closelibraries:
   DeletePool_ ped\mempool
 
 .immediate_exit:
+  log_Print{"unlocking directory..."}
+  If ped\currentDirLock Then UnLock_ ped\currentDirLock
+  If ped\oldDirLock Then CurrentDir_ (ped\oldDirLock)
+
   !ComData_LEA{comFunc_LogPrint,A0} : MOVE.l #0,(A0) ; "de-register" logprint function: make it unavailable for other processes
   !asm
   CLR.w comWord_PEDIsAvailable
@@ -7254,25 +7276,6 @@ iconImageData:
   Dc.b $FF,$FC
 Even
 
-.set_CurrentDir:
-
-  log_Print{"current dir is [" + ped\currentDir + "]"}
-
-  If ped\currentDir = "" Then ped\currentDir = dos_GetCurrentDir{}
-
-  log_Print{"lock current directory [" + ped\currentDir + "]"}
-
-  If *flock_currentDir.l Then UnLock_ *flock_currentDir
-
-  *flock_currentDir = Lock_(&ped\currentDir,#ACCESS_READ)
-  If *flock_currentDir
-    CurrentDir_ *flock_currentDir
-  Else
-    log_Print{"could not lock the given dir, error #" + Str$(IoErr_), #log_warning}
-  EndIf
-Return
-
-
 .load_source:
   log_Print{"load_source called"}
 
@@ -7398,7 +7401,8 @@ Return
   Poke.s ?comStr_SourceDir,dos_PathPart{ped\sourceFileComplete}
   ;ped\ptrCurrentSourceData\SourceName = dos_FilePart{ped\sourceFileComplete}
   ;ped\ptrCurrentSourceData\SourceDir = dos_PathPart{ped\sourceFileComplete}
-  Gosub set_CurrentDir
+  
+  PED_SetCurrentDir{}
 
   Gosub set_pointer_busy
   !PED_ResetBlockflag
@@ -8939,7 +8943,7 @@ Return
     Return
   EndIf
 
-  Gosub set_CurrentDir
+  PED_SetCurrentDir{}
 
   WZ_LockAllOpenWindows{}
 
@@ -9074,7 +9078,7 @@ Return
   ;PED_UpdateStatusArea{#STATUS_SCROLLERS}
 
   Gosub analyze_loadedsource
-  Gosub set_CurrentDir
+  PED_SetCurrentDir{}
 
   log_Print{"redraw of sourcewindow"}
   PED_RedrawSource{}
@@ -14896,14 +14900,14 @@ Return
     WZListRemove helpme.List
     WZCloseWindow WZID("WIN_CONTEXTHELP")
   EndIf
-RTS
+Return
 
 .close_popupwindow
   If pedconfig\intellisense
     WZ_PopUpCloseNonmodal{}   ; move the code to the new include function  tomsmart1
     popup_selected.l = 0
   EndIf
-RTS
+Return
 
 .open_librarybrowser:
   If NOT WZ_IsOpen{"WIN_LIBRARYBROWSER"}
@@ -15118,7 +15122,7 @@ Return
     WZPrint "INSTRUCTION_STRING",search_instruction$
   End If
   WZ_ActivateGadget{"INSTRUCTION_STRING"}
-RTS
+Return
 
 
 .event_instructionbrowser:
