@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.11
-; NumberOfBuilds  = 503
+; NumberOfBuilds  = 506
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 9374
-; CursorColumn    = 19
+; CursorLine      = 30081
+; CursorColumn    = 31
 ; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -221,7 +221,7 @@ XINCLUDE "translation.include.ab3"
 XINCLUDE "dos.include.ab3"
 XINCLUDE "file.include.ab3"
 XINCLUDE "asl.include.ab3"
-
+XINCLUDE "error.include.ab3"
 XINCLUDE "PE/logging.include.ab3"
 
 
@@ -532,7 +532,6 @@ If CLIMode
   End If
 
   If cli_gui        Then CLIMode = False : error_SetFlags{#error_requester}
-  If cli_sourcefile Then Poke.s ?str_tempfilename, cli_sourcefile
 Else
   _wbArgs.b = dos_GetWBNumArgs{}
   If _wbArgs
@@ -541,7 +540,6 @@ Else
     sdir.s = dos_GetStartDir{""}
     sfil.s = dos_GetWBArg{1}
     cli_sourcefile = dos_AddPart{sdir,sfil}
-    Poke.s ?str_tempfilename, cli_sourcefile
   EndIf
 End If
 
@@ -1194,7 +1192,7 @@ End Function
     log2PED{"running PED..."}
     ; -- jump to the address ped returned before and pass a sourcename in A0
     !asm
-    LEA str_tempfilename,A0
+    MOVE.l cli_sourcefile@(A5),A0
     MOVEA.l ped_startup_addr,A1 : JSR (A1)
     !basic
     ; --
@@ -1211,45 +1209,41 @@ End Function
   !asm
   BSR.w Aclearallvars
   BSR.w free_residents
-  BSR.w freeallox
+  BSR.w free_allox
+  JSR free_unusedfunctions  
+  CLR.l pushat
   !basic
   Gosub free_blitzlibs
   
 .shutdown_compiler:
   If config\ptr_seg_debugger Then UnLoadSeg_ config\ptr_seg_debugger
-  If config\ptr_seg_ped Then UnLoadSeg_ config\ptr_seg_ped
+  If config\ptr_seg_ped      Then UnLoadSeg_ config\ptr_seg_ped
 
-
-  ;ptr_macrobuffer_begin: byte 0..3: size of macrobuffer
-  ;                       byte 4..7: address begin of buffer
-  ;MOVEA.l ptr_macrobuffer_begin,A1 : MOVE.l -(a1),D0 : ADDQ.l #4,d0
-  ;MOVEA.l _execbase,A6 : JSR _FreeMem(A6)
+  ;-- ptr_macrobuffer_begin: byte 0..3: size of macrobuffer
+  ;--                        byte 4..7: address begin of buffer
   If Peek.l(?ptr_macrobuffer_begin)-4 Then FreeMem_ Peek.l(?ptr_macrobuffer_begin)-4, Peek.l(?macrobuffer_size)
-
   If Peek.l(?constpcat) Then FreeMem_ Peek.l(?constpcat), Peek.l(?constmaxpc) : Poke.l ?constpcat,0
+
   If Peek.l(?mempool2) Then DeletePool_ Peek.l(?mempool2) : Poke.l ?mempool2,0
   If Peek.l(?mempool) Then DeletePool_ Peek.l(?mempool) : Poke.l ?mempool,0
+
   If Peek.l(?_dosbase) Then CloseLibrary_ Peek.l(?_dosbase) : Poke.l ?_dosbase,0
   If Peek.l(?_mathffpbase) Then CloseLibrary_ Peek.l(?_mathffpbase) : Poke.l ?_mathffpbase,0
   If environment\signalBitNum Then FreeSignal_ environment\signalBitNum
-  !asm
-  CLR.l pushat
-  JSR free_unusedfunctions
-  !basic
 
-abnormal_exit:
+.abnormal_exit:
   If config\blitz3assign  <> ""
     If *AssignSema
       ReleaseSemaphore_ *AssignSema
       If (AttemptSemaphore_ (*AssignSema))                 ; we are the exclusive owner of the sema now!
-        If dos_RemAssign{"LIBS:",dos_AddPart{config\blitz3assign ,"Libs"}}
+        If dos_RemAssign{"LIBS:",dos_AddPart{config\blitz3assign, "Libs"}}
           ;If KickVersion < 47                              ; AssignLock_ freezes with OS 3.2.0 !
-            If NOT dos_RemAssign{config\blitz3assign }
-              error{"Could not remove assign: " + config\blitz3assign }
+            If NOT dos_RemAssign{config\blitz3assign}
+              error{"Could not remove assign: " + config\blitz3assign}
             EndIf
           ;EndIf
         Else
-          error{"Could not remove assign: " + dos_AddPart{config\blitz3assign ,"Libs"}}
+          error{"Could not remove assign: " + dos_AddPart{config\blitz3assign, "Libs"}}
         EndIf
 
         RemSemaphore_ *AssignSema
@@ -1261,7 +1255,10 @@ abnormal_exit:
       End If
     End If
   EndIf
+
+  ;-- resetting the current path in cli structure
   SetCurrentDir{cli_path}
+
   !coutclose
   MOVEQ #0,D0
   !exitasm
@@ -1464,48 +1461,8 @@ CompileMenuCallID: Dc.l 0
 
 
 
-mempool:           Dc.l 0
-dloaderr:          JSR handle_compileerror
-                   Dc.b "Can't LoadSeg debug module!",0
-Even
-
-
-.menu_loaddebugmodule:
-  !basic
-  !ComData_GetL{comPtr_pedScreen,D0} : *pedScreen.Screen = PutRegD0
-  aslfr_SetRequesterTitle{2,"Debug module to load:","Load","Cancel"}
-  aslfr_SetPath {2,config\blitz3assign,Peek.s(?str_temp_debugmodulename),""}
-  If NOT aslfr_Request{2,False,True,False,*pedScreen}
-    Pop If
-    !asm
-    RTS
-  EndIf
-  GetRegD0 aslfr_GetNextFile{}
-  !asm
-
-;loaddmod
-  ;d0=name of module to load!
-  ;
-  MOVE.l D0,ptr_temp_debugmodule
-
-  MOVE.l A7,stackaddr                                      ; added to prevent a possible crash in CLIMode if #continue_on_error is set  tomsmart1
-  MOVE.l A7,errstack
-  MOVE.l #nodload,errcont
-
-  !basic
-  temp_ptr.l = LoadSeg_(Peek.s(?ptr_temp_debugmodule))
-  If temp_ptr <> 0
-    If config\ptr_seg_debugger > 0 Then UnLoadSeg_ config\ptr_seg_debugger
-    config\ptr_seg_debugger = temp_ptr
-  Else
-    Pop If
-    !asm
-    BRA dloaderr
-  EndIf
-  !asm
-  nodload:
-RTS
-
+mempool:               Dc.l 0
+mempool2:              Dc.l 0
 exepath:               Ds.l 48                             ;Ds.b #MAX_STRINGSIZE ; Ds.l 48  ;xpath  dcb.b 192,0 org source
 exefile:               Ds.l 48                             ;Ds.b #MAX_STRINGSIZE ; Ds.l 48  ;xname  dcb.b 192,0 org source
 ptr_newexefilename:    Dc.l 0                                                               ;execname org
@@ -2103,7 +2060,6 @@ compiler_job: Dc.w 0                                      ; added by thilo: what
       ADDQ.w #1,pass
  'l3
 
-
   !ComData_GetB{comByte_FuncOptimize,D0}  ; now its in the xtra file and can be put to GUI settings ; Wanderer
   BEQ 'out  ; only if func optimize is set >< 0; Wanderer
   LEA firstproc,a0
@@ -2114,43 +2070,41 @@ compiler_job: Dc.w 0                                      ; added by thilo: what
  'lr1
     MOVE.l d0,a0
     BEQ 'out
-    TST.b isfunc(a0)
-    BNE 'nex
-    MOVEM.l d2/a6/a0,-(a7)
-    ;MOVE.l $4,a6
-    MOVEQ #0,d0
-    MOVE.b $21+#funcentry_extend-1(a0),d0
-    SUB.w #$21+#funcentry_extend,d0
-    ADD.w #16,d0
-    MOVE.l #$10000,d1
-    MOVE.l d0,d2
-    MOVEA.l _execbase,A6
-    JSR _AllocMem(a6)         ; thilo: not 100% sure about this!
-    MOVE.l d0,a1
-    MOVE.l d2,4(a1)
-    MOVE.l unusedfunc,(a1)
-    MOVE.l d0,unusedfunc
-    MOVEM.l (a7)+,a6/a0/d2
-    MOVE.l isfunc+1(a0),d0
-    ADDQ.l #6,d0
-    ADD.l d0,savefuncspace
+      TST.b isfunc(a0)
+      BNE 'nex
+        MOVEM.l d2/a6/a0,-(a7)
+        ;MOVE.l $4,a6
+        MOVEQ #0,d0
+        MOVE.b $21+#funcentry_extend-1(a0),d0
+        SUB.w #$21+#funcentry_extend,d0
+        ADD.w #16,d0
+        MOVE.l #$10000,d1
+        MOVE.l d0,d2
+        MOVEA.l _execbase,A6
+        JSR _AllocMem(a6)         ; thilo: not 100% sure about this!
+        MOVE.l d0,a1
+        MOVE.l d2,4(a1)
+        MOVE.l unusedfunc,(a1)
+        MOVE.l d0,unusedfunc
+        MOVEM.l (a7)+,a6/a0/d2
 
- 'l1f
-    MOVE.l d0,8(a1)
-    LEA 12(a1),a1
-    MOVE.l a0,-(a7)
-    LEA $21+#funcentry_extend(a0),a0
+        MOVE.l isfunc+1(a0),d0
+        ADDQ.l #6,d0
+        ADD.l d0,savefuncspace
 
- 'l1
-      MOVE.b (a0)+,(a1)+
-    BNE 'l1
-    MOVE.l (a7)+,a0
-
- 'nex
-    MOVE.l (a0),d0
- BRA 'lr1
-
+        MOVE.l d0,8(a1)
+        LEA 12(a1),a1
+        MOVE.l a0,-(a7)
+        LEA $21+#funcentry_extend(a0),a0
+       'l1
+          MOVE.b (a0)+,(a1)+
+        BNE 'l1
+        MOVE.l (a7)+,a0
+     'nex
+      MOVE.l (a0),d0
+  BRA 'lr1
  'out
+
   BTST #$7,make_smallestcode
   BEQ.b 'nosmall                                             ;optimize for executable
   ; new >
@@ -2258,14 +2212,10 @@ BRA.w qfree        ;used to go after beq .nosave                          ;?????
   JSR free_tokeslist
   JSR freepends
   JSR freeifs
-  JSR freeincs
-  JSR freexincs
+  JSR free_includes
+  JSR free_xincludes
   JSR freefors
 JMP cleartemplabel
-
-; new >
-mempool2:  Dc.l 0
-; < new
 
 .Aclearallvars:      ; was freeemup  org source                                    ;called from ped every filechange
   ; new >
@@ -2285,7 +2235,6 @@ mempool2:  Dc.l 0
 
   LEA regtable,a0
   MOVEQ #10,d0
-
  'l1
     CLR.l (a0)+
   DBF d0,'l1
@@ -2364,20 +2313,20 @@ mempool2:  Dc.l 0
   LEA devo,a0
   MOVEM.l a0-a6/d0-d7,-(a7)
   LEA ptr_parameterstore,a1
-
  'l1b
     MOVE.b (a0)+,(a1)+
   BNE 'l1b
   MOVEQ #13,d2
   JSR findlabel2
   BNE 'd
-  CLR.l 8(a2)
-
+    CLR.l 8(a2)
  'd
   MOVEM.l (a7)+,a0-a6/d0-d7
+
   !basic
   dos_Delete{dos_AddPart{config\path_system,"ab_compileerror.txt"}}
   !asm
+
   CLR.b returncode
   ; < new
 JMP freeprocvs                     ;free up outstanding proc stuff
@@ -5792,7 +5741,7 @@ alloxinc:
   MOVE.l libend,D3 : SUB.l destbufferend,D3   : ADD.l #40000,d3
   MOVE.l bigpc,D2  : SUB.l destbufferstart,D2 : ADD.l #20000,d2
   MOVE.l databuffer,D5                        : ADD.l #10000,D5
- BRA newallox
+  BRA newallox
   ; < new                                                        
 
   MOVE.l objectbuffer,D2 :  LSR.l #1,D2 : ADD.l objectbuffer,D2
@@ -5826,19 +5775,19 @@ alloxadj:                                                     ;ne if enough mem 
   ; < new
 
 newallox:
-  BSR.w makeallox
+  BSR.w make_allox
   BNE.w 'done
     BRA.w init_buffers
  'done
 RTS
 
 
-.freeallox:
-  MOVEA.l _execbase,A6
+.free_allox:
   MOVE.l objlen,D0
   BEQ.w 'skip
     CLR.l objlen
     MOVEA.l destbufferstart,A1
+    MOVEA.l _execbase,A6    
     MOVE.l mempool,a0
     JMP _FreeVec(A6)
  'skip
@@ -5851,14 +5800,14 @@ RTS
   MOVE.l systembuffer,D4
   MOVE.l databuffer,D5
 
-.makeallox:
+.make_allox:
   ; d2 = pc size
   ; d3 = lib size
   ; d4 = data1
   ; d5 = data2
   ;
   MOVE.w #$FFFF,anyerrs      ; was -1
-  BSR.w freeallox
+  BSR.w free_allox
   ;
   ; word align blocks
   ;
@@ -6503,8 +6452,8 @@ RTS
     BSR.w fixconsts                                        ;read labels
 
   'next
-    LEA ResidentEntryStep(A5),A5       ;$44
-  DBF D6,'loop
+    LEA ResidentEntryStep(A5),A5
+   DBF D6,'loop
 
     ;
     ;check resident clashes!
@@ -6566,8 +6515,6 @@ RTS
 
 
 .free_residents:
-  MOVEA.l _dosbase,A6
-
   LEA newtype_string,A0
   MOVE.l A0,lastrestype
   CLR.l (A0)
@@ -6581,25 +6528,19 @@ RTS
   CLR.l (A0)
   CLR.w rescnt
 
-;  MOVEA.l comdata,A2
-;  MOVE.b debugmode,$7ee(a2)
   !ComData_SetB{comByte_DebugMode,debugmode}
 
-;freeres2:
   LEA residents_table,A2
   MOVEQ.l #$07,D2
-
+  MOVEA.l _dosbase,A6
  'loop
-     MOVE.l $40(A2),D1
-     BEQ.w 'next
+    MOVE.l $40(A2),D1
+    BEQ.w 'next
       CLR.l $40(A2)
-      MOVEA.l _dosbase,A6
       JSR _UnLoadSeg(A6)
-
-  'next
-     LEA ResidentEntryStep(A2),A2   ; $44
- DBF D2,'loop
-
+   'next
+    LEA ResidentEntryStep(A2),A2
+  DBF D2,'loop
 RTS
 
 
@@ -19544,42 +19485,31 @@ pushdo:
   MOVE.l D1,destpointer    ;New PC
   SUB.l D1,D0              ;len
   MOVE.w D0,pushclen
-   BEQ.w 'skip
-  MOVE.w dontwrite_nomemleft,D1
-   BNE.w 'skip
-  ;
-  ; new >
-   CMP.w #1000,pushclen
-   BGE conmemerr
-   MOVE.l pushat,d0
-   BNE 'nomem
-   MOVE.l #1024,d0
-  ; < new
-  MOVEQ.l #$01,D1
-  MOVEA.l _execbase,A6
-  ; new >
-  MOVE.l mempool,a0
-  JSR _AllocPooled(a6)
-  ; < new
-  ;jsr do_AllocMem
-  MOVE.l D0,pushat
-
-  ; new >
- 'nomem
-  ; < new
-  MOVEA.l D0,A0          ;destination
-  MOVEA.l pushpc,A1      ;source
-  MOVE.l A1,destpointer
-  MOVE.w pushclen,D0
-  LSR.w #1,D0
-  SUBQ.w #1,D0           ;to word dbf
-
- 'loop
-    MOVE.w (A1)+,(A0)+
-  DBF D0,'loop
-
-   MOVE.l hunkoffsetbase,pushdooff
-
+  BEQ.w 'skip
+    MOVE.w dontwrite_nomemleft,D1
+    BNE.w 'skip
+      CMP.w #1000,pushclen
+      BGE conmemerr
+      
+      MOVE.l pushat,d0
+      BNE 'nomem
+        MOVE.l #1024,d0
+        MOVEQ.l #$01,D1
+        MOVEA.l _execbase,A6
+        MOVE.l mempool,a0
+        JSR _AllocPooled(a6)
+        MOVE.l D0,pushat
+     'nomem
+      MOVEA.l D0,A0          ;destination
+      MOVEA.l pushpc,A1      ;source
+      MOVE.l A1,destpointer
+      MOVE.w pushclen,D0
+      LSR.w #1,D0
+      SUBQ.w #1,D0           ;to word dbf
+     'loop
+        MOVE.w (A1)+,(A0)+
+      DBF D0,'loop
+      MOVE.l hunkoffsetbase,pushdooff
  'skip
   MOVEM.l (A7)+,D0-D1/A0-A1
 RTS
@@ -21460,7 +21390,7 @@ readpend:
   TST.l D0
    BMI.w error_reading_file
   ; new >
-   BEQ.w closeinc
+   BEQ.w close_includefile
    MOVE.l D0,include_length
    !ComData_GetL{comPtr_PreProcessor,include_preprocessor}
    !basic
@@ -21487,7 +21417,7 @@ readpend:
    ADD.l d0,0(a0,d1*4)
   ; < new
   ;ADD.w D0,$C(A2)
-  ; ; was beq closeinc
+  ; ; was beq close_includefile
   MOVEA.l $4(A2),A5
   ;MOVE.w $C(A2),D0
   ; new <
@@ -21511,17 +21441,17 @@ include_process:       Dc.l 0
 include_preprocessor:  Dc.l 0
 
 
-closeinc:
+.close_includefile:
   MOVE.l $8(A2),D1
   MOVEA.l _dosbase,A6
   JSR _Close(a6)
-  MOVEA.l _execbase,A6
+
   MOVEA.l $4(A2),A1
   MOVE.l #$400*8,D0         ; #inclen                               ;exit include
-  ;jsr _FreeMem(A6)
   ; new >
   ;MOVE.l mempool,a0
   ;JSR _FreePooled(a6)
+  MOVEA.l _execbase,A6
   JSR _FreeVec(a6)
   ; < new
 
@@ -21529,8 +21459,6 @@ closeinc:
   MOVEA.l A2,A1
   MOVEQ.l #$00,D0
   MOVE.b $12(A2),D0
-  MOVEA.l _execbase,A6
-  ;jsr freemem(a6)
   ; new >
   MOVE.l mempool2,a0
   JSR _FreePooled(A6)
@@ -21544,15 +21472,13 @@ closeinc:
   LEA _include,a0
   MOVEM.l a0-a6/d0-d7,-(a7)
   LEA ptr_parameterstore,a1
-
  'l1b
     MOVE.b (a0)+,(a1)+
   BNE 'l1b
   MOVEQ #9,d2
   JSR findlabel2
   BNE 'd
-  CLR.l 8(a2)
-
+    CLR.l 8(a2)
  'd
   MOVEM.l (a7)+,a0-a6/d0-d7
   ; < new
@@ -21563,12 +21489,11 @@ RTS
   MOVE.l unusedfunc,d0
   BEQ 'noclear
     MOVEM.l d0-d2/a0-a1/a6,-(a7)
-
+    MOVE.l _execbase,a6    
    'f1
       MOVE.l d0,a1
       MOVE.l 4(a1),d0
       MOVE.l (a1),d2
-      MOVE.l _execbase,a6
       JSR _FreeMem(a6)
       MOVE.l d2,d0
     BNE 'f1
@@ -21578,65 +21503,53 @@ RTS
  'noclear
 RTS
 
-freexincs:
-  MOVEA.l xinclude_base,A2
+.free_xincludes:
   CLR.l xinclude_base
+  MOVEA.l xinclude_base,A2
 
+  MOVEA.l _execbase,A6
+  MOVE.l mempool2,a0
  'loop
     CMPA.w #$0,A2
-     BEQ.w 'done
-    MOVEQ.l #$00,D0
-    MOVE.b 4+8(A2),D0           ; was 4 org
-    MOVEA.l A2,A1
-    MOVEA.l (A2),A2
-    MOVEA.l _execbase,A6
-    ;jsr freemem(a6)
-    ; new >
-    MOVE.l mempool2,a0
-    JSR _FreePooled(A6)
-    ; < new
- BRA.w 'loop
-
+    BEQ.w 'done
+      MOVEQ.l #$00,D0
+      MOVE.b 4+8(A2),D0           ; was 4 org
+      MOVEA.l A2,A1
+      MOVEA.l (A2),A2
+      JSR _FreePooled(A6)
+  BRA.w 'loop
  'done
 RTS
 
 
-freeincs:
-  MOVEA.l constantbase,A2
+.free_includes:
   CLR.l constantbase
+  MOVEA.l constantbase,A2
 
+  MOVEA.l _execbase,A6
  'loop
     CMPA.w #$0,A2
-     BEQ.w 'done
-    MOVE.l $8(A2),D1
-     BEQ.w 'noclose
-    MOVEA.l _dosbase,A6
-     JSR _Close(A6)
+    BEQ.w 'done
+      MOVE.l $8(A2),D1
+      BEQ.w 'noclose
+        MOVEA.l _dosbase,A6
+        JSR _Close(A6)
+     'noclose
 
-  'noclose
-    MOVE.l $4(A2),D0
-     BEQ.w 'skip
-    MOVEA.l D0,A1
-    MOVE.l #$400*8,D0          ; was #inclen
-    MOVEA.l _execbase,A6
-    ;jsr freemem(a6)
-    ; new >
-    MOVE.l mempool,a0
-    JSR _FreeVec(a6)
-    ; < new
-
-  'skip
-    MOVEQ.l #$00,D0
-    MOVE.b $12(A2),D0
-    MOVEA.l A2,A1
-    MOVEA.l (A2),A2
-    MOVEA.l _execbase,A6
-    ;jsr freemem(a6)
-    ; new >
-    MOVE.l mempool2,a0
-    JSR _FreePooled(A6)
-    ; < new
- BRA.w 'loop
+      MOVE.l $4(A2),D0             ; free objectbuffer for include
+      BEQ.w 'skip
+        MOVEA.l D0,A1
+        MOVE.l #$400*8,D0          ; was #inclen
+        MOVE.l mempool,a0
+        JSR _FreeVec(a6)
+     'skip
+      MOVEQ.l #$00,D0
+      MOVE.b $12(A2),D0
+      MOVEA.l A2,A1
+      MOVEA.l (A2),A2
+      MOVE.l mempool2,a0
+      JSR _FreePooled(A6)
+  BRA.w 'loop
 
  'done
 RTS
@@ -27900,7 +27813,7 @@ xtra_versionnumber:   Ds.w 1                               ;vers org source
   MOVEQ.l #$07,D0
  'loop3
     CLR.l $40(A0)
-    LEA ResidentEntryStep(A0),A0   ; $44
+    LEA ResidentEntryStep(A0),A0
   DBF D0,'loop3
 
   MOVEM.l D7/A6,-(A7)
@@ -29212,7 +29125,7 @@ Even
   EndIf
 
   If Peek.l (?beforeparameterfetch)
-    MaxLen detokenline.s = #MAX_Columns + 1        ; was 65536  changed it to the max size of a sourceline  tomsmart1
+    MaxLen detokenline.s = #MAX_Columns + 1
     !ComData_GetL{comPtr_PreProcessor,include_preprocessor}
     *tn.preprocessor = Peek.l(?include_preprocessor)
     written.l = preproc_DetokenizeLine{*tn,Peek.l (?beforeparameterfetch),&detokenline}
@@ -30244,7 +30157,7 @@ menu_items:Dc.l menu_compile_run                                ;menuadds oreg s
            Dc.l menu_dummyfunc                                  ;was menu_simcliarguments not needed anymore because is in PED tomsmart1
            Dc.l menu_dummyfunc                                  ;was menu_calculator
            Dc.l menu_reload_userlibs
-           Dc.l menu_loaddebugmodule
+           Dc.l menu_dummyfunc
            Dc.l menu_dummyfunc
            Dc.l menu_newcreate
            Dc.l menu_dummyfunc
@@ -30813,9 +30726,6 @@ firstitem_:                Ds.l 1
 numlines_org:              Ds.w 1                          ;numlines org source
 firstiff:                  Ds.l 1                          ;firstif org source
 str_mathffpname:           Dc.b "mathffp.library",0 : Even ;mathsname org source
-str_tempfilename:          Ds.b #MAX_STRINGSIZE
-str_temp_debugmodulename:  Ds.b #MAX_STRINGSIZE            ;dname org source
-ptr_temp_debugmodule:      Ds.l 1                          ;dname2 org source
 Even
 
 
@@ -30937,7 +30847,7 @@ Even
        MOVE.l  #262143,d3     ; libsbuffersize
        MOVE.l  #131071,d4     ; systembuffersize
        MOVE.l  #131071,d5     ; databuffersize
-       JSR makeallox  ; added 40 buffer more
+       JSR make_allox  ; added 40 buffer more
        !basic
      Else
        If (objectlength < 1572904) AND (maxmem > 1572904)
@@ -30946,7 +30856,7 @@ Even
          MOVE.l  #131071,d3     ; libsbuffersize
          MOVE.l   #65535,d4     ; systembuffersize
          MOVE.l   #65535,d5     ; databuffersize
-         JSR makeallox ; added 40 buffer more
+         JSR make_allox ; added 40 buffer more
          !basic
        EndIf
      EndIf
@@ -30957,7 +30867,7 @@ Even
        MOVE.l  #262143,d3     ; libsbuffersize
        MOVE.l #6291455,d4     ; systembuffersize
        MOVE.l  #262143,d5     ; databuffersize
-       JSR makeallox ; added 40 buffer more
+       JSR make_allox ; added 40 buffer more
        !basic
      Else
        If (objectlength < 6094888) AND (maxmem > 6094888)
@@ -30966,7 +30876,7 @@ Even
          MOVE.l  #262143,d3     ; libsbuffersize
          MOVE.l #3145727,d4     ; systembuffersize
          MOVE.l   #65535,d5     ; databuffersize
-         JSR makeallox ; added 40 buffer more
+         JSR make_allox ; added 40 buffer more
          !basic
        EndIf
      EndIf
