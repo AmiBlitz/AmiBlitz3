@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.11
-; NumberOfBuilds  = 506
+; NumberOfBuilds  = 509
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,7 +30,7 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 30081
+; CursorLine      = 1690
 ; CursorColumn    = 1
 ; LabelSearch     = ""
 ; LabelRemark     = 0
@@ -227,7 +227,6 @@ XINCLUDE "/Shared/ted.include.ab3"
 
 XINCLUDE "dos.include.ab3"
 XINCLUDE "file.include.ab3"
-XINCLUDE "asl.include.ab3"
 XINCLUDE "PE/logging.include.ab3"
 
 
@@ -1401,10 +1400,6 @@ RTS
   PutReg d0,ab3save_filenameP.l
   If ab3save_filenameP
     ab3save_filename.s = Peek.s(ab3save_filenameP)
-
-    ;-- initially set the exepath to sourcefile path so that we can compile and run it with that path    
-    Poke.s ?exepath, dos_PathPart{ab3save_filename}
-
     LoadSource{ab3save_filename}
   Else
     error{"INTERNAL ERROR: no filename passed in D0 to LoadSource{}!"}
@@ -1468,46 +1463,16 @@ CompileMenuCallID: Dc.l 0
 
 mempool:               Dc.l 0
 mempool2:              Dc.l 0
-exepath:               Ds.l 48                             ;Ds.b #MAX_STRINGSIZE ; Ds.l 48  ;xpath  dcb.b 192,0 org source
-exefile:               Ds.l 48                             ;Ds.b #MAX_STRINGSIZE ; Ds.l 48  ;xname  dcb.b 192,0 org source
 ptr_newexefilename:    Dc.l 0                                                               ;execname org
 
-.menu_newcreate:
-  !basic
-  exepath.s = Peek.s(?exepath)
-  exefile.s = Peek.s(?exefile)
-  If exefile <> ""                                         ; test if we have a filename
-    If exepath <> ""                                       ; yes we have a filename ,test if we have a path
-      If dos_Exist{exepath} = False                        ; yes we have a path, test if it exists
-        !asm
-        BRA menu_createexecutable
-      EndIf
-    EndIf
-    exefile.s = dos_AddPart{exepath,exefile}               ; combinat path and filename
-    Poke.s ?tempspace,exefile
-    !asm
-    LEA tempspace,a0 : MOVE.l a0,d0
-    BRA newcreate2                                         ; jump to the compile
-  EndIf                                                    ; we have no filename or no exists path so we need to ask the user
-  !asm
-
 .menu_createexecutable:    ;was menu1 org source          ;compile/save
-  !basic
-  !ComData_GetL{comPtr_pedScreen,D0} : *pedScreen.Screen = PutRegD0
-  aslfr_SetRequesterTitle{2,"Name of Executable to Create:","Create","Cancel"}
-  aslfr_SetPath {2,Peek.s(?exepath),Peek.s(?exefile),""}
-  If NOT aslfr_Request{2,False,True,False,*pedScreen}
-    Pop If
-    !asm
-    RTS
-  EndIf
-  Poke.s ?exepath, aslfr_GetPath{2}
-  Poke.s ?exefile, aslfr_GetFile{2}
-  newexefile$ = aslfr_GetNextFile{} : GetReg D0,&newexefile$
+  !basic 
+  !ComData_LEA{comStr_ExePath,D0} : PutReg d0,exeDirP.l
+  !ComData_LEA{comStr_ExeFile,D0} : PutReg d0,exeFileP.l
+  newexefile$ = dos_AddPart{Peek.s(exeDirP),Peek.s(exeFileP)}
+  GetReg D0,&newexefile$
   !asm
 
-.newcreate2    ; was 'tryit
-  ;O.K.... Now to create it
   MOVE.l D0,ptr_newexefilename
   ADD.l #1,number_of_builds
   MOVE.w #-1,debugversion
@@ -1796,10 +1761,18 @@ RTS
   EndIf
 
   ;-- lock the current path or the set executable
-  log2PED{"locking current directory: " + Peek.s(?exepath)}
-  environment\lock_ExePath = Lock_(?exepath,#ACCESS_READ)
+  !ComData_LEA{comStr_ExePath,D0} : PutReg d0,exeDirP.l
+  !ComData_LEA{comStr_ExeFile,D0} : PutReg d0,exeFileP.l
+  If Peek.s(exeDirP) = ""
+    !ComData_LEA{comStr_SourceDir,D0} : PutReg d0,sourceDirP.l
+    Poke.s exeDirP, Peek.s(sourceDirP)
+  EndIf
+  
+  log2PED{"locking directory for executable or running exe: " + Peek.s(exeDirP)}
+  
+  environment\lock_ExePath = Lock_(Peek.s(exeDirP),#ACCESS_READ)
   If environment\lock_ExePath = 0
-    log2PED{"Could not lock the given Exepath ["+ Peek.s(?exepath) + "], using currentdir ..."}
+    log2PED{"Could not lock the given Exepath ["+ Peek.s(exeDirP) + "], using currentdir ..."}
     environment\lock_CurrentDir = CurrentDir_(0)
     CurrentDir_ environment\lock_CurrentDir
   EndIf
@@ -8078,13 +8051,13 @@ macroexecute
   MOVE.l d1,a0
 
  'l10
-  MOVE.b (a0)+,(a1)+
+    MOVE.b (a0)+,(a1)+
   BNE.s 'l10
   SUBQ.l #1,a0
   SUBQ.l #1,a1
 
  'l20
-  MOVE.b (a5)+,(a1)+
+    MOVE.b (a5)+,(a1)+
   BNE.s 'l20
   CLR.b (a1)
   LEA tempspace,a5
@@ -27647,24 +27620,15 @@ optstuff:             Ds.b 64                              ;temp opt make buffer
 
 Even
 
-;.menu_viewnewtypes:                                        ; deactivated  becaus it is now in PED  tomsmart1
-;  MOVEA.l comdata,A1
-;  MOVEA.l $802(A1),A1                                      ; compiler says to PED: openwindow
-;  !ComData_GetL{comPtr_CLIArgumentsString,A1}
-;  MOVE.l #1000,D0                                          ; set indification for NeyType window
-;  JSR (A1)                                                 ; open PED window NewTypes
-;RTS
-
-
 .ptr_xtradata:                                             ; optspnts org source ;pointers to options involved in source dependant
                                                            ; stuff
-  Dc.w $0001                                               ; 1 byte schreiben ;one byte stuff...
+  Dc.w $0001                                               ; data size 1 byte
   Dc.l xtra_versionnumber                                  ; vers org source
   Dc.l create_iconfile                                     ; create icon for executable
-  Ds.l 1
+  Ds.l $00000000 ; end of datablock
 
-  Dc.w $0002                                               ; 2 bytes schreiben  ;two byte stuff...
-;jimi0 org source
+  Dc.w $0002                                               ; data size 2 bytes
+.jimi0
   Dc.l set_use_debugger
   Dc.l AL_0_11010                                          ;+obsolet: debugger
   Dc.l AL_0_1103C                                          ;+obsolet: long arrays
@@ -27675,52 +27639,48 @@ Even
   Dc.l set_autorun
   Dc.l set_interruptcheck
   Dc.l set_assemblercheck
-    ;
   Dc.l set_overflowcheck
   Dc.l default_obsolete                                    ;+obsolet: ohne inhalt
   Dc.l default_interruptcheck                              ;+obsolet: interruptcheck vorgabe
   Dc.l default_overflowcheck                               ;+obsolet: overflow vorgabe
-    ;
-;jimi1  ;org source
-  Ds.l 1
-    ;
-  Dc.b $00,$04                                             ; 4 bytes schreiben..  ;four byte stuff...
+.jimi1
+  Dc.l $00000000 ; end of datablock
 
-;jimi2:  ;org source
-bufferlist:                                                ;Maximums Int String Gadgets...
+  Dc.w $0004                                               ; data size 4 bytes
+
+.jimi2
+bufferlist:                                                ; Maximums Int String Gadgets...
   Dc.l objectbuffer
   Dc.l libsbuffer
   Dc.l systembuffer
   Dc.l databuffer
   Dc.l macrobuffer_size
   Dc.l stringbuffer
+.jimi3
+  Dc.l $00000000 ; end of datablock
+                                                           
+  Dc.w $0220                                               ; data size 68*8=544 bytes
+  Dc.l residents_table                                     ; Resident Buffer...
+  Dc.l $00000000 ; end of datablock
 
-;jimi3   ;org source
-  Ds.l 1
-                                                           ;Resident Buffer...
-  Dc.b $02,$20                                             ;dc 68*8; 544 bytes schreiben.
-  Dc.l residents_table,0
+  Dc.w $0180                                               ; data size 2*48=192 bytes
+  Dc.l comStr_ExePath                                             ; exepath and exefile
+  Dc.l $00000000  
 
-  ;
-  ;Executable name!
-  Dc.b $01,$80                                             ;dc 192*2; 384 bytes schreiben
-  Dc.l exepath,0                                           ; exepath und exefilename jeweils 192 bytes
-  Ds.w 1
-;optspntsf   ;                                             ;??looks like not used??
-
-optssave: ;ds.b ((jimi1-jimi0)/4*2)+(jimi3-jimi2)+(68*8)+(192*2)+2 org source ; 982 bytes
-  Ds.l 63
-  Ds.l 63
-  Ds.l 63
-  Ds.w 113
+  Ds.w $1
+optssave:                                                  ; data size 982 bytes
+  Ds.l 63    ;((jimi1-jimi0)/4*2)
+  Ds.l 63    ;(jimi3-jimi2)
+  Ds.l 63    ;(68*8)
+  Ds.w 113   ;(192*2)+2
 .ptr_endxtradata
 
-comsettings_message:  Ds.w 1                               ;allchg org source
+
 xtra_versionnumber:   Ds.w 1                               ;vers org source
 
 
 .read_xtrafile:                                            ;load xtrafile, filehandle via PED in D7
-  CLR.b exefile
+  CLR.b comStr_ExeFile
 
   TST.l d0
   BNE 'l10
@@ -27731,25 +27691,24 @@ xtra_versionnumber:   Ds.w 1                               ;vers org source
   JSR Clear_Residents_table                                 ; added for a full clear of the residents table  tomsmart1 2012 08 08
   JSR clear_lastcompileerrordatas                           ; added to fix problems if a residents load error happend  tomsmart1 2016 02 02
 
+  ;-- read xtra datafield
   LEA ptr_xtradata,A2
   MOVEQ.l #$00,D4
-
  'loop
     MOVE.w (A2)+,D4                                        ; anzahl bytes zum lesen
     BEQ.b 'done
 
- 'loop2
-    MOVE.l (A2)+,D2
-  BEQ.b 'loop
-
-  MOVE.l D4,D3
-  MOVE.l D7,D1
-  JSR _Read(A6)                                            ; d1: file, d2: buffer, d3:length
-  TST.l D0
-  BNE.b 'loop2
- BRA.w 'done2
-
- 'done                                                     ; set defaults
+   'loop2
+      MOVE.l (A2)+,D2
+      BEQ.b 'loop
+      MOVE.l D4,D3
+      MOVE.l D7,D1
+      JSR _Read(A6)                                            ; d1: file, d2: buffer, d3:length
+    TST.l D0
+    BNE.b 'loop2
+    BRA.w 'done2                                            ; if no data left, quit loading
+ 'done        
+                                              ; set defaults
   TST.b xtra_versionnumber
   BNE.b 'nover0
     MOVE.w #$0080,set_autorun                                ;auto run on
@@ -27811,9 +27770,8 @@ xtra_versionnumber:   Ds.w 1                               ;vers org source
             MOVE.w temp1+2,-$4(A1,D0.L)
     BRA.b 'dloop
  'done2
-  ;
-  ;load in residents
-  ;
+ 
+  ;-- load in residents
   LEA residents_table(PC),A0
   MOVEQ.l #$07,D0
  'loop3
@@ -27832,10 +27790,9 @@ RTS
   MOVEA.l _dosbase,A6
   MOVE.b #$1,xtra_versionnumber                            ;.xtra version number...
 
+  ;-- write xtradata field
   LEA ptr_xtradata,A2
   MOVEQ.l #$00,D4
-
-  ; -- write boolean options
  'loop
     MOVE.w (A2)+,D4                                        ; number of bytes to write
     BEQ.b 'done
@@ -27847,31 +27804,34 @@ RTS
         MOVE.l D7,D1                                       ; d7: pointer to filehandle to write to
         JSR _Write(A6)                                     ; d1: file, d2: buffer, d3:length
     BRA.b 'loop2
- 'done                                                     ;
+ 'done                    
+ 
+  ;-- write string cliarguments      
   MOVE.l D7,D1
   MOVE.l #str_cliarguments,D2
   MOVE.l #116,D3
   JSR _Write(A6)                                           ; write out cli arguements ...
 
+  ;-- write stacksize
   MOVE.l D7,D1
   MOVE.l #stacksize,D2
   MOVE.l #4,D3
   JSR _Write(A6)
 
+  ;-- write versioninfo
   MOVE.l D7,D1
   MOVE.l #versioninformation,D2
   MOVE.l #4,D3
   JSR _Write(A6)
 
+  ;-- write buildnumber
   MOVE.l D7,D1
   MOVE.l #number_of_builds,D2
   MOVE.l #4,D3
   JSR _Write(A6)
-  ;
-  ;OK, now to write out max's
-  ;
-  ;lib#.w,
-  ;max.w.
+
+  ;-- write max object numbers for all libs
+  ; lib#.w, max.w.
   LEA libpointer,A2
  'loop3
     MOVE.l (A2),D0
@@ -27894,12 +27854,14 @@ RTS
   BRA.w 'loop3
  'done2
 
-  ; write 4 fill/pad/termination bytes because the .read_xtrafile routine read min 4 bytes more as saved, this was moved form PED extend xtra Data save routine  tomsmart1
-  LEA XTRAEndPadBytes,A2 ; get the start address off the 4 fill/pad/termination bytes
-  MOVE.l A2,D2           ; move the address to d2
-  MOVE.l #4,D3           ; we only need 4 bytes to save
-  MOVE.l D7,D1           ; we set the file handle
-  JSR _Write(A6)         ; and we write it.
+  ;-- write 4 fill/pad/termination bytes because 
+  ;-- the .read_xtrafile routine reads min 4 bytes more as saved, 
+  ;-- this was moved from PED extend xtra Data save routine  tomsmart1
+  LEA XTRAEndPadBytes,A2 ; get the start address of the 4 fill/pad/termination bytes
+  MOVE.l A2,D2           
+  MOVE.l #4,D3 
+  MOVE.l D7,D1           
+  JSR _Write(A6)         
 
 RTS
 
@@ -27939,7 +27901,6 @@ RTS
 
  'loop4done
   CLR.w state_of_residents                                 ;resident change
-  CLR.w comsettings_message                                ;alloc change
   CLR.w maxobject_pos
 RTS   ; new tomsmart1
 
@@ -28627,19 +28588,19 @@ End Function
 .check_incdir:
   !basic
   incString.s = Peek$(?ptr_parameterstore)                  ; name of include file
-  log2PED{"searching for include <" + incString + ">..."}
+  ;log2PED{"searching for include <" + incString + ">..."}
 
   ;-- check first, if include is in current directory
   !ComData_LEA{comStr_SourceDir,D0} : PutReg d0,incDirP.l
   incDir_.s   = Peek.s(incDirP)                             ; get current Sourcefiledir
   incFile.s   = dos_AddPart{incDir_,incString}              ; adding Sourcefiledir and Includestring
-  log2PED{"... searching in  <" + incFile + ">..."}  
+  ;log2PED{"... searching in  <" + incFile + ">..."}  
   incLock.l   = ab3_GetIncludeLock{incFile}                 ; check if file exist
 
   If incLock = False ; not found => check default Include Directory
-    log2PED{"... searching in  <" + incString + ">..."}
+    ;log2PED{"... searching in  <" + incString + ">..."}
     incFile.s = dos_AddPart{config\path_includes,incString}
-    log2PED{"... searching in  <" + incFile + ">..."}      
+    ;log2PED{"... searching in  <" + incFile + ">..."}      
     incLock.l = ab3_GetIncludeLock{incFile}
   End If
 
@@ -28749,11 +28710,8 @@ RTS
 
 .check_of_same_source:
   !basic
-  !ComData_LEA{comStr_SourceDir,D0}
-  PutReg d0,currentDirP.l
-
-  !ComData_LEA{comStr_SourceName,D0}
-  PutReg d0,fileNameP.l
+  !ComData_LEA{comStr_SourceDir,D0} : PutReg d0,currentDirP.l
+  !ComData_LEA{comStr_SourceName,D0} : PutReg d0,fileNameP.l
 
   check_dirname$  = Peek$(currentDirP)
   check_filename$ = Peek$(fileNameP)
@@ -30164,13 +30122,13 @@ menu_items:Dc.l menu_compile_run                                ;menuadds oreg s
            Dc.l menu_createexecutable
            Dc.l menu_dummyfunc                                  ;was menu_compileroptions
            Dc.l menu_createresidentfile
-           Dc.l menu_dummyfunc                                  ;was menu_viewnewtypes not needed anymore because is in PED tomsmart1
-           Dc.l menu_dummyfunc                                  ;was menu_simcliarguments not needed anymore because is in PED tomsmart1
+           Dc.l menu_dummyfunc                                  ;was menu_viewnewtypes
+           Dc.l menu_dummyfunc                                  ;was menu_simcliarguments
            Dc.l menu_dummyfunc                                  ;was menu_calculator
            Dc.l menu_reload_userlibs
            Dc.l menu_dummyfunc
            Dc.l menu_dummyfunc
-           Dc.l menu_newcreate
+           Dc.l menu_createexecutable
            Dc.l menu_dummyfunc
            Dc.l menu_toggledebug
            Dc.l menu_createreleaseexe                           ; changed to make it possible to access the routine from PED tomsmart1
@@ -30915,7 +30873,7 @@ RTS
    releasedebugger_save = Peek.b(?use_debugger)       ; save the status of the use of the debugger
    Poke.b ?use_debugger,0                             ; set if off because we create a release verion and need no debugging code
  !asm
- JSR menu_newcreate                                   ; jump to start the compiling
+ JSR menu_createexecutable                                   ; jump to start the compiling
  !regs2stack                                          ; save the registers
  !basic
    releaseexe = False                                 ; set creat release exe off
@@ -31113,8 +31071,8 @@ lastlabel            Ds.l 1
 curtemplabel         Ds.l 1
 sourceline2          Ds.l 1
 chartab              Ds.b 256
-tempspace            Ds.b 384       ; was 120 change because it used as temp exepath save and it can be up to 384 bytes!  tomsmart1
-instructionTable             Ds.l 65538 * 2 ; by every compile pass the content beginning from label labelhash to bssstore are cleared!
+tempspace            Ds.b 120       ; used for calculator
+instructionTable     Ds.l 65538 * 2 ; by every compile pass the content beginning from label labelhash to bssstore are cleared!
 labelhash            Ds.l 8192      ;-bssstore clear every compile pass
 replacedat           Ds.w 65538
 variablehash         Ds.l 8192
