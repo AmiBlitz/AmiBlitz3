@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.11
-; NumberOfBuilds  = 3359
+; NumberOfBuilds  = 3388
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 17099
-; CursorColumn    = 1
-; LabelSearch     = "asl_"
+; CursorLine      = 11094
+; CursorColumn    = 27
+; LabelSearch     = "storecurrentsourceline"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -614,9 +614,6 @@ NEWTYPE.ped
   labelEntryType.l
 
   verticalCopyMode.b
-  verticalPasteMode.b
-  pasteMode.b
-  cutMode.b
   blockmarkRemovalMode.b
 
   undeleteStrLen.w
@@ -1028,23 +1025,6 @@ SHARED ped
     EndIf
   EndIf
 End Function
-
-Macro PED_CursorOn
-  If sourceWindow\cursorEnabled
-    log_Print{"CURSOR: double ON!"}
-  Else
-    sourceWindow\cursorEnabled = True
-    PED_SwitchCursor{}
-  EndIf
-End Macro
-
-Macro PED_CursorOff
-  If NOT sourceWindow\cursorEnabled
-    log_Print{"CURSOR: double OFF!"}
-  EndIf
-  sourceWindow\cursorEnabled = False
-  PED_SwitchCursor{}
-End Macro
 
 
 SHARED storeBlockStartX.w : storeBlockStartX = $FFFF
@@ -1470,6 +1450,26 @@ USEPATH sourceWindow
     EndIf
   EndIf
 End Statement
+
+Statement PED_CursorOn{}
+SHARED sourceWindow
+  If sourceWindow\cursorEnabled
+    log_Print{"CURSOR: double ON!"}
+  Else
+    sourceWindow\cursorEnabled = True
+    PED_SwitchCursor{}
+  EndIf
+End Statement
+
+Statement PED_CursorOff{}
+SHARED sourceWindow
+  If NOT sourceWindow\cursorEnabled
+    log_Print{"CURSOR: double OFF!"}
+  EndIf
+  sourceWindow\cursorEnabled = False
+  PED_SwitchCursor{}
+End Statement
+
 
 Function.b PED_CheckLabelRelevance{testString.s}
 SHARED ped
@@ -2982,25 +2982,6 @@ Statement PED_WriteHelpIndexCache{HelpIndexCacheFile$}
 End Statement
 
 
-Function.l PED_SetCurrentDir{}
-SHARED ped
-  log_Print{"old current dir is [" + ped\currentDir + "]"}
-
-  If ped\currentDir = "" Then ped\currentDir = dos_GetCurrentDir{}
-
-  If ped\currentDirLock Then UnLock_ ped\currentDirLock
-
-  ped\currentDirLock = Lock_(&ped\currentDir,#ACCESS_READ)
-  If ped\currentDirLock
-    log_Print{"new current dir is [" + ped\currentDir + "]"}
-    ped\oldDirLock = CurrentDir_ (ped\currentDirLock)
-    Function Return ped\oldDirLock
-  Else
-    log_Print{"could not lock the given dir, error #" + Str$(IoErr_), #log_warning}
-  EndIf
-End Function
-
-
 Statement PED_LoadHelpIndexCache{HelpIndexCacheFile$}
   SHARED HelpIndexCache()
 ;  fidW.l = file_Open{"sys:pedbug.txt",#file_forcewrite}
@@ -3128,6 +3109,140 @@ Function.b PED_ShowHelptextFor{tokname.s}
 End Function
 
 
+Function.l PED_SetCurrentDir{}
+SHARED ped
+  log_Print{"old current dir is [" + ped\currentDir + "]"}
+
+  If ped\currentDir = "" Then ped\currentDir = dos_GetCurrentDir{}
+
+  If ped\currentDirLock Then UnLock_ ped\currentDirLock
+
+  ped\currentDirLock = Lock_(&ped\currentDir,#ACCESS_READ)
+  If ped\currentDirLock
+    log_Print{"new current dir is [" + ped\currentDir + "]"}
+    ped\oldDirLock = CurrentDir_ (ped\currentDirLock)
+    Function Return ped\oldDirLock
+  Else
+    log_Print{"could not lock the given dir, error #" + Str$(IoErr_), #log_warning}
+  EndIf
+End Function
+
+
+Function.l PED_CheckSourceAlreadyOpen{fname.s}
+SHARED ped
+
+  log_Print{"check if file [" + fname + "] is already opened."}
+
+  found.b = False
+  *fileEntry.sourceEntry = ped\firstSourceEntry
+  While *fileEntry AND (found = False)
+    tempfname.s = dos_AddPart{Peek.s(&*fileEntry\SourceDir), Peek.s(&*fileEntry\SourceName)}
+    log_Print{"... checking [" + tempfname + "]"}
+    If tempfname = fname
+      found = True
+    Else
+      *fileEntry = *fileEntry\nextEntry
+    EndIf
+  Wend
+  Function Return *fileEntry
+End Function
+
+Statement PED_CloseFile{fh.l}
+  SHARED ped,readcache
+  If fh <> 0
+    log_Print{"closing file handle: " + Hex$(fh)}
+    Close_ fh : ped\sourceFileHandle = 0
+    If readcache\cacheptr
+      FreeVec_ readcache\cacheptr
+      readcache\cacheptr = Null
+      readcache\cachelen = 0
+      readcache\readlen = 0
+      readcache\chunklen = 0
+      readcache\filelen = 0
+      ;ClearType readcache
+    EndIf
+  Else
+    log_Print{"file already closed at " + Hex$(fh)}
+  EndIf
+End Statement
+
+Function.l PED_OpenFile{ofname.s, accessmode.l, menuload.b}
+SHARED ped, pedconfig
+
+  log_Print{"open_file <" + ofname + ">"}
+
+  ; -- check extension
+  fext.s = LCase$(dos_GetExt{ofname})
+  log_Print{"checking file extention of file: " + ofname + " [" + fext + "]"}
+  If pedconfig\smart_tokenization <> 0
+    If fext = "bb" OR fext = "bb2" OR fext = "ab2" OR fext = "ab3"
+      log_Print{"smart tokeniztation: activating tokenization"}
+      ped\doTokenize = True
+    Else
+        log_Print{"deactivating tokenization"}
+        ped\doTokenize = False
+    EndIf
+  EndIf
+
+  If fext = "asm"
+    log_Print{"it seems to be an asm file, tokenization and conversion mode is active."}
+    If pedconfig\smart_tokenization Then ped\doTokenize = True
+    ped\convertAsm = True
+  Else
+    ped\convertAsm = False
+  EndIf
+
+  fh.l = Open_(&ofname, accessmode)
+  If fh
+;    log_Print{"file opened successfully, handle: " + Hex$(fh)}
+    Function Return fh
+  Else
+    fileerror.l = IoErr_
+    log_Print{"could not open file <" + ofname + "> for reason: " + Str$(fileerror)}
+    log_Print{"menuload: " + Str$(menuload)}
+
+    If menuload = False
+      error{"Couldn't open file, DOS-Error #" + Str$(fileerror)}
+    Else
+      error{"Couldn't open file, DOS-Error #" + Str$(fileerror)}
+    EndIf
+  EndIf
+End Function
+
+
+
+Function.s PED_RequestFile{tmpdir$, tmpfile$, tmptitle$, tmppattern$, @setAsCurrentFile.b}
+SHARED ped, pedconfig, sourceWindow
+
+ If pedconfig\use_filepattern <> 0
+   If tmppattern$ = "" Then tmppattern$ = "(#?.info)"
+ Else
+   tmppattern$ = ""
+ EndIf
+
+ asl_SetRequesterDims{pedconfig\asl_x,pedconfig\asl_y,pedconfig\asl_w,pedconfig\asl_h}
+ aslfr_SetRequesterTitle{1,!TRANS{tmptitle$},"",""}
+ aslfr_SetPattern{1,tmppattern$}
+ aslfr_SetPath{1,tmpdir$}
+ aslfr_SetFile{1,tmpfile$}
+
+ If aslfr_Request{1,False,False,False,sourceWindow\pedScreen}
+   tempdir$      = aslfr_GetPath{1}
+   tempfile$     = aslfr_GetFile{1}
+   tempcomplete$ = dos_AddPart{tempdir$ , tempfile$}
+ Else
+   tempfile$ = ""
+ EndIf
+
+ If tempfile$ <> "" AND setAsCurrentFile
+   ped\currentDir = tempdir$
+   ped\currentFile = tempfile$
+   ped\sourceFileComplete = tempcomplete$
+ EndIf
+ Function Return tempcomplete$
+End Function
+
+
 Statement FAST PED_PrintText{textaddr.l, xPos.w, yPos.w, textlen.w, @textcolor.w, @backcolor.w}
 SHARED ped,sourceWindow,AB3Pen()
 
@@ -3229,9 +3344,11 @@ USEPATH sourceWindow
   runner - 1
 
   If FLen(tmpExpand)
-    ;-- check for classic token and set color else set standard token color
-    tcolorb.w = AB3Pen(#AB3_ctokenbackground)
     tcolor.w = AB3Pen(#AB3_ctoken)
+    tcolorb.w = -1
+    If AB3Pen(#AB3_ctokenbackground) <> AB3Pen(#AB3_cbackground) Then tcolorb = AB3Pen(#AB3_ctokenbackground)
+
+    ;-- check for classic token and set color else set standard token color
     If AB3Pen(#AB3_cclassic) > 0
       _token.l = PED_GetTokenID{tmpExpand}
       If PED_CheckForClassicToken{_token} Then tcolor.w = AB3Pen(#AB3_cclassic)
@@ -3246,7 +3363,6 @@ USEPATH sourceWindow
     PED_PrintText{&tmpExpand, tposx, tposy, FLen(tmpExpand), tcolor, tcolorb}
 
     ;-- reset font and style
-    SetBPen_ \win\RPort, AB3Pen(#AB3_cbackground)
     If pedconfig\bold_tokens
       ;SetFont_ \win\RPort, \font
       SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
@@ -3899,6 +4015,57 @@ USEPATH ped\ptrCurrentSourceData
   EndIf
 End Statement
 
+Function.l PED_GetCountOfMarkedLines{}
+SHARED ped
+  Function Return ped\ptrCurrentSourceData\BlockEndY - ped\ptrCurrentSourceData\BlockStartY + 1
+End Function
+
+Function.l PED_GetFirstBlockLine{}
+SHARED ped
+  diff.l = 0
+  log_Print{"BlockStartX: " + Str$(ped\ptrCurrentSourceData\BlockStartX)}
+  log_Print{"BlockStartY: " + Str$(ped\ptrCurrentSourceData\BlockStartY)}
+  log_Print{"BlockEndX  : " + Str$(ped\ptrCurrentSourceData\BlockEndX)}
+  log_Print{"BlockEndY  : " + Str$(ped\ptrCurrentSourceData\BlockEndY)}
+  *tempLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+  currLine.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
+  log_Print{"currline   : " + Str$(currLine)}
+  If currLine < ped\ptrCurrentSourceData\BlockStartY
+    diff = ped\ptrCurrentSourceData\BlockStartY - currLine
+    For si.w = 1 To diff
+      If *tempLine\nextLine Then *tempLine = *tempLine\nextLine Else error{"Error copying to clipboard!"}
+    Next si
+  Else
+    If currLine > ped\ptrCurrentSourceData\BlockStartY
+      diff = currLine - ped\ptrCurrentSourceData\BlockStartY
+      For si.w = 1 To diff
+        If *tempLine\previousLine Then *tempLine = *tempLine\previousLine Else error{"Error copying to clipboard!"}
+      Next si
+    EndIf
+  EndIf
+  Function Return *tempLine
+End Function
+
+
+Statement PED_HandleBlockmark{}
+SHARED ped, sourceWindow, pedconfig
+
+  ;log_Print{"handle blockmark"}
+
+  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF Then Statement Return
+
+  If ped\blockmarkRemovalMode <> 0
+    If ped\blockmarkRemovalMode = 2
+      Gosub menu_cut
+      If pedconfig\no_display_beep = False Then DisplayBeep_ sourceWindow\pedScreen
+    Else
+      ; for blockmarkRemovalMode = 1 only remove blockmark
+      PED_DrawBlockmark{}
+      !PED_ResetBlockflag
+    EndIf
+    ped\blockmarkRemovalMode = 0
+  EndIf
+End Statement
 
 Statement PED_RedrawTextbuffer{direction.b}
 SHARED ped, sourceWindow
@@ -3998,7 +4165,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
 
   ped\ptrCurrentSourceData\TextBufferOffset = 0
 
-  !PED_CursorOff
+  PED_CursorOff{}
 
   ;-- draw all the lines
 
@@ -4074,8 +4241,334 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   ;-- redraw the blockmark
   PED_DrawBlockmark{}
 
-  !PED_CursorOn
+  PED_CursorOn{}
 End Statement
+
+
+Statement PED_CopyBlock{}
+SHARED ped
+  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF Then Return
+
+  *tempLine.sourceLine = PED_GetFirstBlockLine{}
+  strline$ = PED_Detokenize{*tempLine.sourceLine}
+  strlng.w = FLen(strline$)
+  If strlng = 0
+    log_Print{"no text to copy..."}
+  Else
+    log_Print{"first marked line: <" + strline$ + ">," + Str$(strlng)}
+    If PED_GetCountOfMarkedLines{} < 2
+      If strlng >= ped\ptrCurrentSourceData\BlockEndX + 1
+        strlng = ped\ptrCurrentSourceData\BlockEndX - ped\ptrCurrentSourceData\BlockStartX + 1
+      EndIf
+      strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX + 1, strlng)
+      clipboard_WriteText{&strline$}
+      log_Print{"moved " + Str$(strlng) + " to clipboard [" + strline$ + "]"}
+    Else
+      *iff.IFFHandle = AllocIFF_()
+      If *iff
+        *iff\iff_Stream = OpenClipboard_ (0)
+        If *iff\iff_Stream
+          InitIFFasClip_ *iff
+          If (OpenIFF_ (*iff, #IFFF_WRITE)=0)
+            If (PushChunk_ (*iff, #ID_FTXT, #ID_FORM, #IFFSIZE_UNKNOWN)=0)
+              If (PushChunk_ (*iff, 0, #ID_CHRS, #IFFSIZE_UNKNOWN)=0)
+                ; copy first line
+                If strlng <= (ped\ptrCurrentSourceData\BlockStartX + 1)
+                  strline$ = ""
+                Else
+                  strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX + 1)
+                EndIf
+                log_Print{Str$(FLen(strline$)) + " <" + strline$ + ">"}
+                strline$ + Chr$(10) : WriteChunkBytes_ *iff, &strline$, FLen(strline$)
+ 
+                ; -- copy most lines
+                ;log_Print{"copy other lines"}
+                For si.w = 1 To PED_GetCountOfMarkedLines{} - 2
+                  If *tempLine\nextLine
+                    *tempLine = *tempLine\nextLine
+                    strline$ = PED_Detokenize{*tempLine}
+                    strlng.w = FLen(strline$)
+                    If ped\verticalCopyMode <> 0 AND (strlng > ped\ptrCurrentSourceData\BlockStartX + 1)
+                      strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX + 1)
+                    EndIf
+                    strline$ + Chr$(10) : WriteChunkBytes_ *iff,&strline$,FLen(strline$)
+                  Else
+                    error{"Error copying to clipboard: no next line!",#log_error}
+                  EndIf
+                Next si
+
+                ; copy last selected Line
+                ;log_Print{"copy last line"}
+                *tempLine = *tempLine\nextLine
+                If *tempLine
+                  strline$ = PED_Detokenize{*tempLine}
+                  strline$ = Left$(strline$,ped\ptrCurrentSourceData\BlockEndX+1)
+                  strlng = FLen(strline$)
+                  If ped\verticalCopyMode <> 0 AND (strlng > ped\ptrCurrentSourceData\BlockStartX + 1)
+                    strline$ = Mid$(strline$,1,ped\ptrCurrentSourceData\BlockEndX + 1)
+                  EndIf
+                  strline$ + Chr$(10) : WriteChunkBytes_ *iff, &strline$, FLen(strline$)
+                EndIf
+                PopChunk_ *iff
+              End If
+
+              PopChunk_ *iff
+            Else
+              error{"Could not write chunks."}
+            End If
+            CloseIFF_ *iff
+          Else
+            error{"Could not open IFF."}
+          End If
+          CloseClipboard_ *iff\iff_Stream
+        Else
+          error{"Could not open Clipboard."}
+        End If
+        FreeIFF_ *iff
+      Else
+        error{"Could not AllocIFF."}
+      End If
+    EndIf
+  EndIf
+
+exit_copy:
+  log_Print{"copy finished."}
+End Statement
+
+
+Statement PED_KillBlock{}
+SHARED ped
+USEPATH ped\ptrCurrentSourceData
+  If \BlockEndY = $FFFFffff Then Return
+
+  killedRows.l = 0
+  *tempLine.sourceLine = PED_GetFirstBlockLine{}
+  log_Print{"marked Lines: " + Str$(PED_GetCountOfMarkedLines{})}
+  strline$ = PED_Detokenize{*tempLine}
+  log_Print{"source of first blockline: <" + Left$(strline$, 30) + ">"}
+
+  If PED_GetCountOfMarkedLines{} = 1
+    If (\BlockEndX - \BlockStartX) < #MAX_Columns
+      strline$ = PED_Detokenize{*tempLine}
+      strline$ = Left$(strline$,\BlockStartX) + UnRight$(strline$,\BlockEndX + 1)
+      log_Print{"changing line to: <" + strline$ + ">"}
+      newline$ = PED_TokenizeText{strline$}
+      *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+      *tempLine = PED_ReplaceSourceLine{*tempLine, *newLine}
+      If *tempLine = 0
+        log_Print{"Could not cut selected block."}
+      EndIf
+    Else
+      If PED_CutSourceLine{*tempLine} Then PED_DeleteSourceLine{*tempLine}
+    EndIf
+  Else
+    *tmpfirstLine.sourceLine = 0
+    For si.w = 1 To PED_GetCountOfMarkedLines{}
+      *nextLine.sourceLine = *tempLine\nextLine
+      ;-- check first line
+      If si = 1 AND (\BlockStartX > 0)
+        strline$ = PED_Detokenize{*tempLine}
+        strline$ = Left$(strline$,\BlockStartX)
+        log_Print{"changing first line to: <" + strline$ + ">"}
+        newline$ = PED_TokenizeText{strline$}
+        *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+        *tempLine = PED_ReplaceSourceLine{*tempLine, *newLine}
+
+        ;-- store the line for joining with last fragment
+        *tmpfirstLine = *tempLine
+        firstline$ = strline$
+
+        Goto skip_killofline
+      EndIf    
+
+      ;-- check last line
+      If si = PED_GetCountOfMarkedLines{} AND (\BlockEndX + 1 < #MAX_Columns)
+        strline1$ = ""
+        If *tmpfirstLine <> 0 Then strline1$ = firstline$
+        strline2$ = PED_Detokenize{*tempLine}
+        strline$ = strline1$ + UnRight$(strline2$,\BlockEndX + 1)
+
+        newline$ = PED_TokenizeText{strline$}
+        *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+        If *tmpfirstLine <> 0
+          log_Print{"joining first and last line to: <" + strline$ + ">"}
+          *tmpfirstLine = PED_ReplaceSourceLine{*tmpfirstLine, *newLine}
+          If *tmpfirstLine = 0
+            log_Print{"Could not cut selected block."}
+          EndIf          
+          killedRows - 1 ; we kill one line less in this case
+        Else
+          log_Print{"changing last line to: " + strline$}
+          *tempLine = PED_ReplaceSourceLine{*tempLine, *newLine}
+          If *tempLine = 0
+            log_Print{"Could not cut selected block."}
+          EndIf
+          Goto skip_killofline
+        EndIf
+      EndIf
+
+      ;-- remove the sourcelines
+      If *tempLine
+        strline$ = PED_Detokenize{*tempLine}
+        log_Print{Str$(si) + " deleting " + Left$(strline$, 20)}
+        If PED_CutSourceLine{*tempLine} Then PED_DeleteSourceLine{*tempLine}
+        killedRows + 1 
+        skip_killofline: 
+      Else
+        log_Print{"no linepointer to delete!", #log_error}
+      EndIf
+      *tempLine = *nextLine
+    Next si
+    \CurrentSourceLine = *tempLine
+    \SourceChanged = $FFFF
+  EndIf 
+
+  ;-- remove block selection
+  PED_DrawBlockmark{}
+  !PED_ResetBlockflag
+
+  ;-- adjust the display
+  \Column = \BlockStartX
+  ;-- check if we have to move the DisplayLineOffset
+  If \DisplayLineOffset + \DisplayLine > \TotalLines
+    \TotalLines - 1
+    \DisplayLineOffset = \TotalLines
+    \DisplayLine = 0
+  Else
+    If (\DisplayLineOffset + \DisplayLine) > \BlockStartY AND (\DisplayLineOffset + \DisplayLine) > \BlockEndY
+      log_Print{"move cursor " + Str$(killedRows) + " lines up, current displayline: " + Str$(\DisplayLine)}
+      If \DisplayLine - killedRows < 0
+        \DisplayLineOffset - killedRows
+        If \DisplayLineOffset < 0
+          \DisplayLine + \DisplayLineOffset
+          \DisplayLineOffset = 0
+        EndIf
+      Else  
+        \DisplayLine - killedRows
+      EndIf
+    EndIf
+  EndIf
+  PED_SetCurrentSourceLine{}
+  PED_RedrawSource{}    
+End Statement
+
+Statement PED_CutBlock{}
+SHARED ped
+  If ped\ptrCurrentSourceData\BlockEndY = $FFFFffff Then Statement Return
+
+  PED_CopyBlock{}
+  PED_KillBlock{}
+End Statement
+
+Statement PED_PasteBlock{blockfile.s}
+SHARED ped, readcache
+
+  If blockfile = ""
+    ;-- clipboard mode
+    log_Print{"reading from clipboard"}
+    If NOT PED_ReadClipboard{}
+      log_Print{"clipboard is empty"}
+      Statement Return
+    EndIf
+  Else
+    ;-- blockfile mode
+    log_Print{"reading from file <" + blockfile + ">"}
+    ped\sourceFileHandle = PED_OpenFile{blockfile,#HUNK_RELOC_16__MODE_OLDFILE,False}
+    If NOT PED_ReadFileCache{}
+      PED_CloseFile{ped\sourceFileHandle}
+      Statement Return
+    EndIf
+  EndIf
+
+  ped\labelListChanged = True
+
+  lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
+  actualColumn.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
+
+  ; -- get first part of current line
+  ped\inString = 0
+  beginString.s = ""
+  For p.w = 0 To actualColumn - 1
+    currentbyte.b = Peek.b(lineaddr + p)
+    If currentbyte = $22 Then ped\inString = NOT ped\inString
+    If NOT ped\inString Then currentbyte = currentbyte BitClr 7
+    beginString + Chr$(currentbyte)
+  Next p
+
+  ;-- get rest of current line
+  restString.s = ""
+  For p.w = actualColumn To #MAX_Columns-1
+    currentbyte.b = Peek.b(lineaddr + p)
+    restString + Chr$(currentbyte)
+  Next p
+  restString = StripTrail$(restString,@" ")
+
+  ;-- get first line and join it with currentline
+  beginString = beginString + PED_ReadNextLine{}
+
+  ;-- check labelIdentifier, update labellist ?
+  If PED_CheckLabelRelevance{beginString} Then ped\labelListChanged = True
+
+  ;-- replace line with current one
+  newline$ = PED_TokenizeText{beginString}
+  *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+  PED_ReplaceCurrentSourceLine{*newLine}
+
+  storeCurrentSourceLine.l = ped\ptrCurrentSourceData\CurrentSourceLine
+
+  ;-- import all further lines
+  morelines.b = False
+  pasteString.s = ""
+  Repeat
+    tmpLine.s = PED_ReadNextLine{}
+    tmpLen.w = FLen(tmpLine)
+    If tmpLine <> "NoCOntenTwasDelivered"
+      morelines = True
+      If ped\verticalCopyMode
+        If actualColumn > #MAX_Columns-10 Then actualColumn = #MAX_Columns-10
+        pasteString = SPACE$(actualColumn)
+        pasteString = pasteString + tmpLine
+      Else
+        pasteString = tmpLine
+      EndIf
+      newline$ = PED_TokenizeText{pasteString}
+      *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+
+      PED_AppendSourceLine{ped\ptrCurrentSourceData\CurrentSourceLine, *newLine}
+      ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
+
+      ;ped\ptrCurrentSourceData\DisplayLine + 1                           ;-> increase displayline if cursor should walk with inserted lines
+    Else
+      tmpLen = 0
+    EndIf
+  Until tmpLen = 0 AND (readcache\moreBytes = False)
+
+  ;-- add the rest to an new line or append to pasted text
+  If FLen(restString) > 0
+    If morelines
+      newline$ = PED_TokenizeText{restString}
+      *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+      PED_AppendSourceLine{ped\ptrCurrentSourceData\CurrentSourceLine,*newLine}
+    Else
+      restString = beginString + pasteString + restString
+      newline$ = PED_TokenizeText{restString}
+      *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+      PED_ReplaceCurrentSourceLine{*newLine}
+      storeCurrentSourceLine = *newLine
+    EndIf
+  ;Else
+  ;  log_Print{"no restString: " + restString}
+  EndIf
+  ped\ptrCurrentSourceData\CurrentSourceLine = storeCurrentSourceLine
+
+  If blockfile <> "" Then PED_CloseFile{ped\sourceFileHandle}
+
+  ped\inString = False
+
+  !PED_ResetBlockflag
+  PED_RedrawSource{}
+  PED_UpdateStatusArea{}
+End Statement 
 
 
 Statement PED_SetBlockStart{}
@@ -4362,6 +4855,197 @@ USEPATH sourceWindow
 End Statement
 
 
+Function.b PED_CheckFoldingState{}
+SHARED ped
+  If ped\currentSourceEntry\FirstSourceLine <> 0
+    foldstatus.b = 0
+    *tmpcsl.sourceLine = ped\currentSourceEntry\FirstSourceLine
+    While *tmpcsl <> ped\currentSourceEntry\CurrentSourceLine
+      If Peek.w(*tmpcsl + 9) = @";@"
+        foldstr.w = Peek.w(*tmpcsl + 11)
+        Select foldstr
+        Case @"@1" : foldstatus = 1
+        Case @"@0" : foldstatus = 0
+        End Select
+      EndIf
+      *tmpcsl = *tmpcsl\nextLine
+    Wend
+    Function Return foldstatus
+  Else
+    Function Return 0
+  EndIf
+End Function
+
+Function.l PED_CheckFoldingReverse{*tmpLine.sourceLine}
+SHARED ped
+  ped\foldNumber = 0
+  linePtr.l = 0
+
+  log_Print{"check line:  [" + Peeks$(*tmpLine + 9,8) + "]"}
+  marker.s = Peeks$(*tmpLine + 11,2)
+  If marker = "@0"
+    ped\foldNumber = 0
+    *tmpPrev.sourceLine = *tmpLine\previousLine
+    While *tmpPrev
+      marker2.s = Peeks$(*tmpPrev + 9,4)
+      If Left$(marker2,2) = ";@"
+        log_Print{" found a marker upwarts: " + marker2}
+        If Right$(marker2,2) = "@1"
+          ped\foldNumber = 1
+          linePtr = *tmpPrev
+          Pop If: Pop If : Pop While
+          Goto exit_while
+        EndIf
+        If Right$(marker2,2) = "@0"
+          Goto exit_while
+        EndIf
+      EndIf
+      *tmpPrev = *tmpPrev\previousLine
+    Wend
+    exit_while:
+  EndIf
+
+  If marker = "@1" Then ped\foldNumber = 0
+
+  Function Return linePtr
+End Function
+
+
+Statement PED_MoveCursorUp{}
+SHARED ped
+  PED_HandleBlockmark{}
+
+  *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+  *prevLine.sourceLine = *currentLine\previousLine
+
+  If *prevLine = 0
+    log_Print{"there is no previous line."}
+    Gosub set_pointer_normal
+    Return
+  EndIf
+
+  ;tmps.s = PED_Detokenize{\CurrentSourceLine}
+  ;log_Print{"current: " + Str$(\DisplayLine+\DisplayLineOffset+1) + " | " +Str$(\DisplayLine)+"-" + Str$(\DisplayLineOffset) + " >> " + Left$(tmps,20)}
+  If Peeks$(*currentLine + 9,4) = ";@@0"
+    log_Print{"jump marker found, searching corresponding previous marker."}
+    *_prev.sourceLine = *currentLine
+    linePtr.l = PED_CheckFoldingReverse{*_prev}
+    If linePtr <> 0
+      log_Print{"previous marker for [" + Peeks$(*_prev + 9,4) + "] found, jumping to that line."}
+      Repeat
+        *_prev = *_prev\previousLine
+        ped\ptrCurrentSourceData\DisplayLineOffset - 1
+      Until *_prev = linePtr
+      ped\ptrCurrentSourceData\CurrentSourceLine = *_prev
+      PED_RedrawSource{}
+      Return
+    EndIf
+  EndIf
+
+  PED_CursorOff{}
+  ped\ptrCurrentSourceData\CurrentSourceLine = *prevLine    
+  If PED_DecreaseDisplayLine{} = 1 ;-- check if we have to scroll the source window
+    PED_ScrollVertical{#SCROLL_DOWN}
+    PED_UpdateStatusArea{#STATUS_SCROLLERS}
+  EndIf
+  PED_CursorOn{}
+End Statement
+
+
+Statement PED_MoveCursorDown{}
+SHARED ped
+
+  PED_HandleBlockmark{}
+
+  *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
+  *nextLine.sourceLine = *currentLine\nextLine
+
+  If *nextLine = 0
+    log_Print{"there is no next line."}
+    Gosub set_pointer_normal
+    Return
+  EndIf
+
+  If Peeks$(*currentLine + 9, 4) = ";@@1"
+    log_Print{"jump marker found, searching corresponding next marker."}
+    tmpDLO.l = ped\ptrCurrentSourceData\DisplayLineOffset
+    *_next.sourceLine = *nextLine
+    While *_next
+      ped\ptrCurrentSourceData\DisplayLineOffset + 1
+      If Peeks$(*_next + 9,4) <> ";@@1"
+        If Peeks$(*_next + 9,4) = ";@@0"
+          ped\ptrCurrentSourceData\CurrentSourceLine = *_next
+          PED_RedrawSource{}
+          Return
+        EndIf
+      EndIf
+      *_next = *_next\nextLine
+    Wend
+    ped\ptrCurrentSourceData\DisplayLineOffset = tmpDLO
+  EndIf
+
+  PED_CursorOff{}
+  ped\ptrCurrentSourceData\CurrentSourceLine = *nextLine
+  If PED_IncreaseDisplayLine{} = 1
+    PED_ScrollVertical{#SCROLL_UP}
+    PED_UpdateStatusArea{#STATUS_SCROLLERS}        
+  EndIf
+  PED_CursorOn{}
+End Statement
+
+
+Statement PED_MoveCursorLeft{}
+SHARED ped, sourceWindow
+
+  PED_CursorOff{}
+  If ped\ptrCurrentSourceData\Column > sourceWindow\boundLinesX
+    ped\ptrCurrentSourceData\Column - 1
+  Else
+    If ped\ptrCurrentSourceData\ColumnsOffset > 1
+      ped\ptrCurrentSourceData\ColumnsOffset - sourceWindow\scrollSize
+      PED_ScrollHorizontal{#SCROLL_RIGHT}
+      ;ped\ptrCurrentSourceData\Column + 1
+    Else
+      If ped\ptrCurrentSourceData\ColumnsOffset = 1
+        ped\ptrCurrentSourceData\ColumnsOffset = 0
+        PED_ScrollHorizontal{#SCROLL_RIGHT}
+      Else
+        If ped\ptrCurrentSourceData\Column > 0
+          ped\ptrCurrentSourceData\Column - 1
+        EndIf
+      EndIf
+    EndIf
+  EndIf
+  PED_UpdateStatusArea{#STATUS_SCROLLERS|#STATUS_CURSOR}
+  exit_cursorleft:
+  PED_CursorOn{}
+End Statement
+
+Statement PED_MoveCursorRight{}
+SHARED ped, sourceWindow
+
+  PED_CursorOff{}
+  If ped\ptrCurrentSourceData\ColumnsOffset + sourceWindow\visibleColumns => #MAX_Columns
+    If ped\ptrCurrentSourceData\Column < sourceWindow\visibleColumns-1
+      ped\ptrCurrentSourceData\Column + 1
+    EndIf
+  Else
+    If sourceWindow\boundLinesX <= ped\ptrCurrentSourceData\Column
+      If ped\ptrCurrentSourceData\Column > sourceWindow\visibleColumns - sourceWindow\boundLinesX
+        ped\ptrCurrentSourceData\ColumnsOffset + sourceWindow\scrollSize
+        PED_ScrollHorizontal{#SCROLL_LEFT}
+        ;ped\ptrCurrentSourceData\Column - 1
+        Goto exit_cursorright
+      EndIf
+    EndIf
+    ped\ptrCurrentSourceData\Column + 1
+  EndIf
+  PED_UpdateStatusArea{#STATUS_SCROLLERS|#STATUS_CURSOR}
+  exit_cursorright:
+  PED_CursorOn{}
+End Statement
+
+
 Statement PED_GetMousePos{*mp.mousePos}
   SHARED sourceWindow
   USEPATH sourceWindow
@@ -4445,7 +5129,202 @@ SHARED ped,sourceWindow
   Function Return success
 End Function
 
+Statement PED_InsertReturn{@count.w}
+SHARED ped, sourceWindow, pedconfig
+USEPATH ped\ptrCurrentSourceData
 
+  If \BlockEndY <> $ffffFFFF
+    ped\blockmarkRemovalMode = 2 : PED_HandleBlockmark{}
+  EndIf
+
+  sourceWindow\redrawFlag = True
+
+  If count = -1 Then count = 1
+
+  For i.b = 1 To count
+    ;-- SHIFT pressed as well ? 
+    If (\QualifierStore AND 3) <> 0
+      ;-- if pressed, do not split current line at cursor pos but insert a new line before the current line!
+      Gosub appendline
+    Else
+      ;log_Print{"split current line at column position, BlockEndY = " + Hex$(\BlockEndY)}
+      Gosub splitlines
+    EndIf
+  Next i
+
+  Statement Return
+
+ .splitlines:
+  ;log_Print{"splitlines"}
+
+  ;-- split the current line at the column position
+  USEPATH ped\ptrCurrentSourceData
+
+  tmpColumn.w = \ColumnsOffset + \Column
+  tmpColumnsOffset.w = \ColumnsOffset
+
+  lineaddr.l = ped\ptrTextbuffer + \TextBufferOffset
+
+  ;-- check the spaces at the beginning to auto indent the next line
+  \Column = 0
+  If pedconfig\auto_indent
+    While Peek.b(lineaddr + \Column) = $20 AND (\Column < #MAX_Columns)
+      \Column + 1
+    Wend
+    If \Column = #MAX_Columns Then \Column = 0
+  EndIf 
+
+  ;-- calculate ColumnsOffset
+  PED_CalculateColumnsOffset{}  
+
+  ;-- get the string until cursorposition
+  restString.s = ""
+  ; add spaces for auto indentation: align to beginning of current line
+  If pedconfig\auto_indent AND \Column <> 0 Then restString.s = SPACE$(\Column)
+
+  ;-- save rest of line and remove from current line / update the text buffer
+  For tcol.w = tmpColumn To #MAX_Columns - 1
+    restString + Chr$(Peek.b(lineaddr + tcol))    ; copy rest of line to parsebuffer
+    Poke.b lineaddr + tcol, $20                   ; remove rest of Line from textbuffer
+  Next tcol
+  restString = StripTrail$(restString, @" ")
+
+  ;-- update current line, that means break the line at cursor position
+  ;-- and move the text right of the cursor into a new line right behinde the current one
+  strline$ = StripTrail$(Peeks$(lineaddr,#MAX_Columns),@" ")
+  strline$ = PED_TokenizeText{strline$}
+  *newLine.sourceLine = PED_CreateNewSourceLine{strline$}
+  PED_ReplaceCurrentSourceLine{*newLine}
+
+  ;-- append rest of line as new line
+  newline$ = PED_TokenizeText{restString}
+  *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+  If *newLine
+    PED_UpdateBlockPosY{\DisplayLineOffset + \DisplayLine}
+
+    If PED_AppendSourceLine{\CurrentSourceLine,*newLine}
+      If tmpColumnsOffset <> \ColumnsOffset
+        log_Print{"reset columnsoffset, redraw with offset"}
+        PED_RedrawSource{}
+      Else
+        PED_CursorOff{}
+        PED_ScrollVertical{#SCROLL_DOWN, \DisplayLine}
+        PED_PrintCurrentSourceLine{True} ; update the old line
+      EndIf
+      PED_MoveCursorDown{}
+      PED_CursorOff{}
+      PED_PrintCurrentSourceLine{True} ; draw the new line
+      PED_CursorOn{}      
+      PED_UpdateStatusArea{#STATUS_SCROLLERS}  
+    Else
+      error{"Couldn't append sourceline!"}      
+    EndIf
+  EndIf
+  Return
+
+.appendline:
+  ;-- don't split the current line but insert a new line after it!
+  USEPATH ped\ptrCurrentSourceData  
+  log_Print{"appendline"}
+
+
+  tmpColumnsOffset.w = \ColumnsOffset
+
+  ;-- check the spaces at the beginning to auto indent the next line
+  \Column = 0
+  If pedconfig\auto_indent
+    \Column = -1
+    Repeat
+      \Column + 1
+    Until Peek.b(\CurrentSourceLine + 9 + \Column) <> $20
+    log_Print{"indent after return: " + Str$(\Column)}
+  EndIf
+
+  ;-- calculate ColumnsOffset
+  If \ColumnsOffset > 0
+    \ColumnsOffset = 0
+    If \Column > sourceWindow\visibleColumns
+      \Column - sourceWindow\visibleColumns
+      \ColumnsOffset = sourceWindow\visibleColumns
+      If \Column > sourceWindow\visibleColumns
+        \Column - sourceWindow\visibleColumns
+        \ColumnsOffset + sourceWindow\visibleColumns
+      EndIf
+    EndIf
+    log_Print{"calculated new columnsoffset: " + Str$(\ColumnsOffset)}
+  EndIf
+
+  *newLine.sourceLine = PED_CreateNewSourceLine{""}
+  If *newLine 
+     PED_UpdateBlockPosY{\DisplayLineOffset + \DisplayLine}
+
+    If PED_AppendSourceLine{\CurrentSourceLine, *newLine}
+      ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
+      If PED_IncreaseDisplayLine{}
+       PED_CursorOff{}
+       If tmpColumnsOffset <> \ColumnsOffset
+          log_Print{"reset columnsoffset, redraw source"}
+          PED_RedrawSource{}
+        Else
+          PED_ScrollVertical{#SCROLL_DOWN,\DisplayLine}
+          PED_PrintCurrentSourceLine{False}
+        EndIf
+        PED_CursorOn{}
+        PED_UpdateStatusArea{#STATUS_SCROLLERS}
+      EndIf
+    Else
+      error{"Couldn't append sourceline!"}
+    EndIf
+  Else
+    Pop If
+    Goto memAlert_CloseSource
+  EndIf
+  Return 
+End Statement
+
+Statement PED_InsertCharToTextBuffer{char.b}
+SHARED ped
+USEPATH ped\ptrCurrentSourceData
+ 
+  If \BlockEndY <> $ffffFFFF
+    ped\blockmarkRemovalMode = 2 : PED_HandleBlockmark{}
+  EndIf
+
+  ;-- move everything right from cursor 1 to right
+  lineaddr.l = ped\ptrTextbuffer + \TextBufferOffset
+  actualColumn.w = \Column + \ColumnsOffset
+  tmpColumn.w = #MAX_Columns - 1
+  While tmpColumn > actualColumn
+    tmpColumn - 1
+    Poke.b lineaddr + tmpColumn, Peek.b(lineaddr + tmpColumn - 1)
+  Wend
+
+  PED_CursorOff{}
+  PED_ScrollHorizontal{#SCROLL_RIGHT, #SCROLL_CURRENT_LINE}
+  PED_PrintChar{char} : \KeyBeforeReturn = char
+  PED_CursorOn{}
+
+  PED_MoveCursorRight{}
+End Statement
+
+
+Statement PED_InsertStringToTextBuffer{str.s}
+SHARED ped
+  If str = "" Then Statement Return
+
+  ; --
+  ; -- check for a comment
+  i.w = SearchBegin(str, Asc(";"), 1)
+  If i Then str = Left$(str,i - 2) ;+" "
+
+  If str <> ""
+    For i = 1 To FLen(str)
+      If ped\ptrCurrentSourceData\Column < $7d      ;#MAX_Columns - 1
+        PED_InsertCharToTextBuffer{ Asc(Mid$(str,i,1)) }
+      EndIf
+    Next i
+  EndIf
+End Statement
 
 
 Function.s autoCompleteContructs{*currentline.sourceLine}
@@ -5165,120 +6044,6 @@ SHARED ped
   Function Return False
 End Function
 
-
-Function.l PED_CheckSourceAlreadyOpen{fname.s}
-SHARED ped
-
-  log_Print{"check if file [" + fname + "] is already opened."}
-
-  found.b = False
-  *fileEntry.sourceEntry = ped\firstSourceEntry
-  While *fileEntry AND (found = False)
-    tempfname.s = dos_AddPart{Peek.s(&*fileEntry\SourceDir), Peek.s(&*fileEntry\SourceName)}
-    log_Print{"... checking [" + tempfname + "]"}
-    If tempfname = fname
-      found = True
-    Else
-      *fileEntry = *fileEntry\nextEntry
-    EndIf
-  Wend
-  Function Return *fileEntry
-End Function
-
-Statement PED_CloseFile{fh.l}
-  SHARED ped,readcache
-  If fh <> 0
-    log_Print{"closing file handle: " + Hex$(fh)}
-    Close_ fh : ped\sourceFileHandle = 0
-    If readcache\cacheptr
-      FreeVec_ readcache\cacheptr
-      readcache\cacheptr = Null
-      readcache\cachelen = 0
-      readcache\readlen = 0
-      readcache\chunklen = 0
-      readcache\filelen = 0
-      ;ClearType readcache
-    EndIf
-  Else
-    log_Print{"file already closed at " + Hex$(fh)}
-  EndIf
-End Statement
-
-Function.l PED_OpenFile{ofname.s, accessmode.l, menuload.b}
-SHARED ped, pedconfig
-
-  log_Print{"open_file <" + ofname + ">"}
-
-  ; -- check extension
-  fext.s = LCase$(dos_GetExt{ofname})
-  log_Print{"checking file extention of file: " + ofname + " [" + fext + "]"}
-  If pedconfig\smart_tokenization <> 0
-    If fext = "bb" OR fext = "bb2" OR fext = "ab2" OR fext = "ab3"
-      log_Print{"smart tokeniztation: activating tokenization"}
-      ped\doTokenize = True
-    Else
-        log_Print{"deactivating tokenization"}
-        ped\doTokenize = False
-    EndIf
-  EndIf
-
-  If fext = "asm"
-    log_Print{"it seems to be an asm file, tokenization and conversion mode is active."}
-    If pedconfig\smart_tokenization Then ped\doTokenize = True
-    ped\convertAsm = True
-  Else
-    ped\convertAsm = False
-  EndIf
-
-  fh.l = Open_(&ofname, accessmode)
-  If fh
-;    log_Print{"file opened successfully, handle: " + Hex$(fh)}
-    Function Return fh
-  Else
-    fileerror.l = IoErr_
-    log_Print{"could not open file <" + ofname + "> for reason: " + Str$(fileerror)}
-    log_Print{"menuload: " + Str$(menuload)}
-
-    If menuload = False
-      error{"Couldn't open file, DOS-Error #" + Str$(fileerror)}
-    Else
-      error{"Couldn't open file, DOS-Error #" + Str$(fileerror)}
-    EndIf
-  EndIf
-End Function
-
-
-
-Function.s PED_RequestFile{tmpdir$, tmpfile$, tmptitle$, tmppattern$, @setAsCurrentFile.b}
-SHARED ped, pedconfig, sourceWindow
-
- If pedconfig\use_filepattern <> 0
-   If tmppattern$ = "" Then tmppattern$ = "(#?.info)"
- Else
-   tmppattern$ = ""
- EndIf
-
- asl_SetRequesterDims{pedconfig\asl_x,pedconfig\asl_y,pedconfig\asl_w,pedconfig\asl_h}
- aslfr_SetRequesterTitle{1,!TRANS{tmptitle$},"",""}
- aslfr_SetPattern{1,tmppattern$}
- aslfr_SetPath{1,tmpdir$}
- aslfr_SetFile{1,tmpfile$}
-
- If aslfr_Request{1,False,False,False,sourceWindow\pedScreen}
-   tempdir$      = aslfr_GetPath{1}
-   tempfile$     = aslfr_GetFile{1}
-   tempcomplete$ = dos_AddPart{tempdir$ , tempfile$}
- Else
-   tempfile$ = ""
- EndIf
-
- If tempfile$ <> "" AND setAsCurrentFile
-   ped\currentDir = tempdir$
-   ped\currentFile = tempfile$
-   ped\sourceFileComplete = tempcomplete$
- EndIf
- Function Return tempcomplete$
-End Function
 
 
 ; not used anymore as the SaveSource()-function in CLIModeSupport.ab3 is used
@@ -6072,7 +6837,7 @@ End
   exit_eventloop.b = False
 
   While exit_eventloop = False
-    ;Gosub handle_blockmark      ; if new editmode, delete a marked block if insertchar or deleteCharFromTextbuffer happens
+    ;PED_HandleBlockmark{}      ; if new editmode, delete a marked block if insertchar or deleteCharFromTextbuffer happens
 
     ;-- handle Window events
     If sourceWindow\win <> 0
@@ -6147,9 +6912,9 @@ Return
    
       ; -- print the tokenized source line if tokenizing
       If ped\doTokenize
-        !PED_CursorOff
+        PED_CursorOff{}
         PED_PrintCurrentSourceLine{False}
-        !PED_CursorOn
+        PED_CursorOn{}
       EndIf
     EndIf
 
@@ -6161,27 +6926,17 @@ Return
     ;log_Print{"***** exit class:" + Str$(exit_loop_class.b)}
 
     If exit_eventloop.b <> 0
-      ;log_Print{"***** executing actions hold back ..."}
-
+      Gosub close_popupwindow
+      
+      ;log_Print{"***** executing actions hold back ... "}
       Select last_vankey
-      Case #VANILLAKEY_RETURN: Gosub do_VANILLAKEY_RETURN
+      Case #VANILLAKEY_RETURN: PED_InsertReturn{}
       Case #VANILLAKEY_UP:     mqualifier.w = ped\ptrCurrentSourceData\QualifierStore : Gosub do_VANILLAKEY_UP
       Case #VANILLAKEY_DOWN:   mqualifier = ped\ptrCurrentSourceData\QualifierStore : Gosub do_VANILLAKEY_DOWN
       End Select
 
-      Gosub close_popupwindow
-
-      If exit_loop_class = -3 OR exit_loop_class= -4
-        Gosub event_leftmousebutton
-      EndIf
-
-      If exit_loop_class = -2
-        ; _menuitem will be set in the first menu event handler
-        Gosub event_menu
-      EndIf
-
-      ;PED_UpdateStatusArea{#STATUS_SCROLLERS}
-      ;log_Print{"actions end"}
+      If exit_loop_class = -3 OR exit_loop_class= -4 Then Gosub event_leftmousebutton
+      If exit_loop_class = -2 Then Gosub event_menu
     EndIf
 
     ;--
@@ -6190,9 +6945,9 @@ Return
       If last_vankey.b = #VANILLAKEY_RETURN
         a$ = autoCompleteContructs{ped\ptrCurrentSourceData\CurrentSourceLine}
         If a$ <> ""
-          Gosub insertstring
-          Gosub insertreturn
-          Gosub movecursorlinedown
+          PED_InsertStringToTextBuffer{a$}
+          PED_InsertReturn{}
+          PED_MoveCursorDown{}
         EndIf
       EndIf
     EndIf
@@ -6418,22 +7173,23 @@ Return
       End If
    EndIf
 
-   ;If ev<>#IDCMP_INTUITICKS AND (ev<>#IDCMP_MOUSEMOVE) Then log_Print{Hex$(ev)}
-
    Select ev
      Case #IDCMP_MOUSEMOVE
        If SliderUsed = True       ; check if colorslider used before
          SliderUsed = False       ; set it back
        Else
          If (WZInput("SET_PAGES") = 3) AND (cw_open = True)
-           ; Get current RGB-Value in relation to the Gradient-slider
+          
+           ;-- get current RGB-Value in relation to the Gradient-slider
            _RGB.l = WZ_GetColorWheelRGB{}
+          
+           ;-- update sliders and colorboxes
            If _RGB <> old_RGB.l
              WZ_SetColorGradientSlider{_RGB}
-             Gosub update_colorsliders    ; added to update the colorsilders to the values of the Colorwheel  tomsmart1
+             Gosub update_colorsliders             
              old_RGB = _RGB
              update_colors.b = True
-             If colnum<>-1
+             If colnum <> -1
                AB3RGB_temp(colnum)= _RGB
                Gosub update_colorboxes
              EndIf
@@ -6454,35 +7210,32 @@ Return
        exit_settings = True
 
      Case #IDCMP_IDCMPUPDATE
-       ; check the colorgadgets
-       ;log_Print{"event: IDCMPUPDATE"}
-       ;log_Print{"eventwindow: " + Str$(EventWindow)}
-       ;log_Print{"gadid: " + Str$(WZGadHit)}
-       ;log_Print{"gadname: " + Str$(WZGadName)}
-
+       ;-- check the colorgadgets
        If Left$(WZGadName,9) = "SET_COLOR"
          colnum = Vallong(Replace$(WZGadName,"SET_COLOR",""))
-         update_colors = True
          Gosub update_colorboxes
-         If (ColorWheelError = False)
-           WZ_SetColorWheelRGB{AB3RGB_temp(colnum)}
-         EndIf
-         _RGB = AB3RGB_temp(colnum) : old_RGB = _RGB       ; added set of _RGB and old_RGB because else it is undefind  tomsmart1
-         Gosub update_colorsliders  ; added to set the colorsilders to the select color  tomsmart1
+         
+         _RGB = AB3RGB_temp(colnum) : old_RGB = _RGB
+         Gosub update_colorsliders
+
+         If (ColorWheelError = False) Then WZ_SetColorWheelRGB{AB3RGB_temp(colnum)}
+
+         update_colors = True
        Else
          If Left$(WZGadName,13) = "SET_SCREENCOL"
            colnum.w = Vallong(Replace$(WZGadName,"SET_SCREENCOL","")) + 20
-           update_colors = True
-           rebuild_gui   = True
            Gosub update_colorboxes
-           If (ColorWheelError = False)
-             WZ_SetColorWheelRGB{AB3RGB_temp(colnum)}
-           EndIf
-            _RGB = AB3RGB_temp(colnum) : old_RGB = _RGB    ; added set of _RGB and old_RGB because else it is undefind  tomsmart1
-           Gosub update_colorsliders ; added to set the colorsilders to the select color  tomsmart1
+           
+           _RGB = AB3RGB_temp(colnum) : old_RGB = _RGB
+           Gosub update_colorsliders
+
+           If (ColorWheelError = False) Then WZ_SetColorWheelRGB{AB3RGB_temp(colnum)}
+
+           update_colors = True           
+           rebuild_gui   = True
          EndIf
        EndIf
-       ;log_Print{"check other gadget..."}
+
        ;-- check all other gadgets
        Select WZGadName
 
@@ -6915,69 +7668,63 @@ Return
  Gosub activatesourcewindow
 Return
 
+Statement UpdateColorBox{*rp.RastPort, *gad.Gadget, width.w, boxcolor.w, boxpen.w}
+  boxx.w = *gad\LeftEdge + *gad\Width + 2
+  boxw.w = boxx + width
+  boxy.w = *gad\TopEdge
+  If width = 20
+    boxh.w = boxy + *gad\Height - 1
+  Else
+    boxh.w = boxy + *gad\Height
+  EndIf
+
+  SetAPen_ *rp, boxcolor
+  RectFill_ *rp, boxx + 1,boxy + 1,boxw - 1,boxh - 1
+  
+  SetAPen_ *rp, boxpen
+  Move_ *rp, boxx, boxy
+  Draw_ *rp, boxw, boxy
+  Draw_ *rp, boxw, boxh
+  Draw_ *rp, boxx, boxh
+  Draw_ *rp, boxx, boxy
+End Statement
 
 .update_colorboxes:
   If WZInput("SET_PAGES") = 3
-     WZ_LockWindow{"WIN_SETTINGS"}    ; added to prevent page switch during drawing  tomsmart1
-     *winSettings.Window = Peek.l(Addr Window(WZID("WIN_SETTINGS")))
-     boxpen.w = 1
-     boxcolor.w = 0
-     For ii.l = 1 To 12
-       If ii = colnum Then boxpen = 2 Else boxpen = 1
-       *gad.Gadget = WZGadAddr("SET_COLOR"+Str$(ii))
-       If *gad
-         boxx.w = *gad\LeftEdge + *gad\Width + 2
-         boxw.w = boxx + 20
-         boxy.w = *gad\TopEdge
-         boxh.w = boxy + *gad\Height - 1
-         boxcolor.w = screen_GetPenRGB{AB3RGB_temp(ii)}
-         SetAPen_ *winSettings\RPort,boxcolor : RectFill_ *winSettings\RPort,boxx+1,boxy+1,boxw-1,boxh-1
-         SetAPen_ *winSettings\RPort,boxpen
-         Move_ *winSettings\RPort,boxx,boxy
-         Draw_ *winSettings\RPort,boxw,boxy
-         Draw_ *winSettings\RPort,boxw,boxh
-         Draw_ *winSettings\RPort,boxx,boxh
-         Draw_ *winSettings\RPort,boxx,boxy
-       EndIf
-     Next ii
+    WZ_LockWindow{"WIN_SETTINGS"}    ; added to prevent page switch during drawing  tomsmart1
+    *winSettings.Window = Peek.l(Addr Window(WZID("WIN_SETTINGS")))
+    *winRP.RastPort = *winSettings\RPort
+    boxpen.w = 1 : boxcolor.w = 0
 
-     For ii = 0 To 3
-       If 20+ii = colnum Then boxpen = 2 Else boxpen = 1
-       *gad.Gadget = WZGadAddr("SET_SCREENCOL"+Str$(ii))
-       If *gad
-         boxx = *gad\LeftEdge + *gad\Width + 2
-         boxw = boxx + 20
-         boxy = *gad\TopEdge
-         boxh = boxy + *gad\Height - 1
-         SetAPen_ *winSettings\RPort,screen_GetPenRGB{AB3RGB_temp(20+ii)}
-         RectFill_ *winSettings\RPort,boxx+1,boxy+1,boxw-1,boxh-1
-         SetAPen_ *winSettings\RPort,boxpen
-         Move_ *winSettings\RPort,boxx,boxy
-         Draw_ *winSettings\RPort,boxw,boxy
-         Draw_ *winSettings\RPort,boxw,boxh
-         Draw_ *winSettings\RPort,boxx,boxh
-         Draw_ *winSettings\RPort,boxx,boxy
-       EndIf
-     Next ii
+    ;-- sourcetext colors
+    For ii.w = 1 To 12
+      *gad.Gadget = WZGadAddr("SET_COLOR" + Str$(ii))
+      If *gad
+        boxcolor = screen_GetPenRGB{AB3RGB_temp(ii)}
+        If ii = colnum Then boxpen = 2 Else boxpen = 1
+        UpdateColorBox{*winRP, *gad, 20, boxcolor, boxpen}
+      EndIf
+    Next ii
 
-     ; begin temporaycopy color
-      *gad.Gadget = WZGadAddr("COPYTOTEMP")
-       If *gad
-         boxx = *gad\LeftEdge + *gad\Width + 2
-         boxw = boxx + 16
-         boxy = *gad\TopEdge
-         boxh = boxy + *gad\Height
-         SetAPen_ *winSettings\RPort,screen_GetPenRGB{AB3RGB_copytemp}
-         RectFill_ *winSettings\RPort,boxx+1,boxy+1,boxw-1,boxh-1
-         SetAPen_ *winSettings\RPort,boxpen
-         Move_ *winSettings\RPort,boxx,boxy
-         Draw_ *winSettings\RPort,boxw,boxy
-         Draw_ *winSettings\RPort,boxw,boxh
-         Draw_ *winSettings\RPort,boxx,boxh
-         Draw_ *winSettings\RPort,boxx,boxy
-       EndIf
-     WZ_UnlockWindow{"WIN_SETTINGS"}  ; added to prevent page switch during drawing  tomsmart1
-   EndIf
+    ;-- GUI colors
+    For ii.w = 0 To 3
+      *gad.Gadget = WZGadAddr("SET_SCREENCOL" + Str$(ii))
+      If *gad
+        boxcolor = screen_GetPenRGB{AB3RGB_temp(20 + ii)}
+        If 20 + ii = colnum Then boxpen = 2 Else boxpen = 1
+        UpdateColorBox{*winRP, *gad, 20, boxcolor, boxpen}
+      EndIf
+    Next ii
+
+    ;-- temporarycopy color box
+    *gad.Gadget = WZGadAddr("COPYTOTEMP")
+    If *gad
+      boxcolor = screen_GetPenRGB{AB3RGB_copytemp}
+      UpdateColorBox{*winRP, *gad, 16, boxcolor, boxpen}
+    EndIf
+     
+    WZ_UnlockWindow{"WIN_SETTINGS"}
+  EndIf
 Return
 
 
@@ -7028,10 +7775,13 @@ Return
 
 .set_color_slider_wheel_boxes:  ;added to set the color -wheel, -boxes, -slider and -intger gadgets for a colorslider or intger gadget change  tomsmart1
   old_RGB = _RGB
+  
   If (ColorWheelError = False)
     WZ_SetColorWheelRGB{_RGB}   ; update the ColorWheel and GradientSlider
   EndIf
-  Gosub update_colorsliders     ; update the sliders and the intger gadgets
+
+  Gosub update_colorsliders     ; update the sliders and the integer gadgets
+  
   If colnum <> -1               ; check if a AB3color is set to change
     update_colors = True
     AB3RGB_temp(colnum) = _RGB  ; set it to the color we set by the slider or get intger gadget
@@ -7044,23 +7794,23 @@ Return
    If ped\AbDiscObject
       log_Print{"saving tooltypes to disk object"}
 
-       ; -- save colors
-       dos_SetToolString{"FUNCTIONCOLOR"   ,"$"+Hex$(AB3RGB(#AB3_cfunction))}
-       dos_SetToolString{"MACROCOLOR"      ,"$"+Hex$(AB3RGB(#AB3_cmacro))}
-       dos_SetToolString{"STRINGCOLOR"     ,"$"+Hex$(AB3RGB(#AB3_cstring))}
-       dos_SetToolString{"NEWTYPECOLOR"    ,"$"+Hex$(AB3RGB(#AB3_cnewtype))}
-       dos_SetToolString{"CONSTANTCOLOR"   ,"$"+Hex$(AB3RGB(#AB3_cconstant))}
-       dos_SetToolString{"REMARKFORG"      ,"$"+Hex$(AB3RGB(#AB3_cremarkforeground))}
-       dos_SetToolString{"REMARKBACKG"     ,"$"+Hex$(AB3RGB(#AB3_cremarkbackground))}
-       dos_SetToolString{"TOKENCOLOR"      ,"$"+Hex$(AB3RGB(#AB3_ctoken))}
-       dos_SetToolString{"TOKENBACKPEN"    ,"$"+Hex$(AB3RGB(#AB3_ctokenbackground))}
-       dos_SetToolString{"BACKGROUNDCOLOR" ,"$"+Hex$(AB3RGB(#AB3_cbackground))}
-       dos_SetToolString{"OTHERCOLOR"      ,"$"+Hex$(AB3RGB(#AB3_cother))}
-       dos_SetToolString{"CLASSICCOLOR"    ,"$"+Hex$(AB3RGB(#AB3_cclassic))}
-       dos_SetToolString{"screenbackcolor" ,"$"+Hex$(AB3RGB(#AB3_screenback))}
-       dos_SetToolString{"screentextcolor" ,"$"+Hex$(AB3RGB(#AB3_screentext))}
-       dos_SetToolString{"screenshinecolor","$"+Hex$(AB3RGB(#AB3_screenshine))}
-       dos_SetToolString{"screenfillcolor" ,"$"+Hex$(AB3RGB(#AB3_screenfill))}
+       ; -- save colors 
+       dos_SetToolString{"FUNCTIONCOLOR"   ,"$" + Hex$(AB3RGB(#AB3_cfunction))}
+       dos_SetToolString{"MACROCOLOR"      ,"$" + Hex$(AB3RGB(#AB3_cmacro))}
+       dos_SetToolString{"STRINGCOLOR"     ,"$" + Hex$(AB3RGB(#AB3_cstring))}
+       dos_SetToolString{"NEWTYPECOLOR"    ,"$" + Hex$(AB3RGB(#AB3_cnewtype))}
+       dos_SetToolString{"CONSTANTCOLOR"   ,"$" + Hex$(AB3RGB(#AB3_cconstant))}
+       dos_SetToolString{"REMARKFORG"      ,"$" + Hex$(AB3RGB(#AB3_cremarkforeground))}
+       dos_SetToolString{"REMARKBACKG"     ,"$" + Hex$(AB3RGB(#AB3_cremarkbackground))}
+       dos_SetToolString{"TOKENCOLOR"      ,"$" + Hex$(AB3RGB(#AB3_ctoken))}
+       dos_SetToolString{"TOKENBACKPEN"    ,"$" + Hex$(AB3RGB(#AB3_ctokenbackground))}
+       dos_SetToolString{"BACKGROUNDCOLOR" ,"$" + Hex$(AB3RGB(#AB3_cbackground))}
+       dos_SetToolString{"OTHERCOLOR"      ,"$" + Hex$(AB3RGB(#AB3_cother))}
+       dos_SetToolString{"CLASSICCOLOR"    ,"$" + Hex$(AB3RGB(#AB3_cclassic))}
+       dos_SetToolString{"screenbackcolor" ,"$" + Hex$(AB3RGB(#AB3_screenback))}
+       dos_SetToolString{"screentextcolor" ,"$" + Hex$(AB3RGB(#AB3_screentext))}
+       dos_SetToolString{"screenshinecolor","$" + Hex$(AB3RGB(#AB3_screenshine))}
+       dos_SetToolString{"screenfillcolor" ,"$" + Hex$(AB3RGB(#AB3_screenfill))}
 
        ; save Screen settings
        dos_SetToolSwitch{"USE_WBSCREEN"    ,pedconfig\use_wbscreen}  ;-WZInput("SET_USEWB")}
@@ -8245,25 +8995,25 @@ Return
 
 .selectblockdown:
   If ped\ptrCurrentSourceData\BlockEndY = $FFFFffff Then PED_SetBlockStart{}
-  Gosub movecursorlinedown
+  PED_MoveCursorDown{}
   PED_SetBlockEnd{}
 Return
 
 .selectblockup:
   If ped\ptrCurrentSourceData\BlockEndY = $FFFFffff Then PED_SetBlockStart{}
-  Gosub movecursorlineup
+  PED_MoveCursorUp{}
   PED_SetBlockEnd{}
 Return
 
 .selectblockright:
   If ped\ptrCurrentSourceData\BlockEndY = $FFFFffff Then PED_SetBlockStart{}
-  Gosub moveCursorRight
+  PED_MoveCursorRight{}
   PED_SetBlockEnd{}
 Return
 
 .selectblockleft:
   If ped\ptrCurrentSourceData\BlockEndY = $FFFFffff Then PED_SetBlockStart{}
-  Gosub moveCursorLeft
+  PED_MoveCursorLeft{}
   PED_SetBlockEnd{}
 Return
 
@@ -8278,7 +9028,7 @@ Return
         f1.s = PED_Detokenize{ped\ptrCurrentSourceData\FirstSourceLine}
         log_Print{"f1: " + Left$(f1,20)}
 
-        !PED_CursorOff
+        PED_CursorOff{}
         ;-- print the line that has to be moved up
         ped\ptrCurrentSourceData\CurrentSourceLine = *currentLine\previousLine
         PED_PrintCurrentSourceLine{True}
@@ -8289,7 +9039,7 @@ Return
           PED_ScrollVertical{#SCROLL_UP}
         EndIf
         PED_PrintCurrentSourceLine{True}
-        !PED_CursorOn
+        PED_CursorOn{}
         PED_UpdateStatusArea{#STATUS_SCROLLERS}
       Else
         log_Print{"*** append not successfull ***"}      
@@ -8310,7 +9060,7 @@ Return
   If (actualLine > 0) AND (*prevLine <> 0) ; if no previousline, we cannot move up
     If PED_CutSourceLine{*currentLine}
       If PED_AppendSourceLine{*prevLine\previousLine, *currentLine}
-        !PED_CursorOff
+        PED_CursorOff{}
         ;-- print the line that has to be moved down
         ped\ptrCurrentSourceData\CurrentSourceLine = *currentLine\nextLine
         PED_PrintCurrentSourceLine{True}
@@ -8321,7 +9071,7 @@ Return
           PED_ScrollVertical{#SCROLL_DOWN}
         EndIf
         PED_PrintCurrentSourceLine{True}
-        !PED_CursorOn
+        PED_CursorOn{}
         PED_UpdateStatusArea{#STATUS_SCROLLERS}  
       Else
         log_Print{"*** append not successfull ***"}
@@ -8333,140 +9083,6 @@ Return
     log_Print{"no alt-cursor up available."}
   EndIf
 Return
-
-Function.b PED_CheckFoldingState{}
-SHARED ped
-  If ped\currentSourceEntry\FirstSourceLine <> 0
-    foldstatus.b = 0
-    *tmpcsl.sourceLine = ped\currentSourceEntry\FirstSourceLine
-    While *tmpcsl <> ped\currentSourceEntry\CurrentSourceLine
-      If Peek.w(*tmpcsl + 9) = @";@"
-        foldstr.w = Peek.w(*tmpcsl + 11)
-        Select foldstr
-        Case @"@1" : foldstatus = 1
-        Case @"@0" : foldstatus = 0
-        End Select
-      EndIf
-      *tmpcsl = *tmpcsl\nextLine
-    Wend
-    Function Return foldstatus
-  Else
-    Function Return 0
-  EndIf
-End Function
-
-Function.l PED_CheckFoldingReverse{*tmpLine.sourceLine}
-SHARED ped
-  ped\foldNumber = 0
-  linePtr.l = 0
-
-  log_Print{"check line:  [" + Peeks$(*tmpLine + 9,8) + "]"}
-  marker.s = Peeks$(*tmpLine + 11,2)
-  If marker = "@0"
-    ped\foldNumber = 0
-    *tmpPrev.sourceLine = *tmpLine\previousLine
-    While *tmpPrev
-      marker2.s = Peeks$(*tmpPrev + 9,4)
-      If Left$(marker2,2) = ";@"
-        log_Print{" found a marker upwarts: " + marker2}
-        If Right$(marker2,2) = "@1"
-          ped\foldNumber = 1
-          linePtr = *tmpPrev
-          Pop If: Pop If : Pop While
-          Goto exit_while
-        EndIf
-        If Right$(marker2,2) = "@0"
-          Goto exit_while
-        EndIf
-      EndIf
-      *tmpPrev = *tmpPrev\previousLine
-    Wend
-    exit_while:
-  EndIf
-
-  If marker = "@1" Then ped\foldNumber = 0
-
-  Function Return linePtr
-End Function
-
-
-.movecursorlineup:
-  Gosub handle_blockmark
-
-  *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  *prevLine.sourceLine = *currentLine\previousLine
-
-  ;tmps.s = PED_Detokenize{\CurrentSourceLine}
-  ;log_Print{"current: " + Str$(\DisplayLine+\DisplayLineOffset+1) + " | " +Str$(\DisplayLine)+"-" + Str$(\DisplayLineOffset) + " >> " + Left$(tmps,20)}
-  If Peeks$(*currentLine + 9,4) = ";@@0"
-    log_Print{"jump marker found, searching corresponding previous marker."}
-    *_prev.sourceLine = *currentLine
-    linePtr.l = PED_CheckFoldingReverse{*_prev}
-    If linePtr <> 0
-      log_Print{"previous marker for [" + Peeks$(*_prev + 9,4) + "] found, jumping to that line."}
-      Repeat
-        *_prev = *_prev\previousLine
-        ped\ptrCurrentSourceData\DisplayLineOffset - 1
-      Until *_prev = linePtr
-      ped\ptrCurrentSourceData\CurrentSourceLine = *_prev
-      PED_RedrawSource{}
-      Return
-    EndIf
-  EndIf
-
-  If *prevLine = 0
-    log_Print{"there is no previous line."}
-    Gosub set_pointer_normal
-  Else
-    !PED_CursorOff
-    ped\ptrCurrentSourceData\CurrentSourceLine = *prevLine    
-    If PED_DecreaseDisplayLine{} = 1 ;-- check if we have to scroll the source window
-      PED_ScrollVertical{#SCROLL_DOWN}
-      PED_UpdateStatusArea{#STATUS_SCROLLERS}
-    EndIf
-    !PED_CursorOn
-  EndIf
-Return
-
-
-.movecursorlinedown:
-  Gosub handle_blockmark
-
-  *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  *nextLine.sourceLine = *currentLine\nextLine
-
-  If Peeks$(*currentLine + 9, 4) = ";@@1"
-    log_Print{"jump marker found, searching corresponding next marker."}
-    tmpDLO.l = ped\ptrCurrentSourceData\DisplayLineOffset
-    *_next.sourceLine = *nextLine
-    While *_next
-      ped\ptrCurrentSourceData\DisplayLineOffset + 1
-      If Peeks$(*_next + 9,4) <> ";@@1"
-        If Peeks$(*_next + 9,4) = ";@@0"
-          ped\ptrCurrentSourceData\CurrentSourceLine = *_next
-          PED_RedrawSource{}
-          Return
-        EndIf
-      EndIf
-      *_next = *_next\nextLine
-    Wend
-    ped\ptrCurrentSourceData\DisplayLineOffset = tmpDLO
-  EndIf
-
-  If *nextLine = 0
-    log_Print{"there is no next line."}
-    Gosub set_pointer_normal
-  Else
-    !PED_CursorOff
-    ped\ptrCurrentSourceData\CurrentSourceLine = *nextLine
-    If PED_IncreaseDisplayLine{} = 1
-      PED_ScrollVertical{#SCROLL_UP}
-      PED_UpdateStatusArea{#STATUS_SCROLLERS}        
-    EndIf
-    !PED_CursorOn
-  EndIf
-Return
-
 
 .menu_markindent:
   log_Print{"menu markindent called."}
@@ -8524,25 +9140,6 @@ Return
 Return
 
 
-.handle_blockmark:
-  ;log_Print{"handle blockmark"}
-
-  If ped\blockmarkRemovalMode <> 0
-    If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-      If ped\blockmarkRemovalMode = 2
-        Gosub menu_cut
-        If pedconfig\no_display_beep = False Then DisplayBeep_ sourceWindow\pedScreen
-      Else
-        ; for blockmarkRemovalMode = 1 only remove blockmark
-        PED_DrawBlockmark{}
-        !PED_ResetBlockflag
-      EndIf
-    EndIf
-    ped\blockmarkRemovalMode = 0
-  EndIf
-Return
-
-
 .menu_insertline:  ; insertStr may come from menu_undeleteline...
   ;If insertStr.s = "" Then insertStr = "leere Zeile"
   *newLine.sourceLine = PED_CreateNewSourceLine{insertStr.s}
@@ -8562,12 +9159,12 @@ Return
     PED_UpdateBlockPosY{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine}
     
     If PED_InsertSourceLine{*newLine}
-      !PED_CursorOff        
+      PED_CursorOff{}        
       PED_ScrollVertical{#SCROLL_DOWN, ped\ptrCurrentSourceData\DisplayLine}
       PED_PrintCurrentSourceLine{False}
       ;PED_UpdateLinenumbers{}
       PED_UpdateStatusArea{#STATUS_SCROLLERS}
-      !PED_CursorOn
+      PED_CursorOn{}
     Else
       error{"Couldn't insert sourceline!"}
     EndIf
@@ -8675,161 +9272,13 @@ USEPATH ped\ptrCurrentSourceData
   EndIf
 
   ;-- update the source
-  !PED_CursorOff
+  PED_CursorOff{}
   PED_ScrollVertical{#SCROLL_UP, \DisplayLine}  
   PED_PrintCurrentSourceLine{True}
   ;PED_UpdateLinenumbers{#FULL}
   PED_UpdateStatusArea{#STATUS_SCROLLERS}
-  !PED_CursorOn
+  PED_CursorOn{}
   log_Print{"menu joinlines finished."}
-Return
-
-
-.splitlines:
-  ;log_Print{"splitlines"}
-
-  ;-- split the current line at the column position
-  USEPATH ped\ptrCurrentSourceData
-
-  tmpColumn.w = \ColumnsOffset + \Column
-  tmpColumnsOffset.w = \ColumnsOffset
-
-  lineaddr.l = ped\ptrTextbuffer + \TextBufferOffset
-
-  ;-- check the spaces at the beginning to auto indent the next line
-  \Column = 0
-  If pedconfig\auto_indent
-    While Peek.b(lineaddr + \Column) = $20 AND (\Column < #MAX_Columns)
-      \Column + 1
-    Wend
-    If \Column = #MAX_Columns Then \Column = 0
-  EndIf 
-
-  ;-- calculate ColumnsOffset
-  PED_CalculateColumnsOffset{}  
-
-  ;-- get the string until cursorposition
-  restString.s = ""
-  ; add spaces for auto indentation: align to beginning of current line
-  If pedconfig\auto_indent AND \Column <> 0 Then restString.s = SPACE$(\Column)
-
-  ;-- save rest of line and remove from current line / update the text buffer
-  For tcol.w = tmpColumn To #MAX_Columns - 1
-    restString + Chr$(Peek.b(lineaddr + tcol))    ; copy rest of line to parsebuffer
-    Poke.b lineaddr + tcol, $20                   ; remove rest of Line from textbuffer
-  Next tcol
-  restString = StripTrail$(restString, @" ")
-
-  ;-- update current line, that means break the line at cursor position
-  ;-- and move the text right of the cursor into a new line right behinde the current one
-  strline$ = StripTrail$(Peeks$(lineaddr,#MAX_Columns),@" ")
-  strline$ = PED_TokenizeText{strline$}
-  *newLine.sourceLine = PED_CreateNewSourceLine{strline$}
-  PED_ReplaceCurrentSourceLine{*newLine}
-
-  ;-- append rest of line as new line
-  newline$ = PED_TokenizeText{restString}
-  *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
-  If *newLine
-    PED_UpdateBlockPosY{\DisplayLineOffset + \DisplayLine}
-
-    If PED_AppendSourceLine{\CurrentSourceLine,*newLine}
-      If tmpColumnsOffset <> \ColumnsOffset
-        log_Print{"reset columnsoffset, redraw with offset"}
-        PED_RedrawSource{}
-      Else
-        !PED_CursorOff
-        PED_ScrollVertical{#SCROLL_DOWN, \DisplayLine}
-        PED_PrintCurrentSourceLine{True} ; update the old line
-      EndIf
-      Gosub movecursorlinedown
-      !PED_CursorOff
-      PED_PrintCurrentSourceLine{True} ; draw the new line
-      !PED_CursorOn      
-      PED_UpdateStatusArea{#STATUS_SCROLLERS}  
-    Else
-      error{"Couldn't append sourceline!"}      
-    EndIf
-  EndIf
-Return
-
-.appendline:
-  ;-- don't split the current line but insert a new line after it!
-  USEPATH ped\ptrCurrentSourceData  
-  log_Print{"appendline"}
-
-
-  tmpColumnsOffset.w = \ColumnsOffset
-
-  ;-- check the spaces at the beginning to auto indent the next line
-  \Column = 0
-  If pedconfig\auto_indent
-    \Column = -1
-    Repeat
-      \Column + 1
-    Until Peek.b(\CurrentSourceLine + 9 + \Column) <> $20
-    log_Print{"indent after return: " + Str$(\Column)}
-  EndIf
-
-  ;-- calculate ColumnsOffset
-  If \ColumnsOffset > 0
-    \ColumnsOffset = 0
-    If \Column > sourceWindow\visibleColumns
-      \Column - sourceWindow\visibleColumns
-      \ColumnsOffset = sourceWindow\visibleColumns
-      If \Column > sourceWindow\visibleColumns
-        \Column - sourceWindow\visibleColumns
-        \ColumnsOffset + sourceWindow\visibleColumns
-      EndIf
-    EndIf
-    log_Print{"calculated new columnsoffset: " + Str$(\ColumnsOffset)}
-  EndIf
-
-  *newLine.sourceLine = PED_CreateNewSourceLine{""}
-  If *newLine 
-     PED_UpdateBlockPosY{\DisplayLineOffset + \DisplayLine}
-
-    If PED_AppendSourceLine{\CurrentSourceLine, *newLine}
-      ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
-      If PED_IncreaseDisplayLine{}
-       !PED_CursorOff
-       If tmpColumnsOffset <> \ColumnsOffset
-          log_Print{"reset columnsoffset, redraw source"}
-          PED_RedrawSource{}
-        Else
-          PED_ScrollVertical{#SCROLL_DOWN,\DisplayLine}
-          PED_PrintCurrentSourceLine{False}
-        EndIf
-        !PED_CursorOn
-        PED_UpdateStatusArea{#STATUS_SCROLLERS}
-      EndIf
-    Else
-      error{"Couldn't append sourceline!"}
-    EndIf
-  Else
-    Pop If
-    Goto memAlert_CloseSource
-  EndIf
-Return
-
-
-.insertreturn:
-  USEPATH ped\ptrCurrentSourceData
-
-  If \BlockEndY <> $ffffFFFF
-    ped\blockmarkRemovalMode = 2 : Gosub handle_blockmark
-  EndIf
-
-  sourceWindow\redrawFlag = True
-
-  ;-- SHIFT pressed as well ? 
-  If (\QualifierStore AND 3) <> 0
-    ;-- if pressed, do not split current line at cursor pos but insert a new line before the current line!
-    Gosub appendline
-  Else
-    ;log_Print{"split current line at column position, BlockEndY = " + Hex$(\BlockEndY)}
-    Gosub splitlines
-  EndIf
 Return
 
 .menu_top:
@@ -9041,7 +9490,7 @@ Return
     aslfr_SetRequesterTitle{0,!TRANS{"Select a filename to insert in source"},"",""}
     aslfr_SetPath{0,pedconfig\mainDir,"",""}
     If aslfr_Request{0,False,False,False,sourceWindow\pedScreen}
-      a$ = aslfr_GetNextFile{} : Gosub insertstring
+      a$ = aslfr_GetNextFile{} : PED_InsertStringToTextBuffer{a$}
     EndIf
 
   Case #MENU_OPENFILEUNDERCURSOR
@@ -9316,263 +9765,29 @@ Return
 
 .menu_copy:
   log_Print{"menu copy called."}
-  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF Then Return
+  PED_CopyBlock{}
 
-  Gosub getCountOfMarkedLines
-  strline$ = PED_Detokenize{*tempLine.sourceLine}
-  strlng.w = FLen(strline$)
-  If strlng = 0
-    log_Print{"no text to copy..."}
-  Else
-    log_Print{"first marked line: <" + strline$ + ">," + Str$(strlng)}
-    If getCountOfMarkedLines.l < 2
-      If strlng >= ped\ptrCurrentSourceData\BlockEndX + 1
-        strlng = ped\ptrCurrentSourceData\BlockEndX - ped\ptrCurrentSourceData\BlockStartX + 1
-      EndIf
-      strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX + 1, strlng)
-      clipboard_WriteText{&strline$}
-      log_Print{"moved " + Str$(strlng) + " to clipboard [" + strline$ + "]"}
-    Else
-      *iff.IFFHandle = AllocIFF_()
-      If *iff
-        *iff\iff_Stream = OpenClipboard_ (0)
-        If *iff\iff_Stream
-          InitIFFasClip_ *iff
-          If (OpenIFF_ (*iff, #IFFF_WRITE)=0)
-            If (PushChunk_ (*iff, #ID_FTXT, #ID_FORM, #IFFSIZE_UNKNOWN)=0)
-              If (PushChunk_ (*iff, 0, #ID_CHRS, #IFFSIZE_UNKNOWN)=0)
-                ; copy first line
-                If strlng <= (ped\ptrCurrentSourceData\BlockStartX + 1)
-                  strline$ = ""
-                Else
-                  strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX + 1)
-                EndIf
-                log_Print{Str$(FLen(strline$)) + " <" + strline$ + ">"}
-                strline$ + Chr$(10) : WriteChunkBytes_ *iff, &strline$, FLen(strline$)
- 
-                ; -- copy most lines
-                ;log_Print{"copy other lines"}
-                For si.w = 1 To getCountOfMarkedLines - 2
-                  If *tempLine\nextLine
-                    *tempLine = *tempLine\nextLine
-                    strline$ = PED_Detokenize{*tempLine}
-                    strlng.w = FLen(strline$)
-                    If ped\verticalCopyMode <> 0 AND (strlng > ped\ptrCurrentSourceData\BlockStartX + 1)
-                      strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX + 1)
-                    EndIf
-                    strline$ + Chr$(10) : WriteChunkBytes_ *iff,&strline$,FLen(strline$)
-                  Else
-                    error{"Error copying to clipboard: no next line!",#log_error}
-                  EndIf
-                Next si
-
-                ; copy last selected Line
-                ;log_Print{"copy last line"}
-                *tempLine = *tempLine\nextLine
-                If *tempLine
-                  strline$ = PED_Detokenize{*tempLine}
-                  strline$ = Left$(strline$,ped\ptrCurrentSourceData\BlockEndX+1)
-                  strlng = FLen(strline$)
-                  If ped\verticalCopyMode <> 0 AND (strlng > ped\ptrCurrentSourceData\BlockStartX + 1)
-                    strline$ = Mid$(strline$,1,ped\ptrCurrentSourceData\BlockEndX + 1)
-                  EndIf
-                  strline$ + Chr$(10) : WriteChunkBytes_ *iff, &strline$, FLen(strline$)
-                EndIf
-                PopChunk_ *iff
-              End If
-
-              PopChunk_ *iff
-            Else
-              error{"Could not write chunks."}
-            End If
-            CloseIFF_ *iff
-          Else
-            error{"Could not open IFF."}
-          End If
-          CloseClipboard_ *iff\iff_Stream
-        Else
-          error{"Could not open Clipboard."}
-        End If
-        FreeIFF_ *iff
-      Else
-        error{"Could not AllocIFF."}
-      End If
-    EndIf
-  EndIf
-
-  If ped\cutMode = 0
-    !PED_CursorOff
-    ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
-    PED_RedrawSource{}                                    ; clear block mark
-    ped\cutMode = 0
-  EndIf
-exit_copy:
-  log_Print{"copy finished."}
+  ; -- remove block selection
+  PED_DrawBlockmark{}
+  ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
 Return
 
-.getCountOfMarkedLines:
-  diff.l = 0
-  log_Print{"BlockStartX: " + Str$(ped\ptrCurrentSourceData\BlockStartX)}
-  log_Print{"BlockStartY: " + Str$(ped\ptrCurrentSourceData\BlockStartY)}
-  log_Print{"BlockEndX  : " + Str$(ped\ptrCurrentSourceData\BlockEndX)}
-  log_Print{"BlockEndY  : " + Str$(ped\ptrCurrentSourceData\BlockEndY)}
-  *tempLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  currLine.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset
-  log_Print{"currline   : " + Str$(currLine)}
-  If currLine < ped\ptrCurrentSourceData\BlockStartY
-    diff = ped\ptrCurrentSourceData\BlockStartY - currLine
-    For si.w = 1 To diff
-      If *tempLine\nextLine Then *tempLine = *tempLine\nextLine Else error{"Error copying to clipboard!"}
-    Next si
-  Else
-    If currLine > ped\ptrCurrentSourceData\BlockStartY
-      diff = currLine - ped\ptrCurrentSourceData\BlockStartY
-      For si.w = 1 To diff
-        If *tempLine\previousLine Then *tempLine = *tempLine\previousLine Else error{"Error copying to clipboard!"}
-      Next si
-    EndIf
-  EndIf
-  getCountOfMarkedLines.l = ped\ptrCurrentSourceData\BlockEndY - ped\ptrCurrentSourceData\BlockStartY + 1
-Return
 
 .menu_cut:
   log_Print{"menu cut called."}
-
-  If ped\ptrCurrentSourceData\BlockEndY = $FFFFffff
-    log_Print{"no block selected."}
-    Return
-  EndIf 
-
-  ped\cutMode = True : Gosub menu_copy
-  Gosub menu_kill
+  PED_CutBlock{}
 Return
-
 
 .menu_paste:
   log_Print{"menu paste called."}
-
-  ped\pasteMode = $FFFF
-  Gosub do_paste
-  ped\pasteMode = $0000
+  PED_PasteBlock{""}
 Return
-
 
 .menu_kill:
-USEPATH ped\ptrCurrentSourceData
-  log_Print{"menu Kill called."}
-  If \BlockEndY = $FFFFffff Then Return
-
-  killedRows.l = 0
-  Gosub getCountOfMarkedLines
-  log_Print{"marked Lines: " + Str$(getCountOfMarkedLines)}
-  strline$ = PED_Detokenize{*tempLine}
-  log_Print{"source of first blockline: <" + Left$(strline$, 30) + ">"}
-
-  If getCountOfMarkedLines = 1
-    If (\BlockEndX - \BlockStartX) < #MAX_Columns
-      strline$ = PED_Detokenize{*tempLine}
-      strline$ = Left$(strline$,\BlockStartX) + UnRight$(strline$,\BlockEndX + 1)
-      log_Print{"changing line to: <" + strline$ + ">"}
-      newline$ = PED_TokenizeText{strline$}
-      *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
-      *tempLine = PED_ReplaceSourceLine{*tempLine, *newLine}
-      If *tempLine = 0
-        log_Print{"Could not cut selected block."}
-      EndIf
-    Else
-      If PED_CutSourceLine{*tempLine} Then PED_DeleteSourceLine{*tempLine}
-    EndIf
-  Else
-    *tmpfirstLine.sourceLine = 0
-    For si.w = 1 To getCountOfMarkedLines
-      *nextLine.sourceLine = *tempLine\nextLine
-      ;-- check first line
-      If si = 1 AND (\BlockStartX > 0)
-        strline$ = PED_Detokenize{*tempLine}
-        strline$ = Left$(strline$,\BlockStartX)
-        log_Print{"changing first line to: <" + strline$ + ">"}
-        newline$ = PED_TokenizeText{strline$}
-        *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
-        *tempLine = PED_ReplaceSourceLine{*tempLine, *newLine}
-
-        ;-- store the line for joining with last fragment
-        *tmpfirstLine = *tempLine
-        firstline$ = strline$
-
-        Goto skip_killofline
-      EndIf    
-
-      ;-- check last line
-      If si = getCountOfMarkedLines AND (\BlockEndX + 1 < #MAX_Columns)
-        strline1$ = ""
-        If *tmpfirstLine <> 0 Then strline1$ = firstline$
-        strline2$ = PED_Detokenize{*tempLine}
-        strline$ = strline1$ + UnRight$(strline2$,\BlockEndX + 1)
-
-        newline$ = PED_TokenizeText{strline$}
-        *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
-        If *tmpfirstLine <> 0
-          log_Print{"joining first and last line to: <" + strline$ + ">"}
-          *tmpfirstLine = PED_ReplaceSourceLine{*tmpfirstLine, *newLine}
-          If *tmpfirstLine = 0
-            log_Print{"Could not cut selected block."}
-          EndIf          
-          killedRows - 1 ; we kill one line less in this case
-        Else
-          log_Print{"changing last line to: " + strline$}
-          *tempLine = PED_ReplaceSourceLine{*tempLine, *newLine}
-          If *tempLine = 0
-            log_Print{"Could not cut selected block."}
-          EndIf
-          Goto skip_killofline
-        EndIf
-      EndIf
-
-      ;-- remove the sourcelines
-      If *tempLine
-        strline$ = PED_Detokenize{*tempLine}
-        log_Print{Str$(si) + " deleting " + Left$(strline$, 20)}
-        If PED_CutSourceLine{*tempLine} Then PED_DeleteSourceLine{*tempLine}
-        killedRows + 1 
-        skip_killofline: 
-      Else
-        log_Print{"no linepointer to delete!", #log_error}
-      EndIf
-      *tempLine = *nextLine
-    Next si
-    \CurrentSourceLine = *tempLine
-    \SourceChanged = $FFFF
-  EndIf 
-
-  ;-- remove block selection
-  PED_DrawBlockmark{}
-  !PED_ResetBlockflag
-
-  ;-- adjust the display
-  \Column = \BlockStartX
-  ;-- check if we have to move the DisplayLineOffset
-  If \DisplayLineOffset + \DisplayLine > \TotalLines
-    \TotalLines - 1
-    \DisplayLineOffset = \TotalLines
-    \DisplayLine = 0
-  Else
-    If (\DisplayLineOffset + \DisplayLine) > \BlockStartY AND (\DisplayLineOffset + \DisplayLine) > \BlockEndY
-      log_Print{"move cursor " + Str$(killedRows) + " lines up, current displayline: " + Str$(\DisplayLine)}
-      If \DisplayLine - killedRows < 0
-        \DisplayLineOffset - killedRows
-        If \DisplayLineOffset < 0
-          \DisplayLine + \DisplayLineOffset
-          \DisplayLineOffset = 0
-        EndIf
-      Else  
-        \DisplayLine - killedRows
-      EndIf
-    EndIf
-  EndIf
-  PED_SetCurrentSourceLine{}
-  PED_RedrawSource{}    
-
+  log_Print{"menu kill called."}
+  PED_KillBlock{}
 Return
+
 
 .menu_saveblockas:
   If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
@@ -9584,11 +9799,11 @@ Return
     *write_fh.l = Open_(&blockfn$, #HUNK_RELOC_8__MODE_NEWFILE)
     If *write_fh <> 0
       Gosub set_pointer_busy
-      Gosub getCountOfMarkedLines
+      *tempLine.sourceLine = PED_GetFirstBlockLine{}
       strline$ = PED_Detokenize{*tempLine}
       strlng.w = FLen(strline$)
 
-      If getCountOfMarkedLines.l < 2
+      If PED_GetCountOfMarkedLines{} < 2
         If strlng >= ped\ptrCurrentSourceData\BlockEndX
           strlng = ped\ptrCurrentSourceData\BlockEndX - ped\ptrCurrentSourceData\BlockStartX + 2
         EndIf
@@ -9609,7 +9824,7 @@ Return
           Write_ *write_fh, &strline$, Len(strline$)
 
           ;-- copy most lines
-          For si.w = 1 To getCountOfMarkedLines - 2
+          For si.w = 1 To PED_GetCountOfMarkedLines{} - 2
             If *tempLine\nextLine
               *tempLine = *tempLine\nextLine
               strline$ = PED_Detokenize{*tempLine}
@@ -9651,120 +9866,10 @@ Return
 .menu_includeblock:
   log_Print{"includeblock"}
 
-  includeblockfile$ = PED_RequestFile{"","","Name of block to load","(#?.info)", False}
-  If includeblockfile$ <> ""
-    Gosub do_paste
+  includeblockfile.s = PED_RequestFile{"","","Name of block to load","(#?.info)", False}
+  If includeblockfile <> ""
+    PED_PasteBlock{includeblockfile}
   EndIf
-Return
-
-
-.do_paste:
-  log_Print{"pastemode " + Hexw$(ped\pasteMode)}
-
-  If ped\pasteMode
-    ; clipboard mode
-    log_Print{"reading from clipboard"}
-    If NOT PED_ReadClipboard{}
-      log_Print{"clipboard is empty"}
-      Return
-    EndIf
-  Else
-    log_Print{"reading from file <" + includeblockfile$ + ">"}
-    ;-- includeblock mode
-    ped\sourceFileHandle = PED_OpenFile{includeblockfile$,#HUNK_RELOC_16__MODE_OLDFILE,False}
-    If NOT PED_ReadFileCache{}
-      PED_CloseFile{ped\sourceFileHandle}
-      Return
-    EndIf
-  EndIf
-
-  ped\labelListChanged = True
-
-  lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-  actualColumn.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
-
-  ; -- get first part of current line
-  ped\inString = 0
-  beginString.s = ""
-  For p.w = 0 To actualColumn - 1
-    currentbyte.b = Peek.b(lineaddr + p)
-    If currentbyte = $22 Then ped\inString = NOT ped\inString
-    If NOT ped\inString Then currentbyte = currentbyte BitClr 7
-    beginString + Chr$(currentbyte)
-  Next p
-
-  ;-- get rest of current line
-  restString.s = ""
-  For p.w = actualColumn To #MAX_Columns-1
-    currentbyte.b = Peek.b(lineaddr + p)
-    restString + Chr$(currentbyte)
-  Next p
-  restString = StripTrail$(restString,@" ")
-
-  ;-- get first line and join it with currentline
-  beginString = beginString + PED_ReadNextLine{}
-
-  ;-- check labelIdentifier, update labellist ?
-  If PED_CheckLabelRelevance{beginString} Then ped\labelListChanged = True
-
-  ;-- replace line with current one
-  newline$ = PED_TokenizeText{beginString}
-  *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
-  PED_ReplaceCurrentSourceLine{*newLine}
-
-  storeCurrentSourceLine.l = ped\ptrCurrentSourceData\CurrentSourceLine
-
-  ;-- import all further lines
-  morelines.b = False
-  pasteString.s = ""
-  Repeat
-    tmpLine = PED_ReadNextLine{}
-    tmpLen = FLen(tmpLine)
-    If tmpLine <> "NoCOntenTwasDelivered"
-      morelines = True
-      If ped\verticalCopyMode
-        If actualColumn > #MAX_Columns-10 Then actualColumn = #MAX_Columns-10
-        pasteString = SPACE$(actualColumn)
-        pasteString = pasteString + tmpLine
-      Else
-        pasteString = tmpLine
-      EndIf
-      newline$ = PED_TokenizeText{pasteString}
-      *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
-
-      PED_AppendSourceLine{ped\ptrCurrentSourceData\CurrentSourceLine, *newLine}
-      ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
-
-      ;ped\ptrCurrentSourceData\DisplayLine + 1                           ;-> increase displayline if cursor should walk with inserted lines
-    Else
-      tmpLen = 0
-    EndIf
-  Until tmpLen = 0 AND (readcache\moreBytes = False)
-
-  ;-- add the rest to an new line or append to pasted text
-  If FLen(restString) > 0
-    If morelines
-      newline$ = PED_TokenizeText{restString}
-      *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
-      PED_AppendSourceLine{ped\ptrCurrentSourceData\CurrentSourceLine,*newLine}
-    Else
-      restString = beginString + pasteString + restString
-      newline$ = PED_TokenizeText{restString}
-      *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
-      PED_ReplaceCurrentSourceLine{*newLine}
-      storeCurrentSourceLine = *newLine
-    EndIf
-  ;Else
-  ;  log_Print{"no restString: " + restString}
-  EndIf
-  ped\ptrCurrentSourceData\CurrentSourceLine = storeCurrentSourceLine
-
-  If ped\pasteMode = 0 Then PED_CloseFile{ped\sourceFileHandle}
-  ped\inString = False
-
-  !PED_ResetBlockflag
-  PED_RedrawSource{}
-  PED_UpdateStatusArea{}
 Return
 
 
@@ -9807,7 +9912,7 @@ USEPATH ped\ptrCurrentSourceData
     Return
   EndIf
 
-  !PED_CursorOff
+  PED_CursorOff{}
 
   ;-- if a blockmark is set, clear the block
   If \BlockEndY <> $FFFFffff
@@ -9881,7 +9986,7 @@ USEPATH ped\ptrCurrentSourceData
 
   Gosub mouseclick_in_source
 
-  !PED_CursorOn
+  PED_CursorOn{}
 Return
 
 .mouse_scrollup:
@@ -11063,7 +11168,7 @@ Return
 
   log_Print{"current textbuffer: " + Peeks$(ped\ptrTextbuffer + \TextBufferOffset,20)}
   !PED_storeCursorPosition 
-  storeCurrentSourceLine = \CurrentSourceLine
+  storeCurrentSourceLine.l = \CurrentSourceLine
 
   ;tmps.s = PED_Detokenize{\CurrentSourceLine}
   ;log_Print{Str$(\DisplayLine+\DisplayLineOffset + 1) +" >>" + tmps}
@@ -11865,34 +11970,6 @@ Return
   ;log_Print{"clear source window done."}
 Return
 
-
-.insertchar:
-  USEPATH ped\ptrCurrentSourceData
-  \KeyBeforeReturn = last_vankey
-
-  If \BlockEndY <> $ffffFFFF
-    ped\blockmarkRemovalMode = 2 : Gosub handle_blockmark
-  EndIf
-
-
-  ;-- move everything right from cursor 1 to right
-  lineaddr.l = ped\ptrTextbuffer + \TextBufferOffset
-  actualColumn.w = \Column + \ColumnsOffset
-  tmpColumn.w = #MAX_Columns - 1
-  While tmpColumn > actualColumn
-    tmpColumn - 1
-    Poke.b lineaddr + tmpColumn, Peek.b(lineaddr + tmpColumn - 1)
-  Wend
-
-  !PED_CursorOff
-  PED_ScrollHorizontal{#SCROLL_RIGHT, #SCROLL_CURRENT_LINE}
-  PED_PrintChar{\KeyBeforeReturn}
-  !PED_CursorOn
-
-  Gosub moveCursorRight
-Return
-
-
 .moveCursorToBeginOfWord:
   ;-- get lineaddress in textbuffer (detokenized text!)
   lineaddr = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
@@ -11978,7 +12055,7 @@ Return
 
     If ped\ptrCurrentSourceData\Column > 0
 
-      If WZ_IsOpen{"WIN_POPUP"} Then Gosub close_popupwindow
+      Gosub close_popupwindow
 
       lineaddr = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
       strline$ = Peek.s(lineaddr)
@@ -12040,7 +12117,7 @@ Return
              PED_ShowMessage{a$ + " " + PED_GetTokenHelp{a$} }
            EndIf
 
-           a$ = UnRight$(a$,FLen(poptok$)) : Gosub insertstring
+           a$ = UnRight$(a$,FLen(poptok$)) : PED_InsertStringToTextBuffer{a$}
 
            Gosub close_popupwindow
            Gosub activatesourcewindow
@@ -12271,7 +12348,7 @@ Return
 
 .updateSourceLine:        ; CursorXTarget: new Cursorposition
   log_Print{"update sourceline and moving cursor to x:" + Str$(CursorXTarget)}
-  !PED_CursorOff
+  PED_CursorOff{}
 
   ped\ptrCurrentSourceData\StoreColumn = ped\ptrCurrentSourceData\Column
   lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset 
@@ -12284,7 +12361,7 @@ Return
 
   newColumn.w = CursorXTarget : Gosub moveCursorToX
 
-  !PED_CursorOn
+  PED_CursorOn{}
 Return
 
 
@@ -12295,11 +12372,11 @@ Return
   ped\ptrCurrentSourceData\KeyBeforeReturn = last_vankey
 
   ; -- scroll to left by 1
-  !PED_CursorOff
+  PED_CursorOff{}
   PED_ScrollHorizontal{#SCROLL_LEFT,  #SCROLL_CURRENT_LINE}
   PED_UpdateStatusArea{#STATUS_SCROLLERS|#STATUS_CURSOR}
   Gosub deleteCharFromTextbuffer
-  !PED_CursorOn
+  PED_CursorOn{}
 
   ; -- check if shift is pressed as well
   If ped\ptrCurrentSourceData\Column > 0 OR ped\ptrCurrentSourceData\ColumnsOffset > 0
@@ -12322,7 +12399,7 @@ Return
 Return
 
 .moveCursorToX:     ; newColumn: new X-Position
-  !PED_CursorOff
+  PED_CursorOff{}
   ;log_Print{"move cursor to column: "  + Str$(newColumn.w)}
   oldColumnsOffset.w = ped\ptrCurrentSourceData\ColumnsOffset
 
@@ -12352,56 +12429,9 @@ Return
   If ped\ptrCurrentSourceData\ColumnsOffset <> oldColumnsOffset
     PED_RedrawTextbuffer{#FULL_REDRAW}
   EndIf
-  !PED_CursorOn
+  PED_CursorOn{}
 
   PED_UpdateStatusArea{#STATUS_CURSOR|#STATUS_SCROLLERS}
-Return
-
-.moveCursorLeft:
-  !PED_CursorOff
-  If ped\ptrCurrentSourceData\Column > \boundLinesX
-    ped\ptrCurrentSourceData\Column - 1
-  Else
-    If ped\ptrCurrentSourceData\ColumnsOffset > 1
-      ped\ptrCurrentSourceData\ColumnsOffset - \scrollSize
-      PED_ScrollHorizontal{#SCROLL_RIGHT}
-      ;ped\ptrCurrentSourceData\Column + 1
-    Else
-      If ped\ptrCurrentSourceData\ColumnsOffset = 1
-        ped\ptrCurrentSourceData\ColumnsOffset = 0
-        PED_ScrollHorizontal{#SCROLL_RIGHT}
-      Else
-        If ped\ptrCurrentSourceData\Column > 0
-          ped\ptrCurrentSourceData\Column - 1
-        EndIf
-      EndIf
-    EndIf
-  EndIf
-  PED_UpdateStatusArea{#STATUS_SCROLLERS|#STATUS_CURSOR}
-  exit_cursorleft:
-  !PED_CursorOn
-Return
-
-.moveCursorRight:
-  !PED_CursorOff
-  If ped\ptrCurrentSourceData\ColumnsOffset + \visibleColumns => #MAX_Columns
-    If ped\ptrCurrentSourceData\Column < \visibleColumns-1
-      ped\ptrCurrentSourceData\Column + 1
-    EndIf
-  Else
-    If \boundLinesX <= ped\ptrCurrentSourceData\Column
-      If ped\ptrCurrentSourceData\Column > \visibleColumns - \boundLinesX
-        ped\ptrCurrentSourceData\ColumnsOffset + \scrollSize
-        PED_ScrollHorizontal{#SCROLL_LEFT}
-        ;ped\ptrCurrentSourceData\Column - 1
-        Goto exit_cursorright
-      EndIf
-    EndIf
-    ped\ptrCurrentSourceData\Column + 1
-  EndIf
-  PED_UpdateStatusArea{#STATUS_SCROLLERS|#STATUS_CURSOR}
-  exit_cursorright:
-  !PED_CursorOn
 Return
 
 
@@ -12419,12 +12449,12 @@ Return
 Return
 
 .resize_sourcewindow:
-  !PED_CursorOff
+  PED_CursorOff{}
   Gosub calc_SourceWindowDimensions
   Gosub allocate_textbuffer
   Gosub clear_sourcewindow
   PED_RedrawSource{}
-  !PED_CursorOn
+  PED_CursorOn{}
 Return
 
 
@@ -12432,7 +12462,9 @@ Return
   pedEventClass.l = PED_GetIntuiMessage{True}
 
   ;If (pedMessage\_Class <> #IDCMP_INTUITICKS) AND (pedMessage\_Class <> #IDCMP_MOUSEMOVE)
-  ;  log_Print{"eventmessage: " + Hex$(pedMessage\_Class) + ", " + Hexw$(pedMessage\_Qualifier) + ", " + Hexw$(pedMessage\_Code)}
+  ;  If pedMessage\_Class = #IDCMP_RAWKEY Then log_Print{"RAWKEY"}
+  ;  If pedMessage\_Class = #IDCMP_VANILLAKEY Then log_Print{"VANILLAKEY"}
+  ;  log_Print{"eventmessage: " + Hex$(pedMessage\_Class) + ", quali " + Hexw$(pedMessage\_Qualifier) + ", code " + Hexw$(pedMessage\_Code)}
   ;  log_Print{"window: " + Str$(pedMessage\_Window) + "  MouseX:"  + Str$(pedMessage\_MouseX)}
   ;End If
 
@@ -12521,40 +12553,34 @@ Return
 
   Case #IDCMP_ACTIVEWINDOW
     Use Window 0
-    !PED_CursorOn
+    PED_CursorOn{}
 
   Case #IDCMP_INACTIVEWINDOW
-    !PED_CursorOff
+    PED_CursorOff{}
 
   Case #IDCMP_GADGETDOWN
     Gosub handle_event_gadget
 
   Case #IDCMP_GADGETUP
-    *gadget.Gadget = pedMessage\_IAddress
+    ;*gadget.Gadget = pedMessage\_IAddress
     ;log_Print{"GADGETUP"}
     ;log_Print{"GadgetID " + Str$(*gadget\GadgetID) + ", Type " + Hex$(*gadget\GadgetType) + ", Activation " + Hex$(*gadget\Activation)}
     ;log_Print{"byte type " + Str$(*gadget\GadgetType AND $00FF)}
 
   Case #IDCMP_MENUVERIFY
-    ; do nothing
+    ;-- do nothing atm
 
   Case #IDCMP_CLOSEWINDOW
-    log_Print{"event CLOSEWINDOW"}
     _menuitem = #MENU_CLOSE : Gosub event_menu
 
   Case #IDCMP_MOUSEBUTTONS
     Gosub handle_event_mousebuttons
 
   Case #IDCMP_RAWKEY
-    Gosub handle_event_rawkey
-    ; some events are converted to vanilla events, handle them now:
-    If last_vankey <> 0 Then Gosub handle_event_vanillakey
-    ;exit_eventloop = True
+    Gosub convert_to_vanillakeys
 
   Case #IDCMP_VANILLAKEY
-    last_vankey = 0
     Gosub handle_event_vanillakey
-    ;exit_eventloop = True
 
   Case #IDCMP_EXTENDEDMOUSE
     Gosub handle_event_extendedmouse
@@ -12729,7 +12755,7 @@ Return
         EndIf
         PED_GetIntuiMessage{False}
       Until exit_gadgetloop = True
-      !PED_CursorOn
+      PED_CursorOn{}
 
     Case #GID_YPROP
       If ped\ptrCurrentSourceData\DisplayLineOffset < ped\ptrCurrentSourceData\TotalLines
@@ -12767,7 +12793,7 @@ Return
           PED_GetIntuiMessage{False}
         Until exit_gadgetloop = True
         ;log_Print{"exit proploop"}
-        !PED_CursorOn
+        PED_CursorOn{}
       EndIf
     End Select
 Return
@@ -12821,20 +12847,69 @@ Return
   End Select
 Return
 
-.handle_event_rawkey:
-  mqualifier.w = pedMessage\_Qualifier 
-  ;-- convert right qualifiers to left qualifiers
-  If (mqualifier AND #IEQUALIFIER_CAPSLOCK) Then mqualifier = mqualifier & (NOT #IEQUALIFIER_CAPSLOCK)
-  If (mqualifier AND #IEQUALIFIER_RSHIFT) Then mqualifier = (mqualifier & (NOT #IEQUALIFIER_RSHIFT)) | #IEQUALIFIER_LSHIFT
-  If (mqualifier AND #IEQUALIFIER_RALT) Then mqualifier = (mqualifier & (NOT #IEQUALIFIER_RALT)) | #IEQUALIFIER_LALT
-
-  ped\ptrCurrentSourceData\QualifierStore = mqualifier
-  last_vankey = 0
-
-  log_Print{"========= rawkey    code: "+ Hexw$(pedMessage\_Code) + " / quali: " + Hex$(mqualifier)}
+.convert_to_vanillakeys:
+  ;log_Print{"========= rawkey    code: "+ Hexw$(pedMessage\_Code) + " / quali: " + Hex$(mqualifier)}
   
+  Select pedMessage\_Code
   ;-- check for Mousewheel Rawkey events from newmouse definition
-  Select last_rawkey
+  Case #NM_WHEEL_DOWN
+    last_vankey = #NM_WHEEL_DOWN
+
+  Case #NM_WHEEL_UP
+    last_vankey = #NM_WHEEL_UP
+
+  ;-- HELP / TAB / RETURN 
+  Case #RAWKEY_HELP
+    last_vankey = #VANILLAKEY_HELP
+  
+  Case #RAWKEY_TAB
+    last_vankey = #VANILLAKEY_TAB
+  
+  Case #RAWKEY_RETURN
+    last_vankey = #VANILLAKEY_RETURN
+
+  Default
+  ;-- check for F-Keys / CURSOR
+    If (pedMessage\_Code => #RAWKEY_F1) AND (pedMessage\_Code <= #RAWKEY_F10)
+      last_vankey = pedMessage\_Code + $31 ; convert F-KEYs to vanillakey
+    Else If (pedMessage\_Code => #RAWKEY_UP) AND (pedMessage\_Code <= #RAWKEY_LEFT)
+        last_vankey = pedMessage\_Code - $30
+      EndIf
+    EndIf
+  End Select
+
+  If last_vankey <> 0 Then Gosub handle_event_vanillakey
+Return
+
+.handle_event_vanillakey:
+  mqualifier.w  = pedMessage\_Qualifier 
+  ;-- remove some unnecessary qualifiers
+  If (mqualifier AND #IEQUALIFIER_RELATIVEMOUSE) Then mqualifier = mqualifier AND (NOT #IEQUALIFIER_RELATIVEMOUSE)
+  If (mqualifier AND #IEQUALIFIER_CAPSLOCK) Then mqualifier = mqualifier & (NOT #IEQUALIFIER_CAPSLOCK)
+  ;-- convert right qualifiers to left qualifiers
+  If (mqualifier AND #IEQUALIFIER_RSHIFT) Then mqualifier = (mqualifier & (NOT #IEQUALIFIER_RSHIFT)) | #IEQUALIFIER_LSHIFT
+  If (mqualifier AND #IEQUALIFIER_RALT) Then mqualifier = (mqualifier & (NOT #IEQUALIFIER_RALT)) | #IEQUALIFIER_LALT  
+  ped\ptrCurrentSourceData\QualifierStore = mqualifier
+
+  If last_vankey = 0 Then last_vankey = pedMessage\_Code
+  ;log_Print{"event vanillakey: " + Hexw$(last_vankey) + " qualifier: " + Hexw$(mqualifier)}
+
+  ;-- check key first
+  Select last_vankey
+
+  Case #VANILLAKEY_RETURN
+    ;Gosub immediate_syntaxhelp
+    exit_eventloop.b = True
+    Pop Select: Return
+
+  Case #VANILLAKEY_UP       ; ---------------------------------------------------------------- Cursor Up
+    exit_eventloop.b = True
+    Pop Select : Return
+
+  Case #VANILLAKEY_DOWN    ; ------------------------------------------------------------------------------------- Cursor Down
+    exit_eventloop.b = True
+    Pop Select: Return
+
   Case #NM_WHEEL_DOWN
     log_Print{"wheel down"}
     Gosub wheel_down
@@ -12842,45 +12917,16 @@ Return
   Case #NM_WHEEL_UP
     log_Print{"wheel up"}
     Gosub wheel_up
-  End Select
-
-  ;-- check for F-Keys / HELP / RETURN / CURSOR
-  If pedMessage\_Code = #RAWKEY_HELP Then last_vankey = #VANILLAKEY_HELP
-  If pedMessage\_Code = #RAWKEY_TAB Then last_vankey = #VANILLAKEY_TAB
-  If pedMessage\_Code = #RAWKEY_RETURN Then last_vankey = #VANILLAKEY_RETURN
-  If (pedMessage\_Code => #RAWKEY_F1) AND (pedMessage\_Code <= #RAWKEY_F10) Then last_vankey = pedMessage\_Code + $31 ; convert F-KEYs to vanillakey
-  If (pedMessage\_Code => #RAWKEY_UP) AND (pedMessage\_Code <= #RAWKEY_LEFT) Then last_vankey = pedMessage\_Code - $30
-Return
-
-.handle_event_vanillakey:
-  mqualifier.w  = pedMessage\_Qualifier 
-  If (mqualifier AND #IEQUALIFIER_RELATIVEMOUSE) Then mqualifier = mqualifier AND (NOT #IEQUALIFIER_RELATIVEMOUSE)
-  If (mqualifier AND #IEQUALIFIER_CAPSLOCK) Then mqualifier = mqualifier AND (NOT #IEQUALIFIER_CAPSLOCK)
-  
-  ped\ptrCurrentSourceData\QualifierStore = mqualifier
-  If last_vankey = 0 Then last_vankey = pedMessage\_Code
-  ;log_Print{"event vanillakey: " + Hexw$(last_vankey) + " qualifier: " + Hexw$(mqualifier)}
-
-  ;-- check key first
-  Select last_vankey
-  Case #VANILLAKEY_RETURN
-    Gosub immediate_syntaxhelp
-    ;Gosub do_VANILLAKEY_RETURN
-    exit_eventloop.b = True
-    Pop Select: Return
 
   Case #VANILLAKEY_HELP
-    log_Print{"HELP"}
     Select mqualifier
     Case #IEQUALIFIER_CONTROL
-      log_Print{" + CONTROL"}
       Gosub open_helpdiag
 
     Case #IEQUALIFIER_LSHIFT
       Gosub startguide
 
     Default
-      log_Print{"default"}
       Gosub immediate_syntaxhelp
     End Select
     Pop Select: Return
@@ -12892,29 +12938,17 @@ Return
 
   Case #VANILLAKEY_DELETE
     Gosub do_VANILLAKEY_DELETE
-    ;exit_eventloop = True
     Pop Select : Return
 
   Case #VANILLAKEY_BACKSPACE
     Gosub do_VANILLAKEY_BACKSPACE
-    ;exit_eventloop.b = True
     Pop Select : Return
 
   Case #VANILLAKEY_TAB
     Gosub do_VANILLAKEY_TAB
-    ;exit_eventloop.b = True
     Pop Select : Return
-
-  Case #VANILLAKEY_UP       ; ---------------------------------------------------------------- Cursor Up
-    exit_eventloop.b = True
-    Pop Select : Return
-
-  Case #VANILLAKEY_DOWN    ; ------------------------------------------------------------------------------------- Cursor Down
-    exit_eventloop.b = True
-    Pop Select: Return
 
   Case #VANILLAKEY_LEFT         ; -------------------------------------------------------------- Cursor Left
-
     Select mqualifier
     Case #IEQUALIFIER_LSHIFT + #IEQUALIFIER_CONTROL    ; $800A: select block right
       log_Print{"shift + control"}
@@ -12945,7 +12979,7 @@ Return
     Case #IEQUALIFIER_CONTROL                   ; ctrl
       log_Print{"control"}
       If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-        !PED_CursorOff
+        PED_CursorOff{}
         Gosub menu_blockuntab
       Else
         Gosub moveCursorToBeginOfWord        
@@ -12954,7 +12988,7 @@ Return
     Default
       ;log_Print{"no qualifier key"}
       ped\blockmarkRemovalMode = 1
-      Gosub moveCursorLeft
+      PED_MoveCursorLeft{}
     End Select
     PED_UpdateStatusArea{#STATUS_SCROLLERS}
 
@@ -12980,7 +13014,7 @@ Return
     Case #IEQUALIFIER_CONTROL        ; tab the marked block
       log_Print{"control"}
       If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-        !PED_CursorOff
+        PED_CursorOff{}
         Gosub menu_blocktab
       Else
         Gosub moveCursorToEndOfWord
@@ -12988,7 +13022,7 @@ Return
 
     Default
       ped\blockmarkRemovalMode = 1
-      Gosub moveCursorRight
+      PED_MoveCursorRight{}
 
     End Select
 
@@ -13007,30 +13041,29 @@ Return
       PED_RedrawSource{}
 
     Case $0e                        ; ctrl-n
-      a$ = "newtype ." : Gosub insertstring
-      Gosub insertreturn
-      Gosub insertreturn
-      a$ = "end newtype " : Gosub insertstring
+      PED_InsertStringToTextBuffer{"newtype ."}
+      PED_InsertReturn{2}
+      PED_InsertStringToTextBuffer{"end newtype "}
+      PED_InsertReturn{}
 
     Case $06                        ; ctrl-f
-      a$ = "function.l { }" : Gosub insertstring
-      Gosub insertreturn
-      Gosub insertreturn
-      a$ = "function return 0" : Gosub insertstring
-      Gosub insertreturn
-      a$ = "end function " : Gosub insertstring
-
+      PED_InsertStringToTextBuffer{"function.l { }"}
+      PED_InsertReturn{2}
+      PED_InsertStringToTextBuffer{"function return 0"}
+      PED_InsertReturn{}
+      PED_InsertStringToTextBuffer{"end function "}
+      PED_InsertReturn{}
+    
     Case $13                        ; ctrl-s
-      a$ = "statement { }" : Gosub insertstring
-      Gosub insertreturn
-      Gosub insertreturn
-      a$ = "end statement " : Gosub insertstring
+      PED_InsertStringToTextBuffer{"statement { }"}
+      PED_InsertReturn{2}
+      PED_InsertStringToTextBuffer{"end statement "}
+      PED_InsertReturn{}
 
     Case $05                        ; ctrl-e
-      a$ = "end if "
-      !PED_CursorOff
-      Gosub insertstring
-
+      PED_InsertStringToTextBuffer{"end if "}
+      PED_InsertReturn{}
+    
     Case $03                        ; ctrl-c
       ped\verticalCopyMode = True    ; set it for column copy
       Gosub menu_copy                         ; do normal copy
@@ -13138,22 +13171,15 @@ Return
 
   Default
     ;log_Print{"no special handling of vanillakey: " + Hexw$(last_vankey) + " *** INSERT CHAR*"}
-    Gosub insertchar
-    ;exit_loop_class = last_vankey
-    ;exit_eventloop.b = True
+    PED_InsertCharToTextBuffer{last_vankey}
   End Select
 Return
 
-.do_VANILLAKEY_RETURN:
-  log_Print{"RETURN"}
-  Gosub close_popupwindow
-  Gosub insertreturn
-Return
 
 .do_VANILLAKEY_DELETE
   log_Print{"DELETE"}
   If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-    ped\blockmarkRemovalMode = 2 : Gosub handle_blockmark
+    ped\blockmarkRemovalMode = 2 : PED_HandleBlockmark{}
     Return
   EndIf
 
@@ -13177,32 +13203,33 @@ Return
 
 .do_VANILLAKEY_BACKSPACE:
   log_Print{"BACKSPACE"}
+  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
+    ped\blockmarkRemovalMode = 2 : PED_HandleBlockmark{}
+    Return
+  EndIf
+  
   If ped\ptrCurrentSourceData\Column > 0 OR ped\ptrCurrentSourceData\ColumnsOffset > 0
-    Gosub moveCursorLeft
+    PED_MoveCursorLeft{}
     delete_mode.l = #VANILLAKEY_BACKSPACE
     Gosub deletekey
     delete_mode = 0
   Else
-      If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-        ped\blockmarkRemovalMode = 2 : Gosub handle_blockmark
-      Else
-        If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine > 0
-          log_Print{"backspace at line start, so join lines!"}
+    If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine > 0
+      log_Print{"backspace at line start, so join lines!"}
 
-          Gosub storeline
-          Gosub movecursorlineup
+      Gosub storeline
+      PED_MoveCursorUp{}
 
-          ;-- find last character in previous line to set new cursor column
-          lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-          tempOffset.w = #MAX_Columns - 1
-          While Peek.b(lineaddr + tempOffset) = $20 AND tempOffset > -1
-            tempOffset - 1
-          Wend
-          ped\ptrCurrentSourceData\Column = tempOffset + 1
+      ;-- find last character in previous line to set new cursor column
+      lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
+      tempOffset.w = #MAX_Columns - 1
+      While Peek.b(lineaddr + tempOffset) = $20 AND tempOffset > -1
+        tempOffset - 1
+      Wend
+      ped\ptrCurrentSourceData\Column = tempOffset + 1
 
-          Gosub menu_joinlines
-        EndIf
-      EndIf
+      Gosub menu_joinlines
+    EndIf
   EndIf
 Return
 
@@ -13210,7 +13237,7 @@ Return
   log_Print{"TAB " + Hexw$(last_vankey)}
 
   If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
-    ped\blockmarkRemovalMode = 2 : Gosub handle_blockmark
+    ped\blockmarkRemovalMode = 2 : PED_HandleBlockmark{}
   EndIf
 
   ped\ptrCurrentSourceData\KeyBeforeReturn = last_vankey
@@ -13288,7 +13315,7 @@ Return
       Next cupos
 
       ;-- scroll tabSize to right and fill with new space characters
-      !PED_CursorOff
+      PED_CursorOff{}
       ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
       For cupos.w = 0 To moveCount - 1
         Poke.b lineaddr + actualColumn + cupos,$20 ; insert space character
@@ -13298,7 +13325,7 @@ Return
 
       ;-- set new cursor position
       newColumn.w = ped\ptrCurrentSourceData\Column + moveCount : Gosub moveCursorToX
-      !PED_CursorOn
+      PED_CursorOn{}
     Else
       ; move characters to left an fill with empty spaces
       For aaa.b = 1 To Abs(moveCount)
@@ -13321,15 +13348,13 @@ Return
 
 
 .do_VANILLAKEY_UP:
-    Gosub close_popupwindow
-
     ; remove REPEAT qualifier
-    mqualifier = mqualifier & (NOT #IEQUALIFIER_REPEAT); remove "pressing" flag
+    mqualifier = mqualifier & (NOT #IEQUALIFIER_REPEAT)
 
     Select mqualifier
-    Case 0  ;#IEQUALIFIER_RELATIVEMOUSE   ; $8000 (just the key)
+    Case 0                     ; $8000 (cursor up)
       ped\blockmarkRemovalMode = 1
-      Gosub movecursorlineup
+      PED_MoveCursorUp{}
 
     Case #IEQUALIFIER_LSHIFT   ; $8001
       log_Print{"shift"}
@@ -13354,25 +13379,20 @@ Return
       log_Print{"shift + alt"}
       Gosub selectblockup
 
-    ;Case $0000                         ; cursor_up for freewheel
-
     Default
-      log_Print{"default"}
-      Gosub movecursorlineup
+      log_Print{"unknown shortcut at vanilla down"}
     End Select
 Return
 
 .do_VANILLAKEY_DOWN:
-    Gosub close_popupwindow
-
-    ; remove REPEAT qualifier
+    ;-- remove REPEAT qualifier
     mqualifier = mqualifier & (NOT #IEQUALIFIER_REPEAT); remove "pressing" flag
 
     Select mqualifier
-    Case 0  ;#IEQUALIFIER_RELATIVEMOUSE                         ; $8000: one line down
+    Case 0                     ; $8000: cursor down
       ped\blockmarkRemovalMode = 1
-      Gosub movecursorlinedown
-
+      PED_MoveCursorDown{}
+      
     Case #IEQUALIFIER_LSHIFT   ; $8001: page down
       log_Print{"shift"}
       actualLine.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
@@ -13396,11 +13416,8 @@ Return
       log_Print{"shift + alt: selectblockdown"}
       Gosub selectblockdown
 
-    ;Case $0000                                      ; -- CURSOR DOWN FOR FREEWHEEL
-
     Default
-      log_Print{"default"}
-      Gosub movecursorlinedown
+      log_Print{"unknown shortcut at vanilla up"}
     End Select
 Return
 
@@ -14655,15 +14672,15 @@ Return
         Next
 
         Gosub activatesourcewindow
-        !PED_CursorOff
+        PED_CursorOff{}
         tmpColumn.w = ped\ptrCurrentSourceData\Column
         tmpColumnsOffset.w = ped\ptrCurrentSourceData\ColumnsOffset
 
-        Gosub insertstring
+        PED_InsertStringToTextBuffer{a$}
 
         ped\ptrCurrentSourceData\ColumnsOffset = tmpColumnsOffset
         ped\ptrCurrentSourceData\Column = tmpColumn
-        !PED_CursorOn
+        PED_CursorOn{}
 
       Case "diagclear"
         For i = 1 To 12
@@ -14905,17 +14922,19 @@ Return
   EndIf
 Return
 
-.close_contexthelp
+.close_contexthelp:
   If WZ_IsOpen{"WIN_CONTEXTHELP"}
     WZListRemove helpme.List
     WZCloseWindow WZID("WIN_CONTEXTHELP")
   EndIf
 Return
 
-.close_popupwindow
+.close_popupwindow:
   If pedconfig\intellisense
-    WZ_PopUpCloseNonmodal{}   ; move the code to the new include function  tomsmart1
-    popup_selected.l = 0
+    If WZ_IsOpen{"WIN_POPUP"}
+      WZ_PopUpCloseNonmodal{}   ; move the code to the new include function  tomsmart1
+      popup_selected.l = 0
+    EndIf
   EndIf
 Return
 
@@ -15192,7 +15211,7 @@ Return
           a$ = Trim$(bstr$)
           If a$ <> ""
             log_Print{"adding to code: " + a$}
-            Gosub insertstring
+            PED_InsertStringToTextBuffer{a$}
             Gosub activatesourcewindow
           EndIf
 
@@ -15327,28 +15346,11 @@ Return
       a$ = UnRight$(a$,Len(poptok$))
     EndIf
     ;log_Print{"inserting: " + a$}
-    Gosub insertstring
+    PED_InsertStringToTextBuffer{a$}
     PED_ShowMessage{a$ + " " + PED_GetIncludeHelp{a$} }    ; removed a$ test because it is not needed  tomsmart1
     Gosub close_popupwindow
   EndIf
   Gosub activatesourcewindow                                ; always active sourcewin if a popupwin event happend like mouse click or scroll  tomsmart1
-Return
-
-
-.insertstring:
-  ; --
-  ; -- check for a comment
-  i = SearchBegin(a$,Asc(";"),1)
-  If i Then a$ = Left$(a$,i-2) ;+" "
-
-  If a$ <> ""
-    For i = 1 To Len(a$)
-      last_vankey = Asc(Mid$(a$,i,1) )
-      If ped\ptrCurrentSourceData\Column < $7d      ;#MAX_Columns - 1
-        Gosub insertchar
-      EndIf
-    Next i
-  EndIf
 Return
 
 
@@ -15758,7 +15760,7 @@ Return
           If Instr(a$,"\",FLen(a$)-1)<>0 Then a$ = Left$(a$,FLen(a$)-1)
           If quicktype Then a$ = Mid$(typestr$,Instr (typestr$,"\")+1)
           If ped\definitionMode <> 1 Then a$ = Replace$(a$,"*","")
-          Gosub insertstring
+          PED_InsertStringToTextBuffer{a$}
           Gosub activatesourcewindow
 
         Case "string2"
@@ -15913,7 +15915,7 @@ Return
       Pop If
       Goto exit_PED_closeall
     EndIf
-    !PED_CursorOn
+    PED_CursorOn{}
   EndIf
 
   FlushEvents
@@ -16044,10 +16046,10 @@ Return
               PED_GotoLine{0,#LINE_START}
             EndIf
             Gosub storeline
-            !PED_CursorOff
+            PED_CursorOff{}
             Gosub menu_findnext
             PED_UpdateStatusArea{#STATUS_SCROLLERS}
-            !PED_CursorOn
+            PED_CursorOn{}
 
             ped\caseSensitive = casesens_backup          ; restore searchmode
 
@@ -16100,7 +16102,7 @@ Return
 .storeline:
   If ped\ptrCurrentSourceData\KeyBeforeReturn = 0 Then Return
 
-  !PED_CursorOff
+  PED_CursorOff{}
 
   ; -- remove part of the selected block if existing and the currentline is inside of the block
   ped\ptrCurrentSourceData\StateBlockmark = False
@@ -16136,7 +16138,7 @@ Return
     PED_DrawBlock{bmark}
   EndIf
 
-  !PED_CursorOn
+  PED_CursorOn{}
 
   ped\ptrCurrentSourceData\KeyBeforeReturn = 0
 Return
@@ -16229,13 +16231,13 @@ Return                                                                        ; 
 
               If pedMessage\_Qualifier AND #IEQUALIFIER_CONTROL
                 log_Print{"control: create exe"}
-                !PED_CursorOff
+                PED_CursorOff{}
                 _menuitem = #MENU_SAVECREATEEXE
                 Gosub call_compilermenuitem
               EndIf
               If pedMessage\_Qualifier AND #IEQUALIFIER_LALT
                 log_Print{"alt: compile & run"}
-                !PED_CursorOff
+                PED_CursorOff{}
                 _menuitem = #MENU_COMPILERUN
                 Gosub call_compilermenuitem
               EndIf
@@ -16598,45 +16600,45 @@ Return
             If UCase$(findStrStore.s) <> UCase$(ped\searchString)
               findStrStore = ped\searchString
               Gosub storeline
-              !PED_CursorOff
+              PED_CursorOff{}
               Gosub menu_findnext
               PED_UpdateStatusArea{#STATUS_SCROLLERS}
-              !PED_CursorOn
+              PED_CursorOn{}
               FlushEvents : Delay_ 1
             End If
 
           Case "FIND_NEXT"
             Gosub storeline
-            !PED_CursorOff
+            PED_CursorOff{}
             Gosub menu_findnext
             PED_UpdateStatusArea{#STATUS_SCROLLERS}
-            !PED_CursorOn
+            PED_CursorOn{}
             Gosub activatesourcewindow                ; added to make source win active that edit is possible  tomsmart1
 
           Case "FIND_PREVIOUS"
             Gosub storeline
-            !PED_CursorOff
+            PED_CursorOff{}
             Gosub menu_findprevious
             PED_UpdateStatusArea{#STATUS_SCROLLERS}
-            !PED_CursorOn
+            PED_CursorOn{}
             Gosub activatesourcewindow
 
           Case "FIND_REPLACE"
             Gosub storeline
-            !PED_CursorOff
+            PED_CursorOff{}
             Gosub menu_replace
-            !PED_CursorOn
+            PED_CursorOn{}
             Gosub activatesourcewindow                ; added to make source win active that edit is possible  tomsmart1
 
           Case "FIND_REPLACE_ALL"
             If ped\searchString <> "" AND ped\replaceString <> ""
               Gosub storeline
-              !PED_CursorOff
+              PED_CursorOff{}
               Gosub set_pointer_busy
               Gosub menu_replaceall
               PED_SetCurrentSourceLine{}
               PED_RedrawSource{}
-              !PED_CursorOn
+              PED_CursorOn{}
               Gosub set_pointer_normal
             EndIf
             Gosub activatesourcewindow                ; added to make source win active that edit is possible  tomsmart1
@@ -16974,7 +16976,7 @@ Return
 
 
 .UseMaxObjectsAndResidentsSettings:
-  ; update save max objects settings  tomsmart1 2012 03 21
+  ;-- update save max objects settings
   For i.l = 1 To Peek.w(Ptr_Number_of_Objects_Word)
     a$ = WZ_GetCell{"OBJECTS",i,2}
     i2.l = Vallong(a$) : If i2 = 0 Then i2 = 1
@@ -16983,12 +16985,12 @@ Return
     !ComData_JSR{comFunc_StoreMaxObjects}
   Next
 
-  ; the compiler have to free all loaded residents and to clear the space for safty  tomsmart1 2012 06 09
+  ;-- the compiler have to free all loaded residents and to clear the space for safty
   !asm
   !ComData_JSR{comFunc_FreeClearResidentsForPED}
   !basic
 
-  ; convert strings to Residents entrys  tomsmart1 2012 03 21
+  ;-- convert strings to Resident entrys
   i.l = WZInput("RESIDENTS")
   a$ = Peek.s(i)
   InitArgParse a$
@@ -16999,7 +17001,7 @@ Return
     var + #ResidentEntryStep
   Next
 
-  ; the compiler have to reload the residents   tomsmart1 2012 03 21
+  ;-- the compiler has to reload the Residents
   !asm
   !ComData_JSR{comFunc_ReloadResidentsForPED}
   !basic
@@ -17025,7 +17027,7 @@ Return
      If CompileStatusWindow_Pointer.l = 0
        WZWindow WZID("WIN_COMPILESTATUS"),?wzgui,64,-2,-2,-2,-2,WZID("WIN_COMPILESTATUS") ; try to open the wizard window
        CompileStatusWindow_Pointer = Peek.l(Addr Window(WZID("WIN_COMPILESTATUS")))       ; get and store the pointer to window
-       ;set init data for the update of the status gadgets
+       ;-- set init data for the update of the status gadgets
        CompileStatus_String_Pointer.l            = Peek.l(?comPtr_CompileStatusString)    ; get the pointer of status string set by the compiler
        CompileStatus_CalculatedProcent_Pointer.l = Peek.l(?comPtr_CompileCalcProLong)     ; get the pointer of calculated procent value set by the compiler
        CompileStatus_String_Old.s                = ""                            ; set to default
@@ -17034,11 +17036,11 @@ Return
        CompileStatus_GaugeString.s               = "0%%"                         ; set to default
        CompileStatusWindow_Event.l               = 0
 
-       ;set init data for the abort handling
+       ;-- set init data for the abort handling
        Poke.b ?comByte_CompileStatusAbortByte,0                                ; set default
        CompileStatusWindow_Abort.l = False                                     ; abort status default for the event loop
 
-       ;print initstring
+       ;-- print initstring
        If CompileStatusWindow_Pointer <> 0                                     ; check if window is open
          CompileStatus_String_Old = !TRANS{"Initializing Compiler..."}         ; set the init string
          WZPrint "COMPILE_INFO",CompileStatus_String_Old                       ; show the init string
