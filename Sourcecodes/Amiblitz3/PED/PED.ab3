@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.11
-; NumberOfBuilds  = 3388
+; NumberOfBuilds  = 3399
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 11094
-; CursorColumn    = 27
+; CursorLine      = 2542
+; CursorColumn    = 13
 ; LabelSearch     = "storecurrentsourceline"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -167,6 +167,7 @@ DEBUG
 #TOKEN_EndIf     = $80C0
 #TOKEN_Object    = $80D7
 #TOKEN_DEFTYPE   = $8033
+#TOKEN_Pop       = $80BE ; dhandlerlib
 
 ; -- scrolling options for sourceWindow
 #SCROLL_UP       = 1
@@ -2627,7 +2628,7 @@ SHARED *tokenbase, ped
     *token = *tokenbase
     While *token
       If *token\number = _tn
-        ;log_Print{"token " + Hexw$(tokenNumber) + " cached.", #log_debug}
+        log_Print{"token " + Hexw$(tokenNumber) + " cached.", #log_debug}
         ;-- add token to tokencache
         Poke.l ped\tokenCache + _tn * 4, *token
 
@@ -4849,7 +4850,11 @@ USEPATH sourceWindow
   PED_PrintCurrentSourceLine{False}
 
   no_line:
-  PED_UpdateLinenumbers{}
+  If (direction = #SCROLL_UP) AND (ped\ptrCurrentSourceData\TotalLines < sourceWindow\visibleLines)
+    PED_UpdateLinenumbers{#FULL}
+  Else 
+    PED_UpdateLinenumbers{}
+  EndIf
   \CurrentSourceLine = storeCurrentSourceLine
   !PED_RestoreCursorPosition
 End Statement
@@ -5335,33 +5340,41 @@ Function.s autoCompleteContructs{*currentline.sourceLine}
   If *prevLine <> Null
     *textline.l = *prevLine + 9     ; get pointer of previus sourceline text
     If *textline <> Null
-      textaddr.l = Peek.l(*textline)           ; get address of the text
+      lasttoken.w = 0
+      acttoken.w = 0
       bytecount.w = 0
 
-      While (textaddr LSR 16) <> $0000
-        textaddr = Peek.l(*textline + bytecount)
+      Repeat
+        acttoken = Peek.w(*textline + bytecount) AND $FFFF
 
-        actword.w = textaddr LSR 16
-
-        ; check the token to select the end token(s)
-        Select actword
-          Case #TOKEN_Then      : construct = ""
-          Case #TOKEN_Statement : construct = "End Statement"
-          Case #TOKEN_Function  : construct = "End Function"
-          Case #TOKEN_If        : construct = "EndIf"
-          Case #TOKEN_While     : construct = "Wend"
-          Case #TOKEN_Macro     : construct = "End Macro"
-          Case #TOKEN_Select    : construct = "End Select"
-          Case #TOKEN_Repeat    : construct = "Until"
-          Case #TOKEN_For       : construct = "Next"
-        End Select
+        ;-- check the token to select the end token(s)
+        If acttoken < 0 
+          log_Print{"found token " + Hexw$(acttoken)+ ",last token " + Hexw$(lasttoken)}
+          Select acttoken
+            Case #TOKEN_Then      : construct = "" ; remove completion for If
+            Case #TOKEN_Return    : construct = "" ; remove completion for Function/Statement
+            Case #TOKEN_Statement : construct = "End Statement"
+            Case #TOKEN_Function  : construct = "End Function"
+            Case #TOKEN_Macro     : construct = "End Macro"            
+            Case #TOKEN_If        : If Hexw$(lasttoken) <> Hexw$(#TOKEN_End) AND Hexw$(lasttoken) <> Hexw$(#TOKEN_Pop) Then construct = "EndIf"
+            Case #TOKEN_While     : If Hexw$(lasttoken) <> Hexw$(#TOKEN_Pop) Then construct = "Wend"
+            Case #TOKEN_Select    : If Hexw$(lasttoken) <> Hexw$(#TOKEN_Pop) Then construct = "End Select"
+            Case #TOKEN_Repeat    : If Hexw$(lasttoken) <> Hexw$(#TOKEN_Pop) Then construct = "Until"
+            Case #TOKEN_For       : If Hexw$(lasttoken) <> Hexw$(#TOKEN_Pop) Then construct = "Next"            
+          End Select
+          lasttoken = acttoken
+          bytecount + 1
+        EndIf
+        
         bytecount + 1
-      Wend
+
+      Until (acttoken = 0) OR (bytecount = #MAX_Columns - 1)
     EndIf
   EndIf
 
   Function Return construct
 End Function
+
 
 Function.w PED_PreparseTextLine{lineaddr.l}
   SHARED ped, pedconfig, operators$(),num_operators
@@ -9272,7 +9285,6 @@ USEPATH ped\ptrCurrentSourceData
   PED_CursorOff{}
   PED_ScrollVertical{#SCROLL_UP, \DisplayLine}  
   PED_PrintCurrentSourceLine{True}
-  ;PED_UpdateLinenumbers{#FULL}
   PED_UpdateStatusArea{#STATUS_SCROLLERS}
   PED_CursorOn{}
   log_Print{"menu joinlines finished."}
@@ -14881,20 +14893,12 @@ Return
       testaddr = Peek.l(*textline + bytecount)
       actword.w = testaddr LSR 16
 
-      ; check the token for parts of an if-loop
+      ;-- check the token for parts of an if-loop
       Select actword
-      Case #TOKEN_EndIf    ; EndIf
-        nestcount + 1
-
-;      Case #TOKEN_End    ; End
-;        nestcount + 1
-
-      Case #TOKEN_If    ; If
-        nestcount - 1
+      Case #TOKEN_EndIf : nestcount + 1
+      Case #TOKEN_If    : nestcount - 1
         iffound  = 1
-
-      Case #TOKEN_Then    ; Then
-        nestcount + 1
+      Case #TOKEN_Then  : nestcount + 1
       End Select
 
       bytecount + 1
@@ -14942,11 +14946,8 @@ Return
 
   Gosub update_librarylist
   Gosub update_functiontable
-;  Else
-;    Use Window WZID("WIN_LIBRARYBROWSER")
-    Activate WZID("WIN_LIBRARYBROWSER")
-    WZ_UpdateTable{"FUNCTIONSTABLE"}
-;  End If
+  Activate WZID("WIN_LIBRARYBROWSER")
+  WZ_UpdateTable{"FUNCTIONSTABLE"}
 Return
 
 
@@ -14958,8 +14959,10 @@ Return
     Case #WZTABLEEVENT_CELLSELECTED
       pos.l = WZ_Row{"FUNCTIONSTABLE"}
       actualword$ = WZ_GetCell{"FUNCTIONSTABLE",WZ_Row{"FUNCTIONSTABLE"},1}
-      If actualword$<>""
-        libinfo$ = lib_mapping$(libnumber.l,0)+" (LibNr. "+Str$(libnumber)+" Token "+Hexw$(PED_GetTokenID{actualword$}) +")"
+      If actualword$ <> ""
+        libinfo$ = lib_mapping$(libnumber.l,0) 
+        libinfo$ + " (LibNr. " + Str$(libnumber)
+        libinfo$ + " Token " + Hexw$(PED_GetTokenID{actualword$}) + ")"
         WZPrint "ARGS_LIBRARYNAME",&libinfo$
       EndIf
 
@@ -15020,7 +15023,7 @@ Return
           Repeat
             libID.l = (*token\number LSR 7)
 
-            If (libID.l <> olibID.l) AND (libID>1) ; skip internal systemlib and dhandlerlib
+            If (libID.l <> olibID.l) AND (libID > 1) ; skip internal systemlib and dhandlerlib
               If lib_check(libID) = False
                 lib_check(libID) = True
               Else
