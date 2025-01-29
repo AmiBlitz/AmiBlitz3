@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.11
-; NumberOfBuilds  = 3401
+; NumberOfBuilds  = 3402
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 4049
-; CursorColumn    = 10
-; LabelSearch     = "storecurrentsourceline"
+; CursorLine      = 2748
+; CursorColumn    = 7
+; LabelSearch     = "fillmem"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -2829,16 +2829,18 @@ End Function
 Function.b PED_Detokenize2Printbuffer{ptrOrgString.l}
 SHARED ped
 
+  ;-- clear textBufferPrint
+  FillMem ped\ptrTextbufferPrint, #MAX_Columns, 0
+
   _strLen.w = Len(Peek.s(ptrOrgString))
   If _strLen
     If ped\keepString = 0 Then ped\inString = False
 
     If ped\noDetokenizing
-      For i.w = 0 To _strLen - 1
-        Poke.b ped\ptrTextbufferPrint + i, Peek.b(ptrOrgString + i);  BitClr 7
-      Next i
-      runnerP.w = i + 1
+      ;-- just copy the current text line to the printBuffer
+      CopyMem_ ptrOrgString, ped\ptrTextbufferPrint, _strLen
     Else
+      ;-- detokenize but keep the tokenbit!
       runnerP.w = 0
       For i.w = 0 To _strLen - 1
         curChar.b  = Peek.b(ptrOrgString + i)
@@ -2857,7 +2859,6 @@ SHARED ped
         EndIf
       Next i
     EndIf
-    Poke.b ped\ptrTextbufferPrint + runnerP,0
   EndIf
 
   Function Return True
@@ -3275,29 +3276,17 @@ Statement PED_PrintTokenizedText{*textaddr.l, startPos.w, size.w, tposx.w, tposy
 SHARED sourceWindow, ped, pedconfig, AB3Pen()
 USEPATH sourceWindow
 
-  ;-- clear textBufferPrint
-  For i.w = 0 To #MAX_Columns/4-1 Step 4
-    Poke.l  ped\ptrTextbufferPrint + i, 0
-  Next i
-
-  ;-- original string
-  tmpString1.s = Peeks$(*textaddr,#MAX_Columns - 1)
-
-  ;-- detokenize it but keep token indicator (bit7)
-  PED_Detokenize2Printbuffer{&tmpString1}
+  ;-- work with printbuffer
   tmpString2.s = Peek.s(ped\ptrTextbufferPrint)
-
-;  If tposy = 0 Then log_Print{">>" + Left$(tmpString1,20)}
-;  If tposy = 0 Then log_Print{">>" + Left$(tmpString2,20)}
 
   ;-- check if source left of display start position has an opened string literal
   If ped\keepString = 0
     chkString.b = 0
 
-    If tmpString1 <> ""
+    If tmpString2 <> ""
       runner.w = 0
       While runner < startPos
-        If Peek.b(&tmpString1 + runner) = $22 Then chkString = NOT chkString
+        If Peek.b( &tmpString2 + runner) = $22 Then chkString = NOT chkString
         runner + 1
       Wend
     EndIf
@@ -3577,15 +3566,14 @@ End Statement
 Statement PED_PrintSourceText{*textaddr.l, startPos.w, size.w, tposx.w, tposy.w, @clearEndOfLine.b}
 SHARED sourceWindow, ped, pedconfig, AB3Pen()
 
+  ;-- detokenize it but keep token indicator (bit7)
+  tmpString1.s = Peeks$(*textaddr,#MAX_Columns - 1)    
+  PED_Detokenize2Printbuffer{&tmpString1}  ; TODO: prepare for syntaxhighlighting
+
   ;-- print the sourcetext
   If ped\doTokenize
     PED_PrintTokenizedText{*textaddr, startPos, size, tposx, tposy}
   Else
-    ;-- copy the current Line To a tempBuffer
-    For i.w = 0 To Len(Peek.s(*textaddr))
-      Poke.b ped\ptrTextbufferPrint + i, Peek.b(*textaddr + i)
-    Next i
-
     tmpString.s = UnRight$(Peek.s(*textaddr), startPos)
     textlen.w = FLen(tmpString.s)
     If textlen > size Then textlen = size
@@ -3688,9 +3676,10 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   If ped\ptrCurrentSourceData\CurrentSourceLine = 0 Then Statement Return
 
   ;-- clear current line in textBuffer
-  For i.w = 0 To #MAX_Columns/4-1 Step 4
-    Poke.l  ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset + i, $20202020
-  Next i
+  ;For i.w = 0 To #MAX_Columns / 4 - 1 Step 4
+  ;  Poke.l  ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset + i, $20202020
+  ;Next i
+  FillMem ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns, @" "
 
   If Peek.b(ped\ptrCurrentSourceData\CurrentSourceLine + 9) <> 0   ; first character of text
     PED_PrintSourceText{ped\ptrCurrentSourceData\CurrentSourceLine + 9, ped\ptrCurrentSourceData\ColumnsOffset, -1,0,ped\ptrCurrentSourceData\DisplayLine, clearEndOfLine}
@@ -5380,8 +5369,6 @@ Function.w PED_PreparseTextLine{lineaddr.l}
   SHARED ped, pedconfig, operators$(),num_operators
 
   ;--  clear token flags but dont trash strings
-  If (lineaddr & $1) <> 0 Then error{"alert: odd address " + Hex$(lineaddr)}
-
   !removeTokenbits{lineaddr, #MAX_Columns}
 
   strg$ = Peeks$(lineaddr,#MAX_Columns)
@@ -5494,6 +5481,8 @@ Function.w PED_PreparseTextLine{lineaddr.l}
             Case ";"      ; innerhalb von Kommentaren nicht strukturieren
               comment_mode = On
 
+            Case "&"
+              temp_disabled = On  ; TODO : check if it is a pointer            
             Case "*"
               temp_disabled = On  ; TODO : check if it is a pointer
 
@@ -12027,14 +12016,35 @@ Return
   ;log_Print{"clear source window done."}
 Return
 
-.moveCursorToBeginOfWord:
-  ;-- get lineaddress in textbuffer (detokenized text!)
+
+.moveCursorToEndOfLine:
   lineaddr = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-
-  ;-- get length of source line
   textlen.w = getLineLength{lineaddr}
+  
+  newColumn.w = textlen : Gosub moveCursorToX
+Return
 
-  ;!removeTokenbits{lineaddr, textlen}
+.moveCursorToBeginOfLine:
+  If ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset > 0
+    newColumn.w = 0 : Gosub moveCursorToX
+  Else
+    If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine > 0
+      runner.w = 0
+      Repeat
+        curbyte.b = Peek.b(ped\ptrCurrentSourceData\CurrentSourceLine + 9 + runner)
+        runner + 1
+      Until (curbyte <> $20) OR (curbyte = 0) OR (runner = #MAX_Columns)
+      If (curbyte <> 0) AND (runner > 0)
+        runner - 1
+        newColumn.w = runner : Gosub moveCursorToX
+      EndIf
+    EndIf
+  EndIf
+Return
+
+.moveCursorToBeginOfWord:
+  lineaddr = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
+  textlen.w = getLineLength{lineaddr}
 
   cursorpos.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
   If cursorpos > 1
@@ -12060,18 +12070,15 @@ Return
 Return
 
 .moveCursorToEndOfWord:
-  ;-- get lineaddress in textbuffer (detokenized text!)
   lineaddr = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-  ;-- get length of source line
   textlen.w = getLineLength{lineaddr}
-
-  ;!removeTokenbits{lineaddr, textlen}
-
+  
   cursorpos.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
   If cursorpos < textlen
     cursorpos + 1
     skip_spaces.b = False
-    If Peek.b(lineaddr + cursorpos) = 32 Then skip_spaces = True ; check if current char is a space
+    ;-- check if current char is a space
+    If Peek.b(lineaddr + cursorpos) = $20 Then skip_spaces = True 
 
     exit_loop.b = False
     Repeat
@@ -13078,21 +13085,7 @@ Return
 
     Case #IEQUALIFIER_LSHIFT          ; move cursor to beginning of line
       ;log_Print{"shift"}
-      If ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset > 0
-        newColumn.w = 0 : Gosub moveCursorToX
-      Else
-        If ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine > 0
-          runner.w = 0
-          Repeat
-            curbyte.b = Peek.b(ped\ptrCurrentSourceData\CurrentSourceLine + 9 + runner)
-            runner + 1
-          Until (curbyte <> $20) OR (curbyte = 0) OR (runner = #MAX_Columns)
-          If (curbyte <> 0) AND (runner > 0)
-            runner - 1
-            newColumn.w = runner : Gosub moveCursorToX
-          EndIf
-        EndIf
-      EndIf
+      Gosub moveCursorToBeginOfLine
 
     Case #IEQUALIFIER_LALT
       log_Print{"alt"}
@@ -13124,10 +13117,8 @@ Return
       Gosub selectblockright
 
     Case #IEQUALIFIER_LSHIFT         ; move to end of line
-      log_Print{"shift"}
-      lineaddr = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-      textlen.w = getLineLength{lineaddr}
-      newColumn.w = textlen : Gosub moveCursorToX
+      ;log_Print{"shift"}
+      Gosub moveCursorToEndOfLine
 
     Case #IEQUALIFIER_LALT           ; move in history
       log_Print{"alt"}
