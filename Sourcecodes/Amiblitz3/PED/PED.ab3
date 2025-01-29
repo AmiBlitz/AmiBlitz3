@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.11
-; NumberOfBuilds  = 3400
+; NumberOfBuilds  = 3401
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 5417
-; CursorColumn    = 18
+; CursorLine      = 4049
+; CursorColumn    = 10
 ; LabelSearch     = "storecurrentsourceline"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -1416,7 +1416,7 @@ USEPATH sourceWindow
 
     Case #AB3_cursorStyle_underline
       xmin.w = \BoxLeft + \font\tf_XSize * ped\ptrCurrentSourceData\Column
-      ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine  + \font\tf_YSize - 1  - 1
+      ymin.w = \BoxTop  + \font\tf_YSize * ped\ptrCurrentSourceData\DisplayLine + \font\tf_YSize - 1  - 1
       xmax.w = xmin + \font\tf_XSize - 1
       ymax.w = ymin + 1
 
@@ -4123,23 +4123,22 @@ End Statement
 
 Statement PED_RedrawSource{}
 SHARED pedconfig, ped, sourceWindow, AB3Pen()
-  log_Print{"RedrawSource, current displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
-
+  log_Print{"RedrawSource, current displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine) + "  offset: " + Str$(ped\ptrCurrentSourceData\DisplayLineOffset)}
   *tmpcsl.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
   If *tmpcsl = 0 Then Statement Return
 
   *storeCurrentSourceLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-
   !PED_storeCursorPosition
-  PED_ClearTextbuffer{}
 
+  ;-- clear textbuffer
+  PED_ClearTextbuffer{} : ped\ptrCurrentSourceData\TextBufferOffset = 0
+  
   CNIF #hardfold = 1
     ped\foldNumber = PED_CheckFoldingState{}
   CEND
 
   ; -- decrease linepointer to first sourceline to be displayed
   *tmpcsl.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-
   While (ped\ptrCurrentSourceData\DisplayLine > 0) AND (*tmpcsl <> 0)
     *tmpcsl = *tmpcsl\previousLine
 
@@ -4161,15 +4160,14 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
       CEND
 
       ped\ptrCurrentSourceData\DisplayLine - 1
+    Else
+      log_Print{"RedrawSource: no previous line!", #log_error}
     EndIf
   Wend
 
-  ped\ptrCurrentSourceData\TextBufferOffset = 0
 
+  ;-- print all the lines into the empty textbuffer
   PED_CursorOff{}
-
-  ;-- draw all the lines
-
   For cl.l = 1 To sourceWindow\visibleLines
     ped\ptrCurrentSourceData\CurrentSourceLine = *tmpcsl
 
@@ -4201,9 +4199,11 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
     If ped\ptrCurrentSourceData\CurrentSourceLine
       ;log_Print{"redraw: next line at displayline " + Str$(ped\ptrCurrentSourceData\DisplayLine)}
       PED_PrintCurrentSourceLine{True}
-      *tmpcsl = *tmpcsl\nextLine
+
       ped\ptrCurrentSourceData\DisplayLine + 1
       ped\ptrCurrentSourceData\TextBufferOffset + #MAX_Columns
+
+      *tmpcsl = *tmpcsl\nextLine
     ;Else
       ;log_Print{"redraw: no next line at displayline " + Str$(cl),#log_information}
     EndIf
@@ -4241,7 +4241,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
 
   ;-- redraw the blockmark
   PED_DrawBlockmark{}
-
+  
   PED_CursorOn{}
 End Statement
 
@@ -8366,10 +8366,6 @@ Return
   EndIf
 
   Gosub update_title_sourcewindow
-
-  ; -- update modified flags
-  ped\ptrCurrentSourceData\KeyBeforeReturn = 0
-  ;Gosub update_modifiermark
   Gosub update_debuggertoggle
 Return
 
@@ -9573,7 +9569,6 @@ Return
   Gosub calc_SourceWindowDimensions
   Gosub clear_sourcewindow
   Gosub reset_labellist
-  ;PED_UpdateStatusArea{#STATUS_SCROLLERS}
 
   Gosub analyze_loadedsource
   PED_SetCurrentDir{}
@@ -9722,9 +9717,11 @@ Return
   selectedEntry.l = PutD0
 
   If ped\currentSourceEntry <> selectedEntry
-    log_Print{"switching to tab."}
+    log_Print{"switching to requested tab."}
+
     Gosub storeCurrentSourceData
     Gosub save_tempprefs
+
     ped\currentSourceEntry = selectedEntry
     Gosub getCurrentSourceData
     Gosub read_tempprefs
@@ -9922,7 +9919,7 @@ USEPATH ped\ptrCurrentSourceData
   ;-- check if mouse is in source area and there is an existing sourceline
   PED_GetMousePos{mousePos}
   If (mousePos\textY < 0) OR (mousePos\textY + \DisplayLineOffset > \TotalLines - 1) OR (mousePos\textX < 0) OR (mousePos\textX + \ColumnsOffset > #MAX_Columns - 1)
-    ;-- mouse is outside of source area
+    log_Print{"mouse is outside of source area"}
     Return
   EndIf
 
@@ -9949,7 +9946,6 @@ USEPATH ped\ptrCurrentSourceData
   bmark\xMin = storeX - \ColumnsOffset, storeY - \DisplayLineOffset, storeX - \ColumnsOffset, storeY - \DisplayLineOffset
   DEFTYPE.bmark storebmark
   CopyType bmark, storebmark
-
   PED_DrawBlock{bmark}
   ;log_Print{"initial block draw at " + Str$(storeX) + ", " + Str$(storeY)}
 
@@ -10840,6 +10836,53 @@ comPtr_Temp_TokenString1: Dc.l ptr_tokenstring
 ptr_tokenstring:          Ds.l #MAX_Columns + 2
 Even
 
+;
+;.ascii_to_token: ;d0 = token
+;  MOVEM.l d1-d7/a0-a6,-(a7)
+;  MOVE.l d0,a2                    ; D0: expandstore
+;  MOVEA.l comPtr_TokenBase,A3
+;
+;  JL_0_6036b:
+;    MOVEA.l A2,A4
+;    MOVE.l A3,-(A7)
+;    ADDQ.w #6,A3
+;
+;    JL_0_603Cb:
+;      MOVE.b (A3)+,D3
+;      BEQ.w JL_0_6082b     ;found
+;        MOVE.b (A4)+,D2
+;        ;BCLR #$7,D2
+;        ;ORI.b #$20,D3
+;        ;ORI.b #$20,D2
+;    CMP.b D3,D2
+;    BEQ.b JL_0_603Cb
+;
+;    JL_0_6054b:
+;    MOVEA.l (A7)+,A3
+;    MOVE.l (A3),D3
+;    BEQ.w JL_0_6060b
+;      MOVEA.l D3,A3
+;  BRA.b JL_0_6036b
+;  JL_0_6082b:
+;
+;  MOVE.b (A4),D2
+;  BNE JL_0_6054b
+;  BCLR #$7,D2
+;  BNE.b JL_0_6054b       ;not found
+;  MOVEA.l (A7)+,A3
+;  ADDQ.w #4,A3
+;  MOVEQ #0,d0
+;  MOVE.b (A3)+,d0
+;  ASL.l #8,d0
+;  MOVE.b (a3),d0
+;  MOVEM.l (a7)+,d1-d7/a0-a6
+;RTS
+;
+; JL_0_6060b
+;  MOVEQ #0,d0
+;  MOVEM.l (a7)+,d1-d7/a0-a6
+;RTS
+;
 
 
 
@@ -12815,10 +12858,8 @@ Return
 
 .handle_event_mousebuttons:
   ;log_Print{"handle event mousebuttons..."}
-  If NOT ped\ptrCurrentSourceData\RunningFlag            ; only available when no exe is running
-    Gosub check_mouse_in_statusarea
-  EndIf
 
+  ;-- handle mouse actions in source
   Select pedMessage\_Code
   Case #SELECTUP
     ;log_Print{"Mouse-Event SELECTUP",#log_debug}
@@ -12828,6 +12869,17 @@ Return
 
   Case #SELECTDOWN
     ;log_Print{"Mouse-Event SELECTDOWN",#log_debug}
+
+    ;-- handle mouse actions in status area
+    If NOT ped\ptrCurrentSourceData\RunningFlag            
+      ; only available when no exe is running  
+      If pedMessage\_MouseY - \win\BorderTop > \statusAreaY + 1
+        Gosub check_mouse_in_statusarea
+        Pop Select
+        Return
+      EndIf
+    EndIf
+
     was_selectdown_before.b = True
     exit_loop_class = -3
 
@@ -12860,6 +12912,68 @@ Return
     EndIf
   End Select
 Return
+
+
+.check_mouse_in_statusarea:
+  USEPATH sourceWindow
+  If ped\firstSourceEntry
+    mx.w = pedMessage\_MouseX - \win\BorderLeft
+    my.w = pedMessage\_MouseY - \win\BorderTop
+
+    xsa.l = \font\tf_XSize / 2
+    xpos_start.w = #leftoffset * \font\tf_XSize - xsa
+    xpos_end.w = 0
+    ypos_start.w = \statusAreaY + 1
+    ypos_end.w = ypos_start + 2 + \font\tf_Baseline + \font\tf_YSize
+
+    ;-- check if a tab is clicked on
+    *fileEntry.sourceEntry = ped\firstSourceEntry
+    Repeat
+      xpos_end = xpos_start + (#bevelsize * \font\tf_XSize)
+      If (mx > xpos_start) AND (mx < xpos_end) AND (my > ypos_start) AND (my < ypos_end)
+        Gosub handle_statusareaactions
+        Pop Repeat
+      EndIf
+      xpos_start = xpos_end
+
+      *fileEntry = *fileEntry\nextEntry
+    Until *fileEntry = 0
+  EndIf
+Return
+
+
+.handle_statusareaactions:
+  log_Print{"mouse clicked at tab: " + dos_AddPart{Peek.s(&*fileEntry\SourceDir), Peek.s(&*fileEntry\SourceName)}}
+  If *fileEntry = ped\currentSourceEntry
+    log_Print{"tab is actual file"}
+    _menuitem = 0
+    If pedMessage\_Qualifier AND #IEQUALIFIER_CONTROL
+      log_Print{"control: create exe"}
+      _menuitem = #MENU_SAVECREATEEXE
+    EndIf
+    If pedMessage\_Qualifier AND #IEQUALIFIER_LALT
+      log_Print{"alt: compile & run"}
+      _menuitem = #MENU_COMPILERUN
+    EndIf
+    If _menuitem
+      If ped\ptrCurrentSourceData\SourceChanged
+        Gosub storeline
+        Delay_ 2
+      EndIf               
+      Gosub call_compilermenuitem
+    EndIf
+  Else
+    log_Print{"tab is not actual file."}
+    Gosub storeline
+
+    GetD0 *fileEntry : Gosub selectTab
+
+    Gosub storeCurrentSourceData
+    log_Print{"switch tab done"}
+  EndIf
+Return
+
+
 
 .convert_to_vanillakeys:
   ;log_Print{"========= rawkey    code: "+ Hexw$(pedMessage\_Code) + " / quali: " + Hex$(mqualifier)}
@@ -16143,53 +16257,6 @@ Return
 Return
 
 
-;
-;.ascii_to_token: ;d0 = token
-;  MOVEM.l d1-d7/a0-a6,-(a7)
-;  MOVE.l d0,a2                    ; D0: expandstore
-;  MOVEA.l comPtr_TokenBase,A3
-;
-;  JL_0_6036b:
-;    MOVEA.l A2,A4
-;    MOVE.l A3,-(A7)
-;    ADDQ.w #6,A3
-;
-;    JL_0_603Cb:
-;      MOVE.b (A3)+,D3
-;      BEQ.w JL_0_6082b     ;found
-;        MOVE.b (A4)+,D2
-;        ;BCLR #$7,D2
-;        ;ORI.b #$20,D3
-;        ;ORI.b #$20,D2
-;    CMP.b D3,D2
-;    BEQ.b JL_0_603Cb
-;
-;    JL_0_6054b:
-;    MOVEA.l (A7)+,A3
-;    MOVE.l (A3),D3
-;    BEQ.w JL_0_6060b
-;      MOVEA.l D3,A3
-;  BRA.b JL_0_6036b
-;  JL_0_6082b:
-;
-;  MOVE.b (A4),D2
-;  BNE JL_0_6054b
-;  BCLR #$7,D2
-;  BNE.b JL_0_6054b       ;not found
-;  MOVEA.l (A7)+,A3
-;  ADDQ.w #4,A3
-;  MOVEQ #0,d0
-;  MOVE.b (A3)+,d0
-;  ASL.l #8,d0
-;  MOVE.b (a3),d0
-;  MOVEM.l (a7)+,d1-d7/a0-a6
-;RTS
-;
-; JL_0_6060b
-;  MOVEQ #0,d0
-;  MOVEM.l (a7)+,d1-d7/a0-a6
-;RTS
-;
 .activatesourcewindow                                                         ; changed name to better show it pourpos  tomsmart1
   If sourceWindow\win
      ActivateWindow_ sourceWindow\win                                         ; replaced ASM part with Basic commands  tomsmart1
@@ -16197,68 +16264,6 @@ Return
   EndIf
 Return                                                                        ; replaced RTS with Return  tomsmart1
 
-.check_mouse_in_statusarea:
-  If pedMessage\_Code = #SELECTDOWN
-
-    USEPATH sourceWindow
-    If ped\firstSourceEntry
-      mx.w = pedMessage\_MouseX - \win\BorderLeft
-      my.w = pedMessage\_MouseY - \win\BorderTop
-
-      xsa.l = \font\tf_XSize / 2
-      xpos_start.w = #leftoffset * \font\tf_XSize - xsa
-      xpos_end.w = 0
-      ypos_start.w = \statusAreaY + 1
-      ypos_end.w = ypos_start + 2 + \font\tf_Baseline + \font\tf_YSize
-
-      *fileEntry.sourceEntry = ped\firstSourceEntry
-      Repeat
-        xpos_end = xpos_start + (#bevelsize * \font\tf_XSize)
-        ;-- check click position
-        If (mx > xpos_start) AND (mx < xpos_end) AND (my > ypos_start) AND (my < ypos_end)
-          log_Print{"mouse clicked at tab: " + dos_AddPart{Peek.s(&*fileEntry\SourceDir), Peek.s(&*fileEntry\SourceName)}}
-          If *fileEntry = ped\currentSourceEntry
-            log_Print{"tab is actual file"}
-            If pedMessage\_Qualifier AND (#IEQUALIFIER_CONTROL|#IEQUALIFIER_LALT)
-              log_Print{"control or alt pressed with mouse"}
-              If ped\ptrCurrentSourceData\SourceChanged
-                Gosub storeline
-                Delay_ 2
-              EndIf
-
-              ;Gosub set_tedlibbase
-
-              If pedMessage\_Qualifier AND #IEQUALIFIER_CONTROL
-                log_Print{"control: create exe"}
-                PED_CursorOff{}
-                _menuitem = #MENU_SAVECREATEEXE
-                Gosub call_compilermenuitem
-              EndIf
-              If pedMessage\_Qualifier AND #IEQUALIFIER_LALT
-                log_Print{"alt: compile & run"}
-                PED_CursorOff{}
-                _menuitem = #MENU_COMPILERUN
-                Gosub call_compilermenuitem
-              EndIf
-            EndIf
-          Else
-            log_Print{"tab is not actual file."}
-            Gosub storeline
-
-            GetD0 *fileEntry : Gosub selectTab
-
-            Gosub storeCurrentSourceData
-          EndIf
-          log_Print{"exiting mouse routine"}
-          Return
-        EndIf
-        xpos_start = xpos_end
-        *fileEntry = *fileEntry\nextEntry
-      Until *fileEntry = 0
-
-    EndIf
-  EndIf
-Return
 
 ; Begin routines for function build_HelpIndexFile  ; moved the functions and statemend defination out of the build index rountine for a better overview  tomsmart1
 Function.l ab3_IsTokenChar{char.w}
@@ -16268,7 +16273,6 @@ Function.l ab3_IsTokenChar{char.w}
   If char=@"_" OR char=@"@" OR char=@"`" Then Function Return True
   Function Return False
 End Function
-
 
 Statement writeentry{destfile.l, mode$,instruction$}
 SHARED pedconfig
