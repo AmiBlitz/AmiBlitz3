@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.11
-; NumberOfBuilds  = 3402
+; NumberOfBuilds  = 3417
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 2748
-; CursorColumn    = 7
-; LabelSearch     = "fillmem"
+; CursorLine      = 3773
+; CursorColumn    = 34
+; LabelSearch     = "log_hex"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -1482,7 +1482,7 @@ SHARED ped
   Repeat
     tmpchar.b = Asc(Mid$(testString,tmppos,1))
     If tmpchar = ped\labelIdentifier Then Function Return True
-    If tmpchar = 59 Then Function Return True    ; ";"
+    If tmpchar = @";" Then Function Return True    ; ";"
     If tmpchar = $80
       If Asc(Mid$(testString,tmppos+1,1))= $2d OR Asc(Mid$(testString,tmppos+1,1)) = $ae ; Token "Stop" or Token "TRAP"
         Function Return True
@@ -1746,13 +1746,12 @@ SHARED ped
 
   If *storeLine = 0 Then Function Return False
 
-  If Peek.b(*storeLine + 9) <> 0
-    tempLen.w = Peek.b(*storeLine + 8) AND $FF
-    log_Print{"storing line [" + Str$(tempLen) + "]: " + Peek.s(*storeLine + 9)}
-    ped\undeleteStrLen = tempLen
-    For i.w = 0 To tempLen-1
-      Poke.b ped\ptrLineUndeleteStore + i, Peek.b(*storeLine + 9 + i)
-    Next i
+  If *storeLine\strLength <> 0
+    log_Print{"storing line [" + Str$(*storeLine\strLength) + "]: " + Peek.s(*storeLine + 9)}
+    ped\undeleteStrLen = *storeLine\strLength
+    CopyMem_ *storeLine + 9, ped\ptrLineUndeleteStore, *storeLine\strLength
+  Else
+    Function Return False
   EndIf
   Function Return True
 
@@ -1776,20 +1775,30 @@ End Function
 Function.l PED_CreateNewSourceLine{newline.s}
 SHARED ped
 
-  _strLen.w = FLen(newline) + 1
-  If _strLen = 1 Then newline = Chr$(0)
+  _strLen.w = FLen(newline)
+  If _strLen > #MAX_Columns - 1
+    error{"String length too long for a line!"}
+    newline = Left$(newline,#MAX_Columns - 2)
+    _strLen = #MAX_Columns - 1
+  EndIf  
 
-  lineaddr.l = PED_AllocMem{_strLen + 9}
-  Poke.l lineaddr,0          ;clear pointer to prevline
-  Poke.l lineaddr+4,0        ;clear pointer to nextline
-  Poke.b lineaddr+8,_strLen  ;store length of string
+  ;-- add a null byte as string terminator
+  newline + Chr$(0)
+  _strLen + 1
+  
+  ;-- allocate memory for new sourceline
+  lineaddr.l = PED_AllocMem{9 + _strLen}
+  Poke.l lineaddr    ,0        ; clear pointer to prevline
+  Poke.l lineaddr + 4,0        ; clear pointer to nextline
+  Poke.b lineaddr + 8,_strLen  ; store length of string
 
-                             ;copy string to new sourceline
+  ;-- copy string to new sourceline
+  CopyMem_  &newline, lineaddr + 9, _strLen
+
+  ;-- check if there is a label in the new sourceline
   For i.w = 0 To _strLen - 1
-    Poke.b lineaddr + 9 + i,Peek.b(&newline + i)
     If Peek.b(&newline + i) = ped\labelIdentifier Then ped\labelListChanged = True
   Next i
-  Poke.b lineaddr + 9 + _strLen,0
 
   Function Return lineaddr
 End Function
@@ -2628,7 +2637,7 @@ SHARED *tokenbase, ped
     *token = *tokenbase
     While *token
       If *token\number = _tn
-        log_Print{"token " + Hexw$(tokenNumber) + " cached.", #log_debug}
+        ;log_Print{"token " + Hexw$(tokenNumber) + " cached.", #log_debug}
         ;-- add token to tokencache
         Poke.l ped\tokenCache + _tn * 4, *token
 
@@ -2795,23 +2804,35 @@ SHARED ped, pedconfig, *preProcessor, linebuff$
     _strLen.w = FLen(strLine)
     If _strLen
       If pedconfig\usePreProcessor
+        ;-- Function returns a string with a 0a-byte at the end in some conditions!
         byteLength.l = preproc_Detokenize{*preProcessor,&strLine, &linebuff$, FLen(strLine)}
+        ;-- remove CR-character
+        If Peek.b(&linebuff$ + byteLength-1) = $0A Then byteLength - 1
         strLine = Peeks$(&linebuff$, byteLength)
       Else
-        ped\inString = False
         linebuff$ = ""
-        For i.w = 0 To _strLen - 1
-          curChar.b  = Peek.b(&strLine + i)
-          If curChar = $22 Then ped\inString = NOT ped\inString
-          If ped\inString = 0 AND (curChar < 0)
-            _token.l = Peek.w(&strLine + i) AND $FFFF
-            _tokname.s = PED_GetTokenName{_token}
-            linebuff$ + _tokname
-            i + 1 ; skip next byte as it is part of the replaced token
-          Else
-            linebuff$ + Chr$(curChar)
-          EndIf
-        Next i
+        If _strLen > 0
+          ped\inString = False
+          For i.w = 0 To _strLen - 1
+            curChar.b  = Peek.b(&strLine + i)
+            ;-- check if we are in a string
+            If curChar = $22 Then ped\inString = NOT ped\inString
+            
+            ;-- we found a token if the byte is negative?
+            If ped\inString = 0
+              If (curChar < 0)
+                _token.l = Peek.w(&strLine + i) AND $FFFF
+                _tokname.s = PED_GetTokenName{_token}
+                linebuff$ + _tokname
+                i + 1 ; skip next byte as it is part of the replaced token
+              Else
+                If curChar > 0 Then linebuff$ + Chr$(curChar) ; skip the 0 byte at the end
+              EndIf
+            Else
+              linebuff$ + Chr$(curChar)
+            EndIf
+          Next i
+        EndIf
         strLine = linebuff$
       EndIf
     EndIf
@@ -3676,10 +3697,10 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   If ped\ptrCurrentSourceData\CurrentSourceLine = 0 Then Statement Return
 
   ;-- clear current line in textBuffer
-  ;For i.w = 0 To #MAX_Columns / 4 - 1 Step 4
-  ;  Poke.l  ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset + i, $20202020
-  ;Next i
   FillMem ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns, @" "
+
+  ;log_Print{"--- " + Str$(ped\ptrCurrentSourceData\CurrentSourceLine\strLength)}
+  ;!log_HexDump{ped\ptrCurrentSourceData\CurrentSourceLine,ped\ptrCurrentSourceData\CurrentSourceLine\strLength+8}
 
   If Peek.b(ped\ptrCurrentSourceData\CurrentSourceLine + 9) <> 0   ; first character of text
     PED_PrintSourceText{ped\ptrCurrentSourceData\CurrentSourceLine + 9, ped\ptrCurrentSourceData\ColumnsOffset, -1,0,ped\ptrCurrentSourceData\DisplayLine, clearEndOfLine}
@@ -3748,10 +3769,10 @@ CNIF `0 < 5
     CERR "Not enough parameters!"
 CEND
 CNIF `0 >= 5
-    sourceWindow\rp\Mask = `5
+    ;sourceWindow\rp\Mask = `5
+    SetAPen_ sourceWindow\rp, AB3Pen(#AB3_screenshine)
 CEND
 CNIF `0 = 6
-    ;SetDrMd_ sourceWindow\rp, #JAM1
     SetAPen_ sourceWindow\rp,`6
 CEND
     If (`3 >= `1) AND (`4 >= `2)
@@ -3760,13 +3781,13 @@ CEND
       log_Print{"illegal area for Macro Rectfill"}
     EndIf
 CNIF `0 >= 5
-    sourceWindow\rp\Mask = -1    
+    ;sourceWindow\rp\Mask = -1    
     ;SetDrMd_ sourceWindow\rp, #COMPLEMENT
 CEND
 End Macro
 
 Statement PED_DrawBlock{*bmark.bmark} ;xMin.w,yMin.w, xMax.w, yMax.w, absolute.b}
-SHARED ped, sourceWindow
+SHARED ped, sourceWindow, AB3Pen()
 USEPATH sourceWindow
   CopyType *bmark, bm.bmark
 
@@ -3830,7 +3851,7 @@ USEPATH sourceWindow
 End Statement
 
 Statement PED_UpdateScrollBlockmark{direction.b}
-SHARED ped,sourceWindow
+SHARED ped,sourceWindow, AB3Pen()
 USEPATH ped\ptrCurrentSourceData
   ; SCROLL_LEFT : add blockparts at the right side of the source window
   ; SCROLL_RIGHT: add blockparts at the left side of the source window  
@@ -5305,8 +5326,8 @@ SHARED ped
 
   ; --
   ; -- check for a comment
-  i.w = SearchBegin(str, Asc(";"), 1)
-  If i Then str = Left$(str,i - 2) ;+" "
+  i.w = SearchBegin(str, @";", 1)
+  If i Then str = Left$(str,i - 2)
 
   If str <> ""
     For i = 1 To FLen(str)
@@ -5478,8 +5499,8 @@ Function.w PED_PreparseTextLine{lineaddr.l}
           last_op$ = char$
 
           Select char$
-            Case ";"      ; innerhalb von Kommentaren nicht strukturieren
-              comment_mode = On
+            Case ";"      
+              comment_mode = On   ; ignore comments
 
             Case "&"
               temp_disabled = On  ; TODO : check if it is a pointer            
@@ -6319,9 +6340,12 @@ If ped\AbDiscObject
   If tmp_string = "INFO" Then logging_level = #log_information
   If tmp_string = "WARN" Then logging_level = #log_warning
   If tmp_string = "ERROR" Then logging_level = #log_error
+
   log_SetLevel{logging_level}
   If logging_level < #log_nothing
-    log_Init{"CON:0/19/1200/200/AmiBlitz3 Log"}
+    If log_Init{"CON:0/19/1200/200/AmiBlitz3 Log"} = 0 
+      log_Init{"CON:0/19/640/200/AmiBlitz3 Log"}
+    EndIf
   EndIf
 
   log_mode.b = #log_toconsole
@@ -6913,6 +6937,8 @@ Return
       newline$ = StripTrail$(newline$,@" ")
       newline$ = PED_TokenizeText{newline$}
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
+      log_Print{"result for new line:"}
+       !log_HexDump{*newLine, *newLine\strLength + 8}
       PED_ReplaceCurrentSourceLine{*newLine}
    
       ; -- print the tokenized source line if tokenizing
@@ -8860,8 +8886,7 @@ Return
       strline$ = Peek.s(\CurrentSourceLine + 9)
     EndIf
  
-    If Instr(strline$,";")
-      strline$ = StripLead$(strline$,@" ")
+    If FLen(strline$) > 0
       If Left$(strline$,1) = ";"
         strline$ = UnRight$(strline$,1)
         newline$ = PED_TokenizeText{strline$}
@@ -10127,6 +10152,9 @@ USEPATH ped\ptrCurrentSourceData
   ;log_Print{"mousebutton released in source, qualifier: " + Hex$(mqualifier) }
   ;log_Print{"EndX: " + Str$(\LinePosEndX)+ " EndY: " + Str$(\LinePosEndY)}
 
+  ;-- correct positions, if mousepointer was outside of source area!
+  If \LinePosEndY < 0 Then \LinePosEndY = 0
+
   ;-- todo: add hardfold support (compare with old asm code at this place!
   ped\foldNumber = 0
 
@@ -10175,6 +10203,7 @@ USEPATH ped\ptrCurrentSourceData
       PED_UpdateStatusArea{#STATUS_SCROLLERS}
   Else
     ;-- it was just a click, so remove the start blockmark and restore 
+    log_Print{"just a click, remove initial blockmark!"}
     PED_DrawBlock{bmark}
     !PED_ResetBlockflag
 
@@ -10613,7 +10642,7 @@ End Function
     JL_0_5F72:
     SUBQ.w #1,D1
     BPL.b JL_0_5F68
-      ADDQ.w #4,A7                     ; Stack richten, weil da A1 drin stand
+      ADDQ.w #4,A7                     ; adjust stack as we put A1 into it
       CLR.b (A1)
       MOVEQ.l #$01,D5                  ; only spaces in string, so return length 1 as we dont store only 1 space
       RTS
@@ -10627,12 +10656,10 @@ End Function
   JL_0_5F88:
     MOVE.b (A2)+,D2
 
-    CMP.b #$22,d2                      ; ------------------ check for string "
-    BNE 'l10
+    CMP.b #$22,d2 : BNE 'l10           ; ------------------ check for string "
       NOT.b instring2
    'l10
-    TST.b instring2
-    BNE 'l11
+    TST.b instring2 : BNE 'l11
       BCLR #$7,D2                      ; remove tokenflag in string
    'l11
 
@@ -10701,12 +10728,10 @@ End Function
 
     JSR copyD2toA1
     MOVE.b (A2)+,D2
-    CMP.b #$22,d2
-    BNE 'l10
+    CMP.b #$22,d2 : BNE 'l10
       NOT.b instring2
    'l10
-    TST.b instring2
-    BNE 'l11
+    TST.b instring2 : BNE 'l11
       BCLR #$7,D2                      ;morechar
    'l11
     CMP.b comByte_QuotationIdentifier,D2
