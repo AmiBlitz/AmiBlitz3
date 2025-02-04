@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.11
-; NumberOfBuilds  = 511
+; NumberOfBuilds  = 517
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 4924
-; CursorColumn    = 61
+; CursorLine      = 30696
+; CursorColumn    = 37
 ; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -77,6 +77,7 @@
 ; Max Chunky      = 20
 ; Max Stencil     = 5
 ; Max XBSound     = 10
+; Max Window      = 25
 ; /XTRA
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
@@ -257,6 +258,21 @@ SHARED CLIMode, cli_verbose
   End If
 End Statement
 
+Statement log2PED_HexDump{maddr.l, size.w}
+  For imh.l = 0 To size Step 8
+    memaddr.l = maddr + imh
+    memdata.l = Peek.l(memaddr)
+    memdata2.l= Peek.l(memaddr + 4)
+
+    logtxt$ = Hex$(memaddr-maddr) + " (" + LSet$(Str$(imh),4) + ") # "
+    logtxt$ + Hex$(memaddr) + ": " + Hex$(memdata)+" "+Hex$(memdata2)+"  "+CharStream{Peeks$(memaddr,8)}+" "
+    logtxt$ + Str$(memdata) + "  " + Str$(memdata2)
+    log2PED{logtxt$}
+  Next
+End Statement
+
+
+
 
 .TOOLTYPES
 ; --
@@ -342,7 +358,9 @@ config\OnePassCompiling = dos_GetToolState{"ONEPASSCOMPILING"}
 
 
 ; -- LOCALIZATION
-XINCLUDE "translation.include.ab3"      ; used by CLIModeSupport, added here as it needs propriatary libraries. LIBS:-assign is added right before
+; -- used by CLIModeSupport, added here as it needs propriatary libraries. 
+; -- LIBS:-assign is added right before
+XINCLUDE "translation.include.ab3"      
 If dos_GetToolState{"DISABLE_LOCALIZATION"}  = -1
   config\localization = False
 Else
@@ -894,35 +912,28 @@ Macro test_for_literal
 End Macro
 
 
-Function.s Get_Libinfo{addr_libnum.l}
-  ; diese Funktion holt aus der nativen lib im Speicher den ersten Tokennamen
-  lib_ab2.b = False : lib_os.b = False
-  addr_counter.l = addr_libnum
-  skip.l = 0
-  If addr_counter=0
+Function.s Get_Libinfo{addr_libdata.l}
+  ;-- diese Funktion holt aus der nativen lib im Speicher den ersten Tokennamen
+  If addr_libdata = 0
     error{"INTERNAL: \\__THIS_FUNCTION: Invalid pointer!"}
     Function Return ""
   End If
-;  runner.l = 0
-;  !cout{Hex$(addr_counter)}
+
+  lib_ab2.b = False : lib_os.b = False
+  skip.l = 0
+  addr_counter.l = addr_libdata + 4 ;start after libnum, maybe better start at $80
   Repeat
     mem.l = Peek.l(addr_counter)
-;    If (runner MOD 8 = 0) AND (runner < $80)
-;        !cout{Hex$(addr_counter)+": "+Hex$(mem) + " " + Hex$(Peek.l(addr_counter + 4))+"   "+Hex$(mem LSR 16)}
-;    EndIf
-;    runner + 2
     addr_counter + 2
-    If (mem = $0000ffff) Then lib_ab2= True : skip = 8
+    If (mem = $0000ffff) Then lib_ab2 = True : skip = 8
     If (mem LSR 16) = $ffe2
-;      !cout{"found."}
       lib_os = True
       skip = 10
-      If Peek$(addr_counter+skip) = "" Then skip + 4
+      If Peek$(addr_counter + skip) = "" Then skip + 4
     EndIf
-  Until (lib_ab2=True OR lib_os = True) OR (addr_counter>addr_libnum + $400)
-  ;!cout{Hex$(addr_libnum),Peek$(addr_counter + skip),Peek$(addr_counter + skip+1),Peek$(addr_counter + skip+2)   }
-  If (addr_counter>addr_libnum + $400)
-;    !cout{"error"}
+  Until (lib_ab2 = True OR lib_os = True) OR (addr_counter > addr_libdata + $400)
+
+  If (addr_counter > addr_libdata + $400)
     Function Return ""
   Else
     Function Return Peek$(addr_counter + skip)
@@ -1159,7 +1170,7 @@ End Function
   !basic
 
   ; --
-  ; -- load all baselibs, utillibs, cslibs and userlibs
+  ; -- load all baselibs, utillibs, cslibs, oslibs and userlibs
   ; --
   log2PED{"Loading Blitzlibs...",3}
   Gosub scan_for_userlibs
@@ -9848,15 +9859,13 @@ uselib2:
 RTS
 
 
-findlibnoerr:
+findlibnoerr: ;d1: libnumber, returns D1: True if found, A1: address of blitzlib
   MOVEA.l libpointer,A1
 
  'loop
-    CMPA.w #$0,A1
-    BEQ.b 'rts
-      CMP.w $4(A1),D1
-      BEQ.w 'found
-        MOVEA.l (A1),A1
+    CMPA.w #$0,A1 : BEQ.b 'rts
+    CMP.w $4(A1),D1 : BEQ.w 'found
+    MOVEA.l (A1),A1
   BRA.w 'loop
  'found
   MOVEQ.l #-$01,D1
@@ -9864,27 +9873,22 @@ findlibnoerr:
 RTS
 
 
-.findlib:
-  ;find lib number d1 - return in a1
+.findlib:   ;d1: libnumber, return libpointer in a1
   ;
-  ; new >
   MOVEM.l d0/a2,-(a7)
   
+  ;-- search first in instructionTable (cache)
   MOVEQ #0,d0
   LEA instructionTable+4,a2
-  MOVE.w d1,d0
-  ASL.l #3,d0
-  MOVE.l 0(a2,d0.l),a1                                     ;*8
+  MOVE.w d1,d0 : ASL.l #3,d0                 ;*8
+  MOVE.l 0(a2,d0.l),a1                       
   CMP.l #0,a1
   BNE 'foundb
-    ; < new
+    ;-- libnum not found, so search the complete library list
     MOVEA.l libpointer,A1
    'loop
-      CMPA.w #$0,A1
-      BEQ.w noliberr
-
-      CMP.w $4(A1),D1
-      BEQ.w 'found
+      CMPA.w #$0,A1 :  BEQ.w noliberr
+      CMP.w $4(A1),D1 : BEQ.w 'found
 
       MOVEA.l (A1),A1
     BRA.w 'loop
@@ -9986,9 +9990,10 @@ RTS
 ; < new
 
 JUMP_writeword JMP writeword
+
 ptr_EndOfLibs.l = 0
 
-Function.l load_libsfile{libfilename.s, libpointer.l, mempool.l}
+Function.l load_biglibsfile{libfilename.s, libpointer.l, mempool.l}
 SHARED ptr_EndOfLibs.l
 
   If libfilename <> ""
@@ -10053,7 +10058,7 @@ End Function
 .load_all_libraries:
   tempmapping$ = dos_AddPart{config\path_system,"token_mapping_userlibs.txt"}
   dos_Delete{tempmapping$}
-  fid.l = file_Open{tempmapping$,#file_forcewrite}
+  tokmapfid.l = file_Open{tempmapping$,#file_forcewrite}
 
   ;-- load baseLibs
   ;!cout{"baseLibs"}
@@ -10062,7 +10067,7 @@ End Function
     If libdata\size_baselibs < 0
       error{"BASELIBS [" + config\path_baselibs + "] not found, none of the stored functions will be available."}
     Else
-      libdata\ptr_baselibs = load_libsfile{config\path_baselibs,?libpointer,Peek.l(?mempool)}
+      libdata\ptr_baselibs = load_biglibsfile{config\path_baselibs,?libpointer,Peek.l(?mempool)}
     EndIf
   Else
     ptr_EndOfLibs = ?libpointer
@@ -10075,7 +10080,7 @@ End Function
     If libdata\size_utillibs < 0
       error{"UTILLIBS [" + config\path_utillibs + "] not found, none of the stored functions will be available."}
     Else
-      tmp_mem.l = load_libsfile{config\path_utillibs,ptr_EndOfLibs,Peek.l(?mempool)}
+      tmp_mem.l = load_biglibsfile{config\path_utillibs,ptr_EndOfLibs,Peek.l(?mempool)}
       libdata\ptr_utillibs = tmp_mem
     End If
   EndIf
@@ -10087,7 +10092,7 @@ End Function
     If libdata\size_oslibs < 0
       error{"OSLIBS [" + config\path_oslibs + "] not found, none of the stored functions will be available."}
     Else
-      tmp_mem.l = load_libsfile{config\path_oslibs,ptr_EndOfLibs,Peek.l(?mempool)}
+      tmp_mem.l = load_biglibsfile{config\path_oslibs,ptr_EndOfLibs,Peek.l(?mempool)}
       libdata\ptr_oslibs = tmp_mem
     End If
   EndIf
@@ -10099,14 +10104,14 @@ End Function
     If libdata\size_cslibs < 0
       error{"CSLIBS [" + config\path_cslibs + "] not found, none of the stored functions will be available."}
     Else
-      tmp_mem.l = load_libsfile{config\path_cslibs,ptr_EndOfLibs,Peek.l(?mempool)}
+      tmp_mem.l = load_biglibsfile{config\path_cslibs,ptr_EndOfLibs,Peek.l(?mempool)}
       libdata\ptr_cslibs = tmp_mem
     End If
   EndIf
 
   libdata\ptr_userlibs = ptr_EndOfLibs
   Poke.l ptr_EndOfLibs,0  ; setting pointer to next lib to 0
-
+ 
 .load_userlibs:
   log2PED{"scanning userlibs ..."}
   ResetList userlibslist()
@@ -10119,72 +10124,32 @@ End Function
         log2PED{"loading userlib [" + userlib_filename$ + "]"}
         If dos_GetExt{Peek.s(&fib\fib_FileName)} <> "info"
           userlib_filename$ = dos_AddPart{config\path_userlibs,Peek.s(&fib\fib_FileName)}
-          Gosub open_userlibfile
-        EndIf
+          Gosub read_userlibsfile
+        EndIf 
       EndIf
       UnLock_ tmp_lock
     EndIf
   Wend
   If tmp_userlibspointer.l <> 0 Then Poke.l tmp_userlibspointer,0    ; setting pointer to next lib to 0
 
-  If fid<>-1
-    file_Close{fid}      ; close temp_mapping file opened above
-    fid = -1
+  ;-- close temp_mapping file opened above
+  If tokmapfid <> -1
+    file_Close{tokmapfid}
+    tokmapfid = -1
   EndIf
-  ;!cout{"process libs"}
   !asm
 BRA.w process_libraries
 
 
-.open_userlibfile:  ; was loadalib  org source
-  If tmp_userlibspointer.l = 0 Then tmp_userlibspointer.l = libdata\ptr_userlibs
-
-  ;!cout{"userlibspointer at: " + Hex$(tmp_userlibspointer)}
-  ulfh.l = Open_(&userlib_filename$,#HUNK_RELOC_16__MODE_OLDFILE)
-  If ulfh
-    Read_ ulfh,?optstuff,$20                               ; 32 bytes lesen
-    datachunk_size.l = Peek.l(?optstuff+28) LSL 2          ; calculate datachunk size
-
-    datachunk_ptr.l  = AllocPooled_ (Peek.l(?mempool),datachunk_size)    ; read datachunk from library
-    Read_ ulfh,datachunk_ptr,datachunk_size
-
-    Poke.l tmp_userlibspointer, datachunk_ptr                      ; tmp_mem > (A3)
-    ;!cout{"added library pointer to liblist at " + Hex$(tmp_userlibspointer) + " datachunksize: " + Str$(datachunk_size) }
-    Poke.l datachunk_ptr + $6, datachunk_size
-    Poke.l datachunk_ptr + $20,0
-
-    ; write libdata to tokenreference
-    If fid<>-1
-      addr_libnum.l = datachunk_ptr + 4
-      libnum.w = Peek.w(addr_libnum)
-      currentlib$ = LSet$(Peek.s(&fib\fib_FileName),30) + ";" + LSet$(Get_Libinfo{addr_libnum},30) ;+";"+Str$(libnum))
-      file_WriteLine{fid,currentlib$}
-    EndIf
-
-    If Read_(ulfh,?optstuff,$0C) = $0C                            ; read 12 bytes
-      udata.l = Peek.l(?optstuff + 4)                             ; length of reloc info (lsl2)
-      Poke.l datachunk_ptr + $20, udata
-      udata = udata LSL 2
-      tmp_mem2.l = AllocPooled_ (Peek.l(?mempool), udata)
-      Poke.l datachunk_ptr + $24, tmp_mem2
-      Read_ ulfh, tmp_mem2, udata
-    EndIf
-    Close_ ulfh
-
-    tmp_userlibspointer = datachunk_ptr                            ; tmp_mem > A3
-  Else
-    error{"could not open userlibfile: " + userlib_filename$}
-  EndIf
-Return
 
 
 ; --
 ; -- prepare userlibs and adding to librarylist
 .process_libraries:   ;was fixlibs org source
-    ;fill in blanks in lib list
-    ;
-    ;tokens, links etc
-    ;
+  ;-- fill in blanks in lib list
+  ;--
+  ;-- tokens, links etc
+  ;--
   CLR.w number_of_objects
   MOVEA.l end_of_tokenlist,A3
   MOVEA.l libpointer,A2
@@ -10203,14 +10168,12 @@ Return
       LEA temp1,A4
 
      'loop2
-        MOVE.w (A1),D0
-        BMI.w 'next
+        MOVE.w (A1),D0 : BMI.w 'next
         MOVE.l A1,(A4)
         MOVEA.l A1,A4      ;last link for subs
         ADDQ.w #2,A4
         ADDQ.w #6,A1
-        CMP.w #$8,D0
-        BEQ.w 'addtoke
+        CMP.w #$8,D0 : BEQ.w 'addtoke
           ANDI.w #$F,D0
           BNE.w 'something
             ;
@@ -10219,10 +10182,10 @@ Return
             BSR.w skiplibreg
             LEA $C(A1),A1
             ADDQ.w #1,D7   ;in case it's a user lib
-      BRA.w 'loop2
+            BRA.w 'loop2
      'something
-      BTST #$2,D0
-      BEQ.w 'notalib
+
+      BTST #$2,D0 : BEQ.w 'notalib
         ADDQ.w #4,A1
        'alibloop
           TST.b (A1)+
@@ -10230,42 +10193,39 @@ Return
         BSR.w aligna1
         BRA.w 'addtoke
      'notalib
-      ;process standard function or statement
-     'stloop
-        MOVE.w (A1)+,D0
-        BMI.w 'addtoke
-          ANDI.w #$FF,D0
-          ADDA.w D0,A1
-          BSR.w aligna1
-          BSR.w skiplibreg
-          LEA $C(A1),A1
-      BRA.w 'stloop
-
+       ;--process standard function or statement
+       'stloop
+          MOVE.w (A1)+,D0
+          BMI.w 'addtoke
+            ANDI.w #$FF,D0
+            ADDA.w D0,A1
+            BSR.w aligna1
+            BSR.w skiplibreg
+            LEA $C(A1),A1
+        BRA.w 'stloop
      'addtoke
+
         MOVE.l A1,(A3)
         MOVEA.l A1,A3
         ADDQ.w #4,A1
         ;
         MOVE.w D7,(A1)+
-     'tokeloop
-        TST.b (A1)+
-      BNE.w 'tokeloop
-
-     'tokeloop2
-        TST.b (A1)+
-      BNE.w 'tokeloop2
-      BSR.w aligna1
-      ADDQ.w #1,D7
+       'tokeloop
+          TST.b (A1)+
+        BNE.w 'tokeloop
+       'tokeloop2
+          TST.b (A1)+
+        BNE.w 'tokeloop2
+        BSR.w aligna1
+        ADDQ.w #1,D7
       BRA.w 'loop2
-
    'next
-    TST.w $4(A2)
-    BMI.w 'notulib
+
+    TST.w $4(A2) : BMI.w 'notulib
       MOVE.w D7,$10(A2)
    'notulib
     ADDQ.w #2,A1
-    TST.l (A1)+
-    BEQ.w 'nomax
+    TST.l (A1)+ : BEQ.w 'nomax
       ADDQ.w #1,number_of_objects
       LEA $16(A1),A1
    'nomax
@@ -10273,37 +10233,34 @@ Return
     MOVE.l A1,$12(A2)
     MOVEA.l (A2),A2
   BRA.w tokenloop
-
   tokendone:
+
   CLR.l (A3)
+
+
   ; new >
-  MOVE.l a7,stackaddr       ; added to prevent a possible crash in CLIMode if #continue_on_error is set  tomsmart1
+  ;-- added to prevent a possible crash in CLIMode if #continue_on_error is set
+  MOVE.l a7,stackaddr       
   ; < new
   MOVE.l A7,errstack
   MOVE.l #'cont,errcont
   MOVE.w #$FFFF,ezerr       ; was -1
 
-  MOVE.w #$FFFA,D1          ;#65530
-  BSR.w findlib             ;get address of mem lib
+  MOVE.w #$FFFA,D1 : BSR.w findlib          ;#65530, memlib
   MOVE.l A1,tempvm
 
-  MOVE.w #$FDA7,D1          ;#64935,
-  BSR.w findlib
+  MOVE.w #$FDA7,D1 : BSR.w findlib          ;#64935,
   MOVE.l A1,ffplib
 
  'cont
 RTS
-
-
 ffplib:  Ds.l 1
 
 
-skiplibreg:
-    TST.w (A1)+
-    BEQ.w 'done
+.skiplibreg:
+  TST.w (A1)+ : BEQ.w 'done
     ADDQ.w #2,A1
- BRA.w skiplibreg
-
+  BRA.w skiplibreg
  'done
 RTS
 
@@ -10322,7 +10279,6 @@ aligna1:
   EXG.l D0,A1
 RTS
 
-
 .free_userlibs:       ; was freeblitzlibs org source
   ; -- free all userlibs loaded
   If libdata\ptr_userlibs <> 0
@@ -10338,7 +10294,6 @@ RTS
     ClearList userlibslist()
   EndIf
 Return
-
 
 .free_blitzlibs:                                           ;freelibs org source    ;free up all memory used by libs
   If libdata\size_baselibs Then FreePooled_ Peek.l(?mempool),libdata\ptr_baselibs,libdata\size_baselibs
@@ -10358,31 +10313,19 @@ Return
   MOVEA.l _execbase,A6
 
  'loop
-    CMPA.w #$0,A2
-    BEQ.w 'done
+    CMPA.w #$0,A2 : BEQ.w 'done
     MOVEQ.l #$00,D0
     MOVE.w $8(A2),D0
     BEQ.w 'skip
-    MOVEA.l $4(A2),A1
-    ; new >
-    MOVE.l mempool,a0
-    JSR _FreePooled(A6)
-    ; < new
-    ;jsr freemem(a6)
-
- 'skip
+      MOVEA.l $4(A2),A1
+      MOVE.l mempool,a0 : JSR _FreePooled(A6)
+   'skip
     MOVEA.l A2,A1
     MOVEA.l (A2),A2
     MOVEQ.l #$00,D0
     MOVE.b $C(A1),D0
-    ; new >
-    MOVE.l mempool2,a0
-    JSR _FreePooled(A6)
-    ; < new
-    ;jsr freemem(a6)
-
- BRA.w 'loop
-
+    MOVE.l mempool2,a0 : JSR _FreePooled(A6)
+  BRA.w 'loop
  'done
 RTS
 
@@ -28996,7 +28939,7 @@ RTS
   ;-- cli output
   NPrint "\\1b[1m",!TRANS{"Compiler Error"}," #",Peek.l(?errorcounter)," in <",errorfile,">\\1b[0m: "
   NPrint "Line ",errorline,": ",error_type.s
-  If error_souce<>"NULL" Then NPrint "  --> ", error_source.s
+  If error_source<>"NULL" Then NPrint "  --> ", error_source.s
   !asm
   MOVE.l (a7)+,a0
 RTS
@@ -30753,6 +30696,95 @@ RTS
   End If
   !asm
 RTS
+
+
+
+.read_userlibsfile:
+  If tmp_userlibspointer.l = 0 Then tmp_userlibspointer.l = libdata\ptr_userlibs
+  ;log2PED{"userlibspointer at address: " + Hex$(tmp_userlibspointer)}
+
+  ulfh.l = Open_(&userlib_filename$,#HUNK_RELOC_16__MODE_OLDFILE)
+  If ulfh
+    ;-- read header data
+    Read_ ulfh,?optstuff,$20                               ; read first 32 bytes
+    
+    ;-- calculate datachunk size and allocate memory for it
+    datachunk_size.l = Peek.l(?optstuff + 28) LSL 2
+    datachunk_ptr.l  = AllocPooled_ (Peek.l(?mempool), datachunk_size)    
+
+    ;-- read datachunk from library
+    Read_ ulfh,datachunk_ptr, datachunk_size
+    ;log2PED_HexDump{datachunk_ptr,32}
+
+    ;-- add blitzlib to internal blitzlib list    
+    Poke.l tmp_userlibspointer, datachunk_ptr                     ; add address to linked list
+    tmp_userlibspointer = datachunk_ptr                           ; set list to current entry
+
+    Poke.l datachunk_ptr +  $6, datachunk_size                    ; write size of library into structure
+    Poke.l datachunk_ptr + $20, 0
+
+    If Read_(ulfh,?optstuff,$0C) = $0C                            ; read additional 12 bytes
+      udata.l = Peek.l(?optstuff + 4)                             ; length of reloc info (lsl2)
+      Poke.l datachunk_ptr + $20, udata
+      udata = udata LSL 2
+      tmp_mem2.l = AllocPooled_ (Peek.l(?mempool), udata)
+      Poke.l datachunk_ptr + $24, tmp_mem2
+      Read_ ulfh, tmp_mem2, udata
+    EndIf
+    Close_ ulfh
+
+    ;-- check if library with that libnumber is already in librarylist
+    ;-- if so replace it with the loaded one
+    libnum.w = Peek.w(datachunk_ptr + 4)
+    firsttoken.s = Get_Libinfo{datachunk_ptr + 4}
+
+    tmpfound.b = False
+    prevaddr.l = 0
+    tmpaddr.l = Peek.l(?libpointer)
+    While (tmpaddr <> 0) AND (tmpfound = False)
+      If Peek.w(tmpaddr + 4) = libnum
+        tmpfound = True
+      Else
+        prevaddr = tmpaddr
+        tmpaddr = Peek.l(tmpaddr)
+      EndIf
+    Wend
+
+    If tmpfound
+      log2PED{".. library with #" + Str$(libnum) + " already in library list, will replace the existing one", #log_warning}
+      log2PED{".. old prev lib #" + Str$(Peek.w(prevaddr + 4))}
+      log2PED{".. old next lib #" + Str$(Peek.w(Peek.l(tmpaddr) + 4))}
+      ;-- HACK: remove the old lib out of list, by removing the entry from linked list
+      ;-- lib will be still in memory and not being freed
+      Poke.l prevaddr, Peek.l(tmpaddr)
+    Else
+      ;-- write name and first token to tokenmapping file to make PED identify the lib with its number
+      If tokmapfid <> -1
+        log2PED{".. adding library #" + Str$(libnum) + " with first token <" + firsttoken + "> to token mapping file"}
+        currentlib$ = LSet$(Peek.s(&fib\fib_FileName),30) + ";" 
+        currentlib$ + LSet$(firsttoken,30)
+        file_WriteLine{tokmapfid, currentlib$}
+      EndIf
+    EndIf
+
+    ; just for debugging: list several libnuns of library list   
+    ;    tmpfound.b = False
+    ;    tmpaddr.l = Peek.l(?libpointer)
+    ;    While (tmpaddr <> 0)
+    ;      libnum_next.w = 0
+    ;
+    ;      libnum.w = Peek.w(tmpaddr + 4)
+    ;      If Peek.l(tmpaddr) <> 0 Then libnum_next.w = Peek.w(Peek.l(tmpaddr) + 4)
+    ;      If libnum = 62 OR libnum=138 OR libnum = 120 Then log2PED{Str$(libnum) + " -> " + Str$(libnum_next)}
+    ;      If libnum = 138
+    ;        tmpfound + 1
+    ;      EndIf
+    ;      tmpaddr = Peek.l(tmpaddr)
+    ;    Wend
+  Else
+    error{"could not open userlibfile: " + userlib_filename$}
+  EndIf
+Return
 
 
 ;------------------------------- for debugging purpose only ------------------
