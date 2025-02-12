@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.11
-; NumberOfBuilds  = 3441
+; NumberOfBuilds  = 3444
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,7 +30,7 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1015
+; CursorLine      = 10071
 ; CursorColumn    = 1
 ; LabelSearch     = "menu_setting"
 ; LabelRemark     = 0
@@ -7191,7 +7191,7 @@ Return
     If exit_eventloop.b <> 0
       Gosub close_popupwindow
       
-      ;log_Print{"***** executing actions hold back ... "}
+      ;log_Print{"***** executing actions hold back ... " + Hex$(last_vankey)}
       Select last_vankey
       Case #VANILLAKEY_RETURN: PED_InsertReturn{}
       Case #VANILLAKEY_UP:     mqualifier.w = ped\ptrCurrentSourceData\QualifierStore : Gosub do_VANILLAKEY_UP
@@ -10111,7 +10111,7 @@ Return
 
 .event_leftmousebutton:
 USEPATH ped\ptrCurrentSourceData
-  log_Print{"event left mousebutton"}
+  ;log_Print{"event left mousebutton, qualifier: " + Hexw$(pedMessage\_Qualifier AND NOT $C000)}
 
   ;-- check if mouse is in source area and there is an existing sourceline
   PED_GetMousePos{mousePos}
@@ -10126,21 +10126,32 @@ USEPATH ped\ptrCurrentSourceData
   If \BlockEndY <> $FFFFffff
     ;log_Print{"remove block from source area."}
     PED_DrawBlockmark{}
-    !PED_ResetBlockflag    
+    !PED_ResetBlockflag
   EndIf
 
   ;-- set initial blockdimensions
   storeX.w = mousePos\textX + \ColumnsOffset
   storeY.l = mousePos\textY + \DisplayLineOffset
+
   If storeX > #MAX_Columns- 1 Then storeY = #MAX_Columns - 1
   If storeY > \TotalLines - 1 Then storeY = \TotalLines - 1
-  \LinePosStartX = storeX
-  \LinePosStartY = storeY
-  \LinePosEndX = \LinePosStartX
-  \LinePosEndY = \LinePosStartY
+
+  If (pedMessage\_Qualifier AND NOT $C000) AND $FFFF <> 0
+    log_Print{"shift: reuse of last click in source! "}
+    \LinePosStartX = ostoreX.w
+    \LinePosStartY = ostoreY.l
+    \LinePosEndX = storeX
+    \LinePosEndY = storeY
+    bmark\xMin = ostoreX - \ColumnsOffset, ostoreY - \DisplayLineOffset, storeX - \ColumnsOffset, storeY - \DisplayLineOffset
+  Else
+    \LinePosStartX = storeX
+    \LinePosStartY = storeY
+    \LinePosEndX = \LinePosStartX
+    \LinePosEndY = \LinePosStartY
+    bmark\xMin = storeX - \ColumnsOffset, storeY - \DisplayLineOffset, storeX - \ColumnsOffset, storeY - \DisplayLineOffset    
+  EndIf
 
   ; -- draw initial blockmark
-  bmark\xMin = storeX - \ColumnsOffset, storeY - \DisplayLineOffset, storeX - \ColumnsOffset, storeY - \DisplayLineOffset
   DEFTYPE.bmark storebmark
   CopyType bmark, storebmark
   PED_DrawBlock{bmark}
@@ -10372,6 +10383,11 @@ USEPATH ped\ptrCurrentSourceData
 
   ;-- set cursor position to beginning of block mark
   \Column = \LinePosEndX - \ColumnsOffset
+
+  ;-- store last click position for next event
+  ostoreX = \LinePosEndX
+  ostoreY = \LinePosEndY
+
 
   ;-- if a block is marked, then quit routine
   If (\LinePosStartX <> \LinePosEndX) OR (\LinePosStartY <> \LinePosEndY)
@@ -12591,21 +12607,18 @@ Return
   sourceWindow\WinLeft = sourceWindow\win\LeftEdge
 
   ;-- update only if mousebutton has been released
-  If pedMessage\_Qualifier <> $FFFFC000
+  If pedMessage\_Qualifier <> #IEQUALIFIER_RELATIVEMOUSE|#IEQUALIFIER_LEFTBUTTON
     sourceWindow\WinWidth = sourceWindow\win\Width
     sourceWindow\WinHeight = sourceWindow\win\Height
     Gosub resize_sourcewindow
-    FlushEvents
   EndIf
 Return
 
 .resize_sourcewindow:
-  PED_CursorOff{}
   Gosub calc_SourceWindowDimensions
   Gosub allocate_textbuffer
   Gosub clear_sourcewindow
   PED_RedrawSource{}
-  PED_CursorOn{}
 Return
 
 
@@ -12906,18 +12919,19 @@ Return
         EndIf
         PED_GetIntuiMessage{False}
       Until exit_gadgetloop = True
-      PED_CursorOn{}
 
     Case #GID_YPROP
+      ;-- maybe triggered by a wheel up/down event of WinUAE
       If ped\ptrCurrentSourceData\DisplayLineOffset < ped\ptrCurrentSourceData\TotalLines
-        ped\ptrCurrentSourceData\LinePosStartX = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
+        
+        tmpCurrentline.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
 
         Repeat
           If pedMessage\_Class <> 0
             *g.Gadget = pedMessage\_IAddress
 
             If pedMessage\_Class <> #IDCMP_GADGETUP
-              GetAttr_ #PGA_Top,sourceWindow\vertiprop,&slider_top.l
+              GetAttr_ #PGA_Top,sourceWindow\vertiprop, &slider_top.l
               totallines.l = ped\ptrCurrentSourceData\TotalLines
               If totallines >= #max_slider_res
                 !mul48f{slider_top,totallines,#max_slider_res,realline.l}
@@ -12926,7 +12940,7 @@ Return
               EndIf
               realline + ped\ptrCurrentSourceData\DisplayLine
 
-              If ped\ptrCurrentSourceData\LinePosStartX <> realline
+              If realline <> tmpCurrentline
                 ped\ptrCurrentSourceData\LinePosStartX = realline
                 PED_GotoLine{realline}
                 PED_UpdateStatusArea{#STATUS_CURSOR|#STATUS_SCROLLERS}
@@ -12943,8 +12957,8 @@ Return
           EndIf
           PED_GetIntuiMessage{False}
         Until exit_gadgetloop = True
+        
         ;log_Print{"exit proploop"}
-        PED_CursorOn{}
       EndIf
     End Select
 Return
@@ -13092,8 +13106,8 @@ Return
   Case #RAWKEY_RETURN
     last_vankey = #VANILLAKEY_RETURN
 
+  ;-- check for F-Keys / CURSOR / or RAWKEY events provided by FreeWheel to map mouse wheel events to keys
   Default
-  ;-- check for F-Keys / CURSOR
     If (pedMessage\_Code => #RAWKEY_F1) AND (pedMessage\_Code <= #RAWKEY_F10)
       last_vankey = pedMessage\_Code + $31 ; convert F-KEYs to vanillakey
     Else If (pedMessage\_Code => #RAWKEY_UP) AND (pedMessage\_Code <= #RAWKEY_LEFT)
@@ -13624,14 +13638,34 @@ Return
 
 .wheel_down:
   Gosub storeline
-  PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine + pedconfig\wheelStep}
+  log_Print{"wheel down"}
+  If ped\ptrCurrentSourceData\DisplayLineOffset > 0 
+    PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine + pedconfig\wheelStep}
+  Else
+    If ped\ptrCurrentSourceData\DisplayLine + pedconfig\wheelStep < ped\ptrCurrentSourceData\TotalLines
+      PED_CursorOff{}
+      ped\ptrCurrentSourceData\DisplayLine + pedconfig\wheelStep
+      PED_CursorOn{}
+    EndIf
+  EndIf
+
   PED_UpdateStatusArea{#STATUS_SCROLLERS}
 Return
 
 
 .wheel_up:
   Gosub storeline
-  PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine - pedconfig\wheelStep}
+  log_Print{"wheel up"}
+  If ped\ptrCurrentSourceData\DisplayLineOffset > 0 
+    PED_GotoLine{ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine - pedconfig\wheelStep}
+  Else
+    If ped\ptrCurrentSourceData\DisplayLine > pedconfig\wheelStep
+      PED_CursorOff{}
+      ped\ptrCurrentSourceData\DisplayLine - pedconfig\wheelStep
+      PED_CursorOn{}
+    EndIf
+  EndIf
+
   PED_UpdateStatusArea{#STATUS_SCROLLERS}
 Return
 
@@ -13642,7 +13676,7 @@ Return
 Return
 
 .handle_event_extendedmouse:
-  If (pedMessage\_Code & $FFFF) = #IMSGCODE_INTUIWHEELDATA
+  If (pedMessage\_Code & $FFFF) = #IMSGCODE_INTUIWHEELDATA  
     log_Print{"extended mouse: wheelevent"}
     *wd.IntuiWheelData  = pedMessage\_IAddress
     ; vertical move
