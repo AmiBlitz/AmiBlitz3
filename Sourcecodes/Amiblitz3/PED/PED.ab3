@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.9.11
-; NumberOfBuilds  = 3430
+; NumberOfBuilds  = 3441
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 10520
-; CursorColumn    = 6
-; LabelSearch     = "t ped_printtext"
+; CursorLine      = 1015
+; CursorColumn    = 1
+; LabelSearch     = "menu_setting"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -451,6 +451,7 @@ NEWTYPE.pedconfig
   ask_before_quit.b
   load_last_source.b
   remember_saved.b
+  create_backups.b
 
   no_display_beep.b
   use_pubscreen.b
@@ -516,8 +517,8 @@ NEWTYPE.pedconfig
   menuFile.s
   winprefsFile.s
 
-  HelpIndexFile.s
-  HelpIndexCacheFile.s
+  HelpIndexTextFile.s
+  HelpIndexBinFile.s
   TokenHashMapFile.s
 
   mainDir.s
@@ -735,10 +736,10 @@ NEWTYPE.project
   value_syntax.b
   value_optimize.b
 End NEWTYPE
-DEFTYPE.project ab2_project
+DEFTYPE.project ab3_project
 Dim tempproject$(#MAX_SOURCEFILES,1)
-MaxLen project_changelog$         = 1024
-
+MaxLen project_changelog.s = 1024
+project_filename.s = ""
 
 Dim rememberfiles$(5)
 
@@ -816,12 +817,6 @@ NEWTYPE.templates
 End NEWTYPE
 Dim List templates.templates(0)
 
-; temporary list for browsefile creation
-NEWTYPE.dirs
-  name.s
-End NEWTYPE
-Dim List dirs.dirs(0)
-
 Dim diag_lab$(15)
 Dim diag_val$(15)
 
@@ -895,44 +890,26 @@ Until key_char$ = ""
 key_chars:
 Data.s "=",":","<",">","+","-","/","*","&","|",";",""
 
-CaseSense Off
-
-browse_macros.l           = Off
-browse_instructions.l     = On
-browse_includes.l         = Off
-
-; for listtype window
-Dim pos2(15),pos$(15),postype$(15)
-
-MaxLen a$                 = 300      ;need for read .xtra
-a$ = ""
-
 
 ;-- for Macro PED_LoadSsource
 loadsourcefilename.s = ""
 loadnewtab.b = False
 loadchecktab.b = False
 loadcheckchanged.b = False
+;--
 
-messageErrorWriteFile.s = "Error writing file!"
+;-- for listtype window
+Dim pos2(15),pos$(15),postype$(15)
 
-MaxLen linebuff$          = 256
+MaxLen tmpStringVar.s     = 1024          ; used for different temporary things
+MaxLen tmpTokeStr.s       = #MAX_Columns  ; used in tokenize/detokenize functions
+MaxLen linebuff$          = 256           ; used in tokenize/detokenize functions
 
-MaxLen tsourcedir$        = 192
-MaxLen tincludedir$       = 192
-MaxLen thelpdir$          = 192
-MaxLen tautodocdir$       = 192
+WZListAdd list_Labels.List ," "
+WZListRemove list_usedBlitzLibs.List
 
-MaxLen tmp_string.s       = 1024                   ; used for passing strings to os-functions
-MaxLen tmpTokeStr.s       = #MAX_Columns
-
-WZListAdd list_labels.List ," "
-
-#Max_BlitzLibs             = 256                   ; added and set to 256 to replace wrong 255 hardcoded Array dimension because we use entry 0 to 255 and this are 256 entrys  tomsmart1
-Dim lib_mapping$(#Max_BlitzLibs,1)                 ; replaced the wrong 255 with the #Max_Blitzlibs Constant  tomsmart1
-Dim lib_check.b(#Max_BlitzLibs)                    ; replaced the wrong 255 with the #Max_Blitzlibs Constant  tomsmart1
-Dim tokentable.b(65536)
-
+#MAX_Blitzlibs             = 256
+Dim blitzlibMapping.s(#MAX_Blitzlibs,1)
 ; -------------------------------------- structs for source window
 NEWTYPE.pedMessage
   _Class.l
@@ -1092,6 +1069,45 @@ Statement WZ_CloseWindowAndRemoveMenu{wzwinname.s}
     EndIf
   EndIf
 End Statement
+
+Statement PED_SetPointerNormal{}
+SHARED sourceWindow, SourceWindowIDCMPFlags.l
+
+  If sourceWindow\win
+    If (ExecVersion > 38)
+      SetWindowPointerA_ sourceWindow\win, Tags(#WA_Pointer, Null, #TAG_END,Null)
+    EndIf
+
+    ;- reset to standard flags
+    ModifyIDCMP_ sourceWindow\win, SourceWindowIDCMPFlags
+  EndIf
+
+  WZ_UnlockAllOpenWindows{}
+End Statement
+
+Statement PED_SetPointerBusy{}
+SHARED sourceWindow, SourceWindowIDCMPFlags.l
+
+  If sourceWindow\win
+    If (ExecVersion > 38)
+      ;-- I the heck dont know, why this does NOT work:
+      ;SetWindowPointerA_ sourceWindow\win, Tags(#WA_BusyPointer,True, #TAG_END,Null)
+
+      SetWindowPointerA_ sourceWindow\win, ?taglist_pointer_busy
+    EndIf
+    ;--  only allow following flags to lock the sourcewin
+    ModifyIDCMP_ sourceWindow\win, #IDCMP_NEWSIZE|#IDCMP_REFRESHWINDOW|#WFLG_REPORTMOUSE
+  EndIf
+
+  WZ_LockAllOpenWindows{}
+  Statement Return
+
+  .taglist_pointer_busy:
+  Dc.l $80000098               ; #WA_BusyPointer
+  Dc.l $FFFFFFFF               ; TRUE
+  Dc.l $00000000               ; 0
+End Statement
+
 
 Function.l PED_AllocMem{memsize.l}
 SHARED ped
@@ -1254,18 +1270,18 @@ USEPATH sourceWindow
 
       ;-- check the name
       modifiedFlag.b = False
-      tmp_string.s = Peek.s(&*fileEntry\SourceName)
-      If tmp_string = "" Then tmp_string = "unnamed"
+      tmpStringVar.s = Peek.s(&*fileEntry\SourceName)
+      If tmpStringVar = "" Then tmpStringVar = "unnamed"
       If *fileEntry = ped\currentSourceEntry
         modifiedFlag = ped\ptrCurrentSourceData\SourceChanged
       Else
         modifiedFlag = *fileEntry\SourceChanged
       EndIf
-      If modifiedFlag Then tmp_string = "*" + tmp_string
+      If modifiedFlag Then tmpStringVar = "*" + tmpStringVar
 
 
       ;-- optionally draw indicator for more chars
-      If FLen(tmp_string) > bevelsize
+      If FLen(tmpStringVar) > bevelsize
         Move_ \win\RPort,bx2,by1
         For wp.w = by1 To by2-1 Step 3
           Move_ \win\RPort, bx2 - 1, wp + 1
@@ -1283,9 +1299,9 @@ USEPATH sourceWindow
 
       SetAPen_ \win\RPort, fcol
       SetBPen_ \win\RPort, bcol
-      tmp_string = Left$(tmp_string, bevelsize)
+      tmpStringVar = Left$(tmpStringVar, bevelsize)
       Move_ \win\RPort, xpos_text-2, ypos_text
-      Text_ \win\RPort, &tmp_string, FLen(tmp_string)
+      Text_ \win\RPort, &tmpStringVar, FLen(tmpStringVar)
 
 
       xpos_text = xpos_text + #bevelsize * \font\tf_XSize
@@ -2065,9 +2081,7 @@ End Function
 Statement PED_ShowMessage{textMessage.s,@target.b,@style.b}
   SHARED pedmessage,sourceWindow,AB3Pen()            ; has to be shared, because on exit of function the variable will be discarded
 
-  If sourceWindow\win;ActiveWindow
-    ;MaxLen pedmessage.s       = 96                     ; used for display the text area
-    ;pedmessage = textMessage
+  If sourceWindow\win
 
     If target = -1
       SetAPen_ sourceWindow\win\RPort,AB3Pen(#AB3_screenfill)
@@ -2579,7 +2593,7 @@ SHARED lev, newtype_found, quicktype, pos$(), postype$()
 End Function
 
 Function.s PED_GetLibname{libnum.w}
-  SHARED lib_mapping$()
+  SHARED blitzlibMapping()
   If libnum > 255 OR libnum < 0
     libname.s = ""
     Select libnum
@@ -2609,20 +2623,20 @@ Function.s PED_GetLibname{libnum.w}
     Case #rundebuglib     : libname = "rundebuglib"
     Case #errtraplib      : libname = "errtraplib"
     Default
-      libname = "unknown syslib #"+Str$(libname)
+      libname = "unknown syslib #" + Str$(libname)
     End Select
     Function Return libname
   Else
-    Function Return lib_mapping$(libnum,0)
+    Function Return blitzlibMapping(libnum,0)
   EndIf
 End Function
 
 Function.s PED_GetFirstTokenname{libnum.w}
-  SHARED lib_mapping$()
-  If libnum>255
+  SHARED blitzlibMapping()
+  If libnum > 255
     error{"Couldnot get Token of a syslib!"}
   Else
-    Function Return lib_mapping$(libnum,1)
+    Function Return blitzlibMapping(libnum,1)
   EndIf
 End Function
 
@@ -2873,7 +2887,8 @@ Function.b PED_Detokenize2Printbuffer{ptrOrgString.l}
 SHARED ped
 
   ;-- clear textBufferPrint
-  FillMem ped\ptrTextbufferPrint, #MAX_Columns, 0
+  ;FillMem ped\ptrTextbufferPrint, #MAX_Columns, 0
+  MemCls ped\ptrTextbufferPrint, #MAX_Columns, 0
 
   _strLen.w = Len(Peek.s(ptrOrgString))
   If _strLen
@@ -2919,13 +2934,15 @@ SHARED ped, sourceWindow
     tmpD3.w = 0
     textBufferPos.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
     If char <> ped\labelIdentifier Then Goto jump_into_it
-    Gosub copy_to_textBuffer
+    ;Gosub copy_to_textBuffer
+    Poke.b textBufferPos + tmpD2, char
     Repeat
       tmpD2 + 1
       char = Peek.b(ped\ptrTextbufferPrint + tmpD2)
       If char <> 0
 jump_into_it:
-        Gosub copy_to_textBuffer
+        ;Gosub copy_to_textBuffer
+        Poke.b textBufferPos + tmpD2, char
       End If
     Until char = 0
   EndIf
@@ -2945,79 +2962,358 @@ jump_into_it:
   Return
 End Statement
 
-
-
-NEWTYPE .HelpIndexCacheItem
-  name.s
-  lname.s
-  help.s
-  includefile.s
+;--WIP
+NEWTYPE.helpIndexIncludeFileItem
+  id.b
+  includeFileName.s
 End NEWTYPE
-Dim List HelpIndexCache.HelpIndexCacheItem(0)
+
+NEWTYPE.helpIndexItem
+  name.s
+  helpText.s
+  includeFileName.s
+End NEWTYPE
+Dim List HelpIndexCache.helpIndexItem(0)
+
+; Begin routines for function PED_BuildHelpIndex{}  ; moved the functions and statemend defination out of the build index rountine for a better overview  tomsmart1
+Function.l ab3_IsTokenChar{char.w}
+  If char>=@"a" AND char<=@"z" Then Function Return True
+  If char>=@"A" AND char<=@"Z" Then Function Return True
+  If char>=@"0" AND char<=@"9" Then Function Return True
+  If char=@"_" OR char=@"@" OR char=@"`" Then Function Return True
+  Function Return False
+End Function
+
+Statement writeentry{destfile.l, mode$,instruction$}
+SHARED pedconfig
+
+  ;#TOKEN_Function  = $8009
+  ;#TOKEN_Statement = $8008
+  ;#TOKEN_Object    = $80d7
+  ;#TOKEN_Macro     = $800d
+  ;#TOKEN_End       = $8002
+  ;#TOKEN_Return    = $8007
+
+  ; -- don't add it if it contains @H
+  If Instr(instruction$,"@H") Then Statement Return
+
+  ; -- token return found
+  If Instr(instruction$,Mki$(#TOKEN_Return)) Then Statement Return
+
+  ; -- token End found
+  If Instr(instruction$,Mki$(#TOKEN_End)) Then Statement Return
+
+  startpos.l = 0
+  Select mode$
+    Case "FUNC"
+      startpos = Instr(instruction$,Mki$(#TOKEN_Function))  + 2
+      i3.l = Instr (instruction$,".",startpos)
+      If (i3 < startpos+5) AND (i3 <> 0)
+        startpos = i3+1                              ; change it to 1 to make the test of spaces possible  tomsmart1
+
+         While Mid$(instruction$,startpos,1)<>" "    ; test if we have no space  so it is still the function type (newtype)  tomsmart1
+           startpos + 1
+         Wend
+
+      End If
+      If Instr(instruction$,"FAST",startpos)
+        startpos.l = Instr(instruction$,"FAST",startpos)    + 4
+      End If
+
+    Case "STAT"
+      startpos = Instr(instruction$,Mki$(#TOKEN_Statement)) + 2
+      If Instr(instruction$,"FAST",startpos)
+        startpos.l = Instr(instruction$,"FAST",startpos)    + 4
+      End If
+
+    Case "MACR"
+      startpos = Instr(instruction$,Mki$(#TOKEN_Macro))     + 2
+
+  End Select
+
+  ; -- get string positions --
+  instruction$ = dos_Trim{Mid$(instruction$,startpos)}
+
+  endpos.l  =1
+  stopchar.l=False
+  While endpos<=FLen(instruction$) AND stopchar=False
+    If ab3_IsTokenChar{Peek.b(&instruction$+endpos-1)}=False Then stopchar=True:Else endpos+1
+  Wend
+
+  ; -- write infos to indexfile
+  If endpos <> 0
+    funcname$ = Mid$( instruction$ , 1 , endpos - 1)
+    ;If Right$(funcname$,1)=";" Then funcname$ = UnLeft$(funcname$,1)
+    ;funcname$ = StripLead$(Left$(funcname$,50,32),32)
+    funcname$ = StripLead$(funcname$,32)
+
+    If FLen(funcname$) >= 6                                   ; test if functionname leng <= 6  tomsmart1
+      If Left$(funcname$,6) = "Return" Then Statement Return  ; yes then test if function or statement RETURN then we have nothing to print back again  tomsmart1
+    EndIf
+
+    If mode$ = "MACR" Then funcname$ = "!" + funcname$
+
+    description$ = Mid$(instruction$,endpos)
+    description$ = StripLead$(description$,32)
+    If Left$(description$,1)=";" Then description$ = UnRight$(description$,1)
+    description$ = StripLead$(description$,32)
+
+    If (Left$(funcname$,1) = "_") OR (Left$(funcname$,2) = "!_")             ; test for privat routines  tomsmart
+      If pedconfig\HelpForPrivateFunctions = True                                   ; test if we show help for it  tomsmart1
+        file_WriteLine{destfile, mode$ + "\\09" + funcname$ + "\\09" + description$ + " ; private!"}     ; show help but indentify private routines tomsmart1
+      End If
+    Else
+      ;NPrint LSet$(mode$,11) + LSet$(funcname$,50) + description$
+      file_WriteLine{destfile, mode$ + "\\09" + funcname$ + "\\09" + description$}                      ; public routines
+    End If
+
+  End If
+End Statement
+
+ 
+
+Function.l ab3_InstrToken{code.s,token.s}
+  pos.l = Instr(code,token)
+  If pos
+    If ab3_IsTokenChar{Peek.b(&code+pos-1+FLen(token))} Then pos=0
+    If pos>1
+      If ab3_IsTokenChar{Peek.b(&code+pos-1-1)} Then pos=0
+    End If
+  End If
+  Function Return pos
+End Function
 
 
-Statement PED_UpdateHelpIndexCache{HelpIndexFile$}
-  SHARED HelpIndexCache()
-  ;fidW.l = file_Open{"sys:pedbug.txt",#file_forcewrite}
-  fid.l = file_Open{HelpIndexFile$,#file_read}
-  If fid<>-1
-    ClearList HelpIndexCache()
+
+Statement scanfile{rootpath$,filename$, destfile.l}
+  functoken$      = Mki$(#TOKEN_Function)
+  statementtoken$ = Mki$(#TOKEN_Statement)
+  objecttoken$    = Mki$(#TOKEN_Object)
+  macrotoken$     = Mki$(#TOKEN_Macro)
+  endtoken$       = Mki$(#TOKEN_End)
+  returntoken$    = Mki$(#TOKEN_Return)
+  tok80.s         = Str$($80)
+  fid.l = file_Open{dos_AddPart{rootpath$,filename$},#file_read}
+  If dos_GetExt{filename$}="bb2" OR dos_GetExt{filename$}="bb"  Then tokenized.l=True : Else tokenized=False
+
+  If fid>=0 ; ReadFile(0,filename$)
     ;file_Cache{fid}
-    While file_EOF{fid} = False
-      zeile$ = file_ReadLine{fid}
+    ;FileInput 0
+    ; -- get current path
+    ;dir_name$ = SPACE$(512)
+    ;GetCurrentDirName_ &dir_name$,FLen(dir_name$)
+    ;dir_name$ = StripTrail$(dir_name$,0)
+    ;dir_name$ = dos_Trim{dir_name$}
+    ;dir_name$ = dos_FilePart{dir_name$}
 
-      pos_name.l  = Instr(zeile$,"\\09",1)
-      If pos_name=0 Then pos_name=FLen(zeile$)+1
+    ; -- add parent path to filename, if not in includes-drawer
+    ;If LCase$(dir_name$)<>"includes" Then filename$ = dos_AddPart{dir_name$,filename$}
 
-      pos_desc.l  = Instr(zeile$,"\\09",pos_name+1)
-      If pos_desc=0 Then pos_desc=FLen(zeile$)+1
+    ; -- write filename into indexfile
+    file_WriteLine{destfile,"FILE\\09"+filename$}
 
-      typ$  = Mid$(zeile$,1,pos_name-1)
-      name$ = Mid$(zeile$,pos_name+1,pos_desc-pos_name-1)
-      help$ = Mid$(zeile$,pos_desc+1)
-
-      ;file_WriteLine{fidW,typ$+"::"+name$+"::"+help$}
-      If typ$><""
-      If typ$ = "FILE"
-        filename$ = name$
+    Repeat
+      ;code.s = ReadLine$
+      If tokenized
+        code.s = file_ReadBB2Line{fid}
       Else
+        code.s = file_ReadLine{fid}
+      End If
 
-        lname$ = LCase$(name$)
-        If name$><""
-          If help$=""
-            Select typ$
-              Case "FUNC" : help$ = "{...} ; Function"
-              Case "MACR" : help$ = "{...} ; Macro"
-              Case "STAT" : help$ = "{...} ; Statement"
-              Default
-                help$ = typ$
-            End Select
-          End If
-          If AddItem(HelpIndexCache())
-            HelpIndexCache()\name  = name$
-            HelpIndexCache()\lname = lname$
-            HelpIndexCache()\help  = help$
-            HelpIndexCache()\includefile = filename$
-          End If
+      maxpos.l = Instr(code,";")
+      If maxpos = 0 Then maxpos = FLen(code)-1
+
+      ; in case its ASCII...
+      If tokenized=False
+        pos.l = ab3_InstrToken{code,"Function"}
+        If pos>0 AND pos<maxpos
+          ;If Instr(code,"GetObjectBy") Then error{"Found Function in "+filename$+" line:\\n"+code}
+          code.s = Left$(code,pos-1) + functoken$ + Right$(code,FLen(code)-pos-8+1)
+          If pos<maxpos Then maxpos=pos
+        End If
+
+        pos = ab3_InstrToken{code,"Statement"}
+        If pos>0 AND pos<maxpos
+          code.s = Left$(code,pos-1) + statementtoken$ + Right$(code,FLen(code)-pos-9+1)
+          If pos<maxpos Then maxpos=pos
+        End If
+
+        pos = ab3_InstrToken{code,"Macro"}
+        If pos>0 AND pos<maxpos
+            code.s = Left$(code,pos-1) + macrotoken$ + Right$(code,FLen(code)-pos-5+1)
+            If pos<maxpos Then maxpos=pos
+        End If
+
+        pos = ab3_InstrToken{code,"End "}
+        If pos>0 AND pos<maxpos
+            code.s = Left$(code,pos-1) + endtoken$ + Right$(code,FLen(code)-pos-3+1)
+            If pos<maxpos Then maxpos=pos
+        End If
+
+        pos = ab3_InstrToken{code,"Return"}
+        If pos>0 AND pos<maxpos
+            code.s = Left$(code,pos-1) + returntoken$ + Right$(code,FLen(code)-pos-6+1)
+            If pos<maxpos Then maxpos=pos
         End If
       End If
-      End If
-    Wend
+
+      pos = Instr(code,functoken$)
+      If pos>0 AND pos<=maxpos Then writeentry{destfile, "FUNC",code}
+
+      pos = Instr(code,statementtoken$)
+      If pos>0 AND pos<=maxpos Then writeentry{destfile, "STAT",code}
+
+      pos = Instr(code,macrotoken$)
+      If pos>0 AND pos<=maxpos Then writeentry{destfile, "MACR",code}
+
+    Until file_EOF{fid}
     file_Close{fid}
   Else
-    error{"Could not open Helpindexfile for read."}
+    dummy.l = ask{!TRANS{"Can't open file "}+filename$,!TRANS{"Ok"},!TRANS{"Error"}}
   End If
-  ;If fidW><-1 Then file_Close{fidW}
-
 End Statement
 
 
-Statement PED_WriteHelpIndexCache{HelpIndexCacheFile$}
-  SHARED HelpIndexCache()
+Statement PED_CreateHelpIndexTextFile{}
+SHARED pedconfig, HelpIndexCache()
 
-  If dos_Exist{HelpIndexCacheFile$} Then dos_Delete{HelpIndexCacheFile$}
+  ;-- check if Indexfile is available and delete it
+  If dos_Exist{pedconfig\HelpIndexTextFile} Then dos_Delete{pedconfig\HelpIndexTextFile}
 
-  If OpenFile(1,HelpIndexCacheFile$)
+  ;-- create a new index text file
+  destfid.l = file_Open{pedconfig\HelpIndexTextFile, #file_forcewrite}
+  If destfid >= 0
+    WZ_ShowMessage{!TRANS{"Updating indexfile for includes onlinehelp..."},0}
+  
+    CaseSense On
+
+    ClearList HelpIndexCache()
+
+    ;-- scan for subdirs
+    NEWTYPE.dirs
+      name.s
+    End NEWTYPE
+    Dim List dirs.dirs(0)
+
+    ClearList dirs()
+    If AddLast(dirs()) Then dirs()\name = pedconfig\includeDir
+
+    log_Print{"*** scan includedir <" + pedconfig\includeDir + ">"}
+    Repeat
+      name$ = dos_ScanDir{pedconfig\includeDir,"",#dos_scan_dirs}
+      If dos_IsDir{name$}
+        If AddLast(dirs()) Then dirs()\name = dos_AddPart{pedconfig\includeDir,name$}
+        log_Print{"found subdir <" + name$ + ">"}
+      EndIf
+    Until name$ = ""
+
+    ;-- count number of files
+    num_files.l = 0
+    ResetList dirs()
+    While NextItem(dirs())
+      dirname$ = dirs()\name                    ; set first subdirectory
+      Repeat
+        name$ = dos_ScanDir{dirname$,"#?",#dos_scan_files}
+        num_files + 1
+      Until name$ = ""
+    Wend
+    log_Print{"counted files: " + Str$(num_files)}
+
+    ;-- scan files for functions
+    ;-- begin count include files
+    subincludedirs.b = False
+    exitscan.b       = True
+    dirname$         = ""
+    act_file.l = 0
+    ResetList dirs()
+    act_file.l = 0
+    While NextItem(dirs())
+      ;--  set first subdirectory
+      dirname$ = dirs()\name
+
+      log_Print{"*** scanning dir <" + dirname$ + ">",#log_debug}
+      Repeat
+        name$ = dos_ScanDir{dirname$,"#?",#dos_scan_files}
+        If name$ <> ""
+          log_Print{"scanning file <" + name$ + ">"}
+          act_file + 1 : act_file = Min(act_file,num_files)
+          ex.s = LCase$(dos_GetExt{name$})
+          If (ex = "bb" OR ex = "bb2" OR ex = "ab2" OR ex = "ab3")
+              scanfile{pedconfig\includeDir,name$, destfid}
+          EndIf
+          !WZ_Update_Gauge{act_file,num_files}
+        End If
+      Until name$ = ""
+    Wend
+    CaseSense Off
+    
+    ClearList dirs()
+    file_Close{destfid}
+  EndIf
+End Statement
+
+
+Statement PED_ReadHelpIndexFromTextFile{}
+SHARED pedconfig, HelpIndexCache()
+
+  fid.l = file_Open{pedconfig\HelpIndexTextFile, #file_read}
+  If fid<>-1
+    file_Cache{fid}
+    
+    row.s = ""
+    ClearList HelpIndexCache()
+    While file_EOF{fid} = False
+      row = file_ReadLine{fid}
+
+      pos_name.l  = Instr(row,"\\09",1)
+      If pos_name = 0 Then pos_name = FLen(row) + 1
+
+      pos_desc.l  = Instr(row,"\\09",pos_name + 1)
+      If pos_desc = 0 Then pos_desc = FLen(row) + 1
+
+      typ$  = Mid$(row, 1, pos_name - 1)
+      name$ = Mid$(row, pos_name + 1 , pos_desc - pos_name - 1)
+      help$ = Mid$(row, pos_desc + 1)
+
+      If typ$ <> ""
+        If typ$ = "FILE"
+          filename$ = name$
+
+        Else
+
+          lowerCase.s = LCase$(name$)
+          If name$ <> ""
+            If help$ = ""
+              Select typ$
+                Case "FUNC" : help$ = "{...} ; Function"
+                Case "MACR" : help$ = "{...} ; Macro"
+                Case "STAT" : help$ = "{...} ; Statement"
+                Default     : help$ = typ$
+              End Select
+            End If
+            If AddItem(HelpIndexCache())
+              HelpIndexCache()\name  = name$
+              HelpIndexCache()\helpText  = help$
+              HelpIndexCache()\includeFileName = filename$
+            End If
+          End If
+        End If
+      End If
+    Wend
+
+    file_Close{fid}
+  Else
+    error{"Could not open " + pedconfig\HelpIndexTextFile + " for read."}
+  End If
+End Statement
+
+
+Statement PED_WriteHelpIndexBinFile{}
+SHARED pedconfig, HelpIndexCache()
+
+  If dos_Exist{pedconfig\HelpIndexBinFile} Then dos_Delete{pedconfig\HelpIndexBinFile}
+
+  If OpenFile(1,pedconfig\HelpIndexBinFile)
     ResetList HelpIndexCache()
     While NextItem(HelpIndexCache())
       WriteType 1,HelpIndexCache()
@@ -3027,27 +3323,24 @@ Statement PED_WriteHelpIndexCache{HelpIndexCacheFile$}
 End Statement
 
 
-Statement PED_LoadHelpIndexCache{HelpIndexCacheFile$}
-  SHARED HelpIndexCache()
-;  fidW.l = file_Open{"sys:pedbug.txt",#file_forcewrite}
+Statement PED_LoadHelpIndexBinFile{}
+SHARED pedconfig, HelpIndexCache()
 
-  If OpenFile(1,HelpIndexCacheFile$)
+  If OpenFile(1,pedconfig\HelpIndexBinFile)
     ClearList HelpIndexCache()
     _lof.l = Lof(1)
     While _lof > Loc(1)
       If AddLast(HelpIndexCache())
         ReadType 1,HelpIndexCache()
-        ;!cout{"*"+HelpIndexCache()\name+"*"}
-        ;file_WriteLine{fidW,HelpIndexCache()\name}
       Else
-        error{!TRANS{"Could not build index cache."}}
+        log_Print{"Could not load HelpfileCache.", #log_error}
         Pop While: Goto exit_while1
       EndIf
     Wend
     exit_while1:
     CloseFile 1
   Else
-    error{HelpIndexCacheFile$ + " "+!TRANS{"not found."}}
+    log_Print{pedconfig\HelpIndexBinFile + " " + !TRANS{"not found."}, #log_error}
   End If
 
 ;  If fidW><-1 Then file_Close{fidW}
@@ -3055,54 +3348,59 @@ Statement PED_LoadHelpIndexCache{HelpIndexCacheFile$}
 End Statement
 
 
-Function.s PED_GetIncludeHelp{tname$}
-  SHARED pedconfig,HelpIndexCache()
-  lname$ = LCase$(tname$)
+
+Statement PED_BuildHelpIndex{}
+SHARED pedconfig
+  log_Print{"****** Building a new helpIndex file for include functions..."}
+
+  If dos_Exist{pedconfig\includeDir}
+    log_Print{"creating help index text file: " + pedconfig\HelpIndexTextFile}
+
+    WZ_ShowMessage{!TRANS{"Creating helpindex text file ..."}}  
+    PED_CreateHelpIndexTextFile{}
+
+    WZ_ShowMessage{!TRANS{"Read helpindex from text file ..."}} 
+    PED_ReadHelpIndexFromTextFile{}
+    
+    WZ_ShowMessage{!TRANS{"Saving helpindex bin file ..."}} 
+    PED_WriteHelpIndexBinFile{}
+
+    WZ_HideMessage{}
+  Else
+    dummy.l = ask{!TRANS{"Could not determine Include directory"}+":\\n"+pedconfig\includeDir+"!",!TRANS{"Ok"},!TRANS{"Error"}}
+  EndIf
+End Statement
+
+
+#INDEXHELP_NAME = 1
+#INDEXHELP_HELP = 2
+#INDEXHELP_FILE = 3
+
+Function.s PED_GetIndexHelp{entry.s, entrytype.b}
+SHARED HelpIndexCache()
+
   ResetList HelpIndexCache()
-  If NextItemFast(HelpIndexCache()) = False Then PED_LoadHelpIndexCache{pedconfig\HelpIndexCacheFile}
+  If NextItemFast(HelpIndexCache()) = False Then Function Return ""
+
+  result.s = ""
+  lowerEntry.s = LCase$(entry)
   ResetList HelpIndexCache()
-  While NextItemFast(HelpIndexCache())
-    If HelpIndexCache()\lname = lname$
-      Function Return HelpIndexCache()\help
+  While NextItemFast(HelpIndexCache()) OR result <> ""
+    If LCase$(HelpIndexCache()\name) = lowerEntry
+      Select entrytype
+      Case #INDEXHELP_NAME : result = HelpIndexCache()\name
+      Case #INDEXHELP_HELP : result = HelpIndexCache()\helpText
+      Case #INDEXHELP_FILE : result = HelpIndexCache()\includeFileName
+      End Select
     End If
   Wend
-  Function Return ""                 ; function not found
+
+  Function Return "" 
+
 End Function
-
-
-Function.s PED_GetIncludeFunction{tname$}
-  SHARED pedconfig,HelpIndexCache()
-  lname$ = LCase$(tname$)
-  ResetList HelpIndexCache()
-  If NextItemFast(HelpIndexCache()) = False Then PED_LoadHelpIndexCache{pedconfig\HelpIndexCacheFile}
-  ResetList HelpIndexCache()
-  While NextItemFast(HelpIndexCache())
-    If HelpIndexCache()\lname = lname$
-      Function Return HelpIndexCache()\name
-    End If
-  Wend
-  Function Return ""                 ; function not found
-End Function
-
-
-Function.s PED_GetIncludeName{tname$}
-  SHARED pedconfig,HelpIndexCache()
-  lname$ = LCase$(tname$)
-  ResetList HelpIndexCache()
-  If NextItemFast(HelpIndexCache()) = False Then PED_LoadHelpIndexCache{pedconfig\HelpIndexCacheFile}
-  ResetList HelpIndexCache()
-  While NextItemFast(HelpIndexCache())
-    If HelpIndexCache()\lname = lname$
-      Function Return HelpIndexCache()\includefile
-    End If
-  Wend
-  Function Return "" ; function not found
-End Function
-
 
 
 Function.s PED_GetHelptextFor{tokname.s}
-
   If Left$(tokname.s,1) = "!"
     tokname.s = PED_GetMacroName{tokname.s}
     ;tokhelp$ = PED_GetMacroHelp{tokname.s}
@@ -3110,21 +3408,17 @@ Function.s PED_GetHelptextFor{tokname.s}
   Else
     tokid.w = PED_GetTokenID{tokname.s}
     If tokid >= 0
-      ;log_Print{"tokenid: " + Hex$(tokid)}
       tokname.s = PED_GetTokenName{tokid}
-      ;log_Print{"tokname: " + tokname}
       libnum.l = PED_GetTokenLibnum{tokname.s}
-      ;log_Print{"toklib: " + Str$(libnum)}
       If libnum >= 0
         tokhelp$ = PED_GetTokenHelp{tokname.s}
         tokexte$ = "BlitzLib: " + PED_GetLibname{libnum}
-        ;log_Print{"tokhelp: " + tokhelp$}
       End If
     Else
-      tokname.s = PED_GetIncludeFunction{tokname.s}
-      If tokname.s<>""
-        tokhelp$ = PED_GetIncludeHelp{tokname.s}
-        tokexte$ = "Include: " + PED_GetIncludeName{tokname.s}
+      tokname.s = PED_GetIndexHelp{tokname.s,#INDEXHELP_NAME}
+      If tokname.s <> ""
+        tokhelp$ = PED_GetIndexHelp{tokname.s,#INDEXHELP_HELP}
+        tokexte$ = "Include: " + PED_GetIndexHelp{tokname.s, #INDEXHELP_FILE}
       End If
     End If
   End If
@@ -3719,7 +4013,8 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   If ped\ptrCurrentSourceData\CurrentSourceLine = 0 Then Statement Return
 
   ;-- clear current line in textBuffer
-  FillMem ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns, @" "
+  ;FillMem ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns, @" "
+  MemCls ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns, @" "
 
   ;log_Print{"--- " + Str$(ped\ptrCurrentSourceData\CurrentSourceLine\strLength)}
   ;!log_HexDump{ped\ptrCurrentSourceData\CurrentSourceLine,ped\ptrCurrentSourceData\CurrentSourceLine\strLength+8}
@@ -4682,7 +4977,7 @@ USEPATH ped\ptrCurrentSourceData
   ;-- same code as in routine mouseclick_in_source
   *tempLine.sourceLine = \CurrentSourceLine
   newLinenum.l = \DisplayLine + \DisplayLineOffset
-  log_Print{"Gotoline: " + Str$(lineNum) + " current line:" + Str$(newLinenum)}
+  ;log_Print{"Gotoline: " + Str$(lineNum) + " current line:" + Str$(newLinenum)}
 
   While lineNum <> newLinenum
     If lineNum > newLinenum
@@ -4725,10 +5020,9 @@ USEPATH ped\ptrCurrentSourceData
     \Column = 0
   Case #LINE_END
     strline.s = PED_Detokenize{\CurrentSourceLine}
-    log_Print{strline}
     \Column = FLen(strline)
     PED_CalculateColumnsOffset{}
-    log_Print{"setting new cursor column: " + Str$(\ColumnsOffset + \Column)}
+    ;log_Print{"set new cursor column to: " + Str$(\ColumnsOffset + \Column)}
   Case #LINE_NOCHANGE  
   End Select
 
@@ -4841,7 +5135,8 @@ USEPATH sourceWindow
   Next r
 
   ;-- prepare the new displayed line with spaces    
-  FillMem destAddr, #MAX_Columns, @" "
+  ;FillMem destAddr, #MAX_Columns, @" "
+  MemCls destAddr, #MAX_Columns, @" "
 
   ;--------------------------------------------
   ;-- draw the new lines after scrolling at top or bottom
@@ -5480,7 +5775,7 @@ Function.w PED_PreparseTextLine{lineaddr.l}
         log_Print{"found function name to correct [" + funcname$ + "] at pos " + Str$(startOfName)}
 
         funcname$ = Trim$(funcname$)
-        newfuncname$ = PED_GetIncludeFunction{funcname$}
+        newfuncname$ = PED_GetIndexHelp{funcname$, #INDEXHELP_NAME}
         If newfuncname$ <> ""
           If newfuncname$ <> funcname$
             log_Print{"correct function name: " + newfuncname$}
@@ -5715,16 +6010,16 @@ Statement savewinpref{layoutNum.l}
 End Statement
 
 
-Statement write_libmapping{_file.s}
-  SHARED lib_mapping$()
+Statement write_libmapping{_tokenMappingFile.s}
+  SHARED blitzlibMapping()
 
-  If dos_Exist{_file} Then dos_Delete{_file}
+  If dos_Exist{_tokenMappingFile} Then dos_Delete{_tokenMappingFile}
 
-  fid.l = file_Open{_file,#file_write}
+  fid.l = file_Open{_tokenMappingFile,#file_write}
   If fid <> -1
     log_Print{"writing libslist..."}
-    For i.w = 0 To #Max_BlitzLibs-1
-      textline.s = LSet$(lib_mapping$(i,0),31) + ";" + lib_mapping$(i,1)
+    For i.w = 0 To #MAX_Blitzlibs-1
+      textline.s = LSet$(blitzlibMapping(i,0),31) + ";" + blitzlibMapping(i,1)
       file_WriteLine{fid,textline}
     Next i
     file_Close{fid}
@@ -5733,110 +6028,41 @@ Statement write_libmapping{_file.s}
 End Statement
 
 
-Statement read_libmapping{_file.s}
+Statement map_tokens_to_libs{_tokenMappingFile.s, _updatefile.b}
   SHARED *tokenbase
-  SHARED lib_mapping$()
+  SHARED blitzlibMapping()
 
-  Dim templist$(#Max_BlitzLibs,1)
-  DEFTYPE.w libcounter,i
-
-  fid.l = file_Open{_file,#file_read}
-  If fid<>-1
-    file_Cache{fid}
-    log_Print{"loading libslist from file <" + _file + ">"}
-    Repeat
-      zeile$ = file_ReadLine{fid}
-      qpos.w = Instr(zeile$,";")
-      If qpos
-        lstring$ = Left$(zeile$,qpos-1)
-        rstring$ = Right$(zeile$,FLen(zeile$)-qpos)
-
-        ;-- get libnumber from internal structure
-        templist$(libcounter,0) = Replace$(lstring$," ","")
-        templist$(libcounter,1) = Replace$(rstring$," ","")
-        libcounter + 1
-      EndIf
-    Until file_EOF{fid}
-    file_Close{fid}
-    If libcounter = 0 Then Statement Return
-
-    log_Print{"scanning tokenlist..."}
-    *token.tokendata = *tokenbase
-    If *token
-      Repeat
-        libnum.w = *token\number LSR 7
-
-        For i = 0 To libcounter
-          If templist$(i,1) = Peek.s(&*token\dat) ; compare name of first token
-            If libnum > 0
-              libname$ = templist$(i,0)
-              firsttoken$ = templist$(i,1)
-              If (Instr(lib_mapping$(libnum,0),"unused")=0)
-                message$= !TRANS{"Library clash!\\n" }
-                message$+ !TRANS{"The dynamic added lib"} + " \\22" + libname$ + "\\22\\n"
-                message$+ !TRANS{"has overwritten"} + " \\22" + lib_mapping$(libnum,0) + "\\22 " + !TRANS{"stored in acidlibs/deflibs"}+".\\n"
-                message$+ !TRANS{"Both libs have the same Lib-ID"}+" "+ Str$(libnum)+".\\n\\n"
-                message$+ !TRANS{"Sourcecode that uses"}+" "+ lib_mapping$(libnum,0) + " "+!TRANS{"might not work,\\n"}
-                message$+ !TRANS{"because these functions are now mapped to"}+" "+libname$+".\\n\\n"
-                message$+ !TRANS{"You should remove the appropriate library from userlibs-directory,\\nor change the Lib-ID to a free one."}
-                dummy.l = ask{message$,!TRANS{"Ok"},!TRANS{"Error"}}
-                lib_mapping$(libnum,0) = libname$ + " ("+!TRANS{ "clashing with"}+" "+lib_mapping$(libnum,0)+")"
-              Else
-                lib_mapping$(libnum,0) = libname$
-              EndIf
-              lib_mapping$(libnum,1) = firsttoken$
-              Pop If : Pop If : Pop For : Goto exit_this_loop
-            EndIf
-          EndIf
-        Next i
-        exit_this_loop:
-
-        *token = *token\next_token
-      Until (*token = 0)
-      log_Print{"scanning finished."}
-    EndIf
-  EndIf
-End Statement
-
-
-Statement map_tokens_to_libs{_file.s, _updatefile.b}
-  SHARED *tokenbase
-  SHARED lib_mapping$()
-
-  fid.l = file_Open{_file,#file_read}
+  fid.l = file_Open{_tokenMappingFile,#file_read}
   If fid <> -1
     ;-- check content of file, if there is only little garbage, then ignore it
     If file_GetLength{fid} < 5
       file_Close{fid}
       Statement Return
     EndIf
+    file_Cache{fid}
 
     ;-- build the hashmap for faster parsing
-    log_Print{"building hashmap for tokens with mappingfile [" + _file + "] ..."}
-    *hm.hashmap = hashmap_Create{8}
-    file_Cache{fid}
+    ;-- mapping file must have an empty line at the end!
+    log_Print{"building hashmap for tokens with mappingfile [" + _tokenMappingFile + "] ..."}
+    *hm_firstTokens.hashmap = hashmap_Create{8}
     lineCounter.w = 0
     Repeat
-      zeile$ = file_ReadLine{fid}
-      If Left$(zeile$,1) <> "#"
-        qpos.w = Instr(zeile$,";")
+      row.s = file_ReadLine{fid}
+      ;-- ignore comments
+      If Left$(row,1) <> "#"
+        qpos.w = Instr(row,";")
         If qpos
-          lstring$ = Left$(zeile$,qpos-1)
-          rstring$ = Right$(zeile$,FLen(zeile$)-qpos)
-
-          ;-- get libnumber from internal structure
-          libname$ = Trim$(lstring$)
-          firsttoken$ = LCase$(Trim$(rstring$))
-          If firsttoken$ <> ""
-            hashmap_AddItem{*hm, firsttoken$, libname$}
+          ;-- extract library name from current row
+          ;-- extract token name of first token in lib
+          libName.s = Trim$( Left$(row,qpos - 1) )
+          tokenName.s = LCase$(Trim$( Right$(row, FLen(row) - qpos) ))
+          ;log_Print{"hasing " + tokenName + " to " + libName}
+          If tokenName <> ""          
+            hashmap_AddItem{*hm_firstTokens, tokenName, libName}
           Else
             ;-- set the libname directly, as there is no token to map
-            lib_mapping$(lineCounter,0) = libname$
+            blitzlibMapping(lineCounter,0) = libName
           EndIf
-
-          ;If lineCounter < 138 AND lineCounter >130
-          ;log_Print{Str$(lineCounter) + ":adding token [" + firsttoken$ + "] with libname [" + libname$ + "]"}
-          ;EndIf
         EndIf
       EndIf
       lineCounter + 1
@@ -5849,15 +6075,16 @@ Statement map_tokens_to_libs{_file.s, _updatefile.b}
     *token.tokendata = *tokenbase
     If *token
       libCounter.w = 0
+      tokenCounter.l = 0
       oldlibNum.w = -1
       Repeat
         libName.s = ""
+        libNum.w    = *token\number LSR 7
 
-        tokenName.s    = Peek.s(&*token\dat)
-        libNum.w       = *token\number LSR 7
-
+        tokenName.s = Peek.s(&*token\dat)
         If tokenName = ""
-          log_Print{ "#" + Str$(libNum) + ": nulltoken found"}
+          log_Print{ "Lib #" + Str$(libNum) + ": nulltoken found , number: " + Str$(*token\number) + ")"}
+          !log_HexDump{*token,32}
         EndIf
 
         If (libNum <> oldlibNum) AND tokenName <> ""
@@ -5865,21 +6092,22 @@ Statement map_tokens_to_libs{_file.s, _updatefile.b}
           oldlibNum = libNum
 
           ;-- check if token is first token of a blitzlib
-          libName = hashmap_GetItem{*hm, LCase$(tokenName)}
+          libName = hashmap_GetItem{*hm_firstTokens, LCase$(tokenName)}
+
           ;log_Print{"#" + Str$(libNum) + " [" + libName + "] -  first token [" + tokenName + "]"}
 
           ;-- check if token is part of library, that is already used
           ;-- if libNum is unused, map libname to libNum
           ;-- if a libNum appears, here a libname has been mapped, we have a libclash!
           If libName = ""
-            log_Print{"could not identify libNum #" + Str$(libNum) + " with first token [" + tokenName + "]"}
+            log_Print{"could not identify libNum #" + Str$(libNum) + " with first token [" + tokenName + "]", #log_warning}
           Else
             ;log_Print{"first token of library #" + Str$(libNum) + " [" + libName + "]: [" + tokenName + "]"}
 
-            If Instr(lib_mapping$(libNum,0),"unused") = 0
+            If Instr(blitzlibMapping(libNum,0),"unused") = 0
               log_Print{"lib #" + Str$(libNum) + " has already been mapped!",#log_warning}
               message$ = !TRANS{"Library clash!\\n" }
-              message$ + !TRANS{"The dynamic added blitzlib"} + " \\22" + libName + "\\22 " + !TRANS{"overwrites the already loaded blitzlib "} + " \\22" + lib_mapping$(libNum,0)+"\\22\\n\\n"
+              message$ + !TRANS{"The dynamic added blitzlib"} + " \\22" + libName + "\\22 " + !TRANS{"overwrites the already loaded blitzlib "} + " \\22" + blitzlibMapping(libNum,0)+"\\22\\n\\n"
 
               message$ + !TRANS{"Both libs have the same Lib-ID"} + " #"+ Str$(libNum) + ".\\n\\n"
 
@@ -5887,22 +6115,24 @@ Statement map_tokens_to_libs{_file.s, _updatefile.b}
 
               message$ + !TRANS{"You should remove the appropriate library from userlibs-directory,\\nor change the Lib-ID to a free one."}
               dummy.l = ask{message$,!TRANS{"Ok"},!TRANS{"Error"}}
-              lib_mapping$(libNum,0) = libName + " ("+!TRANS{ "clashing with"}+" "+lib_mapping$(libNum,0)+")"
+              blitzlibMapping(libNum,0) = libName + " ("+!TRANS{ "clashing with"}+" "+blitzlibMapping(libNum,0)+")"
             Else
-              lib_mapping$(libNum,0) = libName
+              blitzlibMapping(libNum,0) = libName
             EndIf
-            lib_mapping$(libNum,1) = tokenName
+            blitzlibMapping(libNum,1) = tokenName
           End If
         EndIf
         *token = *token\next_token
+        tokenCounter + 1
       Until (*token = 0)
-      log_Print{"scanning tokenlist done, processed " + Str$(libCounter) +" libs"}
+      log_Print{"scanning tokenlist done, processed " + Str$(libCounter) +" libs, " + Str$(tokenCounter) + " tokens."}
 
       ;-- update the token_mapping file
-      If _updatefile Then write_libmapping{_file}
+      If _updatefile Then write_libmapping{_tokenMappingFile}
     EndIf
-    ;-- free the built hashmap
-    hashmap_Free{*hm}
+
+    ;-- free the hashmap
+    hashmap_Free{*hm_firstTokens}
   EndIf
 End Statement
 
@@ -6117,69 +6347,6 @@ End Function
 
 
 
-; not used anymore as the SaveSource()-function in CLIModeSupport.ab3 is used
-;Function.b PED_SaveSourceAsASCII{savename.s}
-;SHARED ped, messageErrorWriteFile, *preProcessor;
-;
-;  *write_fh.l = Open_(&savename, #HUNK_RELOC_8__MODE_NEWFILE)
-;  If *write_fh = 0
-;    error{!TRANS{messageErrorWriteFile}}
-;  Else
-;    If ped\ptrCurrentSourceData\TotalLines > 0
-;      *tempLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine;
-;
-;      If ped\doTokenize = False
-;        log_Print{"write as text: writing detokenized file"};
-;
-;        ;-- detokenize and write to file
-;        numlines.l = ped\ptrCurrentSourceData\TotalLines
-;        totalLength.l = 0
-;        For n.l = 0 To numlines - 1
-;          baseptr.l = *tempLine + 9
-;          sptr.l = baseptr
-;          While Peek.b(sptr) : sptr + 1 : Wend
-;          totalLength + sptr - baseptr + 1
-;          *tempLine = *tempLine\nextLine
-;        Next
-;        ;-- alloc buffer
-;        tmp.l        = AllocVec_(totalLength,#MEMF_CLEAR)
-;        If tmp
-;          node.l     = ped\ptrCurrentSourceData\FirstSourceLine
-;          dptr.l     = tmp
-;          For n.l=0 To numlines-1
-;            baseptr.l= node+$9 ;Peek.l (node+$9)
-;            sptr.l   = baseptr
-;            Repeat
-;              char.b = Peek.b(sptr)
-;              Poke.b dptr,char : sptr +1 : dptr+1
-;            Until char = 0
-;            node = Peek.l(node)
-;          Next
-;          plainLength.l = preproc_DetokenizeFP{*preProcessor, tmp, totalLength, *write_fh}
-;          FreeVec_ tmp
-;        Else
-;          error{!TRANS{"Not enough memory for temp buffer!"}}
-;        End If
-;      Else
-;        ;-- directly write to file
-;        log_Print{"write as text: writing text line-by-line to file"}
-;        Repeat
-;          strLine.s = ""
-;          strLength.w = *tempLine\strLength - 1
-;          If strLength > 0 Then strLine.s = Peeks$(*tempLine + 9, strLength)
-;          strLine + Chr$(10)
-;          Write_ *write_fh, &strLine, FLen(strLine)
-;          *tempLine = *tempLine\nextLine
-;        Until *tempLine = 0
-;      EndIf
-;    EndIf
-;    log_Print{"write as text: closing file"}
-;    Close_ *write_fh : *write_fh = 0
-;    Function Return True
-;  EndIf
-;End Function
-
-
 Function.l PED_GetIntuiMessage{_wait.b}
 SHARED pedMessage,sourceWindow
 
@@ -6378,13 +6545,13 @@ log_Print{"opening tooltypes for <" + tt.s + ">"}
 ped\AbDiscObject = dos_OpenToolTypes{tt.s}
 If ped\AbDiscObject
   ; ---- LOGGING --------------------------------------------------
-  tmp_string = UCase$(dos_GetToolString{"LOG_LEVEL","NOTHING"})
+  tmpStringVar = UCase$(dos_GetToolString{"LOG_LEVEL","NOTHING"})
   logging_level.b = #log_nothing
-  If tmp_string = "NOTHING" Then logging_level = #log_nothing
-  If tmp_string = "DEBUG" Then logging_level = #log_debug
-  If tmp_string = "INFO" Then logging_level = #log_information
-  If tmp_string = "WARN" Then logging_level = #log_warning
-  If tmp_string = "ERROR" Then logging_level = #log_error
+  If tmpStringVar = "NOTHING" Then logging_level = #log_nothing
+  If tmpStringVar = "DEBUG" Then logging_level = #log_debug
+  If tmpStringVar = "INFO" Then logging_level = #log_information
+  If tmpStringVar = "WARN" Then logging_level = #log_warning
+  If tmpStringVar = "ERROR" Then logging_level = #log_error
 
   log_SetLevel{logging_level}
   If logging_level < #log_nothing
@@ -6394,10 +6561,10 @@ If ped\AbDiscObject
   EndIf
 
   log_mode.b = #log_toconsole
-  tmp_string = UCase$(dos_GetToolString{"LOG_MODE","CONSOLE"})
-  If tmp_string = "FILE" Then log_mode = #log_tofile
-  If tmp_string = "CONSOLE" Then log_mode = #log_toconsole
-  If tmp_string = "BOTH" Then log_mode = #log_toboth
+  tmpStringVar = UCase$(dos_GetToolString{"LOG_MODE","CONSOLE"})
+  If tmpStringVar = "FILE" Then log_mode = #log_tofile
+  If tmpStringVar = "CONSOLE" Then log_mode = #log_toconsole
+  If tmpStringVar = "BOTH" Then log_mode = #log_toboth
   log_SetDestination{log_mode,"System/PED.log"}
 EndIf
 
@@ -6447,6 +6614,7 @@ MOVE.l (a7)+,A0 : PutReg A0,ptr_compilersource.l
 
     If dos_GetToolState{"DISABLE_WELCOME"}     = -1 Then pedconfig\no_welcome      = True  : Else pedconfig\no_welcome = 0
     If dos_GetToolState{"ASKBEFOREQUIT"}       = -1 Then pedconfig\ask_before_quit = True  : Else pedconfig\ask_before_quit = 0
+    If dos_GetToolState{"CREATE_BACKUPS"}       = -1 Then pedconfig\create_backups = True  : Else pedconfig\create_backups = 0
     If dos_GetToolState{"SMART_TOKENIZATION"}  = -1 Then pedconfig\smart_tokenization = True  : Else pedconfig\smart_tokenization = 0
     If dos_GetToolState{"DISABLE_DISPLAYBEEP"} = -1 Then pedconfig\no_display_beep = True  : Else pedconfig\no_display_beep =   0
     If dos_GetToolState{"AUTO_FORMAT"}         = -1 Then pedconfig\auto_format     = True  : Else pedconfig\auto_format = 0
@@ -6499,15 +6667,16 @@ MOVE.l (a7)+,A0 : PutReg A0,ptr_compilersource.l
     If dos_GetToolState{"USE_WBFONT"}         = -1 Then pedconfig\use_wbfont            = True : Else pedconfig\use_wbfont = 0
   Else
     log_Print{"Could not open tooltypes",#log_warning}
-    pedconfig\bold_tokens       = True
-    pedconfig\onlinehelp        = True
+    pedconfig\create_backups      = True
+    pedconfig\bold_tokens         = True
+    pedconfig\onlinehelp          = True
     pedconfig\onlinehelp_extended = False
-    pedconfig\clone_wbscreen     = False
-    pedconfig\use_wbscreen       = True
-    pedconfig\use_pubscreen      = False
+    pedconfig\clone_wbscreen      = False
+    pedconfig\use_wbscreen        = True
+    pedconfig\use_pubscreen       = False
     pedconfig\use_default_pubscreen = False
-    pedconfig\use_wbfont         = True
-    pedconfig\use_filepattern    = True
+    pedconfig\use_wbfont          = True
+    pedconfig\use_filepattern     = True
   End If
 
   If dos_GetToolState{"CREATE_ICONS"}=-1 Then pedconfig\use_source_icon = True Else pedconfig\use_source_icon = False
@@ -6708,12 +6877,14 @@ MOVE.l (a7)+,A0 : PutReg A0,ptr_compilersource.l
 ; EINBINDEN DER KONFIGURATIONSDATEIEN
 ; ------------------------------------------------------
 .CONFIGFILES
-pedconfig\HelpIndexFile        = dos_AddPart{pedconfig\systemDir,"HelpIndex.txt"}
-pedconfig\HelpIndexCacheFile   = dos_AddPart{pedconfig\systemDir,"HelpIndexCache.bin"}
-pedconfig\TokenHashMapFile     = dos_AddPart{pedconfig\systemDir,"TokenList.hashmap"}
+pedconfig\HelpIndexTextFile = dos_AddPart{pedconfig\systemDir,"HelpIndex.txt"}
+pedconfig\HelpIndexBinFile  = dos_AddPart{pedconfig\systemDir,"HelpIndexCache.bin"}
+pedconfig\TokenHashMapFile  = dos_AddPart{pedconfig\systemDir,"TokenList.hashmap"}
 
 pedconfig\usePreProcessor = True  ; it is necessary for Compiler ATM !!!
 
+;--
+;-- Preprocessor
 WZ_ShowMessage{!TRANS{"Preparing preprocessor ..."}}
 !log_AvailMem{"before initiating preprocessor"}
 *preProcessor = preproc_Create{}
@@ -6730,20 +6901,24 @@ Else
 EndIf
 !log_AvailMem{"after initiating preprocessor"}
 
+;--
+;-- HelpIndex
 If pedconfig\onlinehelp_includes
   WZ_ShowMessage{!TRANS{"Loading helpindex for include-functions ..."}}
-  If dos_Exist{pedconfig\HelpIndexCacheFile} AND dos_GetFileSize{pedconfig\HelpIndexCacheFile} > 0
-    log_Print{"loading help index cache file: " + pedconfig\HelpIndexCacheFile}
-    PED_LoadHelpIndexCache{pedconfig\HelpIndexCacheFile}
+  If dos_Exist{pedconfig\HelpIndexBinFile} AND dos_GetFileSize{pedconfig\HelpIndexBinFile} > 0
+    log_Print{"loading help index cache file: " + pedconfig\HelpIndexBinFile + ", " + Str$(dos_GetFileSize{pedconfig\HelpIndexBinFile}) + "bytes"}
+    PED_LoadHelpIndexBinFile{}
   Else
-    log_Print{"building help index cache file: " + pedconfig\HelpIndexCacheFile}
-    Gosub build_HelpIndexFile
+    log_Print{"building help index cache file: " + pedconfig\HelpIndexBinFile}
+    PED_BuildHelpIndex{}
   EndIf
   !log_AvailMem{"after loading includehelpindex"}
 Else
   log_Print{"index for includefiles skipped."}
 EndIf
 
+;--
+;-- prefs file for window positions
 If ReadFile (0,pedconfig\winprefsFile)
   WZ_ShowMessage{!TRANS{"Loading window layouts ..."}}
   ReadType 0,wpref(0)
@@ -6761,6 +6936,15 @@ WZ_ShowMessage{!TRANS{"Starting IDE ..."} }
 ; --
 ; -- create a msgport for Iconification
 *WBMsgPort.MsgPort = CreateMsgPort_
+
+
+; --
+; -- defaultsettings for instructions browser
+CaseSense Off
+browse_macros.l           = Off
+browse_instructions.l     = On
+browse_includes.l         = Off
+
 
 ; --
 ; -- init arexx port
@@ -6787,10 +6971,11 @@ EndIf
 ; -- and check consistency based on the mapping files and the internal libnums
 WZ_ShowMessage{!TRANS{"Building libmapping..."}}
 !log_AvailMem{"before doing libmapping"}
+
 ;-- reset libmapping
-For i.l = 0 To (#Max_BlitzLibs-1)
-  lib_mapping$(i,0) = "* unused ID"+Str$(i)+" *"
-  lib_mapping$(i,1) = ""
+For i.l = 0 To (#MAX_Blitzlibs-1)
+  blitzlibMapping(i,0) = "* unused ID" + Str$(i) + " *"
+  blitzlibMapping(i,1) = ""
 Next i
 map_tokens_to_libs{dos_AddPart{pedconfig\systemDir,"token_mapping_libs.txt"}, False}
 map_tokens_to_libs{dos_AddPart{pedconfig\systemDir,"token_mapping_userlibs.txt"}, False}
@@ -6984,8 +7169,8 @@ Return
       newline$ = StripTrail$(newline$,@" ")
       newline$ = PED_TokenizeText{newline$}
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
-      log_Print{"result for new line:"}
-       !log_HexDump{*newLine, *newLine\strLength + 8}
+      ;log_Print{"result for new line:"}
+      ;!log_HexDump{*newLine, *newLine\strLength + 8}
       PED_ReplaceCurrentSourceLine{*newLine}
    
       ; -- print the tokenized source line if tokenizing
@@ -7021,9 +7206,9 @@ Return
     ;-- check for some tokens and automatically add the closing token
     If pedconfig\auto_constructs AND NOT exit_mainloop
       If last_vankey.b = #VANILLAKEY_RETURN
-        a$ = autoCompleteContructs{ped\ptrCurrentSourceData\CurrentSourceLine}
-        If a$ <> ""
-          PED_InsertStringToTextBuffer{a$}
+        tmpStringVar = autoCompleteContructs{ped\ptrCurrentSourceData\CurrentSourceLine}
+        If tmpStringVar <> ""
+          PED_InsertStringToTextBuffer{tmpStringVar}
           PED_InsertReturn{}
           PED_MoveCursorDown{}
         EndIf
@@ -7056,7 +7241,8 @@ Return
 Return
 
 .menu_settings:
- Gosub set_pointer_busy
+ PED_SetPointerBusy{}
+
  WZWindow WZID("WIN_SETTINGS"),?wzgui,255,-2,-2,-2,-2,WZID("WIN_SETTINGS")
  Use Window WZID("WIN_SETTINGS")
 
@@ -7101,7 +7287,8 @@ Return
  WZPrint "SET_SORTLABELS"     ,pedconfig\sort_labels
  WZPrint "SET_CURSORSTYLE"    ,pedconfig\cursorStyle
 
- WZDisable "SET_ITALICREMARKS"
+ WZDisable "SET_ITALICREMARKS"  ; field obsolete will be removed later TODO
+
 ; If NOT ped\no_scrollrate
 ;   WZDisable "SET_SCROLLRATE"
 ; Else
@@ -7110,33 +7297,33 @@ Return
 
  WZPrint "SET_TAB_SIZE"       , pedconfig\tabSize
  WZPrint "SET_CURSORBLINKRATE", pedconfig\blinkrate
+
  If OSVersion = #AmigaOS4                           ; check if OS4
    WZDisable "SET_MOUSEWHEELSTEP"                   ; yes disable it becau we use the System value
  Else                                               ; no print used value.
    WZPrint "SET_MOUSEWHEELSTEP",pedconfig\wheelStep  ; add to make Mousewheelsteprate configuratable and saveable tomsmart1
  EndIf
 
- tsourcedir$  = pedconfig\sourceDir
- tincludedir$ = pedconfig\includeDir
- tautodocdir$ = pedconfig\autodocDir
- thelpdir$    = pedconfig\helpDir
+ tmpSourceDir.s  = pedconfig\sourceDir
+ tmpIncludeDir.s = pedconfig\includeDir
+ tmpAutoDocDir.s = pedconfig\autodocDir
+ tmpHelpDir.s    = pedconfig\helpDir
+ tmpUtillibFile.s= pedconfig\utillibFile
+ tmpOslibFile.s  = pedconfig\oslibFile
+ tmpCslibFile.s  = pedconfig\cslibFile
 
- tutillibfile$ = pedconfig\utillibFile
- toslibfile$  = pedconfig\oslibFile
- tcslibfile$  = pedconfig\cslibFile
-
- WZPrint "SET_SOURCEDIR"  ,&tsourcedir$
- WZPrint "SET_INCDIR"     ,&tincludedir$
- WZPrint "SET_AUTODOCDIR" ,&tautodocdir$
- WZPrint "SET_HELPDIR"    ,&thelpdir$
+ WZPrint "SET_SOURCEDIR"  ,&tmpSourceDir
+ WZPrint "SET_INCDIR"     ,&tmpIncludeDir
+ WZPrint "SET_AUTODOCDIR" ,&tmpAutoDocDir
+ WZPrint "SET_HELPDIR"    ,&tmpHelpDir
 
  WZPrint "SET_UTILLIBS",pedconfig\useUtilLib
  WZPrint "SET_OSLIBS",pedconfig\useOsLib
  WZPrint "SET_CSLIBS",pedconfig\useCsLib
 
  WZPrint "SET_UTILLIBS_PATH",&tutillibfile$
- WZPrint "SET_OSLIBS_PATH"  ,&toslibfile$
- WZPrint "SET_CSLIBS_PATH"  ,&tcslibfile$
+ WZPrint "SET_OSLIBS_PATH"  ,&tmpOslibFile
+ WZPrint "SET_CSLIBS_PATH"  ,&tmpCslibFile
 
  ;-- get screen infos
  temp_id.l     = pedconfig\screen_modeID
@@ -7371,75 +7558,75 @@ Return
          ; end new gadgets of colors page
 
          Case "SET_SOURCEDIR"
-           tsourcedir$ = WZInputstr
-           WZPrint "SET_SOURCEDIR",&tsourcedir$
+           tmpSourceDir = WZInputstr
+           WZPrint "SET_SOURCEDIR",&tmpSourceDir
 
          Case "BUTTON_SOURCEDIR"
            aslfr_SetRequesterTitle {0,!TRANS{ "Please select source directory:"},"",""}
-           aslfr_SetPath{0,tsourcedir$,"",""}
+           aslfr_SetPath{0,tmpSourceDir,"",""}
            If aslfr_Request{0,False,False,True,sourceWindow\pedScreen}
-             tsourcedir$ = aslfr_GetNextFile{}
-             WZPrint "SET_SOURCEDIR",&tsourcedir$
+             tmpSourceDir = aslfr_GetNextFile{}
+             WZPrint "SET_SOURCEDIR",&tmpSourceDir
            EndIf
 
          Case "SET_INCDIR"
-           tincludedir$ = WZInputstr
-           WZPrint "SET_INCDIR",&tincludedir$
+           tmpIncludeDir = WZInputstr
+           WZPrint "SET_INCDIR",&tmpIncludeDir
 
          Case "BUTTON_INCDIR"
            aslfr_SetRequesterTitle {0,!TRANS{"Please select includes directory:"},"",""}
-           aslfr_SetPath{0,tincludedir$,"",""}
+           aslfr_SetPath{0,tmpIncludeDir,"",""}
            If aslfr_Request{0,False,False,True,sourceWindow\pedScreen}
-             tincludedir$ = aslfr_GetNextFile{}
-             WZPrint "SET_INCDIR",&tincludedir$
+             tmpIncludeDir = aslfr_GetNextFile{}
+             WZPrint "SET_INCDIR",&tmpIncludeDir
            EndIf
 
          Case "SET_HELPDIR"
-           thelpdir$ = WZInputstr
-           WZPrint "SET_HELPDIR",&thelpdir$
+           tmpHelpDir = WZInputstr
+           WZPrint "SET_HELPDIR",&tmpHelpDir
 
          Case "BUTTON_HELPDIR"
            aslfr_SetRequesterTitle {0,!TRANS{"Please select help directory:"},"",""}
-           aslfr_SetPath{0,thelpdir$,"",""}
+           aslfr_SetPath{0,tmpHelpDir,"",""}
            If aslfr_Request{0,False,False,True,sourceWindow\pedScreen}
-             thelpdir$ = aslfr_GetNextFile{}
-             WZPrint "SET_HELPDIR",&thelpdir$
+             tmpHelpDir = aslfr_GetNextFile{}
+             WZPrint "SET_HELPDIR",&tmpHelpDir
            EndIf
 
          Case "SET_AUTODOCDIR"
-           tautodocdir$ = WZInputstr
-           WZPrint "SET_AUTODOCDIR",&tautodocdir$
+           tmpAutoDocDir = WZInputstr
+           WZPrint "SET_AUTODOCDIR",&tmpAutoDocDir
 
          Case "BUTTON_AUTODOCDIR"
            aslfr_SetRequesterTitle {0,!TRANS{ "Please select AutoDocs directory:"},"",""}
-           aslfr_SetPath{0,tautodocdir$,"",""}
+           aslfr_SetPath{0,tmpAutoDocDir,"",""}
            If aslfr_Request{0,False,False,True,sourceWindow\pedScreen}
-             tautodocdir$ = aslfr_GetNextFile{}
-             WZPrint "SET_AUTODOCDIR",&tautodocdir$
+             tmpAutoDocDir = aslfr_GetNextFile{}
+             WZPrint "SET_AUTODOCDIR",&tmpAutoDocDir
            EndIf
 
          Case "BUTTON_UTILLIBS"
            aslfr_SetRequesterTitle {0,!TRANS{"Please select UtilLibs file:"},"",""}
            aslfr_SetPath{0,dos_PathPart{tutillibfile$},dos_FilePart{tutillibfile$},"#?"}
            If aslfr_Request{0,False,False,False,sourceWindow\pedScreen}
-             tutillibfile$ = aslfr_GetNextFile{}
+            tmpUtillibFile = aslfr_GetNextFile{}
              WZPrint "SET_UTILLIBS_PATH",&tutillibfile$
            EndIf
 
          Case "BUTTON_OSLIBS"
            aslfr_SetRequesterTitle {0,!TRANS{"Please select OsLibs file:"},"",""}
-           aslfr_SetPath{0,dos_PathPart{toslibfile$},dos_FilePart{toslibfile$},"#?"}
+           aslfr_SetPath{0,dos_PathPart{tmpOslibFile},dos_FilePart{tmpOslibFile},"#?"}
            If aslfr_Request{0,False,False,False,sourceWindow\pedScreen}
-             toslibfile$ = aslfr_GetNextFile{}
-             WZPrint "SET_OSLIBS_PATH",&toslibfile$
+             tmpOslibFile = aslfr_GetNextFile{}
+             WZPrint "SET_OSLIBS_PATH",&tmpOslibFile
            EndIf
 
          Case "BUTTON_CSLIBS"
            aslfr_SetRequesterTitle {0,!TRANS{"Please select CsLibs file:"},"",""}
-           aslfr_SetPath{0,dos_PathPart{tcslibfile$},dos_FilePart{toslibfile$},"#?"}
+           aslfr_SetPath{0,dos_PathPart{tmpCslibFile},dos_FilePart{tmpOslibFile},"#?"}
            If aslfr_Request{0,False,False,False,sourceWindow\pedScreen}
-             toslibfile$ = aslfr_GetNextFile{}
-             WZPrint "SET_CSLIBS_PATH",&tcslibfile$
+             tmpOslibFile = aslfr_GetNextFile{}
+             WZPrint "SET_CSLIBS_PATH",&tmpCslibFile
            EndIf
 
          Case "SET_PUBSCREEN"
@@ -7631,19 +7818,18 @@ Return
    pedconfig\autolayout= -WZInput("SET_AUTOLAYOUT")
 
    ; store directories
-   pedconfig\sourceDir  = tsourcedir$
-   pedconfig\includeDir = tincludedir$
-   pedconfig\autodocDir = tautodocdir$
-   pedconfig\helpDir    = thelpdir$
-
+   pedconfig\sourceDir  = tmpSourceDir
+   pedconfig\includeDir = tmpIncludeDir
+   pedconfig\autodocDir = tmpAutoDocDir
+   pedconfig\helpDir    = tmpHelpDir
+   pedconfig\utillibFile =tmpUtillibFile
+   pedconfig\oslibFile  = tmpOslibFile
+   pedconfig\cslibFile  = tmpCslibFile
 
    pedconfig\useUtilLib  = -WZInput("SET_UTILLIBS")
    pedconfig\useOsLib  = -WZInput("SET_OSLIBS")
    pedconfig\useCsLib  = -WZInput("SET_CSLIBS")
 
-   pedconfig\utillibFile = tutillibfile$
-   pedconfig\oslibFile  = toslibfile$
-   pedconfig\cslibFile  = tcslibfile$
 
    If temp_id <> pedconfig\screen_modeID
      pedconfig\screen_modeID = temp_id
@@ -7698,7 +7884,7 @@ Return
    If (rebuild_sourcewindow = True) AND (rebuild_gui = False)
      log_Print{"rebuilding the source window..."}
 
-     Gosub set_pointer_busy
+     PED_SetPointerBusy{}
      Gosub close_sourcewindow
      Gosub open_sourcewindow
      If ped\errorCode = #PEDERROR_OPENWINDOW
@@ -7708,7 +7894,7 @@ Return
      EndIf
 
      WindowToFront_ Peek.l(Addr Window(WZID("WIN_SETTINGS")))
-     Gosub set_pointer_normal     
+     PED_SetPointerNormal{}     
    Else
      log_Print{"just redraw source"}
      PED_RedrawSource{}
@@ -7731,7 +7917,7 @@ Return
  If cw_open Then WZ_KillColorWheel{} : cw_open = False
  WZCloseWindow WZID("WIN_SETTINGS")
  FlushEvents
- Gosub set_pointer_normal
+ PED_SetPointerNormal{}
 
  If rebuild_gui
    log_Print{"rebuilding the gui..."}
@@ -7989,68 +8175,35 @@ Return
   EndIf
 Return
 
-.set_pointer_normal:
-  If sourceWindow\win
-    If (ExecVersion > 38) Then SetWindowPointerA_ sourceWindow\win, Tags(#WA_Pointer,Null, #TAG_END,Null)
-
-    ;- reset to standard flags
-    ModifyIDCMP_ sourceWindow\win, SourceWindowIDCMPFlags.l
-  EndIf
-  WZ_UnlockAllOpenWindows{}
-Return
-
-.taglist_pointer_busy:
-  Dc.l $80000098               ; #WA_BusyPointer
-  Dc.l $FFFFFFFF               ; TRUE
-  Dc.l $00000000               ; 0
-
-.set_pointer_busy:
-  If sourceWindow\win
-    ;-- I really don't understand, why this does not work correctly:
-    ;If (ExecVersion > 38) Then SetWindowPointerA_ sourceWindow\win, Tags(#WA_BusyPointer,True, #TAG_END,Null)
-    If (ExecVersion > 38) Then SetWindowPointerA_ sourceWindow\win, ?taglist_pointer_busy
-
-    ;--  only allow following flags to lock the sourcewin
-    ModifyIDCMP_ sourceWindow\win, #IDCMP_NEWSIZE|#IDCMP_REFRESHWINDOW|#WFLG_REPORTMOUSE
-  EndIf
-  WZ_LockAllOpenWindows{}
-Return
-
-
 .write_infofile:
-  tmp_string.s = ped\sourceFileComplete
-  If Exists(tmp_string + ped\extention_info)
-    do_info.b = False
-  Else
-    do_info = True
+  If dos_Exist{ped\sourceFileComplete + ped\extention_info}
+    dos_Delete{ped\sourceFileComplete + ped\extention_info}
   EndIf
 
-  If do_info
-    *ni.DiskObject = GetDiskObject_(Null)
-    If *ni
-      log_Print{"writing info-file for [" + ped\sourceFileComplete + "]"}
+  *ni.DiskObject = GetDiskObject_(Null)
+  If *ni
+    log_Print{"writing info-file for [" + ped\sourceFileComplete + "]"}
 
-      ; set the icon type as a projectfile
-      *ni\do_Type = #WBPROJECT
+    ;-- set the icon type as a projectfile
+    *ni\do_Type = #WBPROJECT
 
-      ; set the default tooltype for the icon
-      idefToolTtype.s = "Blitz3:AmiBlitz3"
-      *ni\do_DefaultTool = &idefToolTtype
+    ;-- set the default tooltype for the icon
+    idefToolTtype.s = "Blitz3:AmiBlitz3"
+    *ni\do_DefaultTool = &idefToolTtype
 
-      ;-- create the Image structure with embedded gfx data and assing the Image to the icongadget structure
-      iImg.Image\LeftEdge = 0,0,46,23,2,?iconImageData,3,0,0
-      *ni\do_Gadget\NextGadget = 0,0,0,46,24,5,3,1,iImg,0,0,0,0,0,0
-      *ni\do_CurrentX = #NO_ICON_POSITION ; 92
-      *ni\do_CurrentY = #NO_ICON_POSITION ; 14
+    ;-- create the Image structure with embedded gfx data and assing the Image to the icongadget structure
+    iImg.Image\LeftEdge = 0,0,46,23,2,?iconImageData,3,0,0
+    *ni\do_Gadget\NextGadget = 0,0,0,46,24,5,3,1,iImg,0,0,0,0,0,0
+    *ni\do_CurrentX = #NO_ICON_POSITION ; 92
+    *ni\do_CurrentY = #NO_ICON_POSITION ; 14
 
-      If PutDiskObject_(&tmp_string, *ni)
-      Else
-        log_Print{"Could not write DiskObject, error " + Str$(IoErr_),#log_error}
-      EndIf
-    Else
-      log_Print{"Could not init Diskobject structure",#log_error}
+    If NOT PutDiskObject_(&ped\sourceFileComplete, *ni)
+      log_Print{"Could not write DiskObject, error " + Str$(IoErr_),#log_error}
     EndIf
+  Else
+    log_Print{"Could not init Diskobject structure",#log_error}
   EndIf
+
 Return
 
 iconImageData:
@@ -8167,7 +8320,7 @@ Even
   EndIf
 
   ; -- load the source file
-  Gosub set_pointer_busy
+  PED_SetPointerBusy{}
 
   PED_ShowMessage{!TRANS{"Loading file"} + " " + loadsourcefilename + "..."}
   If loadsourcefilename.s <> ""
@@ -8186,9 +8339,7 @@ Even
     !ComData_JSR{comFunc_LoadSource}
     !basic
     log_Print{"loaded " + Str$(ped\ptrCurrentSourceData\TotalLines) + " lines of text"}
-    log_Print{"length of last first line: " + Hex$(Peek.b(ped\ptrCurrentSourceData\FirstSourceLine+8))}
-    log_Print{"length of last source line: " + Hex$(Peek.b(ped\ptrCurrentSourceData\LastSourceLine+8))}
-    ;!log_HexDump{ped\ptrCurrentSourceData\LastSourceLine,32}
+
     Gosub storeCurrentSourceData
 
     ;-- restore windows
@@ -8210,6 +8361,7 @@ Even
   Else
     Gosub other_loading_routine
     Gosub storeCurrentSourceData
+
     Gosub analyze_loadedsource
     Gosub calc_SourceWindowDimensions
   EndIf
@@ -8219,7 +8371,7 @@ Even
   Gosub reset_labellist
   PED_RedrawSource{}
 
-  Gosub set_pointer_normal
+  PED_SetPointerNormal{}
 
   PED_ShowMessage{""}
 Return
@@ -8251,7 +8403,7 @@ Return
   
   PED_SetCurrentDir{}
 
-  Gosub set_pointer_busy
+  PED_SetPointerBusy{}
   !PED_ResetBlockflag
   Gosub free_actualsource
 
@@ -8308,8 +8460,8 @@ Return
   Goto skip_loadingxtrafile
 
   If Peek.l(?comFunc_ReadXtraFile) = 0 Then Goto skip_loadingxtrafile
-  tmp_string.s = ped\sourceFileComplete + ped\extention_xtra
-  *xtra_fh.l = Open_(&tmp_string, #HUNK_RELOC_16__MODE_OLDFILE)
+  tmpStringVar.s = ped\sourceFileComplete + ped\extention_xtra
+  *xtra_fh.l = Open_(&tmpStringVar, #HUNK_RELOC_16__MODE_OLDFILE)
   If *xtra_fh = 0 Then Goto skip_loadingxtrafile
 
   PutReg D0,*xtra_fh : MOVE.l d0,-(a7)
@@ -8389,8 +8541,8 @@ Return
     WZPrint "case"        ,Peek.w(?comWord_LabelCase)
     WZPrint "rem"         ,Peek.w(?comWord_LabelRemark)
     WZPrint "all"         ,Peek.w(?comWord_LabelAll)
-    WZListRemove lib_list.List
-    WZPrint "LIBRARY_LIST",0,lib_list
+    WZListRemove list_usedBlitzLibs
+    WZPrint "LIBRARY_LIST",0,list_usedBlitzLibs
   EndIf
   If WZ_IsOpen{"WIN_NEWTYPE"}
     PED_UpdateDefinitionBrowser{#DEFBROWSER_RESET}
@@ -8423,25 +8575,26 @@ Return
     EndIf
   EndIf
 
-  Gosub update_title_sourcewindow
+  SetWindowTitles_ sourceWindow\win, &sourceWindow\Title, -1
+
   Gosub update_debuggertoggle
 Return
 
 
 .delete_tempprefs:
   If Peek.l(?comFunc_ReadXtraFile) <> 0
-    tmp_string = "T:PED_" + Hex$(ped\currentSourceEntry) + ".xtra"
-    log_Print{"deleting <" + tmp_string + ">"}
-    DeleteFile_ &tmp_string
+    tmpStringVar = "T:PED_" + Hex$(ped\currentSourceEntry) + ".xtra"
+    log_Print{"deleting <" + tmpStringVar + ">"}
+    DeleteFile_ &tmpStringVar
   EndIf
 Return
 
 .read_tempprefs:
   If Peek.l(?comFunc_ReadXtraFile) <> 0
-    tmp_string = "T:PED_" + Hex$(ped\currentSourceEntry) + ".xtra"
-    tpfhandle.l = Open_(&tmp_string, #HUNK_RELOC_16__MODE_OLDFILE)
+    tmpStringVar = "T:PED_" + Hex$(ped\currentSourceEntry) + ".xtra"
+    tpfhandle.l = Open_(&tmpStringVar, #HUNK_RELOC_16__MODE_OLDFILE)
     If tpfhandle <> 0
-      log_Print{"reading xtrafile <" + tmp_string + ">"}
+      log_Print{"reading xtrafile <" + tmpStringVar + ">"}
       GetD0 Peek.l(?comFunc_ReadXtraFile) : MOVE.l d0,-(a7)
       GetD0 tpfhandle : MOVE.l d0,-(a7)
       !asm
@@ -8456,10 +8609,10 @@ Return
 
 .save_tempprefs:
   If Peek.l(?comFunc_WriteXtraFile) <> 0
-    tmp_string.s = "T:PED_" + Hex$(ped\currentSourceEntry) + ".xtra"
-    tpfhandle.l = Open_(&tmp_string, #HUNK_RELOC_8__MODE_NEWFILE)
+    tmpStringVar.s = "T:PED_" + Hex$(ped\currentSourceEntry) + ".xtra"
+    tpfhandle.l = Open_(&tmpStringVar, #HUNK_RELOC_8__MODE_NEWFILE)
     If tpfhandle <> 0
-      log_Print{"writing xtrafile for " + Peek.s(&ped\ptrCurrentSourceData\SourceName) + " <" + tmp_string + ">"}
+      log_Print{"writing xtrafile for " + Peek.s(&ped\ptrCurrentSourceData\SourceName) + " <" + tmpStringVar + ">"}
       GetD0 Peek.l(?comFunc_WriteXtraFile) : MOVE.l d0,-(a7)
       GetD0 tpfhandle : MOVE.l d0,-(a7)
       !asm
@@ -8476,8 +8629,8 @@ Return
   log_Print{"menu_saveas called."}
   Gosub storeCurrentSourceData
 
-  tmp_string.s = PED_RequestFile{Peek.s(&ped\ptrCurrentSourceData\SourceDir),Peek.s(&ped\ptrCurrentSourceData\SourceName),"Name of file to save", "(#?.ab3)"}
-  If tmp_string <> ""
+  tmpStringVar.s = PED_RequestFile{Peek.s(&ped\ptrCurrentSourceData\SourceDir),Peek.s(&ped\ptrCurrentSourceData\SourceName),"Name of file to save", "(#?.ab3)"}
+  If tmpStringVar <> ""
     ped\check_existsfile = True
     Gosub menu_save
     ped\check_existsfile = False
@@ -8497,12 +8650,60 @@ Return
   EndIf
   If ped\currentFile = "" Then Return
 
-  directory.s = dos_FilePart{dos_PathPart{ped\sourceFileComplete}}
-  If dos_Exist{ped\sourceFileComplete} AND LCase$(directory) = "templates"
-    If NOT ask{!TRANS{"Do you really want to save this file into the templates drawer?"},!TRANS{"Ok|Cancel"},!TRANS{"Question"}}
-      Return
+  ;--
+  ;-- check if file exist and if file should be stored in templates drawer
+  If ped\check_existsfile = True
+    log_Print{"check if file <" + ped\sourceFileComplete + "> already exists, requester if so  ..."}
+
+    If dos_Exist{ped\sourceFileComplete} ; Lock_(&ped\sourceFileComplete, #ACCESS_WRITE)
+      If ask{!TRANS{"File already exists!"},!TRANS{"Overwrite|Cancel"},!TRANS{"Save File As..."}}
+        log_Print{"overwrite is ok"}
+      Else
+        log_Print{"operation cancelled"}
+        Return
+      EndIf
+
+      directory.s = dos_FilePart{dos_PathPart{ped\sourceFileComplete}}
+      If LCase$(directory) = "templates"
+        If NOT ask{!TRANS{"Do you really want to save this file into the templates drawer?"},!TRANS{"Ok|Cancel"},!TRANS{"Question"}}
+          Return
+        EndIf
+      EndIf
+    Else
+      ; file does not exist, that is ok!
     EndIf
+  EndIf 
+
+  ;--
+  ;-- check file length
+  If FLen(ped\currentFile) > 27
+    dummy.l = ask{!TRANS{"Warning: Filename is longer than 27 characters.\\n" + ped\currentFile + "\\n\\nThis may cause problems with some filesystems."},!TRANS{"Continue"},!TRANS{"Info"}}
   EndIf
+  log_Print{"ped\sourceFileComplete : " + ped\sourceFileComplete + ", check exists: " + Str$(ped\check_existsfile)}
+
+  ;--
+  ;-- creating a backup of current source file
+  If pedconfig\create_backups
+    tmpStringVar.s = ped\sourceFileComplete + ped\extention_bak
+    log_Print{"creating a backup of source file " + tmpStringVar}
+    dos_Delete{tmpStringVar}
+    dos_Rename{ped\sourceFileComplete, tmpStringVar}
+  EndIf
+
+
+  Poke.l ?comPtr_SourceName, &ped\currentFile
+  Poke.l ?comPtr_SourceDir, &ped\currentDir
+  Poke.s ?comStr_SourceName, ped\currentFile
+  Poke.s ?comStr_SourceDir, ped\currentDir
+  ;ped\ptrCurrentSourceData\SourceName = ped\currentFile      ; doesnt work with NEWTYPE
+  ;ped\ptrCurrentSourceData\SourceDir = ped\currentDir
+  
+  Gosub storeCurrentSourceData
+
+  log_Print{"updated current source name: " + Peek.s(&ped\ptrCurrentSourceData\SourceName)}
+
+  PED_SetPointerBusy{}
+  PED_ShowMessage{!TRANS{"Saving file"} + "..."}
 
   ped\amiblitzmode = 0
   ex.s = LCase$(dos_GetExt{ped\sourceFileComplete})
@@ -8511,63 +8712,26 @@ Return
   If ex = "ab2" Then ped\amiblitzmode = 2
   If ex = "ab3" Then ped\amiblitzmode = 3
 
-  If Len(ped\currentFile) > 27
-    dummy.l = ask{!TRANS{"Warning: Filename is longer than 27 characters.\\n" + ped\currentFile + "\\nThis may cause problems with some filesystems."},!TRANS{"Continue"},!TRANS{"Info"}}
-  EndIf
-  log_Print{"ped\sourceFileComplete : " + ped\sourceFileComplete + ", check exists: " + Str$(ped\check_existsfile)}
-
-  If ped\check_existsfile = True
-    log_Print{"check if file <" + ped\sourceFileComplete + "> already exists, requester if so  ..."}
-    *flock.l = Lock_(&ped\sourceFileComplete,#ACCESS_WRITE)
-    If *flock <> 0
-      If ask{!TRANS{"File already exists!"},!TRANS{"Overwrite|Cancel"},!TRANS{"Save File As..."}}
-        log_Print{"overwrite is ok"}
-        UnLock_ *flock
-      Else
-        log_Print{"operation cancelled"}
-        Pop If : Pop If
-        Return
-      EndIf
-    Else
-      ; file does not exist, that is ok!
-    EndIf
-  EndIf 
-
-  Poke.l ?comPtr_SourceName, &ped\currentFile
-  Poke.l ?comPtr_SourceDir, &ped\currentDir
-  Poke.s ?comStr_SourceName, ped\currentFile
-  Poke.s ?comStr_SourceDir, ped\currentDir
-  ;ped\ptrCurrentSourceData\SourceName = ped\currentFile
-  ;ped\ptrCurrentSourceData\SourceDir = ped\currentDir
-  
-  Gosub storeCurrentSourceData
-
-  log_Print{"updated current source name: " + Peek.s(&ped\ptrCurrentSourceData\SourceName)}
-  tmp_string.s = ped\sourceFileComplete + ped\extention_bak
-  DeleteFile_ &tmp_string
-  Rename_ &ped\sourceFileComplete, tmp_string
-
-  Gosub set_pointer_busy
-  PED_ShowMessage{!TRANS{"Saving file"} + "..."}
-
   log_Print{"writing mode: " + Str$(ped\amiblitzmode)}
   Select ped\amiblitzmode
-  Case 1 : Gosub save_source_as_tokenized
-           Gosub write_xtrafile
+  Case 1 : Gosub save_source_as_tokenized           
   Case 2 : Gosub save_source_as_text
   Case 3 : Gosub save_source_as_ab3
   Default: Gosub save_source_as_text
   End Select
 
   If pedconfig\use_source_icon Then Gosub write_infofile
+
+
   Gosub analyze_loadedsource
 
   If pedconfig\remember_saved Then Gosub update_rememberlist
+  If pedconfig\load_last_source Then Gosub update_loadsourcefile
 
   ped\ptrCurrentSourceData\SourceChanged = 0
 
   PED_ShowMessage{""}
-  Gosub set_pointer_normal
+  PED_SetPointerNormal{}
 Return
 
 
@@ -8597,11 +8761,13 @@ Return
   MOVE.l (a7)+,D0
   !ComData_JSR{comFunc_SaveSource}
   !basic
+
+  Gosub write_xtrafile
 Return
 
 .write_xtrafile:
-  tmp_string.s = ped\sourceFileComplete + ped\extention_xtra
-  *xtra_fh.l = Open_(&tmp_string, #HUNK_RELOC_8__MODE_NEWFILE)
+  tmpStringVar.s = ped\sourceFileComplete + ped\extention_xtra
+  *xtra_fh.l = Open_(&tmpStringVar, #HUNK_RELOC_8__MODE_NEWFILE)
   If *xtra_fh
     PutReg D7,*xtra_fh
     !asm
@@ -8620,7 +8786,7 @@ Return
 Return
 
 .menu_about:
-  Gosub set_pointer_busy
+  PED_SetPointerBusy{}
 
   txt0.s = !versions + "#" + Peek.s(Peek.l(?comPtr_CompilerVersion))
   txt1.s = ArexxPortName.s
@@ -8682,7 +8848,7 @@ Return
   WZCloseWindow WZID("WIN_WELCOME")
   FlushEvents
 
-  Gosub set_pointer_normal
+  PED_SetPointerNormal{}
   Gosub activatesourcewindow
 Return
 
@@ -8723,7 +8889,7 @@ nextOccurence:
       log_Print{"find previous for [" + ped\searchString + "]"}
     EndIf
 
-    Gosub set_pointer_busy
+    PED_SetPointerBusy{}
 
     curLine.l = ped\ptrCurrentSourceData\DisplayLine + ped\ptrCurrentSourceData\DisplayLineOffset + direction
     Repeat
@@ -8744,7 +8910,7 @@ nextOccurence:
       PED_MoveCursorToX{tmpX - 1}
     EndIf
 
-    Gosub set_pointer_normal
+    PED_SetPointerNormal{}
   EndIf
 Return
 
@@ -8851,7 +9017,7 @@ Return
 
   If \BlockEndY = $ffffFFFF
     log_Print{"no block selected."}
-    Gosub set_pointer_normal
+    PED_SetPointerNormal{}
     Pop If: Return
   EndIf
 
@@ -8886,7 +9052,7 @@ Return
   log_Print{"menu blockuncomment called."}
   If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
     log_Print{"no block selected."}
-    Gosub set_pointer_normal
+    PED_SetPointerNormal{}
     Pop If: Return
   EndIf
 
@@ -8926,7 +9092,7 @@ Return
 
   If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
     log_Print{"no block selected."}
-    Gosub set_pointer_normal
+    PED_SetPointerNormal{}
     Pop If: Return
   EndIf
 
@@ -8962,7 +9128,7 @@ Return
   log_Print{"menu blockuntab called."}
   If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
     log_Print{"no block selected."}
-    Gosub set_pointer_normal
+    PED_SetPointerNormal{}
     Pop If: Return
   EndIf
 
@@ -9179,7 +9345,7 @@ Return
     ped\ptrCurrentSourceData\BlockEndX   = #MAX_Columns - 1
     PED_RedrawSource{}
   EndIf
-  Gosub set_pointer_normal
+  PED_SetPointerNormal{}
 Return
 
 
@@ -9293,7 +9459,7 @@ USEPATH ped\ptrCurrentSourceData
   If *currLine\nextLine = 0
     log_Print{"no next line to join."}
 
-    Gosub set_pointer_normal
+    PED_SetPointerNormal{}
     Pop If: Return
   Else
     *nextLine.sourceLine = *currLine\nextLine
@@ -9357,13 +9523,13 @@ Return
     Return
 
   Case #MENU_CALCULATOR
-    Gosub set_pointer_busy
+    PED_SetPointerBusy{}
  
     Gosub save_tempprefs                 ; save data to prevent crashes if the calculation routine is called an it coms back to Ped
     Gosub open_calculator
     Gosub read_tempprefs                 ; restore data to prevent crashes if the calculation routine is called an it comes back to Ped
 
-    Gosub set_pointer_normal
+    PED_SetPointerNormal{}
 
     Pop Select : Return
 
@@ -9371,15 +9537,15 @@ Return
     Gosub open_definitionbrowser
 
   Case #MENU_SETCLIARGS
-    Gosub set_pointer_busy
+    PED_SetPointerBusy{}
     Gosub open_cliarguments
-    Gosub set_pointer_normal
+    PED_SetPointerNormal{}
 
   Case #MENU_SOURCEBROWSER
     Gosub open_sourcebrowser
 
   Case #MENU_COMPILERSETTINGS
-    Gosub set_pointer_busy
+    PED_SetPointerBusy{}
     Gosub menu_compilersettings
     If WZ_IsOpen{"WIN_NEWTYPE"}
        Use Window WZID("WIN_NEWTYPE")
@@ -9387,7 +9553,7 @@ Return
     End If
     Gosub update_debuggertoggle
     Gosub save_tempprefs
-    Gosub set_pointer_normal
+    PED_SetPointerNormal{}
 
   Case #MENU_COMPILERUN
     ;TEDSetLabelList {?comPtr_LabelList}
@@ -9423,7 +9589,6 @@ Return
 
   log_Print{"doing stuff after compiler has finished."}
 
-  Gosub update_title_sourcewindow
   PED_UpdateStatusArea{}
 
   ;-- handle compile error??
@@ -9534,7 +9699,7 @@ Return
     aslfr_SetRequesterTitle{0,!TRANS{"Select a filename to insert in source"},"",""}
     aslfr_SetPath{0,pedconfig\mainDir,"",""}
     If aslfr_Request{0,False,False,False,sourceWindow\pedScreen}
-      a$ = aslfr_GetNextFile{} : PED_InsertStringToTextBuffer{a$}
+      tmpStringVar = aslfr_GetNextFile{} : PED_InsertStringToTextBuffer{tmpStringVar}
     EndIf
 
   Case #MENU_OPENFILEUNDERCURSOR
@@ -9542,20 +9707,20 @@ Return
     _file$ = PED_GetWordAtPos{strline$, ped\ptrCurrentSourceData\Column,False,False}
     log_Print{"open file under cursor [" + _file$+ "]"}
     If _file$ <> ""
-      tmp_string = _file$
-      If NOT dos_Exist{tmp_string}
-        tmp_string = dos_AddPart{pedconfig\includeDir,_file$}
-        log_Print{"not found, trying " + tmp_string}
+      tmpStringVar = _file$
+      If NOT dos_Exist{tmpStringVar}
+        tmpStringVar = dos_AddPart{pedconfig\includeDir,_file$}
+        log_Print{"not found, trying " + tmpStringVar}
       EndIf
-      If NOT dos_Exist{tmp_string}
-        tmp_string = dos_AddPart{Peek.s(&ped\ptrCurrentSourceData\SourceDir),_file$}
-        log_Print{"not found, trying " + tmp_string}
+      If NOT dos_Exist{tmpStringVar}
+        tmpStringVar = dos_AddPart{Peek.s(&ped\ptrCurrentSourceData\SourceDir),_file$}
+        log_Print{"not found, trying " + tmpStringVar}
       EndIf
-      If dos_Exist{tmp_string}
-        log_Print{"open file under cursor: " + tmp_string}
-        !PED_LoadSource{tmp_string,False,True,True}  
+      If dos_Exist{tmpStringVar}
+        log_Print{"open file under cursor: " + tmpStringVar}
+        !PED_LoadSource{tmpStringVar,False,True,True}  
       Else
-        log_Print{"could not find file: " + tmp_string}
+        log_Print{"could not find file: " + tmpStringVar}
       EndIf
     EndIf
 
@@ -9628,7 +9793,7 @@ Return
 
   Else
     log_Print{"unknown template, opening a new file instead."}
-    tmp_string = !TRANS{"unnamed"}
+    tmpStringVar = !TRANS{"unnamed"}
     Gosub menu_loadAsNew
   EndIf
 Return
@@ -9841,7 +10006,7 @@ Return
   If blockfn$ <> ""
     *write_fh.l = Open_(&blockfn$, #HUNK_RELOC_8__MODE_NEWFILE)
     If *write_fh <> 0
-      Gosub set_pointer_busy
+      PED_SetPointerBusy{}
       *tempLine.sourceLine = PED_GetFirstBlockLine{}
       strline$ = PED_Detokenize{*tempLine}
       strlng.w = FLen(strline$)
@@ -9898,9 +10063,9 @@ Return
           EndIf
       EndIf
       Close_ *write_fh
-      Gosub set_pointer_normal
+      PED_SetPointerNormal{}
     Else
-      dummy.l = ask{!TRANS{messageErrorWriteFile},!TRANS{"OK"},"Error!"}
+      dummy.l = ask{!TRANS{"Error writing file!"},!TRANS{"OK"},"Error!"}
     End If
   End If
 Return
@@ -9920,7 +10085,7 @@ Return
   log_Print{"menu dublicate called."}
   If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
     log_Print{"no block selected."}
-    Gosub set_pointer_normal
+    PED_SetPointerNormal{}
     Pop If: Return
   EndIf
 
@@ -9935,7 +10100,7 @@ Return
   log_Print{"menu forget called."}
   If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
     log_Print{"no block selected."}
-    Gosub set_pointer_normal
+    PED_SetPointerNormal{}
     Pop If : Return
   EndIf
 
@@ -10232,7 +10397,7 @@ USEPATH ped\ptrCurrentSourceData
 Return
 
 .menu_gotoline:
-  Gosub set_pointer_busy
+  PED_SetPointerBusy{}
 
   WZWindow WZID("WIN_GOTO"),?wzgui,32,-2,-2,-2,-2,WZID("WIN_GOTO")
   Use Window WZID("WIN_GOTO")
@@ -10276,7 +10441,7 @@ Return
 
   WZCloseWindow WZID("WIN_GOTO")
 
-  Gosub set_pointer_normal
+  PED_SetPointerNormal{}
   Gosub activatesourcewindow
 Return
 
@@ -10401,14 +10566,14 @@ RTS
     Write_ runExe\cliFileHandle, &clitxt, FLen(clitxt)
     Flush_ runExe\cliFileHandle
 
-    Gosub set_pointer_busy
+    PED_SetPointerBusy{}
 
     console_dummy.b = 0
     While Read_(runExe\cliFileHandle, &console_dummy, 1) = 0
       Delay_ 2
     Wend
 
-    Gosub set_pointer_normal
+    PED_SetPointerNormal{}
 
     If pedconfig\console_wb = True Then ScreenToFront_ sourceWindow\pedScreen
   EndIf
@@ -10504,9 +10669,9 @@ RTS
   If *strptr = 0 OR *destptr = 0
     error{"null-pointer in com_detokenizeLine !"}
   Else
-    tmp_string.s = PED_DetokenizeText{Peek.s(*strptr)}
-    For i = 0 To FLen(tmp_string) - 1
-      Poke.b *destptr + i, Peek.b(&tmp_string + i)
+    tmpStringVar.s = PED_DetokenizeText{Peek.s(*strptr)}
+    For i = 0 To FLen(tmpStringVar) - 1
+      Poke.b *destptr + i, Peek.b(&tmpStringVar + i)
     Next i
   EndIf
   !asm
@@ -10535,7 +10700,8 @@ RTS
     compilestatus.s = Mid$(file_ReadLine{fid},9)
     file_Close{fid}
 
-    If error_incname <> "none"              ; open source file with error
+    ;-- open source file with error    
+    If error_incname <> "none"
       If Exists (error_incname)
         log_Print{"Error in include ["+ error_incname + "], opening it and jumping to errorline ["+ error_incline + "]..."}
         ;-- check if source is already open
@@ -10543,47 +10709,59 @@ RTS
         If *fileEntry
           GetD0 *fileEntry : Gosub selectTab
         Else
-          !PED_LoadSource{error_incname,False,True,True}
+          !PED_LoadSource{error_incname, False, True, True}
         EndIf
         PED_GotoLine{Val(error_incline)-1,#LINE_END}
         PED_UpdateStatusArea{#STATUS_REDRAW}
       EndIf
     EndIf
-
-    msg$ = !TRANS{Replace$(error_type,"\n","\\n")} + "\\n"
   Else
-    error_line$ = ""
+    error_line = ""
     log_Print{"no error file from compiler",#log_warning}
   EndIf
 
-  ; building the inforequester:
+  ;--
+  ;--  building the inforequester:
   If error_line <> ""
-
-    If error_incname <> "none"
-      msg$ + "Include " + !TRANS{"file"} + ": " + error_incname + "\\n"
-      msg$ + "Include " + !TRANS{"line"} + ": " + error_incline + " - " + !TRANS{"Source line"} + ": " + error_line
-    Else
-      msg$ + !TRANS{"Source line"} + ": " + error_line
-    EndIf
-
-    msg$ + "\\n"
+    msg$ = !TRANS{Replace$(error_type,"\n","\\n")} + "\\n"
+    msg$ + !TRANS{"Line "} + error_line + ": "
 
     If error_lineptr <> ""
       *errorline.sourceLine = Vallong(error_lineptr)
-      log_Print{"Source line pointer provided by compiler:" + Hex$(*errorline)}
-      error_source2.s = Trim$(PED_Detokenize{*errorline})
-      log_Print{"affected sourceline: [" + error_source2 + "]"}
-      msg$ + "\\n" + error_source2
-    EndIf
-    msg$ + "\\n" + error_source + "\\n"
+      error_sourceline.s = Trim$(PED_Detokenize{*errorline})
+      msg$ + "--> " + error_sourceline + "\\n"
 
-    If error_cause1 <> "" OR error_cause2 <> ""
-      msg$ + "\\n\\n------ " + !TRANS{"Details"} + " ------\\n"
-      If error_cause1 <> "" Then msg$ + error_cause1 + "\\n"
-      If error_cause2 <> "" Then msg$ + error_cause2
+      log_Print{"Sourceline pointer provided by compiler: $" + Hex$(*errorline)}
+      log_Print{"affected sourceline: [" + error_sourceline + "]"}
+    Else
+      msg$ + "\\n"
     EndIf
+
+    ;-- add infos to include
+    If error_incname <> "none"
+      msg$ + "\\nThe error occured in included file"
+      msg$ + "\\n" + error_incname + "\\n"
+      msg$ + "Line " + error_incline + ": "
+      msg$ + "--> " + error_source + "\\n"
+    EndIf
+
+
+    ;-- Details
+    If error_cause1 <> "" OR error_cause2 <> ""
+      msg$ + "\\n------ " + !TRANS{"Problem before:"} + " ------\\n"
+      If error_cause1 <> ""
+        msg$ + PED_DetokenizeText{error_cause1} + "\\n"
+      EndIf
+      If error_cause2 <> "" 
+        msg$ + PED_DetokenizeText{error_cause2}
+      EndIf
+    EndIf    
+  Else
+    msg$ = "Compiler did not provide any data about the problem."
   EndIf
+
   dummy.l = ask{msg$,!TRANS{"OK"},!TRANS{"Compile Error"}}
+
   !asm
   !stack2regs
 ;  MOVE.l (A7)+,D7
@@ -10925,7 +11103,7 @@ Even
 
 
 .free_labellist:
-  WZListRemove list_labels
+  WZListRemove list_Labels
   ped\ptrCurrentSourceData\LabelCounter = 0
 Return
 
@@ -10950,11 +11128,11 @@ Return
 
     Use Window WZID("WIN_LABELS")
     ;-- update the labellist
-    WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_labels,LabelList_1VisableItem
+    WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_Labels,LabelList_1VisableItem
 
     ;-- update the librarylist
-    WZListRemove lib_list.List
-    WZPrint "LIBRARY_LIST",0,lib_list
+    WZListRemove list_usedBlitzLibs
+    WZPrint "LIBRARY_LIST",0,list_usedBlitzLibs
 
     PED_ShowMessage{""}
   EndIf
@@ -11156,7 +11334,7 @@ Return
     End Select
     ped\labelEntryType = 0
 
-    WZListAdd list_labels,labelCaption,labelSorting,*nextline
+    WZListAdd list_Labels,labelCaption,labelSorting,*nextline
 
     ped\ptrCurrentSourceData\LabelCounter + 1
     ;ped\labelListChanged = True
@@ -11184,19 +11362,16 @@ Goto bottom_of_mainloop
 Return
 
 .close_sourcefonts:
-  log_Print{"closing fonts..."}
+  ;log_Print{"closing fonts..."}
   USEPATH sourceWindow
-  If (\fontB <> 0)  AND (\fontB <> \font) Then CloseFont_ \fontB
-  If \font <> 0 Then CloseFont_ \font
-
-  \fontB = 0
-  \font = 0
+  If \fontB AND (\fontB <> \font) Then CloseFont_ \fontB : \fontB = 0
+  If \font Then CloseFont_ \font : \font = 0
 Return
 
 .open_sourcefonts:
   Gosub close_sourcefonts
 
-  ; open source font
+  ;-- open source font
   DEFTYPE.TextAttr fontsettings
   fontsettings\ta_Name = &sourcefont_name$
   fontsettings\ta_YSize = sourcefont_size
@@ -11216,7 +11391,7 @@ Return
     \font = OpenDiskFont_(ta)
   EndIf
 
-  ; open bold font
+  ;-- open bold font
   fontsettings\ta_Style = #FSF_BOLD
   \fontB = OpenDiskFont_ (fontsettings)
   If \fontB = 0
@@ -11230,28 +11405,15 @@ Return
       EndIf
     EndIf
   EndIf
-
 Return
 
-.update_title_sourcewindow:
-  log_Print{"update_title_sourcewindow: "  + sourceWindow\Title}
-  SetWindowTitles_ sourceWindow\win, &sourceWindow\Title, -1
-
-  ; -- update tooltype "LAST_SOURCE"
-  If pedconfig\load_last_source <> 0
-    log_Print{"updating tooltype LAST_SOURCE..."}  
-    pedconfig\lastSourceFile = ped\sourceFileComplete
-    If pedconfig\lastSourceFile <> ""
-      ;If Instr(pedconfig\lastSourceFile, Peek.s(?comStr_SourceName)) <> 0
-      ;  dos_SetToolString{"LAST_SOURCE", pedconfig\lastSourceFile}
-      ;EndIf
-      If Instr(pedconfig\lastSourceFile, ped\currentFile) <> 0
-        dos_SetToolString{"LAST_SOURCE",pedconfig\lastSourceFile}
-      EndIf
-    EndIf
+.update_loadsourcefile:
+  pedconfig\lastSourceFile = ped\sourceFileComplete
+  If pedconfig\lastSourceFile <> ""
+    log_Print{"updating tooltype LAST_SOURCE to " + ped\sourceFileComplete}
+    dos_SetToolString{"LAST_SOURCE",pedconfig\lastSourceFile}
   EndIf
 Return
-
 
 .clear_sourcebuffer:
   !PED_ResetBlockflag
@@ -11695,7 +11857,7 @@ Return
   SetFont_ sourceWindow\win\RPort,sourceWindow\font
 
   ;-- attach sourcewindow to peds process
-  log_Print{"attach sourcewindow as main window of ped-task"}
+  ;log_Print{"attach sourcewindow as main window of ped-task"}
   ped\taskWinPtr = *pedProcess\pr_WindowPtr
   *pedProcess\pr_WindowPtr = sourceWindow\win
 Return
@@ -11749,12 +11911,12 @@ Return
 
   SetWindowTitles_ sourceWindow\win,&ped\defaultScreenTitle,-1
   Gosub clear_sourcewindow
-  Gosub set_pointer_normal
+  PED_SetPointerNormal{}
   PED_RedrawSource{}
 Return
 
 .calc_SourceWindowDimensions:
-  log_Print{"calculating sourcewindow dimensions..."}
+  ;log_Print{"calculating sourcewindow dimensions..."}
   USEPATH sourceWindow
   \BoxHeight = \win\Height - \win\BorderTop - \win\BorderBottom
   \BoxWidth = \win\Width   - \win\BorderLeft - \win\BorderRight
@@ -12051,12 +12213,13 @@ Return
 Return
 
 
-.startguide:
-  log_Print{"startguide"}
+.helpOnToken:
+  log_Print{"helpOnToken"}
   strline$ = PED_Detokenize{ped\ptrCurrentSourceData\CurrentSourceLine}
+  ;log_Print{"current sourceline: " + strline$}
   actualword$ = PED_GetWordAtPos{strline$, ped\ptrCurrentSourceData\Column,True}
   If actualword$ <> ""
-    Gosub instructionbrowser_startguide
+    Gosub startGuide
   Else
     Gosub open_instructionbrowser
   EndIf
@@ -12124,18 +12287,18 @@ Return
      Case $0D ; ENTER
        If pedconfig\intellisense AND pedconfig\onlinehelp_includes
          If WZ_IsOpen{"WIN_POPUP"}
-           a$ = WZ_GetPopUpEntry{WZ_GetPopUpMenu{}+1}
+           tmpStringVar = WZ_GetPopUpEntry{WZ_GetPopUpMenu{}+1}
 
            ; include function
-           a_new$ = dos_Trim{Left$(a$,Instr(a$,"{")-1)}
+           a_new$ = dos_Trim{Left$(tmpStringVar,Instr(tmpStringVar,"{")-1)}
            If (a_new$ <> "") ;test if include function
-             PED_ShowMessage{a_new$ + " " + PED_GetIncludeHelp{a_new$} }
-             a$ = a_new$ + "{"
+             PED_ShowMessage{a_new$ + " " + PED_GetIndexHelp{a_new$, #INDEXHELP_HELP} }
+             tmpStringVar = a_new$ + "{"
            Else          ; is command
-             PED_ShowMessage{a$ + " " + PED_GetTokenHelp{a$} }
+             PED_ShowMessage{tmpStringVar + " " + PED_GetTokenHelp{tmpStringVar} }
            EndIf
 
-           a$ = UnRight$(a$,FLen(poptok$)) : PED_InsertStringToTextBuffer{a$}
+           tmpStringVar = UnRight$(tmpStringVar,FLen(poptok$)) : PED_InsertStringToTextBuffer{tmpStringVar}
 
            Gosub close_popupwindow
            Gosub activatesourcewindow
@@ -12186,20 +12349,20 @@ Return
 
         ; -- search for any text that equals entered text
         If (FLen(_tokname.s) > 2)
+          CaseSense Off
           ;log_Print{"intellisense, searching for [" + _tokname.s+ "]"}
-          poptok$ = Trim$(LCase$(_tokname.s)) : tokenliste$ = "" : popfound.w = 0
+          poptok$ = Trim$(_tokname.s) : tokenliste$ = "" : popfound.w = 0
 
-          ; in Helptext for Functionnames
-          If (Instr(_tokname.s,"_") > 0)
-            ; helptext
+          ;-- in Helptext for Functionnames
+          If Instr(_tokname.s,"_") > 0
             ResetList HelpIndexCache()
             While NextItemFast(HelpIndexCache())
-              If Instr(HelpIndexCache()\lname,poptok$) = 1
-                ; %%1 = green, %%2 = rot, %%3= white, %%4= blue  fuer farben
-                pophelp$ = HelpIndexCache()\name + HelpIndexCache()\help
+              If Instr(HelpIndexCache()\name, poptok$) = 1
+                pophelp$ = HelpIndexCache()\name + HelpIndexCache()\helpText
                 If FLen(pophelp$) > 32
                   pophelp$ = Left$(pophelp$,32) + " ... "
                 EndIf
+                ; %%1 = green, %%2 = rot, %%3= white, %%4= blue  fuer farben
                 tokenliste$ + "%%4" + pophelp$ + Chr$(10)
                 popfound + 1
               End If
@@ -12212,13 +12375,12 @@ Return
 
             While *tokenpointer
               temptoken.s  = Peek.s(*tokenpointer+6)
-              ltemptoken.s = LCase$(temptoken)
-              If Instr(ltemptoken,poptok$) = 1
-                ; %%1 = green, %%2 = rot, %%3= white, %%4= blue  fuer farben
+              If Instr(temptoken, poptok$) = 1
                 pophelp$ = temptoken
                 If FLen(pophelp$) > 32
                   pophelp$ = Left$(pophelp$,32) + " ... "
                 EndIf
+                ; %%1 = green, %%2 = rot, %%3= white, %%4= blue  fuer farben
                 tokenliste$ + "%%4" + pophelp$ + Chr$(10)
                 popfound + 1
               End If
@@ -12226,6 +12388,7 @@ Return
               *tokenpointer = Peek.l(*tokenpointer)  ; nexttoken
             Wend
           End If
+          CaseSense On
 
           ; -- open list if something found
           If popfound > 0
@@ -12254,17 +12417,18 @@ Return
   log_Print{"scan source for used libs..."}
   If ped\ptrCurrentSourceData\TotalLines = 0 Then Return
 
-  Gosub set_pointer_busy
+  PED_SetPointerBusy{}
 
   Use Window WZID("WIN_LABELS")
 
   ; --
   ; -- reset tables and arrays
+  Dim usedTokensTable.b(65535)
   For i.l = 0 To 65535
-    tokentable(i) = 0
+    usedTokensTable(i) = 0
   Next i
-  HIERARCHY_Clear{&lib_list}
-  WZPrint "LIBRARY_LIST",0,lib_list
+  HIERARCHY_Clear{&list_usedBlitzLibs}
+  WZPrint "LIBRARY_LIST",0,list_usedBlitzLibs
 
   ; --
   ; -- scanning each line for tokens
@@ -12272,6 +12436,7 @@ Return
 
   scanned_lines.l = 0
   *sourceLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
+  _token.l = 0 
   While *sourceLine
     ptrString.l = *sourceLine + 9
     ped\inString = 0
@@ -12282,9 +12447,9 @@ Return
       If curchar = $22 Then ped\inString = NOT ped\inString
       If curchar = @";" AND NOT ped\inString Then skip_rest_of_line = True
       If curchar < 0 AND NOT ped\inString
-        toknum2.l = Peek.w(ptrString) AND $FFFF
-        If toknum2 > $8000 Then toknum2 - $8000
-        tokentable(toknum2) = tokentable(toknum2) + 1
+        _token.l = Peek.w(ptrString) AND $FFFF
+        If _token > $8000 Then _token - $8000
+        usedTokensTable(_token) = usedTokensTable(_token) + 1
         ptrString + 1
       EndIf
 
@@ -12292,7 +12457,9 @@ Return
     Until skip_rest_of_line OR curchar = 0
 
     If (scanned_lines MOD 10) = 0 Then !WZ_Update_Gauge{scanned_lines, ped\ptrCurrentSourceData\TotalLines}
+    
     scanned_lines = scanned_lines + 1
+    
     *sourceLine = *sourceLine\nextLine
   Wend
 
@@ -12300,40 +12467,41 @@ Return
   log_Print{Str$(scanned_lines) + " lines scanned, building result tree..."}
   WZ_ShowMessage{!TRANS{"Building result tree..."}, 0}
 
-  For toknum2 = 0 To 65535
-    If tokentable(toknum2)
-      tokname.s = PED_GetTokenName{toknum2}
-      If tokname <> ""
-        libnum.l = toknum2 LSR 7
-        libname.s = lib_mapping$(libnum,0)
-        entry.s = tokname + " (" + Str$(tokentable(toknum2) AND $FF) + ")"
-        If libname <> ""
-          main.s = libname
+  For _token = 0 To 65535
+    If usedTokensTable(_token)
+      tokenName.s = PED_GetTokenName{_token}
+      If tokenName <> ""
+        libNum.l = _token LSR 7
+        libName.s = blitzlibMapping(libNum, 0)
+        entry.s = tokenName + " (" + Str$(usedTokensTable(_token) AND $FF) + ")"
+
+        If libName <> ""
+          main.s = libName
           child.s= entry
           pid.l = HIERARCHY_GetParentID{main}
           If pid > 0
             HIERARCHY_AddChild{pid,child}
           Else
-            HIERARCHY_AddParent{&lib_list,main}
+            HIERARCHY_AddParent{&list_usedBlitzLibs, main}
             If child <> ""
               pid.l = HIERARCHY_GetParentID{main}
               If pid <> 0 Then HIERARCHY_AddChild{pid, child}
             EndIf
           EndIf
         Else
-          HIERARCHY_AddParent{&lib_list, entry}
+          HIERARCHY_AddParent{&list_usedBlitzLibs, entry}
         EndIf
       EndIf
     EndIf
-    If (toknum2 MOD 1024) = 0 Then !WZ_Update_Gauge{toknum2,65535}
-  Next toknum2
+    If (_token MOD 1024) = 0 Then !WZ_Update_Gauge{_token,65535}
+  Next _token
   ;
   WZ_HideMessage{}
 
   Use Window WZID("WIN_LABELS")
-  WZPrint "LIBRARY_LIST",0,lib_list
+  WZPrint "LIBRARY_LIST",0,list_usedBlitzLibs
 
-  Gosub set_pointer_normal
+  PED_SetPointerNormal{}
 Return
 
 .deleteCharFromTextbuffer:
@@ -12972,7 +13140,7 @@ Return
       Gosub open_helpdiag
 
     Case #IEQUALIFIER_LSHIFT
-      Gosub startguide
+      Gosub helpOnToken
 
     Default
       Gosub immediate_syntaxhelp
@@ -13525,13 +13693,18 @@ Return
   Show_Helpfile{"Main","main",""}
 Return
 
+.menu_helpbuildindex:
+  PED_SetPointerBusy{}
 
-.menu_helpbuildindex
-  Gosub set_pointer_busy
+  PED_BuildHelpIndex{}
 
-  Gosub build_HelpIndexFile
+  If pedconfig\usePreProcessor
+    WZ_ShowMessage{!TRANS{"updating token hashmap for preprocessor ..."}}
+    Gosub update_preprocessor
+    WZ_HideMessage{}
+  End If
 
-  Gosub set_pointer_normal
+  PED_SetPointerNormal{}
 Return
 
 .write_newprefs
@@ -13920,7 +14093,7 @@ Even
 
 
 .menu_project:
-  Gosub set_pointer_busy
+  PED_SetPointerBusy{}
 
   Gosub storeCurrentSourceData
 
@@ -13935,9 +14108,6 @@ Even
     project_tab.b = WZInput("PROJECT_TABS")
     Gosub update_versiongadgets
   EndIf
-
-  MaxLen lf$=64
-  MaxLen pa$=64
 
   actual_file$ = Peek.s(&ped\ptrCurrentSourceData\SourceName)
   actual_drawer$ = Peek.s(&ped\ptrCurrentSourceData\SourceDir)
@@ -13961,25 +14131,25 @@ Even
         EndIf
 
       Case "PROJECT_NAME"
-        ab2_project\name = WZInputstr
+        ab3_project\name = WZInputstr
 
       Case "PROJECT_DRAWER"
-        ab2_project\drawer = WZInputstr
+        ab3_project\drawer = WZInputstr
 
       Case "PROJECT_VERSION"
-        ab2_project\version = WZInput
+        ab3_project\version = WZInput
 
       Case "PROJECT_REVISION"
-        ab2_project\revision = WZInput
+        ab3_project\revision = WZInput
 
 
       Case "PROJECT_CREATE"
-        If ab2_project\name<>""
+        If ab3_project\name<>""
           If ask{!TRANS{"The current project and its files will be closed,\\nand all source files will be saved."},!TRANS{"Ok|Cancel"},!TRANS{"Create Project"}}
             WZ_ClearTable{"PROJECTTABLE"}
             WZ_UpdateTable{"PROJECTTABLE"}
             Gosub project_closeallfiles
-            ClearType ab2_project
+            ClearType ab3_project
             Gosub project_updatesourcelist
             WZ_ActivateGadget{"PROJECT_NAME"}
           EndIf
@@ -13989,16 +14159,16 @@ Even
 
       Case "PROJECT_LOAD"
         aslfr_SetRequesterTitle {1,!TRANS{"Choose Project"},!TRANS{"Ok"},!TRANS{"Cancel"}}
-        aslfr_SetPath  {1,"",lf$,"#?.a2p",False}
+        aslfr_SetPath  {1,"",project_filename,"#?.a2p",False}
         If aslfr_Request {1,False,False,False,sourceWindow\pedScreen,True}
-          lf$=aslfr_GetNextFile{}
-        ;If Exists(lf$)>0
+          project_filename = aslfr_GetNextFile{}
+        ;If Exists(project_filename)>0
           Gosub project_load
-          If ab2_project\sourcecounter > 0
-            For pc.l = 1 To ab2_project\sourcecounter
-              fext$ = dos_GetExt{ab2_project\sourcefile[pc]}
+          If ab3_project\sourcecounter > 0
+            For pc.l = 1 To ab3_project\sourcecounter
+              fext$ = dos_GetExt{ab3_project\sourcefile[pc]}
               If fext$="ab2" OR fext$="bb2" OR fext$="bb"
-                sourcefile$ = ab2_project\sourcepath[pc]+ab2_project\sourcefile[pc]
+                sourcefile$ = ab3_project\sourcepath[pc]+ab3_project\sourcefile[pc]
                 !PED_LoadSource{sourcefile$,False,True,True}
               EndIf
             Next pc
@@ -14008,13 +14178,13 @@ Even
             WindowToFront_ WZWindowAddr
           EndIf
         Else
-          If lf$ <> "" Then dummy.l = ask{!TRANS{"This project does not exist."},!TRANS{"Ok"},!TRANS{"Info"}}
+          If project_filename <> "" Then dummy.l = ask{!TRANS{"This project does not exist."},!TRANS{"Ok"},!TRANS{"Info"}}
         EndIf
 
       Case "PROJECT_SAVE"
-        ab2_project\name = WZGetString("PROJECT_NAME")
-        ab2_project\drawer = WZGetString("PROJECT_DRAWER")
-        If ab2_project\name <> ""
+        ab3_project\name = WZGetString("PROJECT_NAME")
+        ab3_project\drawer = WZGetString("PROJECT_DRAWER")
+        If ab3_project\name <> ""
           Gosub project_save
         Else
           dummy.l = ask{!TRANS{"Illegal Projectname"},!TRANS{"Ok"},!TRANS{"Error"}}
@@ -14022,29 +14192,29 @@ Even
 
       Case "PROJECT_ADDFILE"
         aslfr_SetRequesterTitle {1,!TRANS{"Add File"},!TRANS{"Ok"},!TRANS{"Cancel"}}
-        aslfr_SetPath  {1,ab2_project\drawer,lf$,"",False}
+        aslfr_SetPath  {1,ab3_project\drawer,project_filename,"",False}
         If aslfr_Request {1,False,False,False,sourceWindow\pedScreen,False}
           actual_file$=aslfr_GetNextFile{}
         ;If Exists(actual_file$) > 0
-          ab2_project\sourcecounter + 1
-          ab2_project\sourcefile[ab2_project\sourcecounter] = dos_FilePart{actual_file$}
+          ab3_project\sourcecounter + 1
+          ab3_project\sourcefile[ab3_project\sourcecounter] = dos_FilePart{actual_file$}
 
-          Gosub project_loadfile
+          Gosub project_filename
           actual_file$ = dos_FilePart{actual_file$}
           Gosub project_updatesourcelist
           Use Window WZID("WIN_PROJECT")
           WindowToFront_ WZWindowAddr
         Else
-          If lf$ <> "" Then dummy.l = ask{!TRANS{"This file does not exist"},!TRANS{"Ok"},!TRANS{"Error"}}
+          If project_filename <> "" Then dummy.l = ask{!TRANS{"This file does not exist"},!TRANS{"Ok"},!TRANS{"Error"}}
         EndIf
 
       Case "PROJECT_REMOVEFILE"
         actual_file$ = WZ_GetCell{"PROJECTTABLE",WZ_Row{"PROJECTTABLE"},1}
-        For pc = 1 To ab2_project\sourcecounter
-          If actual_file$ = ab2_project\sourcefile[pc]
+        For pc = 1 To ab3_project\sourcecounter
+          If actual_file$ = ab3_project\sourcefile[pc]
             Gosub project_removefile
-            ab2_project\sourcefile[pc] = ""
-            ab2_project\sourcepath[pc] = ""
+            ab3_project\sourcefile[pc] = ""
+            ab3_project\sourcepath[pc] = ""
             Gosub project_sortsourcelist
             Gosub project_updatesourcelist
           EndIf
@@ -14078,7 +14248,7 @@ Even
             vercode$ + Str$((version_code LSL 8) LSR 24 )+"."
             vercode$ + Str$((version_code LSL 16)LSR 24 )+" (build: "
             vercode$ + Str$(anz_builds)+")"
-            project_changelog$ =  "V"+vercode$ + ":\\0a\\0a" + project_changelog$
+            project_changelog$ =  "V" + vercode$ + ":\\0a\\0a" + project_changelog$
             WZPrint "CHANGELOG_TEXTFIELD",&project_changelog$
           EndIf
         EndIf
@@ -14104,9 +14274,9 @@ Even
         _sf$ = WZ_GetCell{"PROJECTTABLE",WZ_Row{"PROJECTTABLE"},1}
         If (_sf$<>actual_file$) AND (_sf$<>"<unnamed>")
           actual_file$ = _sf$
-          Gosub project_loadfile
-;        For pc = 1 To ab2_project\sourcecounter
-;          t$ = ab2_project\sourcefile[pc]
+          Gosub project_filename
+;        For pc = 1 To ab3_project\sourcecounter
+;          t$ = ab3_project\sourcefile[pc]
 ;          If t$ = actual_source$ Then WZ_SetActiveRow{"PROJECTTABLE",pc}
 ;        Next pc
 ;        WZ_UpdateTable{"PROJECTTABLE"}
@@ -14122,34 +14292,34 @@ Even
   WZCloseWindow WZID("WIN_PROJECT")
   FlushEvents
   Gosub activatesourcewindow
-  Gosub set_pointer_normal
+  PED_SetPointerNormal{}
 Return
 
 .project_sortsourcelist
   tempcounter.w = 0
   For i = 1 To #MAX_SOURCEFILES
-    If ab2_project\sourcefile[i]<> ""
+    If ab3_project\sourcefile[i]<> ""
       tempcounter + 1
-      tempproject$(tempcounter,0) = ab2_project\sourcefile[i]
-      tempproject$(tempcounter,1) = ab2_project\sourcepath[i]
+      tempproject$(tempcounter,0) = ab3_project\sourcefile[i]
+      tempproject$(tempcounter,1) = ab3_project\sourcepath[i]
     EndIf
-    ab2_project\sourcefile[i] = ""
-    ab2_project\sourcepath[i] = ""
+    ab3_project\sourcefile[i] = ""
+    ab3_project\sourcepath[i] = ""
   Next i
 
   For i = 1 To tempcounter
-    ab2_project\sourcefile[i] = tempproject$(i,0)
-    ab2_project\sourcepath[i] = tempproject$(i,1)
+    ab3_project\sourcefile[i] = tempproject$(i,0)
+    ab3_project\sourcepath[i] = tempproject$(i,1)
   Next i
-  ab2_project\sourcecounter = tempcounter
+  ab3_project\sourcecounter = tempcounter
 Return
 
 .project_updatesourcelist:
   If project_tab = 1
     WZ_ClearTable{"PROJECTTABLE"}
-    If ab2_project\sourcecounter > 0
-      For pc = 1 To ab2_project\sourcecounter
-        t$ = LCase$(ab2_project\sourcefile[pc])
+    If ab3_project\sourcecounter > 0
+      For pc = 1 To ab3_project\sourcecounter
+        t$ = LCase$(ab3_project\sourcefile[pc])
         If Instr(t$,".include") Then u$ = "Include" Else
         If Instr(t$,".bb2")     Then u$ = "AB2-Source" Else
         If Instr(t$,".ab2")     Then u$ = "AB2-Source" Else
@@ -14162,12 +14332,12 @@ Return
     EndIf
     WZ_UpdateTable{"PROJECTTABLE"}
 
-    ab2p$ = ab2_project\name
-    ab2d$ = ab2_project\drawer
+    ab2p$ = ab3_project\name
+    ab2d$ = ab3_project\drawer
     WZPrint "PROJECT_NAME",&ab2p$
     WZPrint "PROJECT_DRAWER",&ab2d$
-;    WZPrint "PROJECT_VERSION",ab2_project\version
-;    WZPrint "PROJECT_REVISION",ab2_project\revision
+;    WZPrint "PROJECT_VERSION",ab3_project\version
+;    WZPrint "PROJECT_REVISION",ab3_project\revision
   EndIf
 Return
 
@@ -14183,25 +14353,25 @@ Return
 Return
 
 .project_removefile:
-  t$ = actual_file$
-  If Instr(t$,".bb2")     OR Instr(t$,".ab2") OR Instr(t$,".ab3")     OR Instr(t$,".bb")
-    Gosub project_loadfile
+  t$ = LCase$(actual_file$)
+  If Instr(t$,".bb2") OR Instr(t$,".ab2") OR Instr(t$,".ab3") OR Instr(t$,".bb")
+    Gosub project_filename
     Gosub menu_quit
     actual_file$ = Peek.s(ped\ptrCurrentSourceData + $DE)
   EndIf
 Return
 
-.project_loadfile:
+.project_filename:
   t$ = LCase$(actual_file$)
-  If Instr(t$,".bb2")     OR Instr(t$,".ab2")  OR Instr(t$,".ab3")    OR Instr(t$,".bb")
+  If Instr(t$,".bb2") OR Instr(t$,".ab2") OR Instr(t$,".ab3") OR Instr(t$,".bb")
     !PED_LoadSource{actual_file$,False,True,True}
   EndIf
 Return
 
 .project_load
-  If OpenFile(1,lf$)
-    ClearType ab2_project
-    ReadType 1,ab2_project
+  If OpenFile(1,project_filename)
+    ClearType ab3_project
+    ReadType 1,ab3_project
     CloseFile 1
   Else
     dummy.l = ask{!TRANS{"This project could not be loaded"},!TRANS{"Ok"},"Error"}
@@ -14209,13 +14379,13 @@ Return
 Return
 
 .project_save
-  lf$ = ab2_project\name+".a2p"
+  project_filename = ab3_project\name+".a2p"
   aslfr_SetRequesterTitle {1,!TRANS{"Save Projectfile"},!TRANS{"Ok"},!TRANS{"Cancel"}}
-  aslfr_SetPath  {1,ab2_project\drawer,lf$,"(#?.a2p)",False}
+  aslfr_SetPath  {1,ab3_project\drawer,project_filename,"(#?.a2p)",False}
   If aslfr_Request {1,True,False,False,sourceWindow\pedScreen,True}
-    lf$=aslfr_GetNextFile{}
-    If OpenFile(1,lf$)
-      WriteType 1,ab2_project
+    project_filename = aslfr_GetNextFile{}
+    If OpenFile(1,project_filename)
+      WriteType 1,ab3_project
       CloseFile 1
     Else
       dummy.l = ask{!TRANS{"The project could not be saved."},!TRANS{"Ok"},!TRANS{"Error"}}
@@ -14255,7 +14425,7 @@ Return
 
 
 .menu_print:
-  Gosub set_pointer_busy
+  PED_SetPointerBusy{}
 
   If Peek.l(Addr Window(WZID("WIN_PRINT")))=0
     WZWindow WZID("WIN_PRINT"),?wzgui,128,-2,-2,-2,-2,WZID("WIN_PRINT")
@@ -14286,7 +14456,7 @@ Return
   Until exit_print = True
 
   WZCloseWindow WZID("WIN_PRINT")
-  Gosub set_pointer_normal
+  PED_SetPointerNormal{}
   Gosub activatesourcewindow
 Return
 
@@ -14382,7 +14552,7 @@ Return
 Return
 
 .open_menueditor:
-  Gosub set_pointer_busy
+  PED_SetPointerBusy{}
   If NOT WZ_IsOpen{"WIN_MENUED"}
     WZWindow WZID("WIN_MENUED"),?wzgui,255,-2,-2,-2,-2,WZID("WIN_MENUED")
   End If
@@ -14556,7 +14726,7 @@ Return
   FlushEvents
   WZListRemove menuedlist
   WZCloseWindow WZID("WIN_MENUED")
-  Gosub set_pointer_normal
+  PED_SetPointerNormal{}
 Return
 
 .jump_historyup:
@@ -14637,25 +14807,25 @@ Return
   ;-- nothing found in current source search in helpcache
   If clickjump_fromfile = 0
     clickjump_fromfile = 1
-    Gosub set_pointer_busy
+    PED_SetPointerBusy{}
 
-    ;-- searching in HelpIndexFile for macro or function name
+    ;-- searching in help index for macro or function name
     found_in_cache.b = False
     If actualword$ <> ""
       log_Print{"definition not found in current source, searching in helpcache for <" + actualword$ + ">"}
       ResetList HelpIndexCache()
       While NextItemFast(HelpIndexCache()) AND found_in_cache = False
-        If actualword$ = HelpIndexCache()\name OR actualword$ = HelpIndexCache()\includefile
+        If actualword$ = HelpIndexCache()\name OR actualword$ = HelpIndexCache()\includeFileName
           found_in_cache = True
         End If
       Wend
 
       If found_in_cache
-        tmp_string = dos_AddPart{pedconfig\includeDir, HelpIndexCache()\includefile}
-        log_Print{"found in HelpIndexCache(), will open it:" + tmp_string}
-        !PED_LoadSource{tmp_string,False,True,True}
+        tmpStringVar = dos_AddPart{pedconfig\includeDir, HelpIndexCache()\includeFileName}
+        log_Print{"found in HelpIndexCache(), will open it:" + tmpStringVar}
+        !PED_LoadSource{tmpStringVar,False,True,True}
         PED_UpdateStatusArea{}
-        Gosub set_pointer_normal
+        PED_SetPointerNormal{}
         *currLine = ped\ptrCurrentSourceData\CurrentSourceLine
         ;-- jump upwards and search again in file ...
         Goto jump_search
@@ -14663,7 +14833,7 @@ Return
         log_Print{"not found in cache"}
       EndIf
     EndIf
-    Gosub set_pointer_normal
+    PED_SetPointerNormal{}
 
   EndIf
 Return
@@ -14697,10 +14867,10 @@ Return
         Next
         Gosub close_helpdiag
 
-        a$ = diag_addstr$
+        tmpStringVar = diag_addstr$
         For i = 1 To 12
-          a$ = a$ + diag_val$(i)
-          If diag_val$(i + 1) <> "" Then a$ = a$ + ","
+          tmpStringVar = tmpStringVar + diag_val$(i)
+          If diag_val$(i + 1) <> "" Then tmpStringVar = tmpStringVar + ","
         Next
 
         Gosub activatesourcewindow
@@ -14708,7 +14878,7 @@ Return
         tmpColumn.w = ped\ptrCurrentSourceData\Column
         tmpColumnsOffset.w = ped\ptrCurrentSourceData\ColumnsOffset
 
-        PED_InsertStringToTextBuffer{a$}
+        PED_InsertStringToTextBuffer{tmpStringVar}
 
         ped\ptrCurrentSourceData\ColumnsOffset = tmpColumnsOffset
         ped\ptrCurrentSourceData\Column = tmpColumn
@@ -14990,7 +15160,7 @@ Return
       pos.l = WZ_Row{"FUNCTIONSTABLE"}
       actualword$ = WZ_GetCell{"FUNCTIONSTABLE",WZ_Row{"FUNCTIONSTABLE"},1}
       If actualword$ <> ""
-        libinfo$ = lib_mapping$(libnumber.l,0) 
+        libinfo$ = blitzlibMapping(libnumber.l,0) 
         libinfo$ + " (LibNr. " + Str$(libnumber)
         libinfo$ + " Token " + Hexw$(PED_GetTokenID{actualword$}) + ")"
         WZPrint "ARGS_LIBRARYNAME",&libinfo$
@@ -15000,7 +15170,7 @@ Return
       pos = WZ_Row{"FUNCTIONSTABLE"}
       actualword$ = WZ_GetCell{"FUNCTIONSTABLE",WZ_Row{"FUNCTIONSTABLE"},1}
       If actualword$<>""
-        Gosub instructionbrowser_startguide
+        Gosub startGuide
       EndIf
   End Select
 
@@ -15031,8 +15201,8 @@ Return
 
         Case "BUTTON_LIB_FREEIDS"
           message$ = !TRANS{"The following lib-IDs are not in use:"}+"\\n\\n"
-          For i = 1 To (#Max_BlitzLibs-1)             ; replaced hardcoded 255 with (#Max_BlitzLibs-1) because we start with 0  tomsmart1
-            If Instr(lib_mapping$(i,0),"unused")<>0
+          For i = 1 To (#MAX_Blitzlibs-1)             ; replaced hardcoded 255 with (#MAX_Blitzlibs-1) because we start with 0  tomsmart1
+            If Instr(blitzlibMapping(i,0),"unused")<>0
               message$ + Str$(i)+ "  "
             EndIf
           Next i
@@ -15045,41 +15215,38 @@ Return
 
           WZ_ShowMessage{!TRANS{"Checking BlitzLib consistency..."},1}
 
-          tmp_string = ""
+          tmpStringVar = ""
           libID.l = 0 : olibID.l = 0
-          For i = 0 To (#Max_BlitzLibs-1) : lib_check(i) = False : Next i
 
           *token.tokendata = *tokenbase
           Repeat
             libID.l = (*token\number LSR 7)
+            
+            ;-- skip internal systemlib and dhandlerlib (Ids 0 and 1)
+            If (libID.l <> olibID.l) AND (libID > 1) 
+              For i = 0 To (#MAX_Blitzlibs-1)
+                If blitzlibMapping(i,1) = Peek.s(&*token\dat)
+                  old_libname.s = StripTrail$(UnRight$(blitzlibMapping(i,0),Instr(blitzlibMapping(libID,0),"with ")+4),@")")
+                  Pop If : Pop For : Goto exit_for2
+                EndIf
+              Next i
+              log_Print{"nothing found for token [" + Peek.s(&*token\dat) + "], libID #" + Str$(libID)}
+              exit_for2:
+              error_libname.s = Left$(blitzlibMapping(libID,0),Instr(blitzlibMapping(libID,0)," ")-1)
+              tmpStringVar + "+ " + old_libname + " has been overwritten by\\n"
+              tmpStringVar + "\\22" + error_libname + "\\22 with same LibID: "+Str$(libID)+"\\n\\n"
 
-            If (libID.l <> olibID.l) AND (libID > 1) ; skip internal systemlib and dhandlerlib
-              If lib_check(libID) = False
-                lib_check(libID) = True
-              Else
-                For i = 0 To (#Max_BlitzLibs-1)
-                  If lib_mapping$(i,1) = Peek.s(&*token\dat)
-                    old_libname.s = StripTrail$(UnRight$(lib_mapping$(i,0),Instr(lib_mapping$(libID,0),"with ")+4),@")")
-                    Pop If : Pop For : Goto exit_for2
-                  EndIf
-                Next i
-                log_Print{"nothing found for token [" + Peek.s(&*token\dat) + "], libID #" + Str$(libID)}
-                exit_for2:
-                error_libname.s = Left$(lib_mapping$(libID,0),Instr(lib_mapping$(libID,0)," ")-1)
-                tmp_string + "+ " + old_libname + " has been overwritten by\\n"
-                tmp_string + "\\22" + error_libname + "\\22 with same LibID: "+Str$(libID)+"\\n\\n"
-              EndIf
               olibID = libID
-              !WZ_GaugeInfo{&lib_mapping$(libID,0)}
+              !WZ_GaugeInfo{&blitzlibMapping(libID,0)}
             EndIf
             *token = *token\next_token
           Until (*token = 0)
 
           WZ_HideMessage{}
-          If tmp_string = ""
-            tmp_string = !TRANS{"The internal library structure seems to be correct."}
+          If tmpStringVar = ""
+            tmpStringVar = !TRANS{"The internal library structure seems to be correct."}
           EndIf
-          dummy.l = ask{tmp_string,!TRANS{"Ok"},!TRANS{"Info"}}
+          dummy.l = ask{tmpStringVar,!TRANS{"Ok"},!TRANS{"Info"}}
 
           WZ_UnlockWindow{"WIN_LIBRARYBROWSER"}
       End Select
@@ -15098,12 +15265,12 @@ Return
   sortorder.b = WZInput("CYCLE_SORTORDER")
   WZListRemove libslist.List
   Format "000"
-  For i = 0 To (#Max_BlitzLibs-1)
-    If Instr(lib_mapping$(i,0),"unused") = 0
+  For i = 0 To (#MAX_Blitzlibs-1)
+    If Instr(blitzlibMapping(i,0),"unused") = 0
       If sortorder = 0
-        listvalue.s = LCase$(lib_mapping$(i,0))
+        listvalue.s = LCase$(blitzlibMapping(i,0))
       Else
-        listvalue.s = Str$(i) +  " | " + LCase$(lib_mapping$(i,0))
+        listvalue.s = Str$(i) +  " | " + LCase$(blitzlibMapping(i,0))
       EndIf
       WZListAdd libslist,listvalue,-1,i
     EndIf
@@ -15129,7 +15296,7 @@ Return
 .update_functiontable:
   selected.l = WZInput("LIST_LIBRARIES")
   libnumber = WZListData(libslist,selected)
-  libinfo$ = lib_mapping$(libnumber,0) + " (LibNr. " + Str$(libnumber) + ")"
+  libinfo$ = blitzlibMapping(libnumber,0) + " (LibNr. " + Str$(libnumber) + ")"
   WZPrint "ARGS_LIBRARYNAME",&libinfo$
 
   WZ_ClearTable{"FUNCTIONSTABLE"}
@@ -15197,7 +15364,7 @@ Return
         iinfo$ = "Library: " + PED_GetLibname{tokenNumber LSR 7}
         iinfo$ + " - LibNr.: " + Str$(tokenNumber LSR 7) + " - TokenNr: " + Str$((tokenNumber AND $7f)-1) + " - TokenId: $" + Hexw$(tokenNumber)
       Else
-        iinfo$ = "Include: " + PED_GetIncludeName{bstr$}
+        iinfo$ = "Include: " + PED_GetIndexHelp{bstr$, #INDEXHELP_FILE}
       EndIf
       WZTags #WARGSA_TextPen,2
       WZPrint "INSTRUCTION_INFO",&iinfo$
@@ -15205,7 +15372,7 @@ Return
     Case #WZTABLEEVENT_DOUBLECLICK
       pos = WZ_Row{"INSTRUCTIONTABLE"}
       actualword$ = WZ_GetCell{"INSTRUCTIONTABLE",WZ_Row{"INSTRUCTIONTABLE"},1}
-      Gosub instructionbrowser_startguide
+      Gosub startGuide
 
   End Select
 
@@ -15218,11 +15385,11 @@ Return
       Gosub close_instructionbrowser
 
     Case #IDCMP_RAWKEY:
-      ;error{"RAW: " + Hexw$(EventCode)}
+      ;error{"RAW: " + Hexw$(pedMessage\_Code)}
 
     Case #IDCMP_VANILLAKEY:
-      ;error{"VAN: " + Hexw$(EventCode)}
-      Select EventCode
+      ;error{"VAN: " + Hexw$(pedMessage\_Code)}
+      Select pedMessage\_Code
       Case #VANILLAKEY_ESC : Gosub close_instructionbrowser
       Case #VANILLAKEY_TAB : Gosub activatesourcewindow
       End Select
@@ -15231,10 +15398,10 @@ Return
       Select LCase$(WZGadName)
 
         Case "add" ;add to code
-          a$ = Trim$(bstr$)
-          If a$ <> ""
-            log_Print{"adding to code: " + a$}
-            PED_InsertStringToTextBuffer{a$}
+          tmpStringVar = Trim$(bstr$)
+          If tmpStringVar <> ""
+            log_Print{"adding to code: " + tmpStringVar}
+            PED_InsertStringToTextBuffer{tmpStringVar}
             Gosub activatesourcewindow
           EndIf
 
@@ -15270,14 +15437,14 @@ Return
 
 .update_instructiontable:
   search_instruction$ = WZGetString("INSTRUCTION_STRING")
-  If (search_instruction$<>previoussearch_instruction$) AND (Len(search_instruction$) > 1)
+  If (search_instruction$ <> previoussearch_instruction$) AND (Len(search_instruction$) > 1)
     previoussearch_instruction$ = search_instruction$
     WZ_ClearTable{"INSTRUCTIONTABLE"}
     InitArgParse search_instruction$
     word1$ = NextArg$
     word2$ = NextArg$
     instruction_counter.l = 0
-
+    CaseSense Off
     If browse_instructions
       log_Print{"instruction browser: searching for token <" + word1$ + "/" + word2$+ ">"}
       *token.tokendata = *tokenbase
@@ -15318,14 +15485,15 @@ Return
     If browse_includes
       ResetList HelpIndexCache()
       While NextItemFast(HelpIndexCache())
-        If Instr(HelpIndexCache()\name,word1$) AND instruction_counter<#maxlabels
-          If Instr(HelpIndexCache()\name,word2$)
-            instruction_counter = instruction_counter+1
-            WZ_AddRow{"INSTRUCTIONTABLE",HelpIndexCache()\name,HelpIndexCache()\help}
+        If Instr(HelpIndexCache()\name, word1$) AND instruction_counter < #maxlabels
+          If Instr(HelpIndexCache()\name, word2$)
+            instruction_counter = instruction_counter + 1
+            WZ_AddRow{"INSTRUCTIONTABLE",HelpIndexCache()\name,HelpIndexCache()\helpText}
           End If
         End If
       Wend
     End If
+    CaseSense On
     pos = 0
     WZ_TableSort{"INSTRUCTIONTABLE",1}
     WZ_UpdateTable{"INSTRUCTIONTABLE"}
@@ -15339,7 +15507,7 @@ Return
 Return
 
 .event_popup:
-  log_Print{"processing poupevent " + Hex$(pedMessage\_Class)}
+  log_Print{"processing popup event " + Hex$(pedMessage\_Class)}
   popexit.l = False
                                                 ; added to set the init value that fix the bug that after select a item with a doubleclick the next popup win are autoclosed  tomsmart1
   Select pedMessage\_Class
@@ -15359,25 +15527,25 @@ Return
   End Select
 
   If popexit = True
-    a$ = WZ_GetPopUpEntry{popup_selected}
-    ;log_Print{"selected: " + a$}
-    brackpos.w = Instr(a$,"{")
+    tmpStringVar = WZ_GetPopUpEntry{popup_selected}
+    ;log_Print{"selected: " + tmpStringVar}
+    brackpos.w = Instr(tmpStringVar,"{")
     If brackpos > 0
-      a$ = Trim$(Left$(a$,brackpos-1))
-      a$ = UnRight$(a$,Len(poptok$)) + "{"
+      tmpStringVar = Trim$(Left$(tmpStringVar,brackpos-1))
+      tmpStringVar = UnRight$(tmpStringVar,Len(poptok$)) + "{"
     Else
-      a$ = UnRight$(a$,Len(poptok$))
+      tmpStringVar = UnRight$(tmpStringVar,Len(poptok$))
     EndIf
-    ;log_Print{"inserting: " + a$}
-    PED_InsertStringToTextBuffer{a$}
-    PED_ShowMessage{a$ + " " + PED_GetIncludeHelp{a$} }    ; removed a$ test because it is not needed  tomsmart1
+    ;log_Print{"inserting: " + tmpStringVar}
+    PED_InsertStringToTextBuffer{tmpStringVar}
+    PED_ShowMessage{tmpStringVar + " " + PED_GetIndexHelp{tmpStringVar, #INDEXHELP_HELP} }    ; removed tmpStringVar test because it is not needed  tomsmart1
     Gosub close_popupwindow
   EndIf
   Gosub activatesourcewindow                                ; always active sourcewin if a popupwin event happend like mouse click or scroll  tomsmart1
 Return
 
 
-.instructionbrowser_startguide   ;actualword$: zu suchende Funktion
+.startGuide   ;actualword$: zu suchende Funktion
 
   PED_ShowMessage{!TRANS{"Searching help for <" + actualword$ + ">"}}
 
@@ -15388,13 +15556,13 @@ Return
       actualword$ = Left$(actualword$,FLen(actualword$) - 1)
       helpdir$ = pedconfig\autodocDir
     EndIf
-    libname$ = lib_mapping$(libnumber,0)
+    libname$ = blitzlibMapping(libnumber,0)
 
     ;-- check if library has an number extention (e.g. for libraries that have more than 128 tokens)
     mostright$ = Right$(libname$,1)
     If mostright$ = "1" OR mostright$ = "2" Then libname$ = Left$(libname$,FLen(libname$)-1)
   Else
-    libname$ = PED_GetIncludeName{actualword$}
+    libname$ = PED_GetIndexHelp{actualword$, #INDEXHELP_FILE}
   EndIf
 
   If (libname$ <> "") AND Instr(libname$,"unused") = 0
@@ -15489,8 +15657,8 @@ Return
   wev.l = WZ_CheckTableEvent{pedMessage\_Class}
   Select pedMessage\_Class
     Case #IDCMP_VANILLAKEY:
-      If EventCode = #VANILLAKEY_ESC Then Gosub close_shortcuts
-      If EventCode = #VANILLAKEY_TAB Then Gosub activatesourcewindow
+      If pedMessage\_Code = #VANILLAKEY_ESC Then Gosub close_shortcuts
+      If pedMessage\_Code = #VANILLAKEY_TAB Then Gosub activatesourcewindow
 
     Case #IDCMP_CLOSEWINDOW
       Gosub close_shortcuts
@@ -15589,7 +15757,7 @@ Return
 
       Select ev_calculator
         Case #IDCMP_VANILLAKEY:
-          If EventCode = #VANILLAKEY_ESC Then calc_exit = True
+          If pedMessage\_Code = #VANILLAKEY_ESC Then calc_exit = True
 
         Case #IDCMP_CLOSEWINDOW
           calc_exit = True
@@ -15685,22 +15853,23 @@ Return
         EndIf
 
         If ped\definitionMode <> 1 Then selectedVarName = ""
-        a$ = selectedDefEntry
+
+        tmpStringVar = selectedDefEntry
 
         lev = lev + 1 : If lev > 13 Then lev = 13
 
         pos2(lev) = 0
         pos2(lev-1) = WZ_Row{"TYPETABLE"}
 
-        ped\previousNewtypeStr = Left$(a$,Instr(a$," ")-1)
+        ped\previousNewtypeStr = Left$(tmpStringVar,Instr(tmpStringVar," ")-1)
 
         If lev > 1
-          i = SearchEnd(a$, @".", 1)
-          i2 = SearchEnd(a$, @"$", 1)
-          a$ = Mid$(a$, i+1, i2-i-3)
+          i = SearchEnd(tmpStringVar, @".", 1)
+          i2 = SearchEnd(tmpStringVar, @"$", 1)
+          tmpStringVar = Mid$(tmpStringVar, i+1, i2-i-3)
         EndIf
 
-        log_Print{"search for type: " + a$ + " - " + ped\previousNewtypeStr}
+        log_Print{"search for type: " + tmpStringVar + " - " + ped\previousNewtypeStr}
         newtype_found = 0
         *nt.l = *newtypebase
         If *nt = 0
@@ -15708,9 +15877,9 @@ Return
         Else
           *nt = Peek.l(*nt)
           While *nt AND newtype_found = False
-            If Peek.s(*nt + 11) = a$
-              log_Print{"Found the type in newtypes-list [" + a$ + "]"}
-              PED_UpdateDefinitionBrowser{#DEFBROWSER_SELECTTYPE, a$}
+            If Peek.s(*nt + 11) = tmpStringVar
+              log_Print{"Found the type in newtypes-list [" + tmpStringVar + "]"}
+              PED_UpdateDefinitionBrowser{#DEFBROWSER_SELECTTYPE, tmpStringVar}
               newtype_found = 1
             EndIf
             *nt = Peek.l(*nt)
@@ -15719,17 +15888,17 @@ Return
 
         If newtype_found = 0
           lev = lev - 1
-          a$ = ""
+          tmpStringVar = ""
           For i = 1 To lev
             If i > 1
-               a$ = a$ + "\" + pos$(i)
+               tmpStringVar = tmpStringVar + "\" + pos$(i)
             Else
-               a$ = a$ + "." + pos$(i)
+               tmpStringVar = tmpStringVar + "." + pos$(i)
             EndIf
           Next
           i = Instr(selectedDefEntry," ")
           selectedDefEntry = Replace$ (selectedDefEntry,"*","")
-          typestr$ = selectedVarName + a$ + "\" + Left$(selectedDefEntry,i)
+          typestr$ = selectedVarName + tmpStringVar + "\" + Left$(selectedDefEntry,i)
           WZTags #WZRD_TEXTPEN,AB3Pen(#AB3_cnewtype)
           WZPrint "NEWTYPE_ENTRY",&typestr$
         EndIf
@@ -15780,11 +15949,11 @@ Return
       Select LCase$(WZGadName)
 
         Case "typeadd"
-          a$ = typestr$
-          If Instr(a$,"\",FLen(a$)-1)<>0 Then a$ = Left$(a$,FLen(a$)-1)
-          If quicktype Then a$ = Mid$(typestr$,Instr (typestr$,"\")+1)
-          If ped\definitionMode <> 1 Then a$ = Replace$(a$,"*","")
-          PED_InsertStringToTextBuffer{a$}
+          tmpStringVar = typestr$
+          If Instr(tmpStringVar,"\",FLen(tmpStringVar)-1)<>0 Then tmpStringVar = Left$(tmpStringVar,FLen(tmpStringVar)-1)
+          If quicktype Then tmpStringVar = Mid$(typestr$,Instr (typestr$,"\")+1)
+          If ped\definitionMode <> 1 Then tmpStringVar = Replace$(tmpStringVar,"*","")
+          PED_InsertStringToTextBuffer{tmpStringVar}
           Gosub activatesourcewindow
 
         Case "string2"
@@ -15886,28 +16055,28 @@ Return
 
 .do_windowlayout:
   If \lbrowser_on
-    log_Print{"opening library browser"}
+    ;log_Print{"opening library browser"}
     Gosub open_librarybrowser
   Else
     Gosub close_librarybrowser
   End If
 
   If \ibrowser_on
-    log_Print{"opening instruction browser"}
+    ;log_Print{"opening instruction browser"}
     Gosub open_instructionbrowser
   Else
     Gosub close_instructionbrowser
   End If
 
   If \diag_on
-    log_Print{"opening diag window"}
+    ;log_Print{"opening diag window"}
     Gosub open_helpdiag
   Else
     Gosub close_helpdiag
   End If
 
   If \click_on
-    log_Print{"opening source browser"}
+    ;log_Print{"opening source browser"}
     Gosub open_sourcebrowser
   Else
     Gosub close_sourcebrowser
@@ -15920,13 +16089,13 @@ Return
   End If
 
   If \type_on
-    log_Print{"opening definition browser"}
+    ;log_Print{"opening definition browser"}
     Gosub open_definitionbrowser
   Else
     Gosub close_definitionbrowser
   End If
 
-  log_Print{"opening/updating source window"}
+  ;log_Print{"opening/updating source window"}
   If sourceWindow\win <> 0
     ChangeWindowBox_ sourceWindow\win,sourceWindow\WinLeft,sourceWindow\WinTop,sourceWindow\WinWidth,sourceWindow\WinHeight
     RefreshWindowFrame_ sourceWindow\win
@@ -15969,7 +16138,7 @@ Return
   WZPrint "rem",Peek.w(?comWord_LabelRemark)
   WZPrint "all",Peek.w(?comWord_LabelAll)
   WZPrint "STRING_LABEL",LabelListSearchString
-  WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_labels,LabelList_1VisableItem
+  WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_Labels,LabelList_1VisableItem
 
 Return
 
@@ -15985,13 +16154,21 @@ Return
         old_LabelListSearchString = LabelListSearchString
         LabelList_NewSelectItemNumber.l = 0
         Gosub reset_labellist
-
         Poke.s ?comStr_LabelSearchString ,LabelListSearchString
       End If
 
+    Case #IDCMP_RAWKEY:
+      Select pedMessage\_Code
+      Case #RAWKEY_UP
+        Gosub navigate_to_previous_label
+      Case #RAWKEY_DOWN
+        Gosub navigate_to_next_label
+      End Select
+
     Case #IDCMP_VANILLAKEY:
-      If EventCode = #VANILLAKEY_ESC Then Gosub close_sourcebrowser
-      If EventCode = #VANILLAKEY_TAB Then Gosub activatesourcewindow
+      ;log_Print{Hex$(pedMessage\_Code)}
+      If pedMessage\_Code = #VANILLAKEY_ESC Then Gosub close_sourcebrowser
+      If pedMessage\_Code = #VANILLAKEY_TAB Then Gosub activatesourcewindow
 
     Case #IDCMP_CLOSEWINDOW
       Gosub close_sourcebrowser
@@ -16009,10 +16186,10 @@ Return
           ; was the same because wizard.lib do it and by overwritable by doublellick  tomsmart1
           LabelList_PreSelectItemNumber = WZListNum("LISTVIEW_LABELS")
           LabelList_1VisableItem = WZListPos("LISTVIEW_LABELS")
-          ;WZPrint "LISTVIEW_LABELS",-1,list_labels,LabelList_1VisableItem
+          ;WZPrint "LISTVIEW_LABELS",-1,list_Labels,LabelList_1VisableItem
           Gosub activatesourcewindow
           Gosub storeline
-          lineAddress.l = WZListData (list_labels, WZInput)
+          lineAddress.l = WZListData (list_Labels, WZInput)
           log_Print{"jump to corresponding source line, (address: " + Hex$(lineAddress)+ ") itemnumber:"+ Str$(WZInput)}
           PED_HistoryAddEntry{}
           PED_GotoLineAddress{lineAddress}
@@ -16054,7 +16231,7 @@ Return
           Gosub scan_source_for_used_libs
 
         Case "library_list"
-          cmd_node.l = WZGetNode(lib_list.List)
+          cmd_node.l = WZGetNode(list_usedBlitzLibs)
           searchcmd.s = WZListString(cmd_node,0)
           klammer.b = Instr(searchcmd,"(")
           If klammer
@@ -16099,26 +16276,32 @@ Return
 
 .navigate_to_previous_label:
   If WZ_IsOpen{"WIN_LABELS"}
-    LabelList_PreSelectItemNumber = LabelList_PreSelectItemNumber-1
-    If LabelList_PreSelectItemNumber<0 Then LabelList_PreSelectItemNumber = 0
+    LabelList_PreSelectItemNumber = LabelList_PreSelectItemNumber - 1
+    If LabelList_PreSelectItemNumber < 0 Then LabelList_PreSelectItemNumber = 0
     LabelList_NewSelectItemNumber = LabelList_PreSelectItemNumber
+
     Use Window WZID("WIN_LABELS")
-    WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_labels
-    Gosub storeline
-    lineAddress.l = WZListData (list_labels,LabelList_NewSelectItemNumber)
+    WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_Labels
+
+    Gosub storeline    
+
+    lineAddress.l = WZListData (list_Labels,LabelList_NewSelectItemNumber)
     PED_GotoLineAddress{lineAddress}
   End If
 Return
 
 .navigate_to_next_label:
   If WZ_IsOpen{"WIN_LABELS"}
-    LabelList_PreSelectItemNumber = LabelList_PreSelectItemNumber+1
-    If LabelList_PreSelectItemNumber = >WZListItems (list_labels) Then LabelList_PreSelectItemNumber = WZListItems (list_labels)-1
+    LabelList_PreSelectItemNumber = LabelList_PreSelectItemNumber + 1
+    If LabelList_PreSelectItemNumber = >WZListItems (list_Labels) Then LabelList_PreSelectItemNumber = WZListItems (list_Labels) - 1
     LabelList_NewSelectItemNumber = LabelList_PreSelectItemNumber
+
     Use Window WZID("WIN_LABELS")
-    WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_labels
+    WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_Labels
+
     Gosub storeline
-    lineAddress.l = WZListData (list_labels,LabelList_NewSelectItemNumber)
+
+    lineAddress.l = WZListData (list_Labels,LabelList_NewSelectItemNumber)
     PED_GotoLineAddress{lineAddress}
   End If
 Return
@@ -16176,302 +16359,17 @@ Return
 Return                                                                        ; replaced RTS with Return  tomsmart1
 
 
-; Begin routines for function build_HelpIndexFile  ; moved the functions and statemend defination out of the build index rountine for a better overview  tomsmart1
-Function.l ab3_IsTokenChar{char.w}
-  If char>=@"a" AND char<=@"z" Then Function Return True
-  If char>=@"A" AND char<=@"Z" Then Function Return True
-  If char>=@"0" AND char<=@"9" Then Function Return True
-  If char=@"_" OR char=@"@" OR char=@"`" Then Function Return True
-  Function Return False
-End Function
-
-Statement writeentry{destfile.l, mode$,instruction$}
-SHARED pedconfig
-
-  ;#TOKEN_Function  = $8009
-  ;#TOKEN_Statement = $8008
-  ;#TOKEN_Object    = $80d7
-  ;#TOKEN_Macro     = $800d
-  ;#TOKEN_End       = $8002
-  ;#TOKEN_Return    = $8007
-
-  ; -- don't add it if it contains @H
-  If Instr(instruction$,"@H") Then Statement Return
-
-  ; -- token return found
-  If Instr(instruction$,Mki$(#TOKEN_Return)) Then Statement Return
-
-  ; -- token End found
-  If Instr(instruction$,Mki$(#TOKEN_End)) Then Statement Return
-
-  startpos.l = 0
-  Select mode$
-    Case "FUNC"
-      startpos = Instr(instruction$,Mki$(#TOKEN_Function))  + 2
-      i3.l = Instr (instruction$,".",startpos)
-      If (i3 < startpos+5) AND (i3 <> 0)
-        startpos = i3+1                              ; change it to 1 to make the test of spaces possible  tomsmart1
-
-         While Mid$(instruction$,startpos,1)<>" "    ; test if we have no space  so it is still the function type (newtype)  tomsmart1
-           startpos + 1
-         Wend
-
-      End If
-      If Instr(instruction$,"FAST",startpos)
-        startpos.l = Instr(instruction$,"FAST",startpos)    + 4
-      End If
-
-    Case "STAT"
-      startpos = Instr(instruction$,Mki$(#TOKEN_Statement)) + 2
-      If Instr(instruction$,"FAST",startpos)
-        startpos.l = Instr(instruction$,"FAST",startpos)    + 4
-      End If
-
-    Case "MACR"
-      startpos = Instr(instruction$,Mki$(#TOKEN_Macro))     + 2
-
-  End Select
-
-  ; -- get string positions --
-  instruction$ = dos_Trim{Mid$(instruction$,startpos)}
-
-  endpos.l  =1
-  stopchar.l=False
-  While endpos<=FLen(instruction$) AND stopchar=False
-    If ab3_IsTokenChar{Peek.b(&instruction$+endpos-1)}=False Then stopchar=True:Else endpos+1
-  Wend
-
-  ; -- write infos to indexfile
-  If endpos <> 0
-    funcname$ = Mid$( instruction$ , 1 , endpos - 1)
-    ;If Right$(funcname$,1)=";" Then funcname$ = UnLeft$(funcname$,1)
-    ;funcname$ = StripLead$(Left$(funcname$,50,32),32)
-    funcname$ = StripLead$(funcname$,32)
-
-    If FLen(funcname$) >= 6                                   ; test if functionname leng <= 6  tomsmart1
-      If Left$(funcname$,6) = "Return" Then Statement Return  ; yes then test if function or statement RETURN then we have nothing to print back again  tomsmart1
-    EndIf
-
-    If mode$ = "MACR" Then funcname$ = "!" + funcname$
-
-    description$ = Mid$(instruction$,endpos)
-    description$ = StripLead$(description$,32)
-    If Left$(description$,1)=";" Then description$ = UnRight$(description$,1)
-    description$ = StripLead$(description$,32)
-
-    If (Left$(funcname$,1) = "_") OR (Left$(funcname$,2) = "!_")             ; test for privat routines  tomsmart
-      If pedconfig\HelpForPrivateFunctions = True                                   ; test if we show help for it  tomsmart1
-        file_WriteLine{destfile, mode$ + "\\09" + funcname$ + "\\09" + description$ + " ; private!"}     ; show help but indentify private routines tomsmart1
-      End If
-    Else
-      ;NPrint LSet$(mode$,11) + LSet$(funcname$,50) + description$
-      file_WriteLine{destfile, mode$ + "\\09" + funcname$ + "\\09" + description$}                      ; public routines
-    End If
-
-  End If
-End Statement
-
- 
-
-Function.l ab3_InstrToken{code.s,token.s}
-  pos.l = Instr(code,token)
-  If pos
-    If ab3_IsTokenChar{Peek.b(&code+pos-1+FLen(token))} Then pos=0
-    If pos>1
-      If ab3_IsTokenChar{Peek.b(&code+pos-1-1)} Then pos=0
-    End If
-  End If
-  Function Return pos
-End Function
-
-
-
-Statement scanfile{rootpath$,filename$, destfile.l}
-  functoken$      = Mki$(#TOKEN_Function)
-  statementtoken$ = Mki$(#TOKEN_Statement)
-  objecttoken$    = Mki$(#TOKEN_Object)
-  macrotoken$     = Mki$(#TOKEN_Macro)
-  endtoken$       = Mki$(#TOKEN_End)
-  returntoken$    = Mki$(#TOKEN_Return)
-  tok80.s         = Str$($80)
-  fid.l = file_Open{dos_AddPart{rootpath$,filename$},#file_read}
-  If dos_GetExt{filename$}="bb2" OR dos_GetExt{filename$}="bb"  Then tokenized.l=True : Else tokenized=False
-
-  If fid>=0 ; ReadFile(0,filename$)
-    ;file_Cache{fid}
-    ;FileInput 0
-    ; -- get current path
-    ;dir_name$ = SPACE$(512)
-    ;GetCurrentDirName_ &dir_name$,FLen(dir_name$)
-    ;dir_name$ = StripTrail$(dir_name$,0)
-    ;dir_name$ = dos_Trim{dir_name$}
-    ;dir_name$ = dos_FilePart{dir_name$}
-
-    ; -- add parent path to filename, if not in includes-drawer
-    ;If LCase$(dir_name$)<>"includes" Then filename$ = dos_AddPart{dir_name$,filename$}
-
-    ; -- write filename into indexfile
-    file_WriteLine{destfile,"FILE\\09"+filename$}
-
-    Repeat
-      ;code.s = ReadLine$
-      If tokenized
-        code.s = file_ReadBB2Line{fid}
-      Else
-        code.s = file_ReadLine{fid}
-      End If
-
-      maxpos.l = Instr(code,";")
-      If maxpos = 0 Then maxpos = FLen(code)-1
-
-      ; in case its ASCII...
-      If tokenized=False
-        pos.l = ab3_InstrToken{code,"Function"}
-        If pos>0 AND pos<maxpos
-          ;If Instr(code,"GetObjectBy") Then error{"Found Function in "+filename$+" line:\\n"+code}
-          code.s = Left$(code,pos-1) + functoken$ + Right$(code,FLen(code)-pos-8+1)
-          If pos<maxpos Then maxpos=pos
-        End If
-
-        pos = ab3_InstrToken{code,"Statement"}
-        If pos>0 AND pos<maxpos
-          code.s = Left$(code,pos-1) + statementtoken$ + Right$(code,FLen(code)-pos-9+1)
-          If pos<maxpos Then maxpos=pos
-        End If
-
-        pos = ab3_InstrToken{code,"Macro"}
-        If pos>0 AND pos<maxpos
-            code.s = Left$(code,pos-1) + macrotoken$ + Right$(code,FLen(code)-pos-5+1)
-            If pos<maxpos Then maxpos=pos
-        End If
-
-        pos = ab3_InstrToken{code,"End "}
-        If pos>0 AND pos<maxpos
-            code.s = Left$(code,pos-1) + endtoken$ + Right$(code,FLen(code)-pos-3+1)
-            If pos<maxpos Then maxpos=pos
-        End If
-
-        pos = ab3_InstrToken{code,"Return"}
-        If pos>0 AND pos<maxpos
-            code.s = Left$(code,pos-1) + returntoken$ + Right$(code,FLen(code)-pos-6+1)
-            If pos<maxpos Then maxpos=pos
-        End If
-      End If
-;      If Left$(a$,2) = ";/"
-;        NPrint a$
-;      Else
-        pos = Instr(code,functoken$)
-        If pos>0 AND pos<=maxpos Then writeentry{destfile, "FUNC",code}
-
-        pos = Instr(code,statementtoken$)
-        If pos>0 AND pos<=maxpos Then writeentry{destfile, "STAT",code}
-
-        pos = Instr(code,macrotoken$)
-        If pos>0 AND pos<=maxpos Then writeentry{destfile, "MACR",code}
-
-;       EndIf
-    Until file_EOF{fid}
-    file_Close{fid}
-  Else
-    dummy.l = ask{!TRANS{"Can't open file "}+filename$,!TRANS{"Ok"},!TRANS{"Error"}}
-  End If
-End Statement
-
 .update_preprocessor:
   If *preProcessor
     log_Print{"recreating token hashmap..."}
     preproc_QueryTokens{*preProcessor}
     log_Print{"updating hashmapfile [" + pedconfig\TokenHashMapFile + "]..."}
-    preproc_SaveTokens{*preProcessor,pedconfig\TokenHashMapFile}
+    preproc_SaveTokens{*preProcessor, pedconfig\TokenHashMapFile}
   Else
     log_Print{"update_preprocessor: preprocessor not initiated!", #log_warning}
   EndIf
 Return
 
-.build_HelpIndexFile:
-  log_Print{"****** Building a new helpIndex file for include functions..."}
-
-  If dos_Exist{pedconfig\includeDir}
-    DosBuffLen 32000  
-    CaseSense On
-    ;-- check if Indexfile is available and delete it
-    If dos_Exist{pedconfig\HelpIndexFile} Then dos_Delete{pedconfig\HelpIndexFile}
-
-    ;-- create a new indexfile
-    log_Print{"opening help index file: " + pedconfig\HelpIndexFile}
-    destfid.l = file_Open{pedconfig\HelpIndexFile, #file_forcewrite}
-    If destfid >= 0
-      WZ_ShowMessage{!TRANS{"Updating indexfile for includes onlinehelp..."},0}
-      ;WZ_ChangeTitle{"WIN_PROGRESS",!TRANS{"Rebuilding"} }
-
-      ClearList HelpIndexCache()
-
-      ;-- scan for subdirs
-      ClearList dirs()
-      If AddLast(dirs()) Then dirs()\name = pedconfig\includeDir
-      log_Print{"*** scan includedir <" + pedconfig\includeDir + ">"}
-      Repeat
-        name$ = dos_ScanDir{pedconfig\includeDir,"",#dos_scan_dirs}
-        If dos_IsDir{name$}
-          If AddLast(dirs()) Then dirs()\name = dos_AddPart{pedconfig\includeDir,name$}
-          log_Print{"found subdir <" + name$ + ">"}
-        EndIf
-      Until name$ = ""
-
-      ;-- count number of files
-      num_files.l = 0
-      ResetList dirs()
-      While NextItem(dirs())
-        dirname$ = dirs()\name                    ; set first subdirectory
-        Repeat
-          name$ = dos_ScanDir{dirname$,"#?",#dos_scan_files}
-          num_files + 1
-        Until name$ = ""
-      Wend
-      log_Print{"counted files: " + Str$(num_files)}
-
-      ;-- scan files for functions
-      ;-- begin count include files
-      subincludedirs.b = False
-      exitscan.b       = True
-      dirname$         = ""
-      act_file.l = 0
-      ResetList dirs()
-      act_file.l = 0
-      While NextItem(dirs())
-        dirname$ = dirs()\name                    ; set first subdirectory
-        log_Print{"*** scanning dir <" + dirname$ + ">",#log_debug}
-        Repeat
-          name$ = dos_ScanDir{dirname$,"#?",#dos_scan_files}
-          If name$<>""
-            log_Print{"scanning file <" + name$ + ">"}
-            act_file + 1 : act_file = Min(act_file,num_files)
-            ex.s = LCase$(dos_GetExt{name$})
-            If (ex="bb" OR ex="bb2" OR ex="ab2" OR ex="ab3")
-               scanfile{pedconfig\includeDir,name$, destfid}
-            EndIf
-            !WZ_Update_Gauge{act_file,num_files}
-          End If
-        Until name$ = ""
-      Wend
-      ClearList dirs()
-      file_Close{destfid}
-
-      WZ_ShowMessage{!TRANS{"Updating helpindex..."}} : PED_UpdateHelpIndexCache{pedconfig\HelpIndexFile}
-      WZ_ShowMessage{!TRANS{"Saving helpindex to disk..."}} : PED_WriteHelpIndexCache{pedconfig\HelpIndexCacheFile}
-      WZ_HideMessage{}
-    End If
-    CaseSense Off
-  Else
-    dummy.l = ask{!TRANS{"Could not determine Include directory"}+":\\n"+pedconfig\includeDir+"!",!TRANS{"Ok"},!TRANS{"Error"}}
-  EndIf
-
-  If pedconfig\usePreProcessor
-    WZ_ShowMessage{!TRANS{"updating token hashmap for preprocessor ..."}}
-    Gosub update_preprocessor
-    WZ_HideMessage{}
-  End If
-Return
 
 .event_find:
     ped\caseSensitive = True
@@ -16543,12 +16441,12 @@ Return
             If ped\searchString <> "" AND ped\replaceString <> ""
               Gosub storeline
               PED_CursorOff{}
-              Gosub set_pointer_busy
+              PED_SetPointerBusy{}
               Gosub menu_replaceall
               PED_SetCurrentSourceLine{}
               PED_RedrawSource{}
               PED_CursorOn{}
-              Gosub set_pointer_normal
+              PED_SetPointerNormal{}
             EndIf
             Gosub activatesourcewindow                ; added to make source win active that edit is possible  tomsmart1
 
@@ -16607,17 +16505,15 @@ Return
 
   Gosub BackupCompilerSettings    ; make a Backup of the active settings
 
-  MaxLen a$ = 5000
-
-  If ScreenHeight>400
-    com_scr_y.w = ScreenHeight/6
-    com_scr_h.w = ScreenHeight/1.5
+  If ScreenHeight > 400
+    com_scr_y.w = ScreenHeight / 6
+    com_scr_h.w = ScreenHeight / 1.5
   Else
     com_scr_y.w = -2
     com_scr_h.w = -2
   End If
-
   WZWindow WZID("WIN_CPREFS"),?wzgui,256,-2,com_scr_y,-2,com_scr_h,WZID("WIN_CPREFS")
+
   WZ_SetFont{"WIN_CPREFS"}
   WZ_InitTable{"WIN_CPREFS","OBJECTS",2,0}
   WZ_SetTableColors{"OBJECTS",1,0,2,3,3}
@@ -16634,33 +16530,31 @@ Return
   ; Sortieren verboten
   WZ_SetSortable{"OBJECTS",Off}
 
-  ; Fuegt Zeilen an die Tabelle "OBJECTS" an
-  For i.l = 0 To Peek.w(Ptr_Number_of_Objects_Word)-1
-    a$ = ""
-    GetD0 &a$,i
+  ;-- fill objectdata from compiler into table OBJECTS
+  For i.l = 0 To Peek.w(Ptr_Number_of_Objects_Word) - 1
+    tmpStringVar = ""
+    GetD0 &tmpStringVar, i
     !ComData_JSR{comFunc_GetObjectEntry}    ;stringaddress in d0 , indexnumber d1
-    a.l = PutD0
-    WZ_AddRow{"OBJECTS",Peek.s(&a$),Str$(a)}
+    tmpL.l = PutD0
+    WZ_AddRow{"OBJECTS",Peek.s(&tmpStringVar),Str$(tmpL)}
   Next
   WZ_DrawTable{"OBJECTS"}
-  ; Fuellt die Tabelle mit den Werten, die mit WZAddRow{} erstellt wurden
   WZ_UpdateTable{"OBJECTS"}
 
-  ;get Residents and convert it to a string
+  ;-- get Residents and convert it to a string
   var.l = Ptr_Residents_Table
-  a$ = Peek.s(var)              ; get first entry
+  tmpStringVar = Peek.s(var)     ; get first entry
   For i = 0 To 6               ; get up to 7 entry
-    a$ = a$ + "\\0a"           ; added a newline
+    tmpStringVar + "\\0a"        ; added a newline
     var + #ResidentEntryStep   ; update pointer to the next entry
-    a$ = a$ + Peek.s(var)       ; added next entry
+    tmpStringVar + Peek.s(var)   ; added next entry
   Next
-  WZPrint "RESIDENTS",&a$      ; print string in gadget
+  WZPrint "RESIDENTS",&tmpStringVar
 
   WZPrint "STRINGBUFFER",StringbufferValue_Backup
+  WZPrint "STACKSIZE",StackSizeValue_Backup
 
-  WZPrint "STACKSIZE",StackSizeValue_Backup                       ;print it  tomsmart1
-
-; get and set status of the checkmarks
+  ;-- get and set status of the checkmarks
   If Peek.b(Ptr_Create_Iconfile_Byte)=-128
     WZPrint "ICON",1
   Else
@@ -16887,8 +16781,8 @@ Return
 .UseMaxObjectsAndResidentsSettings:
   ;-- update save max objects settings
   For i.l = 1 To Peek.w(Ptr_Number_of_Objects_Word)
-    a$ = WZ_GetCell{"OBJECTS",i,2}
-    i2.l = Vallong(a$) : If i2 = 0 Then i2 = 1
+    i2.l = Vallong( WZ_GetCell{"OBJECTS",i,2} ) 
+    If i2 = 0 Then i2 = 1
     Poke.w Ptr_MaxObjects_Value_Word,i2
     Poke.w Ptr_MaxObject_Pos_Word   ,i-1
     !ComData_JSR{comFunc_StoreMaxObjects}
@@ -16901,8 +16795,8 @@ Return
 
   ;-- convert strings to Resident entrys
   i.l = WZInput("RESIDENTS")
-  a$ = Peek.s(i)
-  InitArgParse a$
+  tmpStringVar = Peek.s(i)
+  InitArgParse tmpStringVar
   var.l = Ptr_Residents_Table
   For i = 0 To 7
     p$ = NextArgChar$ ($a)
