@@ -1082,13 +1082,13 @@ End Function
   Poke.l ?constlibat, Peek.l(?constpcat) + Peek.l(?constmaxpc)
 
   ;-- init macrobuffer
+  ;-- macrobuffersize is 4 bytes more to store the size in the first 4 bytes :-)
   If Peek.l(?macrobuffer_size) < #DEFAULT_MACROBUFFERSIZE Then Poke.l ?macrobuffer_size, #DEFAULT_MACROBUFFERSIZE
   tmpL.l = AllocMem_(Peek.l(?macrobuffer_size) + 4, #MEMF_PUBLIC)
   If tmpL = 0 Then Goto shutdown_compiler
-  Poke.l tmpL, Peek.l(?macrobuffer_size)
+  Poke.l tmpL, Peek.l(?macrobuffer_size) + 4
   Poke.l ?ptr_macrobuffer_begin, tmpL + 4
   Poke.l ?ptr_macrobuffer_end  , tmpL + 4 + Peek.l(?macrobuffer_size)
-
 
   If CLIMode
     succ.l = InitEmulatedPED{}
@@ -1230,7 +1230,8 @@ End Function
 
   ;-- ptr_macrobuffer_begin: byte 0..3: size of macrobuffer
   ;--                        byte 4..7: address begin of buffer
-  If Peek.l(?ptr_macrobuffer_begin)-4 Then FreeMem_ Peek.l(?ptr_macrobuffer_begin)-4, Peek.l(?macrobuffer_size)
+  If Peek.l(?ptr_macrobuffer_begin)-4 Then FreeMem_ Peek.l(?ptr_macrobuffer_begin)-4, Peek.l(?macrobuffer_size) + 4
+
   If Peek.l(?constpcat) Then FreeMem_ Peek.l(?constpcat), Peek.l(?constmaxpc) : Poke.l ?constpcat,0
 
   If Peek.l(?mempool2) Then DeletePool_ Peek.l(?mempool2) : Poke.l ?mempool2,0
@@ -2378,22 +2379,18 @@ JMP free_Types
 
 
 .free_allVariables:
+  MOVEA.l _execbase,A6
+
   MOVEA.l varbase,A3
   CLR.l varbase
-
-  ; new >
  'l10
-  CMPA.w #$0,A3
-  BEQ.w 'l20
-  MOVEA.l A3,A1
-  MOVEA.l (A3),A3
-  MOVEQ.l #$00,D0
-  MOVE.b $E+4(A1),D0
-  MOVEA.l _execbase,A6
-  MOVE.l mempool2,a0
-  JSR _FreePooled(A6)
- BRA.w 'l10
-
+    CMPA.w #$0,A3 : BEQ.w 'l20
+    MOVEA.l A3,A1
+    MOVEA.l (A3),A3
+    MOVEQ.l #$00,D0
+    MOVE.b $E+4(A1),D0
+    MOVE.l mempool2,a0 : JSR _FreePooled(A6)
+  BRA.w 'l10
  'l20
 RTS
 
@@ -2700,15 +2697,15 @@ findmacro:   ;expandmax org source
 ; bra 'l10c
 
  'l1c
+  MOVEA.l _execbase,A6
 
-  MOVE.l mempool,a0
   MOVE.l macrobuffer_size,D0
   CMP.l #DEFAULT_MACROBUFFERSIZE,d0                          ; replaced with a constant tomsmart1
   BGE 'l1mc
     MOVE.l #DEFAULT_MACROBUFFERSIZE,d0                         ; replaced with a constant tomsmart1
     MOVE.l d0,macrobuffer_size
  'l1mc
-  MOVEA.l _execbase,A6 :  JSR _AllocPooled(a6)
+  MOVE.l mempool,a0 : JSR _AllocPooled(a6)
   
   MOVE.l myline,myoline
 
@@ -4960,10 +4957,9 @@ replineat:   Ds.l 1
     ;Until a=10
   CLR.l fp0addr
   MOVE.l linenumat,replineat
-  MOVEQ.l #$08,D0
   MOVEA.l _execbase,A6
-  MOVE.l mempool,a0
-  JSR _AllocPooled(a6)
+  MOVEQ.l #$08,D0
+  MOVE.l mempool,a0 : JSR _AllocPooled(a6)
   MOVEA.l D0,A0
 
   MOVE.l firstrep(PC),(A0)
@@ -7765,7 +7761,7 @@ macroexecute
 RTS
 
 
-calc
+.calc:
   MOVEM.l D1-D2/A0,-(A7)
   MOVE.l d0,d2
   MOVEQ #0,d1
@@ -7774,38 +7770,29 @@ calc
  'll20
   ADDQ.l #1,d1
   MOVE.b (a5)+,d0
-  CMP.b #",",d0
-  BEQ 'll10
-  CMP.b #";",d0
-  BEQ 'll10
-  CMP.b #":",d0
-  BEQ 'll10
-  CMP.b #"(",d0
-  BEQ 'll10
-  TST.b d0
-  BNE 'll20
+  CMP.b #",",d0 :  BEQ 'll10
+  CMP.b #";",d0 :  BEQ 'll10
+  CMP.b #":",d0 :  BEQ 'll10
+  CMP.b #"(",d0 :  BEQ 'll10
+  TST.b d0      :  BNE 'll20
 
  'll10
   SUBQ #1,a5
-  CMP.b #"'",(a4)
-  BEQ 'llocal
+  CMP.b #"'",(a4) : BEQ 'llocal
 
-  TST.w inmacro
-  BNE 'lmacro
+  TST.w inmacro   : BNE 'lmacro
 
   MOVEQ.l #$14+4,D0
   ADD.l d1,d0
 
   MOVE.l d1,-(a7)
-  MOVEQ.l #$01,D1
   MOVEA.l _execbase,A6
-  MOVE.l mempool2,a0
-  JSR _AllocPooled(a6)
+  MOVEQ.l #$01,D1
+  MOVE.l mempool2,a0 :  JSR _AllocPooled(a6)
   MOVE.l (a7)+,d1
-  TST.l d0
-  BEQ out_of_memory
-
+  TST.l d0 : BEQ out_of_memory
   MOVEA.l D0,A0
+
   ;MOVE.w linenumat+2,$C(A0)
   MOVE.w linenumat+2,$A(A0)
   ;MOVE.w linenumat,$c(a0)
@@ -9480,23 +9467,21 @@ RTS
   ;!stack2regs
 
   MOVEA.l _execbase,A6
-  MOVE.l mempool,a0
+
   LEA tokeslist,A3
  'loop2
-  MOVE.l (A3),D0
-  BEQ.w 'notfound
-    MOVEA.l D0,A3
-    CMP.w $4(A3),D4
-    BNE.w 'loop2
-      CMP.w $6(A3),D5
-        BNE.w 'loop2
+    MOVE.l (A3),D0    :  BEQ.w 'notfound
+      MOVEA.l D0,A3
+      CMP.w $4(A3),D4   : BNE.w 'loop2
+        CMP.w $6(A3),D5 : BNE.w 'loop2
           BRA.w 'found
  'notfound
-    ;None done yet...make one up!
-    ;
+    ;-- None done yet...make one up!
+    ;--
     MOVEQ.l #$0C,D0       ; 12 bytes
-    JSR _AllocPooled(a6)
+    MOVE.l mempool,a0 : JSR _AllocPooled(a6)
     MOVEA.l D0,A3
+
     MOVE.l tokeslist,(A3)
     MOVE.l A3,tokeslist
     MOVE.w D4,$4(A3)            ; tokenumber
@@ -9504,11 +9489,11 @@ RTS
     CLR.l $8(A3)                ; clear offsets
  'found
 
-  MOVEA.l _execbase,A6
-  MOVE.l mempool,a0
+
   MOVEQ.l #$08,D0               ; add offset to list
-  JSR _AllocPooled(a6)
+  MOVE.l mempool,a0 : JSR _AllocPooled(a6)
   MOVEA.l D0,A0
+
   MOVE.l D3,$4(A0)
   MOVE.l $8(A3),(A0)
   MOVE.l A0,$8(A3)
@@ -9989,27 +9974,27 @@ RTS
 Return
 
 .free_blitzlibs:                                           ;freelibs org source    ;free up all memory used by libs
-  If libdata\size_baselibs Then FreePooled_ Peek.l(?mempool),libdata\ptr_baselibs,libdata\size_baselibs
-  If libdata\size_utillibs Then FreePooled_ Peek.l(?mempool),libdata\ptr_utillibs,libdata\size_utillibs
-  If libdata\size_oslibs Then   FreePooled_ Peek.l(?mempool),libdata\ptr_oslibs,libdata\size_oslibs
-  If libdata\size_cslibs Then   FreePooled_ Peek.l(?mempool),libdata\ptr_cslibs,libdata\size_cslibs
   Gosub free_userlibs
+  If libdata\size_cslibs Then   FreePooled_ Peek.l(?mempool),libdata\ptr_cslibs,libdata\size_cslibs
+  If libdata\size_oslibs Then   FreePooled_ Peek.l(?mempool),libdata\ptr_oslibs,libdata\size_oslibs
+  If libdata\size_utillibs Then FreePooled_ Peek.l(?mempool),libdata\ptr_utillibs,libdata\size_utillibs
+  If libdata\size_baselibs Then FreePooled_ Peek.l(?mempool),libdata\ptr_baselibs,libdata\size_baselibs
 
   Poke.l ?libpointer, 0
   Poke.l Peek.l(?end_of_tokenlist),0
 Return
 
 .free_Macros:
+  MOVEA.l _execbase,A6
+
   MOVEA.l currentmacroaddr,A0
   MOVEA.l (A0),A2
   CLR.l (A0)
-  MOVEA.l _execbase,A6
-
  'loop
     CMPA.w #$0,A2 : BEQ.w 'done
+
     MOVEQ.l #$00,D0
-    MOVE.w $8(A2),D0
-    BEQ.w 'skip
+    MOVE.w $8(A2),D0 : BEQ.w 'skip
       MOVEA.l $4(A2),A1
       MOVE.l mempool,a0 : JSR _FreePooled(A6)
    'skip
@@ -10023,29 +10008,22 @@ Return
 RTS
 
 
-cleartemplabel:                                            ;freeasms org code
+.cleartemplabel:                                            ;freeasms org code
   MOVEA.l templabel,A2
   CLR.l templabel
-  ; new >
 RTS
-  ; < new
+  ;--
+  ;-- code not used atm, donot know why
   MOVEA.l _execbase,A6                                     ;??looks like dead code?
 
  'loop
-    CMPA.w #$0,A2
-    BEQ.w 'done
+    CMPA.w #$0,A2 : BEQ.w 'done
     MOVEQ.l #$00,D0
     MOVE.b $E(A2),D0                                       ;labeltemp
     MOVEA.l A2,A1
     MOVEA.l (A2),A2
-    ; new >
-    MOVE.l mempool2,a0
-    ;jsr _FreePooled(A6)
-    ;< new
-    ;jsr freemem(a6)
-
- BRA.w 'loop
-
+    ;MOVE.l mempool2,a0 : JSR _FreePooled(A6)
+  BRA.w 'loop
  'done
 RTS
 
@@ -10870,10 +10848,9 @@ RTS
 
   TST.b nohunkoffset :  BNE 'l10
     MOVEA.l _execbase,A6
-    MOVEQ.l #$8,D0
     MOVEQ.l #$01,D1
-    MOVE.l mempool2,a0
-    JSR _AllocPooled(a6)
+    MOVEQ.l #$8,D0
+    MOVE.l mempool2,a0 : JSR _AllocPooled(a6)
 
     ADDQ.l #1,hunkoffsetcounter
     MOVEA.l D0,A0
@@ -10885,7 +10862,7 @@ RTS
 RTS
 
 
-free_allOffsets:
+.free_allOffsets:
   ;--
   ;-- kill all offsets
   MOVEA.l _execbase,A6
@@ -11557,9 +11534,7 @@ RTS
   MOVE.w D0,D2
   ADDQ.l #2,d0
 
-
-  MOVE.l mempool2,a0
-  JSR _AllocPooled(a6)
+  MOVE.l mempool2,a0 :  JSR _AllocPooled(a6)
   MOVE.l lastlabel,a2
   MOVE.l D0,(A2)
   MOVE.l d0,a0
@@ -11865,44 +11840,35 @@ RTS
   ; < new
 
  'loop
-    CMPA.w #$0,A4
-     BEQ.b 'done
+    CMPA.w #$0,A4 : BEQ.b 'done
     MOVEA.l $4(A4),A3
     ;BSR.w 'freevarsb       ; was freevars
     MOVEA.l $8(A4),A3
     ;BSR.w freevars
     MOVEA.l A4,A1
     MOVEA.l (A4),A4
-    MOVEQ.l #$0C,D0
     MOVEA.l _execbase,A6
-    ; new >
-    MOVE.l mempool,a0
-    JSR _FreePooled(A6)
-    ; < new
-    ;jsr freemem(a6)
- BRA.b 'loop
-
+    MOVEQ.l #$0C,D0
+    MOVE.l mempool,a0 : JSR _FreePooled(A6)
+  BRA.b 'loop
  'done
+
   ; new >
   CLR.l firstglob                                          ;fix 2*aclearallvar called
   CLR.l firstlocal
   CLR.l sharebase
-  TST.l mempool2
-  BEQ 'done_l10
-  ;MOVE.l $4,a6
   MOVEA.l _execbase,A6
-  MOVE.l mempool2,a0
-  CLR.l mempool2
-  JSR _DeletePool(a6)
+  TST.l mempool2 : BEQ 'done_l10
+    MOVE.l mempool2,a0
+    CLR.l mempool2
+    JSR _DeletePool(a6)
 
  'done_l10
-  MOVE.l _execbase,a6
   MOVE.l #$10000,d0
   MOVE.l #80000,d1
   MOVE.l d1,d2
   JSR _CreatePool(a6)
   MOVE.l d0,mempool2
-  ; < new
 RTS
 
 
