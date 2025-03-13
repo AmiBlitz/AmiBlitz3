@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.10.0
-; NumberOfBuilds  = 536
+; NumberOfBuilds  = 540
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1694
-; CursorColumn    = 39
+; CursorLine      = 1109
+; CursorColumn    = 16
 ; LabelSearch     = "log_print"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -145,11 +145,16 @@ Macro DPrint
 End Macro
 
 NEWTYPE.environment
-  *exeTask.Task
   lock_CurrentDir.l
   lock_ExePath.l
-  signalBitNum.l     ;panicbit
-  signalPanic.l       ;panicmask
+  signalPanicBitNum.l     ;panicbit
+  signalPanicMask.l       ;panicmask
+  signalStopBitNum.l     
+  signalStopMask.l       
+  ;
+  *exeTask.Task
+  *PEDTask.Task
+  *msgportPED.MsgPort
   ;
   _noCLI.b
   _noPED.b
@@ -1179,10 +1184,12 @@ End Function
   !basic
 
   ; --
-  ; -- grab a panic bit for a signal mask
-  ; --
-  environment\signalBitNum = AllocSignal_(-1)   ; -1 no preference for a special signal bit
-  environment\signalPanic = 1 LSL environment\signalBitNum
+  ; -- grab a panic bit for a signal mask with -1 no preference for a special signal bit
+  ; -- 
+  environment\signalPanicBitNum = AllocSignal_(-1)
+  environment\signalPanicMask = 1 LSL environment\signalPanicBitNum
+  environment\signalStopBitNum = AllocSignal_(-1)
+  environment\signalStopMask = 1 LSL environment\signalStopBitNum
 
   ; --
   ; -- loadseg default debugger (blitz2:dhandler)
@@ -1204,9 +1211,14 @@ End Function
     MOVE.l cli_sourcefile@(A5),A0
     MOVEA.l ped_startup_addr,A1 : JSR (A1)
     !basic
+
+    ; --
     ; --
     ; == wait until PED has been quit !!
     ; --
+    ; --
+    ; --
+
   Else
     Gosub handle_cli_parameters
   EndIf
@@ -1239,7 +1251,8 @@ End Function
 
   If Peek.l(?_dosbase) Then CloseLibrary_ Peek.l(?_dosbase) : Poke.l ?_dosbase,0
   If Peek.l(?_mathffpbase) Then CloseLibrary_ Peek.l(?_mathffpbase) : Poke.l ?_mathffpbase,0
-  If environment\signalBitNum Then FreeSignal_ environment\signalBitNum
+  If environment\signalStopBitNum Then FreeSignal_ environment\signalStopBitNum
+  If environment\signalPanicBitNum Then FreeSignal_ environment\signalPanicBitNum
 
 .abnormal_exit:
   If config\blitz3assign  <> ""
@@ -1752,10 +1765,12 @@ RTS
     !ComData_JSR{comFunc_CloseGUI}
     !basic
   Else
+    
     !asm
-    BSR compilerequester
+    BSR init_compilerequester
     !basic
-    comstatusstr  = !TRANS{"Running executable..."} ;default settings
+
+    comstatusstr  = !TRANS{"Running executable..."}
     calcpro = 100
     GetReg D0,&comstatusstr : !ComData_SetL{comPtr_CompileStatusString,d0}
     GetReg D0,&calcpro      : !ComData_SetL{comPtr_CompileCalcProLong ,d0}
@@ -1765,47 +1780,57 @@ RTS
   EndIf
 
   ;-- lock the current path or the set executable
-  ;-- ->removed as the current source directoy should be used as the current dir for the running task
   !ComData_LEA{comStr_ExePath,D0} : PutReg d0,exeDirP.l
-  ;!ComData_LEA{comStr_ExeFile,D0} : PutReg d0,exeFileP.l
-  ;If Peek.s(exeDirP) = ""
-    !ComData_LEA{comStr_SourceDir,D0} : PutReg d0,sourceDirP.l
-    Poke.s exeDirP, Peek.s(sourceDirP)
-  ;EndIf
-  
+  !ComData_LEA{comStr_SourceDir,D0} : PutReg d0,sourceDirP.l
+  Poke.s exeDirP, Peek.s(sourceDirP)
+
   log2PED{"locking directory for executable or running exe: " + Peek.s(exeDirP)}
-  
-  environment\lock_ExePath = Lock_(Peek.s(exeDirP),#ACCESS_READ)
+  environment\lock_ExePath = Lock_(Peek.s(exeDirP), #ACCESS_READ)
   If environment\lock_ExePath = 0
     log2PED{"Could not lock the given Exepath ["+ Peek.s(exeDirP) + "], using currentdir ..."}
     environment\lock_CurrentDir = CurrentDir_(0)
     CurrentDir_ environment\lock_CurrentDir
   EndIf
 
-  environment\_runerror = 0
   processName.s = "AmiBlitz3 Program Process"
   log2PED{"creating the exe process [" + processName + "] with stack " + Str$(Peek.l(?stacksize)),3}
+
   *processMsgPort.l = CreateNewProc_(Tags(#NP_Entry,?processStart,@@
                                           #NP_Name,&processName,@@
                                           #NP_StackSize,Peek.l(?stacksize),@@
                                           #TAG_END,0))
   If *processMsgPort
-    *exeTask.Task = Null ; will be set within process in a few moments
-    GetReg D0,*processMsgPort : MOVE.l d0,-(a7)
+    *exeTask.Task = Null                    ; will be set within process in a few moments
     !asm
-    MOVE.l (a7)+,D0
-    !ComData_SetB{comByte_RunningFlag,#1}   ; this should be done here, straigt after it is clear that
-                                            ; the program task is running
+    !ComData_SetB{comByte_RunningFlag,#1}   ; this should be done here, straigt after it is clear that the program task is running
     !basic
-    ;-- OK, task should be running here! see if we get a panic!
-    log2PED{"program is running..."}
 
-    ;-- wait for a panicsignal is removed ??
     If environment\_noPED = False
       !asm
       BSR.w close_compilewin
       !basic
     EndIf
+
+    log2PED{"program is running, waiting to stop..."}
+
+    ; TODO: implment a complete signalling between exe, compiler and PED
+    ;;-- OK, task should be running here! see if we get a panic or stop!
+    ;signalSet.l = environment\signalPanicMask|environment\signalStopMask
+    ;receivedSignal.l = Wait_(signalSet)
+    ;If receivedSignal AND environment\signalPanicMask
+    ;  log2PED{"received Panic signal..."}
+    ;Else
+    ;  If receivedSignal AND environment\signalStopMask
+    ;    log2PED{"received Stop signal..."}
+    ;  EndIf
+    ;EndIf
+
+    ;Repeat
+    ;    CLR.l d0 : !ComData_GetB{comByte_RunningFlag,D0} : PutReg D0,running.l
+    ;    If running Then Delay_ 10
+    ;Until running = False
+
+    environment\_runerror = 0
   Else
     environment\_runerror = 1
   EndIf
@@ -1821,7 +1846,8 @@ RTS
   !asm
 RTS
 
-.processStart:                                                      ; begin of executable program
+stopit:     Ds.w 1
+.processStart: 
   !basic
   *exeTask.Task = *eb\ThisTask                                     ; getting this task via execbase
   *exeProcess.Process = FindTask_(0)
@@ -1876,8 +1902,10 @@ RTS
   CLR.l firstlocal
 
   !ComData_SetB{comByte_RunningFlag,#0}
+
   !basic
-  log2PED{"We are back from the executable!"}
+  
+  log2PED{"We are back from the executable!"}  
 
   If environment\lock_ExePath Then UnLock_ environment\lock_ExePath
 
@@ -1888,9 +1916,9 @@ RTS
     !basic
   EndIf
 
-  ;-- send compilertask the signal that the task has stopped
+  ;-- send compilertask the signal that the task has stopped OK!
   Poke.w ?stopit, 1
-  Signal_ *compilerTask,environment\signalPanic
+  Signal_ *compilerTask, environment\signalStopMask
   !asm
 RTS
 
@@ -2977,28 +3005,6 @@ isitclose:
 RTS
 
 
-;stopbit:   Ds.w 1
-stopit:     Ds.w 1
-
-;stopcode:                  ; was only used by the old openstopreq
-;  MOVE.w stopit(PC),D1
-;  BNE.b 'skip
-;  MOVE.w stopbit(PC),D1
-;  BTST D1,D0
-;  BEQ.b 'skip
-;  ;MOVE.w #-1,stopit
-;  ;
-;  MOVEM.l D0/A6,-(A7)
-;  MOVE.l signalPanic(PC),D0
-;  MOVEA.l ptr_ThisTask,A1
-;  MOVEA.l _execbase,A6
-;  JSR _Signal(A6)
-;  MOVEM.l (A7)+,D0/A6
-
-; 'skip
-;RTS
-
-
 .close_compilewin:         ; was endstop  org source
   !basic
   *compilerTask\tc_SigExcept = 0
@@ -3050,7 +3056,7 @@ RTS
 debugmode:  Ds.w 1                                         ;debugga org source ;debugger enabled?
 
 
-.compilerequester:           ; was openstopreq org source
+.init_compilerequester:           ; was openstopreq org source
   !basic  
   comstatusstr  = !TRANS{"Initializing Compiler..."} ;default settings
   calcpro       = 0
@@ -3059,10 +3065,9 @@ debugmode:  Ds.w 1                                         ;debugga org source ;
   pass_old      = -1
   update_comstatus_gui = True ; for the first
 
-  GetReg D0,&comstatusstr : !ComData_SetL{comPtr_CompileStatusString,d0}  ; set pointer of status string for gui tomsmart1 2012 05 12
-  GetReg D0,&calcpro      : !ComData_SetL{comPtr_CompileCalcProLong ,d0}  ; set pointer of calcpro long for gui tomsmart1 2012 05 12
+  GetReg D0,&comstatusstr : !ComData_SetL{comPtr_CompileStatusString,d0}
+  GetReg D0,&calcpro      : !ComData_SetL{comPtr_CompileCalcProLong ,d0}
   !asm
-  ;removed call to open window because is now opened by the GUI (PED)
 
   CLR.w stopit
 RTS
@@ -3075,7 +3080,7 @@ RTS
   CLR.w storedebugmode
   CLR.b iserror
   
-  BSR.w compilerequester
+  BSR.w init_compilerequester
   
   MOVE.l #0,globallinecount
   JSR check_of_same_source
@@ -8663,9 +8668,9 @@ uselib3:                                                  ; a1: pointer to lib
   
   BSET #$7,$C(A1) : BNE.w 'skip                           ; already done....
     CMPI.w #-1,$A(A1) : BNE.w 'skip                       ; something already here
-      ;
-      ;o.k. - move in the lib!
-      ;
+      ;--
+      ;-- o.k. - move in the lib!
+      ;--
       TST.w direct_mode : BEQ.b 'oktouse
       ; new >
         TST.b exdebug : BEQ 'l1
@@ -8674,160 +8679,154 @@ uselib3:                                                  ; a1: pointer to lib
           ; < new
           BCLR #$7,$C(A1)
           BRA.w dirliberr                                 ; not available in direct mode
-       'oktouse                                           ;addlibrary
+     'oktouse                                             ; addlibrary
 
-        TST.b log_blitzlibs : BEQ.b 'skiplog
-          TST.w pass : BNE.b 'skiplog
-            TST.l funcscanon : BNE.b 'skiplog
-              !regs2stack
-              MOVE.l A1,D2 ; get libpointer
-              !basic
-              PutReg D1,libnum2.l
-              PutReg D2,libptr2.l
+      TST.b log_blitzlibs : BEQ.b 'skiplog
+        TST.w pass : BNE.b 'skiplog
+          TST.l funcscanon : BNE.b 'skiplog
+            !regs2stack
+            MOVE.l A1,D2 ; get libpointer
+            !basic
+            PutReg D1,libnum2.l
+            PutReg D2,libptr2.l
 
-              If Peek.w(?ininclude) > 0
-                codefile.s = dos_FilePart{incdim(Peek.w(?ininclude)-1)}
-                codeline.l = Peek.l(?includeline)
-              Else
-                codefile.s = ""
-                codeline.l = Peek.l(?linenumat)
-              EndIf
+            If Peek.w(?ininclude) > 0
+              codefile.s = dos_FilePart{incdim(Peek.w(?ininclude)-1)}
+              codeline.l = Peek.l(?includeline)
+            Else
+              codefile.s = ""
+              codeline.l = Peek.l(?linenumat)
+            EndIf
 
-              libaddr.l = Peek.l(libptr2)
-              libsize.l = Peek.l(libaddr + $6) - Peek.l(libaddr + $12)
-              If Peek.b(?debugmode) Then libsize + Peek.l(libaddr + $2C)
-              
-              alllibssize + libsize
-              
-              GetReg D0,libnum2
-              GetReg D1,&codefile
-              GetReg D2,codeline
-              GetReg D3,Peek.l(?sourceline)
-              GetReg D4,Peek.l(?lastsourcepos)
-              GetReg D5,libsize
-              GetReg A1,0
-              !ComData_JSR{comFunc_LogPrint}
-              !asm
-              !stack2regs
-       'skiplog:
+            libaddr.l = Peek.l(libptr2)
+            libsize.l = Peek.l(libaddr + $6) - Peek.l(libaddr + $12)
+            If Peek.b(?debugmode) Then libsize + Peek.l(libaddr + $2C)
+            
+            alllibssize + libsize
+            
+            GetReg D0,libnum2
+            GetReg D1,&codefile
+            GetReg D2,codeline
+            GetReg D3,Peek.l(?sourceline)
+            GetReg D4,Peek.l(?lastsourcepos)
+            GetReg D5,libsize
+            GetReg A1,0
+            !ComData_JSR{comFunc_LogPrint}
+            !asm
+            !stack2regs
+     'skiplog:
 
-        MOVE.b debugmode,-(a7)
-        MOVEM.l D1/A0/A2,-(A7)
+      MOVE.b debugmode,-(a7)
+      MOVEM.l D1/A0/A2,-(A7)
 
-        ; -- check debugmode
-        BTST #$7,use_debugger : BNE 'debugon
-          CLR.w D1
-          BRA.b 'debugoff
-       'debugon
-          SNE D1
-       'debugoff
-        MOVE.b d1,debugmode
+      ; -- check debugmode
+      BTST #$7,use_debugger : BNE 'debugon
+        CLR.w D1
+        BRA.b 'debugoff
+      'debugon
+        SNE D1
+      'debugoff
+      MOVE.b d1,debugmode
 
-        ;
-        ;is it a maximum type lib....
-        ;if so, create a varoff for it's structs.....
-        ;
-        MOVEA.l A1,A0 : ADDA.l $12(A1),A0
-        TST.w -$2(A0) : BEQ.w 'notmax
-          MOVEM.l A0-A1,-(A7)
-          MOVE.w #$FB4F,D1 : BSR.w uselib        ; #maxslib #64335
-          MOVEM.l (A7)+,A0-A1
+      ;
+      ;is it a maximum type lib....
+      ;if so, create a varoff for it's structs.....
+      ;
+      MOVEA.l A1,A0 : ADDA.l $12(A1),A0
+      TST.w -$2(A0) : BEQ.w 'notmax
+        MOVEM.l A0-A1,-(A7)
+        MOVE.w #$FB4F,D1 : BSR.w uselib        ; #maxslib #64335
+        MOVEM.l (A7)+,A0-A1
 
-          ADDQ.w #1,globalvarpointer
-          BCLR #$0,globalvarpointer+1
-          MOVE.w globalvarpointer,-$6(A0)
+        ADDQ.w #1,globalvarpointer
+        BCLR #$0,globalvarpointer+1
+        MOVE.w globalvarpointer,-$6(A0)
+        ADDQ.w #4,globalvarpointer
+        TST.l -$E(A0) : BEQ.w 'notmax
           ADDQ.w #4,globalvarpointer
-          TST.l -$E(A0)
-          BEQ.w 'notmax
-            ADDQ.w #4,globalvarpointer
-       'notmax
+      'notmax
 
-        ;-- calculate start and end of code to be copied
-        MOVE.l libend,$28(A1)                    ; pc of lib
-        MOVEA.l A1,A0 : ADDA.l $12(A1),A0        ; start of lib
-        MOVE.l A1,D1 : ADD.l $6(A1),D1           ; end of lib without error check routines
+      ;-- calculate start and end of code to be copied
+      MOVE.l libend,$28(A1)                    ; pc of lib
+      MOVEA.l A1,A0 : ADDA.l $12(A1),A0        ; start of lib
+      MOVE.l A1,D1 : ADD.l $6(A1),D1           ; end of lib without error check routines
 
-        TST.l $2C(A1) : BEQ.w 'nor               ; check if lib contains error checking code
-          TST.b debugmode : BNE.w 'nor
-            MOVE.l A1,D1 : ADD.l $2C(A1),D1      ; copy errchks as well!
-       'nor
+      TST.l $2C(A1) : BEQ.w 'nor               ; check if lib contains error checking code
+        TST.b debugmode : BNE.w 'nor
+          MOVE.l A1,D1 : ADD.l $2C(A1),D1      ; copy errchks as well!
+      'nor
 
-        ;-- copy the lib code to destination buffer
-        MOVEA.l libend,A2
-       'loop
-          CMPA.l data1start,A2
-          BCS.w 'okp
-            MOVE.w #$FFFF,dontwrite_nomemleft
-           'bad
-              ADDQ.w #2,A0
-              ADDQ.w #2,A2
-            CMPA.l D1,A0
-            BCS.w 'bad
-            BRA.w 'toreloc
-         'okp
-          MOVE.w (A0)+,(A2)+ 
-        CMPA.l D1,A0
-        BCS.w 'loop
-       'toreloc
-        MOVE.l A2,libend
+      ;-- copy the lib code to destination buffer
+      MOVEA.l libend,A2
+     'loop
+        CMPA.l data1start,A2 : BCS.w 'okp
+          MOVE.w #$FFFF,dontwrite_nomemleft
+         'bad
+            ADDQ.w #2,A0
+            ADDQ.w #2,A2
+          CMPA.l D1,A0 : BCS.w 'bad
+          BRA.w 'toreloc
+        'okp
+        MOVE.w (A0)+,(A2)+ 
+      CMPA.l D1,A0 : BCS.w 'loop
+     'toreloc
+      MOVE.l A2,libend
 
-        MOVE.l $20(A1),D1
-        BEQ.w 'noreloc
-          MOVEM.l D0/D2-D3,-(A7)
-          MOVEA.l $24(A1),A0                              ;start of reloc table
-          MOVEQ.l #$00,D3                                 ;no tokejsrs (yet!)
+      MOVE.l $20(A1),D1 : BEQ.w 'noreloc
+        MOVEM.l D0/D2-D3,-(A7)
+        MOVEA.l $24(A1),A0                              ;start of reloc table
+        MOVEQ.l #$00,D3                                 ;no tokejsrs (yet!)
 
-         'reloop
-            ;-- relocate library code!
-            MOVE.l (A0)+,D2
-            TST.l $2C(A1) : BEQ.w 'skipr                  ; error checks ?
-              TST.b debugmode : BNE.w 'skipr
-                CMP.l $2C(A1),D2
-                BCC.w 'next
-           'skipr
+        'reloop
+          ;-- relocate library code!
+          MOVE.l (A0)+,D2
+          TST.l $2C(A1) : BEQ.w 'skipr                  ; error checks ?
+            TST.b debugmode : BNE.w 'skipr
+              CMP.l $2C(A1),D2
+              BCC.w 'next
+          'skipr
 
-            TST.w $0(A1,D2.l) : BPL.w 'notajsr
-              TST.l D3 : BNE.w 'notajsr                   ; already done...
-                MOVE.l A0,D0
-                MOVE.l D1,D3                              ; number left to do!
-           'notajsr
+          TST.w $0(A1,D2.l) : BPL.w 'notajsr
+            TST.l D3 : BNE.w 'notajsr                   ; already done...
+              MOVE.l A0,D0
+              MOVE.l D1,D3                              ; number left to do!
+          'notajsr
 
-            SUB.l $12(A1),D2 : BMI.w 'next
-              ADD.l $28(A1),D2
-              MOVE.l D2,-(A7)
-              SUB.l destbufferstart,D2
-              BSR.w addhunkoffset
-              MOVEA.l (A7)+,A2
+          SUB.l $12(A1),D2 : BMI.w 'next
+            ADD.l $28(A1),D2
+            MOVE.l D2,-(A7)
+            SUB.l destbufferstart,D2
+            BSR.w addhunkoffset
+            MOVEA.l (A7)+,A2
 
-              TST.w dontwrite_nomemleft : BNE.w 'next
-                MOVE.l $28(A1),D2
-                SUB.l $12(A1),D2
-                ADD.l D2,(A2)
-           'next
-            SUBQ.l #1,D1
-          BNE.w 'reloop
+            TST.w dontwrite_nomemleft : BNE.w 'next
+              MOVE.l $28(A1),D2
+              SUB.l $12(A1),D2
+              ADD.l D2,(A2)
+          'next
+          SUBQ.l #1,D1
+        BNE.w 'reloop
 
-          MOVE.l D3,D2 : BEQ.w 'nohand
-            MOVEA.l D0,A2
-            SUBQ.w #4,A2
-            BSR.w handlejsrs
-         'nohand
-          MOVEM.l (A7)+,D0/D2-D3
-       'noreloc
+        MOVE.l D3,D2 : BEQ.w 'nohand
+          MOVEA.l D0,A2
+          SUBQ.w #4,A2
+          BSR.w handlejsrs
+       'nohand
+        MOVEM.l (A7)+,D0/D2-D3
+      'noreloc
 
-        MOVEM.l (A7)+,D1/A0/A2
-        ;
-        MOVEM.l D1-D2,-(A7)
-        TST.w $1A(A1) : BNE.w 'skip2a
-          CLR.w $A(A1)
-          BRA.w 'skip2
-       'skip2a
+      MOVEM.l (A7)+,D1/A0/A2
+      ;
+      MOVEM.l D1-D2,-(A7)
+      TST.w $1A(A1) : BNE.w 'skip2a
+        CLR.w $A(A1)
+        BRA.w 'skip2
+      'skip2a
         ADDQ.w #1,globalvarpointer
         BCLR #$0,globalvarpointer+1
         MOVE.w globalvarpointer,$A(A1)
         ;
-        CMP.w #-$12D,D1            ; was  #65235, strings1lib
-        BNE.w 'nots1
+        CMP.w #-$12D,D1 : BNE.w 'nots1            ; was  #65235, strings1lib
           MOVE.w $A(A1),movestdn+2
           MOVE.w $A(A1),pusha3+2
           MOVE.w $A(A1),pusha32+2
@@ -8835,32 +8834,29 @@ uselib3:                                                  ; a1: pointer to lib
           MOVE.w $A(A1),geta3+2
        'nots1
 
-        CMP.w #-$3E9,D1            ; was #64535, datalib
-        BNE.w 'notd
+        CMP.w #-$3E9,D1 : BNE.w 'notd            ; was #64535, datalib
           MOVE.w $A(A1),dataget+2
           MOVE.w $A(A1),dataput+2
           MOVE.w $A(A1),rescode+6
           MOVE.w $A(A1),rescode2+2
-       'notd
+        'notd
 
         ADDQ.w #2,globalvarpointer
-        TST.w $1A(A1)
-        BMI.w 'jword
+        TST.w $1A(A1) : BMI.w 'jword
           ADDQ.w #2,globalvarpointer
        'jword
 
         MOVEM.l D1/A1,-(A7)
         BSR.w usevars
         MOVEM.l (A7)+,D1/A1
+     'skip2
+      MOVE.w D1,D2
+      MOVE.l $16(A1),D1 : BSR.w uselib2  ;init?
+      MOVE.l $1C(A1),D1 : BSR.w uselib2
 
-       'skip2
-        MOVE.w D1,D2
-        MOVE.l $16(A1),D1 : BSR.w uselib2  ;init?
-        MOVE.l $1C(A1),D1 : BSR.w uselib2
-
-        MOVEM.l (A7)+,D1-D2
-        ;JSR clear_Cache
-        MOVE.b (a7)+,debugmode
+      MOVEM.l (A7)+,D1-D2
+      ;JSR clear_Cache
+      MOVE.b (a7)+,debugmode
  'skip
 RTS
 
