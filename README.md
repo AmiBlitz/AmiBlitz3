@@ -33,6 +33,7 @@ https://www.amiblitz.de                         | various documentation about Am
 
 https://www.amiforce.de                         | additional information and fora
 
+There is also a discord-channel: https://discord.gg/whVrUAPb
 
 ## Known Problems
 Under OS 3.2, workbench does not react anymore after exiting the IDE, due to a bug with removing an assign.
