@@ -2,7 +2,7 @@ Short:        ProTracker player w/ support for ext. sfx
 Author:       Frank Wille
 Uploader:     frank@phoenix.owl.de
 Type:         mus/play
-Version:      5.3
+Version:      6.1
 Requires:     Assembler
 Architecture: m68k-amigaos
 
@@ -46,6 +46,10 @@ may be used for sound effects at once.
 The master volume is always applied to the music, but does not affect
 external sound effects at all.
 
+NOTE: When playing external sound effects, always make sure the first
+word is cleared! It is used for idling when the effect stopped. This
+is the same technique as used by the music samples in Amiga trackers.
+
 
 How to use:
 
@@ -55,18 +59,41 @@ How to use:
 ptplayer.asm can be configured to support two data models:
 
 a) By default ptplayer.asm assembles into a single code section. The
-   interface functions set up a local base register to access data.
+   player routines set up a local base register to access data.
    This requires a working RS directive, which is provided by many
    assemblers, like e.g. vasm, PhxAss, Devpac, Basm, AsmOne, SNMA.
 
 b) By defining the SDATA symbol ptplayer.asm assembles into a code
-   section and a small-data section (called __MERGED). All interface
-   functions expect that the base register A4 is set up with the
+   section and a small-data section (called __MERGED). All player
+   routines expect that the base register A4 is set up with the
    small-data base pointer (provided by the linker through _LinkerDB).
    It uses the NEAR directive, which might work with vasm and PhxAss only.
 
 
-2. Common usage
+2. Selecting optional features
+
+By default ptplayer builds with all features included.
+
+a) By defining the symbol MINIMAL=1 (defaults to 0) you get just a
+   standard Protracker player, without the ability to insert external
+   sound effects or to control the master or sample volumes.
+   This approximately halves the code size.
+
+b) By defining the symbol ENABLE_SAWRECT=0 (defaults to 1) you may
+   disable sawtooth and rectangle vibratos/tremolos. When selected,
+   they are replaced by sine-waves. These wave forms are extremely
+   rare and disabling them saves another 2K for the tables.
+
+c) By defining the symbol NULL_IS_CLEARED=1 (defaults to 0) you indicate
+   that the memory locations $0 and $1 in your system are zero, so they
+   will be used for idle-looping of audio channels. Might be useful when
+   dynamically loading new samples.
+
+You may change these symbols either directly in the source or override
+them via the assembler's command line.
+
+
+3. Common usage
 
 a) Install a Level-6 interrupt handler for CIA-B timer interrupts
    by calling mt_install_cia(). Do this once, during program init.
@@ -82,7 +109,7 @@ c) Set the byte-variable mt_Enable to non-zero to start the replay.
 d) Stop playing and set all volumes to zero by calling mt_end().
 
 e) Finally, in the cleanup routine of your program, remove the Level-6
-   interrupt handler again and reset all CIA register by calling
+   interrupt handler again and reset all CIA registers by calling
    mt_remove_cia().
 
 
@@ -107,46 +134,76 @@ _mt_init(a6=CUSTOM, a0=TrackerModule, a1=Samples|NULL, d0=InitialSongPos.b)
   Initialize a new module.
   Reset speed to 6, tempo to 125 and start at the given song position.
   Master volume is at 64 (maximum).
-  When a1 is NULL the samples are assumed to be stored after the patterns.
+  When a1 is NULL the samples are assumed to be stored after the patterns,
+  which is the usual case.
 
 _mt_end(a6=CUSTOM)
-  Stop playing current module.
+  Stop playing current module and sound effects.
 
 _mt_soundfx(a6=CUSTOM, a0=SamplePointer,
             d0=SampleLength.w, d1=SamplePeriod.w, d2=SampleVolume.w)
   Request playing of an external sound effect on the most unused channel.
-  This function is for compatibility with the old API only!
-  You should call _mt_playfx instead.
+  This function is for compatibility with the old API only.
+  You should call _mt_playfx instead. MINIMAL=0 only.
 
-_mt_playfx(a6=CUSTOM, a0=SfxStructurePointer)
+channelStatus = _mt_playfx(a6=CUSTOM, a0=SfxStructurePointer)
   Request playing of a prioritized external sound effect, either on a
   fixed channel or on the most unused one.
   Structure layout of SfxStructure:
-    APTR  sfx_ptr  (pointer to sample start in Chip RAM, even address)
+    void *sfx_ptr  (pointer to sample start in Chip RAM, even address)
     WORD  sfx_len  (sample length in words)
     WORD  sfx_per  (hardware replay period for sample)
     WORD  sfx_vol  (volume 0..64, is unaffected by the song's master volume)
     BYTE  sfx_cha  (0..3 selected replay channel, -1 selects best channel)
-    UBYTE sfx_pri  (unsigned priority, must be non-zero)
+    BYTE  sfx_pri  (priority, must be in the range 1..127)
   When multiple samples are assigned to the same channel the lower
   priority sample will be replaced. When priorities are the same, then
   the older sample is replaced.
   The chosen channel is blocked for music until the effect has
   completely been replayed.
-  NOTE: Always make sure the first two bytes of your sound effect sample
+  RETURN VALUES: A pointer to a channel-status structure (see ptplayer.h)
+  when the sample is scheduled for playing, and NULL when the request was
+  ignored.
+  NOTE: Always make sure the first word of your sound effect sample
   are zero!
+  MINIMAL=0 only.
+
+_mt_loopfx(a6=CUSTOM, a0=SfxStructurePointer)
+  Request playing of a looped sound effect on a fixed channel, which
+  will be blocked for music until the effect is stopped (_mt_stopfx).
+  It uses the same SfxStructure as _mt_playfx, but the priority is
+  ignored. A looped sound effect has always highest priority and will
+  replace a previous effect on the same channel. No automatic channel
+  selection possible!
+  Also make sure the sample starts with a zero-word, which is used
+  for idling when the effect is stopped. This word is included in the
+  total length calculation, but excluded when actually playing the loop.
+  MINIMAL=0 only.
+
+_mt_stopfx(a6=CUSTOM, d0=Channel.b)
+  Immediately stop a currently playing sound effect on a channel (0..3)
+  and make it available for music, or other effects, again. This is the
+  only way to stop a looped sound effect (_mt_loopfx), besides stopping
+  replay completely (_mt_end). MINIMAL=0 only.
 
 _mt_musicmask(a6=CUSTOM, d0=ChannelMask.b)
   Bits set in the mask define which specific channels are reserved
   for music only. Set bit 0 for channel 0, ..., bit 3 for channel 3.
   When calling _mt_soundfx or _mt_playfx with automatic channel selection
   (sfx_cha=-1) then these masked channels will never be picked.
-  The mask defaults to 0.
+  The mask defaults to 0. MINIMAL=0 only
 
 _mt_mastervol(a6=CUSTOM, d0=MasterVolume.w)
   Set a master volume from 0 to 64 for all music channels.
   Note that the master volume does not affect the volume of external
-  sound effects (which is desired).
+  sound effects (which is desired). MINIMAL=0 only.
+
+_mt_samplevol(d0=SampleNumber.w, d1=Volume.b)
+  Redefine a sample's volume. May also be done while the song is playing.
+  Warning: Does not check arguments for valid range! You must have done
+  _mt_init before calling this function!
+  The new volume is persistent. Even when the song is restarted.
+  MINIMAL=0 only.
 
 _mt_music(a6=CUSTOM)
   The replayer routine. Is called automatically after _mt_install_cia.
@@ -159,13 +216,6 @@ _mt_Enable
   Note that you can still play sound effects, while music is stopped.
   It is set to 0 by _mt_install_cia.
 
-_mt_SongEnd
-  Set to -1 ($ff) if you want the song to stop automatically when
-  the last position has been played (clears _mt_Enable). Otherwise, the
-  song is restarted and _mt_SongEnd is incremented to count the restarts.
-  It is reset to 0 after _mt_init.
-  BUGS: Automatic stop with $ff doesn't work perfectly yet.
-
 _mt_E8Trigger
   This byte reflects the value of the last E8 command.
   It is reset to 0 after _mt_init.
@@ -174,6 +224,7 @@ _mt_MusicChannels
   This byte defines the number of channels which should be dedicated
   for playing music. So sound effects will never use more
   than 4 - _mt_MusicChannels channels at once. Defaults to 0.
+  MINIMAL=0 only.
 
 
 There is also a header file for C compilers, called ptplayer.h.
@@ -184,11 +235,52 @@ Get it from Aminet: http://aminet.net/dev/c/SDI_headers.lha
 
 License:
 
-Written by Frank Wille in 2013, 2016, 2017, 2018, 2019.
+Written by Frank Wille in 2013, 2016, 2017, 2018, 2019, 2020, 2021.
 I, the copyright holder of this work, hereby release it into the
 public domain. This applies worldwide.
 
 If still in doubt, please read the included file "LICENSE".
+
+
+FAQ:
+
+- The player doesn't work. I am hearing no music.
+  A: This can have multiple reasons. Most likely is that you didn't
+  call _mt_install_cia at all or with a wrong Vector Base pointer.
+  The Vector Base is 0 for 68000 systems. Otherwise you *must* read
+  it from the CPU's VBR register, which is only available in supervisor
+  mode. Also don't forget to set _mt_enable to true to start playing.
+  This player is intended for games/demos which take over the hardware
+  and disable the OS. Running with the OS alive may work, as the OS
+  doesn't use the CIA-B timers, but it is not recommended.
+
+- I want to run the player in VERTB interrupt.
+  A: No. That's currently not possible. Although the player routine
+  _mt_music could theoretically run in a 50Hz VERTB, it requires
+  CIA-B Timer-B interrupts to enable Audio DMA and set the loop
+  pointers.
+
+- I am hearing a high-pitched noise in my music.
+  A: Amiga players use the first two bytes of a sample for idle-looping.
+  Make sure they are zeroed.
+  Alternatively, assemble ptplayer with NULL_IS_CLEARED=1 and make sure
+  the bytes at $0 and $1 are zero.
+
+- I am hearing a high-pitched noise when playing an empty sample.
+  My first initialized sample is looped or unused, so how can that be?
+  A: Check the first two bytes of your first initialized sample.
+  These bytes are used by ptplayer for all empty samples.
+  Alternatively, assemble ptplayer with NULL_IS_CLEARED=1 and make sure
+  the bytes at $0 and $1 are zero.
+
+- I am hearing a high-pitched noise after playing a sound effect.
+  A: The same technique is used for playing sound effects as for
+  playing instrumental samples. The sound effect idles in the first
+  two bytes after being played. So make sure they are zero.
+
+- But I don't want to clear the first two bytes in sound effects.
+  A: Then make sure that the bytes at address $0 and $1 are zero, and
+  assemble the player with NULL_IS_CLEARED=1.
 
 
 History:
@@ -261,3 +353,38 @@ History:
   OS header file compatibility.
 - Fixed detection of negative fine-tuning (broken due to optimizations
   in V5.1).
+
+6.0:
+- _mt_musicmask works as documented now! Sound effects will never play
+  on the masked channels. Previously it was rather a hint not to use them.
+- Fixed sign-bug in tremolo/vibrato command 7xx (Antiriad/EAB).
+- New function _mt_samplevol may be used to redefine a sample's volume.
+- _mt_playfx now returns a pointer to the selected channel status structure
+  when the sample was scheduled for playing and returns NULL when ignored.
+- Wait 576 ticks for audio DMA instead of 496, which fixes issues with
+  low notes on a few A1200 configurations. (No, this doesn't harm the
+  player's performance, as it is a timer interrupt.)
+- Defining the symbol MINIMAL lets you assemble a minimal version of
+  the player, without the ability to insert sound effects and without
+  master-volume or changing samples volumes.
+- Improved interrupt handling, following a suggestion of Ross/EAB.
+- Minor optimizations.
+
+6.1:
+- Fixed note delay command (EDx), which still played the previous note
+  in some situations (Antiriad/EAB).
+- Fixed sample-offset command (9) with empty note-field (h0ffman/EAB).
+- mt_mastervol() must change the volumes of all channels immediately
+  and shouldn't wait for the next sample being played (suggested by
+  h0ffman/EAB).
+- Symbol ENABLE_SAWRECT may be used to disable sawtooth and rectangle
+  waveforms for vibrato and tremolo, which saves memory for their tables
+  (suggested by Antiriad).
+- Symbol NULL_IS_CLEARED may be used to indicate that the memory locations
+  $0 and $1 in your system are zero, so they will be used for idle-looping
+  of audio channels (suggested by h0ffman).
+- Removed cia.i and custom.i include files and included the required
+  symbols directly into the source.
+- New function mt_loopfx() for playing looped sound effects (suggested by
+  mcgeezer/EAB).
+- New function mt_stopfx() for immediately stopping a sound effect.
