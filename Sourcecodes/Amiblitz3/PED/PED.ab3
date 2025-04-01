@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.10.0
-; NumberOfBuilds  = 3457
+; NumberOfBuilds  = 3465
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1938
-; CursorColumn    = 1
+; CursorLine      = 2900
+; CursorColumn    = 8
 ; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -2922,28 +2922,31 @@ Function.s PED_Detokenize{*sourceLine.sourceLine}
   Function Return PED_DetokenizeText{Peek.s(*sourceLine + 9)}
 End Function
 
-Function.b PED_Detokenize2Printbuffer{ptrOrgString.l}
+Function.b PED_Detokenize2Printbuffer{lineaddr.l}
 SHARED ped
 
   ;-- clear textBufferPrint
-  ;FillMem ped\ptrTextbufferPrint, #MAX_Columns, 0
   MemCls ped\ptrTextbufferPrint, #MAX_Columns, 0
 
-  _strLen.w = Len(Peek.s(ptrOrgString))
+  ;-- clip to max columns
+  tmpString.s = Peek.s(lineaddr)
+  _strLen.w = FLen(tmpString)
+  If _strLen > #MAX_Columns - 1 Then _strLen = #MAX_Columns - 1
+
   If _strLen
     If ped\keepString = 0 Then ped\inString = False
 
-    If ped\noDetokenizing
+    If ped\noDetokenizing OR (ped\doTokenize = False)
       ;-- just copy the current text line to the printBuffer
-      CopyMem_ ptrOrgString, ped\ptrTextbufferPrint, _strLen
+      CopyMem_ lineaddr, ped\ptrTextbufferPrint, _strLen
     Else
       ;-- detokenize but keep the tokenbit!
       runnerP.w = 0
       For i.w = 0 To _strLen - 1
-        curChar.b  = Peek.b(ptrOrgString + i)
+        curChar.b  = Peek.b(lineaddr + i)
         If curChar = $22 Then ped\inString = NOT ped\inString
         If ped\inString = 0 AND (curChar < 0)
-          _token.l = Peek.w(ptrOrgString + i)
+          _token.l = Peek.w(lineaddr + i)
           _tokname.s = PED_GetTokenName{_token}
           For j.b = 0 To FLen(_tokname)-1
             Poke.b ped\ptrTextbufferPrint + runnerP, Peek.b(&_tokname + j) BitSet 7
@@ -2962,43 +2965,22 @@ SHARED ped
 End Function
 
 Statement PED_CopyPrintbuffer2Textbuffer{}
-SHARED ped, sourceWindow
-
-  ;-- copy current printed line to textbuffer
-  tmpColumn.w = ped\ptrCurrentSourceData\Column                           ; save Columnpos as it is changed for process_highlighting
+SHARED ped
 
   char.b = Peek.b(ped\ptrTextbufferPrint)
   If char <> 0
-    tmpD2.w = 0
-    tmpD3.w = 0
+    
     textBufferPos.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-    If char <> ped\labelIdentifier Then Goto jump_into_it
-    ;Gosub copy_to_textBuffer
-    Poke.b textBufferPos + tmpD2, char
-    Repeat
-      tmpD2 + 1
-      char = Peek.b(ped\ptrTextbufferPrint + tmpD2)
-      If char <> 0
-jump_into_it:
-        ;Gosub copy_to_textBuffer
-        Poke.b textBufferPos + tmpD2, char
-      End If
-    Until char = 0
+    runner.w = 0
+
+    While char <> 0
+      Poke.b textBufferPos + runner, char
+
+      runner + 1
+      char = Peek.b(ped\ptrTextbufferPrint + runner)
+    Wend
   EndIf
 
-  ;-- restore Columnposition
-  ped\ptrCurrentSourceData\Column = tmpColumn
-  Statement Return
-
-.copy_to_textBuffer:
-  Poke.b textBufferPos + tmpD2, char
-  ;If tmpD2 <= ped\ptrCurrentSourceData\ColumnsOffset
-  ;  If tmpD3 <= sourceWindow\visibleColumns
-  ;    ped\ptrCurrentSourceData\Column = tmpD3
-  ;    tmpD3 + 1
-  ;  EndIf
-  ;EndIf
-  Return
 End Statement
 
 ;--WIP
@@ -3649,7 +3631,8 @@ SHARED ped,sourceWindow,AB3Pen()
   
 End Statement
 
-Statement PED_PrintTokenizedText{*textaddr.l, startPos.w, size.w, tposx.w, tposy.w}
+
+Statement PED_PrintTokenizedText{startPos.w, size.w, tposx.w, tposy.w}
 SHARED sourceWindow, ped, pedconfig, AB3Pen()
 USEPATH sourceWindow
 
@@ -3943,18 +3926,20 @@ End Statement
 Statement PED_PrintSourceText{*textaddr.l, startPos.w, size.w, tposx.w, tposy.w, @clearEndOfLine.b}
 SHARED sourceWindow, ped, pedconfig, AB3Pen()
 
-  ;-- detokenize it but keep token indicator (bit7)
-  tmpString1.s = Peeks$(*textaddr,#MAX_Columns - 1)    
-  PED_Detokenize2Printbuffer{&tmpString1}  ; TODO: prepare for syntaxhighlighting
+  ;-- detokenize it (optionally), but keep token indicator (bit7)
+  ;-- copy the text to the printbuffer
+  PED_Detokenize2Printbuffer{*textaddr}  ; TODO: prepare for syntaxhighlighting
 
   ;-- print the sourcetext
   If ped\doTokenize
-    PED_PrintTokenizedText{*textaddr, startPos, size, tposx, tposy}
+    PED_PrintTokenizedText{startPos, size, tposx, tposy}
   Else
     tmpString.s = UnRight$(Peek.s(*textaddr), startPos)
     textlen.w = FLen(tmpString.s)
-    If textlen > size Then textlen = size
-    PED_PrintText{*textaddr + startPos, tposx, tposy, textlen, AB3Pen(#AB3_cother), AB3Pen(#AB3_cbackground)}    
+
+    If (size <> -1) AND (textlen > size) Then textlen = size
+
+    PED_PrintText{*textaddr + startPos, tposx, tposy, textlen, AB3Pen(#AB3_cother), AB3Pen(#AB3_cbackground)}
   EndIf
 
   ;-- clear end of line
@@ -3981,6 +3966,7 @@ SHARED sourceWindow, ped, pedconfig, AB3Pen()
   
   ;-- do syntax highlighting if activated
   If pedconfig\highlighting 
+    ;-- printbuffer is used here!
     PED_PrintSyntaxHighlighting{startPos, size, tposx, tposy}
   EndIf
 End Statement
@@ -4053,7 +4039,6 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   If ped\ptrCurrentSourceData\CurrentSourceLine = 0 Then Statement Return
 
   ;-- clear current line in textBuffer
-  ;FillMem ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns, @" "
   MemCls ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns, @" "
 
   If Peek.b(ped\ptrCurrentSourceData\CurrentSourceLine + 9) <> 0   ; first character of text
@@ -4790,7 +4775,7 @@ USEPATH ped\ptrCurrentSourceData
       ;-- remove the sourcelines
       If *tempLine
         strline$ = PED_Detokenize{*tempLine}
-        !log_PrintOut{Str$(si) + " deleting " + Left$(strline$, 20)}
+        !log_PrintOut{Str$(si) + " deleting " + Left$(strline$, 20),#log_debug}
         If PED_CutSourceLine{*tempLine} Then PED_DeleteSourceLine{*tempLine}
         killedRows + 1 
         skip_killofline: 
@@ -8517,33 +8502,27 @@ Even
     MOVE.l #MODE_OLDFILE,D2
     !ComData_JSR{comFunc_LoadSource}
     !basic
-
-    !log_PrintOut{"loaded " + Str$(ped\ptrCurrentSourceData\TotalLines) + " lines of text"}
-
-    Gosub storeCurrentSourceData
-
-    ;-- restore windows
-    Gosub RestoreLabelAndNewtypeWin
-    project_changelog$ = ""
- 
-    Gosub update_versiongadgets
-    Gosub analyze_loadedsource
-    Gosub calc_SourceWindowDimensions
- 
-    If ped\ptrCurrentSourceData\CursorPosStore
-      !log_PrintOut{"goto stored cursor line: " + Str$(ped\ptrCurrentSourceData\CursorPosStore)}
-      PED_GotoLine{ped\ptrCurrentSourceData\CursorPosStore-1, #LINE_START}
-    EndIf
-
-    !log_PrintOut{"deleting and restoring prefs..."}
-    Gosub delete_tempprefs
-    Gosub save_tempprefs
   Else
-    Gosub other_loading_routine
-    Gosub storeCurrentSourceData
+    Gosub normal_text
+  EndIf
+  !log_PrintOut{"loaded " + Str$(ped\ptrCurrentSourceData\TotalLines) + " lines of text"}
 
-    Gosub analyze_loadedsource
-    Gosub calc_SourceWindowDimensions
+  Gosub storeCurrentSourceData    
+  !log_PrintOut{"deleting and storing xtra prefs..."}
+  Gosub delete_tempprefs
+  Gosub save_tempprefs
+
+  ;-- restore windows
+  Gosub RestoreLabelAndNewtypeWin
+  project_changelog$ = ""
+
+  Gosub update_versiongadgets
+  Gosub analyze_loadedsource
+  Gosub calc_SourceWindowDimensions
+
+  If ped\ptrCurrentSourceData\CursorPosStore
+    !log_PrintOut{"goto stored cursor line: " + Str$(ped\ptrCurrentSourceData\CursorPosStore)}
+    PED_GotoLine{ped\ptrCurrentSourceData\CursorPosStore-1, #LINE_START}
   EndIf
 
   !log_PrintOut{"updating sourcewindow..."}
@@ -8556,7 +8535,7 @@ Even
   PED_ShowMessage{""}
 Return
 
-.other_loading_routine:
+.normal_text:
   !log_PrintOut{"other loading routine called..."}
   ped\sourceFileHandle = PED_OpenFile{loadsourcefilename.s,#MODE_OLDFILE,True}
   ped\sourceFileComplete = loadsourcefilename
@@ -8582,27 +8561,36 @@ Return
   ;ped\ptrCurrentSourceData\SourceDir = dos_PathPart{ped\sourceFileComplete}
   
   PED_SetCurrentDir{}
-
   PED_SetPointerBusy{}
   !PED_ResetBlockflag
-  Gosub free_actualsource
 
+  ;-- set some defaults
+  ped\ptrCurrentSourceData\TextBufferOffset = 0
+  ped\ptrCurrentSourceData\Column = 0
+  ped\ptrCurrentSourceData\ColumnsOffset = 0
+  ped\ptrCurrentSourceData\DisplayLineOffset = 0
+  ped\ptrCurrentSourceData\DisplayLine = 0
+
+  ped\ptrCurrentSourceData\FuncOptimize = 1
+  ped\ptrCurrentSourceData\CreateDebugFile = 0
+  ped\ptrCurrentSourceData\SourceChanged = 0
+  ped\ptrCurrentSourceData\CursorPosStore = 0
+
+  ;--
+  ;-- reading the source
   tmpLine.s = PED_ReadNextLine{}
   If ped\convertAsm Then tmpLine = PED_ConvertASM{tmpLine}
-
+  
   *newLine.sourceLine = PED_CreateNewSourceLine{tmpLine}
   ped\ptrCurrentSourceData\FirstSourceLine = *newLine
   ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
   ped\ptrCurrentSourceData\LastSourceLine = *newLine
+  ped\ptrCurrentSourceData\TotalLines = 1
 
   Repeat
-    *currLine.sourceLine = *newLine
-
     tmpLine = PED_ReadNextLine{}
     If ped\convertAsm Then tmpLine = PED_ConvertASM{tmpLine}
-
     tmpLen.w = FLen(tmpLine)
-    ;!log_PrintOut{Str$(tmpLen) + " [" + tmpLine + "]"}
 
     If tmpLine <> "NoCOntenTwasDelivered"
       If ped\doTokenize AND (ex <> "bb2" AND ex <> "bb")
@@ -8611,14 +8599,17 @@ Return
         ;-- replace TAB with space
         tmpLine = Replace$(tmpLine,Chr$(9)," ")
       EndIf
+
       *newLine = PED_CreateNewSourceLine{tmpLine}
-
-;      !log_PrintOut{"[" + Str$(*newLine\strLength)+ "] >> " + Peek.s(*newLine+9)}
-
-      ped\ptrCurrentSourceData\LastSourceLine = *newLine
-      *currLine\nextLine = *newLine
-      *newLine\previousLine = *currLine
-      ped\ptrCurrentSourceData\TotalLines + 1
+      If *newLine
+        If PED_AppendSourceLine{ped\ptrCurrentSourceData\CurrentSourceLine, *newLine}
+          ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
+        Else
+          !log_PrintOut{"could not append sourceline!",#log_error}
+        EndIf
+      Else
+        !log_PrintOut{"could not create a new sourceline!",#log_error}
+      EndIf
     Else
       tmpLen = 0
     EndIf
@@ -8626,84 +8617,9 @@ Return
 
   PED_CloseFile{ped\sourceFileHandle}
   ped\convertAsm = 0
-  ped\ptrCurrentSourceData\TextBufferOffset = 0
-  ped\ptrCurrentSourceData\SourceChanged = 0
-  ped\ptrCurrentSourceData\Column = 0
-  ped\ptrCurrentSourceData\ColumnsOffset = 0
-  ped\ptrCurrentSourceData\DisplayLineOffset = 0
-  ped\ptrCurrentSourceData\DisplayLine = 0
 
-  ;--
-  ;-- read optional xtrafile
-  ;--
-
-  Goto skip_loadingxtrafile
-
-  If Peek.l(?comFunc_ReadXtraFile) = 0 Then Goto skip_loadingxtrafile
-  tmpStringVar.s = ped\sourceFileComplete + ped\extention_xtra
-  *xtra_fh.l = Open_(&tmpStringVar, #MODE_OLDFILE)
-  If *xtra_fh = 0 Then Goto skip_loadingxtrafile
-
-  PutReg D0,*xtra_fh : MOVE.l d0,-(a7)
-  !asm
-  MOVE.l (a7)+,D7
-  MOVE.l comFunc_ReadXtraFile,D0 : MOVEA.l D0,A5
-  JSR (A5)
-  !basic
-  !log_PrintOut{"opening xtrafile done."}
-  Read_ *xtra_fh, ?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin ; xtrabuf,36
-
-;  stackSize.l = Peek.l(?comLong_StackSizeStore)
-;  If stackSize<4096 Then stackSize=4096
-;  Poke.l ?stacksize,stackSize
-;
-  ; -- get the data for creating executables
-  exefilename$ = ""
-  exepathname$ = ""
-  tempexename$ = SPACE$(96)
-
-  Seek_ *xtra_fh,$256,#OFFSET_BEGINNING
-  Read_ *xtra_fh,&tempexename$,96
-  i = 1
-  Repeat
-    char$ = Mid$(tempexename$,i,1)
-    If Asc(char$) <> 0 Then exepathname$ + char$
-    i + 1
-  Until (i = FLen(tempexename$)) OR (Asc(char$) = 0)
-
-  tempexename$ = SPACE$(96)
-  Seek_ *xtra_fh,$316,#OFFSET_BEGINNING
-  Read_ *xtra_fh,&tempexename$,96
-  i = 1
-  Repeat
-    char$ = Mid$(tempexename$,i,1)
-    If Asc(char$)<>0 Then exefilename$ + char$
-    i + 1
-  Until (i = FLen(tempexename$)) OR (Asc(char$) = 0)
-
-;  exepathname$ = dos_Trim{exepathname$}
-;  exefilename$ = dos_Trim{exefilename$}
-;  !cout{exepathname$+"/"+exefilename$} ;$ , dos_GetFileSize2{exepathname$+"/"+exefilename$}}
-
-
-  ; -- restore windows
-  Gosub RestoreLabelAndNewtypeWin
-  project_changelog$ = ""
-  Gosub update_versiongadgets
-
-  Close_ *xtra_fh
-
-  ; update Sourcewindow
-  PED_GotoLine{ped\ptrCurrentSourceData\CursorPosStore+1, #LINE_START}
-
-  ; set default as these options are not stored in old xtra-file
-  ped\ptrCurrentSourceData\FuncOptimize = 1
-  ped\ptrCurrentSourceData\CreateDebugFile = 0
-
-  Gosub delete_tempprefs
-  Gosub save_tempprefs
-
-  skip_loadingxtrafile:
+  ;-- set firstline as current one
+  ped\ptrCurrentSourceData\CurrentSourceLine = ped\ptrCurrentSourceData\FirstSourceLine
 Return
 
 
@@ -10084,10 +10000,13 @@ Return
 
 .storeCurrentSourceData:                      ;copy view data
   ;-- this function is called after a succesfull load of a sourcecode and before and after a switch of the sourcecode
+  ;-- it copies the current xtra-data to the store
 
   GetReg A0, ped\currentSourceEntry
+  
   ;-- skip listentries (next/previous sourceentry)  
   ADDQ.l #8,A0
+
   LEA comLong_XtraBegin + 8,A1                  ; skip "tedsdoc!"
   MOVE.l #comDef_XtraEnd-comLong_XtraBegin - 8, D0 : SUBQ.w #1,D0
  'copyloop
@@ -10100,11 +10019,13 @@ Return
 
 
 .getCurrentSourceData:
-  ;-- zurueckholen der xtra-settings nach sourcewechsel
+  ;-- copy sourcedata to xtra-area
   
   GetReg A0,ped\currentSourceEntry
+
   ;-- skip listentries (next/previous sourceentry)
   ADDQ.l #8,A0   
+
   LEA comLong_XtraBegin + 8,A1                  ; skip "tedsdoc!"
   MOVE.l #comDef_XtraEnd-comLong_XtraBegin - 8, D0 : SUBQ.w #1,D0
  'copyloop:
