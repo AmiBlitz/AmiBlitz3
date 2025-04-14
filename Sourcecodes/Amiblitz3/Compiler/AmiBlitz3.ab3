@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.10.0
-; NumberOfBuilds  = 542
+; NumberOfBuilds  = 548
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 10630
-; CursorColumn    = 20
+; CursorLine      = 15341
+; CursorColumn    = 13
 ; LabelSearch     = "log_print"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -2285,11 +2285,8 @@ RTS
   JSR free_allTypes           ;free up all types
   JSR free_Macros             ;free up actual macro defines.
   JSR free_proceduresList     ;free up states/funcs
-
   ;TST.w pass  ;bne free_procedureVS ; is done later
-
   JSR free_Labels             ;free up labels
-
   JSR clearhash
 
  'l2a
@@ -2311,7 +2308,9 @@ RTS
 
   CLR.b returncode
   ; < new
-JMP free_procedureVS                     ;free up outstanding proc stuff
+
+  JSR free_procedureVS                     ;free up outstanding proc stuff
+RTS
 
 
 .clearhash:
@@ -5930,29 +5929,36 @@ resident_Constants:
 RTS
 
 ; new >
-.check_residentpath
-   !basic
-    MOVE.l ptr_resfile,d0
-    resfileP.l = Peek.l(?ptr_resfile)
-    If resfileP
-      resfile$ = Peek.s(resfileP)
-      tests.b = Instr(resfile$,"/")
-      testc.b = Instr(resfile$,":")
-      If tests=0 AND testc=0
-        resfile$ = dos_AddPart{config\path_residents, resfile$}
-        Poke.l ?ptr_resfile,&resfile$
-      EndIf
-    Else
-      error{"INTERNAL: Invalid pointer in ptr_resfile!"}
-    End If
-   !asm
+.check_residentpath:
+  MOVE.l a5,-(a7)
+
+  !basic
+  resfileP.l = Peek.l(?ptr_resfile)
+  If resfileP
+    resfile$ = Peek.s(resfileP)
+    tests.b = Instr(resfile$,"/")
+    testc.b = Instr(resfile$,":")
+    If tests = 0 AND testc = 0
+      resfile$ = dos_AddPart{config\path_residents, resfile$}
+      Poke.l ?ptr_resfile,&resfile$
+    EndIf
+    log2PED{"loading resident file: " + resfile$}
+  Else
+    error{"INTERNAL: Invalid pointer in ptr_resfile!"}
+  End If
+  !asm
+  MOVE.l (a7)+,a5
 RTS
 ; < new
 
 
 .reloadresident:  ;loadres org source
-  ;load in resident structs.....
-  ;
+  !basic
+  log2PED{"reload residents ..."}
+  !asm  
+
+  ;--
+  ;-- load in resident structs.....
   MOVE.l a7,stackaddr                                      ; added to prevent a crash in CLIMode if #continue_on_error is set and residents can't load  tomsmart1
   MOVE.l A7,errstack
 
@@ -5964,22 +5970,29 @@ RTS
   MOVE.w #$FFFF,ezerr         ; was -1
   ;
   BSR.w Aclearallvars
-  BSR.w free_Residents
-  ;
-  LEA residents_table,A5
-  MOVEQ.l #$07,D6
 
+  BSR.w free_Residents
+
+  LEA residents_table,A5                                   ; this is a fixed memory area with a meta data size for 8 residents
+  MOVEQ.l #$07,D6
  'loop
     TST.b (A5) : BEQ.w 'next
 
     MOVE.l A5,ptr_resfile
+
     BSR check_residentpath
+    
     MOVE.l ptr_resfile,d1
     MOVEA.l _dosbase,A6
     JSR _LoadSeg(A6)
     MOVE.l D0,$40(A5) : BNE.w 'yeah
+      !basic
+      log2PED{"Error loading resident."}
+      !asm
       BSR.w reserr
+      BRA 'next
    'yeah
+
     ;-- res loaded O.K.
     MOVEA.l D0,A3
     ADDA.l A3,A3
@@ -5989,7 +6002,6 @@ RTS
     BSR.w fixtypes
     BSR.w fixmacs                                        ;add macros to list
     BSR.w fixconsts                                        ;read labels
-
    'next
     LEA ResidentEntryStep(A5),A5
   DBF D6,'loop
@@ -6010,6 +6022,10 @@ RTS
   MOVEA.l firstconst,A3
   MOVEQ.l #$19,D7
   BSR.w checkclash
+
+  !basic
+  log2PED{"done ..."}
+  !asm  
 
  ;'skipresload                                             ;??looks like label not used??
 RTS
@@ -6047,7 +6063,7 @@ RTS
 
 
 .free_Residents:
-  LEA newtype_string,A0
+  LEA newtype_string,A0           ; remove all newtypes from list except build in ones
   MOVE.l A0,lastrestype
   CLR.l (A0)
 
@@ -7247,16 +7263,20 @@ JMP handle_compileerror
       ADDQ.l #1,a5
    'skipo_lm1
     BSR.w getparameter2 : BEQ.w syntaxerr
+
     LEA varbase,A2
     MOVE.b #1,newvariable
     BSR.w findvariable
     CLR.b newvariable
     CMP.l #-1,d0 : BEQ.w notypeerr
+
     MOVE.l a4,a5
     MOVE.l $a(a2),a2
     LEA 4(A2),a2
     BSR getparameter2 : BEQ.w syntaxerr
+
     BSR.w findvariable2 : BNE.w notypeerr
+
     MOVE.w 4(A2),D3
     EXT.l D3
  'skipo_l30b
@@ -8516,22 +8536,22 @@ BRA.w get1bytemain
 
 
 sendtype:
-  ;OK, type of array is gonna be put on stack
-  ;
+  ;--
+  ;-- OK, type of array is gonna be put on stack
+  ;--
   MOVE.w regnum,D1
   LSL.w #8,D1
   LSL.w #1,D1
   ORI.w #$7000,D1
-  BTST #$0,$7(A3)
-   BNE.w 'isap         ;A Pointer
-  CMPI.l #$100,4(A2)
-   BCC.w arrerr1       ;illegal type to send
-  MOVE.b $7(A2),D1
-
- 'putit
-  BSR.w writeword      ;moveq #type,d regat
-  MOVEQ.l #$02,D2      ;just a word.
-BRA.w pushap
+  
+  BTST #$0,$7(A3) : BNE.w 'isap            ;A Pointer
+    CMPI.l #$100,4(A2) : BCC.w arrerr1     ;illegal type to send
+    
+    MOVE.b $7(A2),D1
+   'putit
+    BSR.w writeword      ;moveq #type,d regat
+    MOVEQ.l #$02,D2      ;just a word.
+    BRA.w pushap
 
  'isap
   MOVE.b #$3,D1
@@ -8641,7 +8661,7 @@ RTS
 
 usevars:                                                  ; was uselib2 in new source renamed to org name
                                                           ; because of the org source routine label uselib2
-  MOVE.w #$FFFE,D1       ;#allocvars
+  MOVE.w #$FFFE,D1                                        ; #varslib (was #allocvars)
 
 .uselib:                                                  ; lib number in d1 - turn it on baby!
   BSR.w findlib
@@ -9231,7 +9251,7 @@ searchinstr:                  ; was  findtoke org source input: d1=token, return
     MOVEM.l D1/A1-a3,-(A7)      ; was  movem.l d1/a1,-(a7)
     ; new >
     CMP.w #1,(a3)           : BNE.s 'ex10
-    CMP.l #$12345678,$e(a3) : BNE.s 'ex10   call functions of fpulib ???
+    CMP.l #$12345678,$e(a3) : BNE.s 'ex10   ;call functions of fpulib ???
     CMP.w #$ffff,$16(a3)    : BNE.s 'ex10
     MOVE.l $12(a3),d1       : BEQ.s 'ex10
       LEA pluginbase,a3
@@ -10901,7 +10921,7 @@ makename2:
 getparameter2:                                            ;makename org source
   ;-- pick up label name from a5...
   ;-- 
-  ;-- put into name buff, return len in d2 (eq if zero)
+  ;-- put into namebuffer, return len in d2 (eq if zero)
   ;--
   ; new >
   MOVE.l a5,beforeparameterfetch
@@ -10913,19 +10933,18 @@ makename3:
 
 makename4:
   ; new >
-  LEA chartab,a0
-  MOVEQ #0,d0
   MOVE.l A5,lastsourcepos
   MOVE.w instringon,oldqflag
 
+  MOVEQ #0,d0
  'retry
     MOVE.b (a5)+,d0
-  CMP.b #$20,d0                                            ;space deftype
-  BEQ 'retry
+  CMP.b #$20,d0 : BEQ 'retry                               ; skip spaces
+  
 
   MOVE.w d0,lastchar
-  TST.b 0(a0,d0.w)
-  BNE 'done
+  LEA chartab,a0  
+  TST.b 0(a0,d0.w) : BNE 'done                             ; check illegal character
 
   ;move.l a0,-(a7)
   ; < new
@@ -10935,7 +10954,7 @@ makename4:
    ;test_for_letter                                                ;bsr.w tstalpha
    ; < new
    ;bne.w 'done
-; 'oloop  ;not    quoteflag   ;force 'space' gets
+  ; 'oloop  ;not    quoteflag   ;force 'space' gets
 
  'loop
   MOVE.b D0,(A1)+
@@ -10949,16 +10968,16 @@ makename4:
     MOVE.b d0,lastchar+1
     CMP.b #$20,d0 : BEQ 'loop_l20
 
-    TST.b 0(a0,d0) : BEQ 'loop
-    CMP.b #2,d0 : BNE 'loop_lf1
-      MOVEA.l usedfrom,A5
-      CLR.l usedfrom
-      BRA 'loop_ln1
-   'loop_lf1
+      TST.b 0(a0,d0) : BEQ 'loop
+      CMP.b #2,d0 : BNE 'loop_lf1
+        MOVEA.l usedfrom,A5
+        CLR.l usedfrom
+        BRA 'loop_ln1
+     'loop_lf1
 
-    CMP.b #1,d0 : BNE 'loop_l20
-      MOVEA.l cmakea5(PC),A5
-      BRA 'loop_ln1
+      CMP.b #1,d0 : BNE 'loop_l20
+        MOVEA.l cmakea5(PC),A5
+        BRA 'loop_ln1
    'loop_l20
     CMP.b #$7e,d0 : BNE 'loop_lt
       TST.w cmake : BNE.w 'loop_a1
@@ -11001,21 +11020,20 @@ makename4:
   MOVE.l a5,lastsourcepos
 
  'loop_l103
-  MOVE.b (a5)+,d0                                          ;neuneu
-  BPL 'loop_l101
-  ASL.w #8,d0
-  MOVE.b (a5)+,d0
-
+  MOVE.b (a5)+,d0 : BPL 'loop_l101                                          ;neuneu
+    ASL.w #8,d0
+    MOVE.b (a5)+,d0
  'loop_l101
+
   TST.w instringon :  BNE 'loop_l102
   CMP.b #$20,d0    :  BEQ 'loop_l103
   CMP.b #";",d0    :  BNE 'loop_l102
 
  'loop_lr
-  MOVE.b (A5)+,D0  :  BEQ 'loop_l1
-  CMP.b #":",d0    :  BNE 'loop_lr                         ;:@
-  CMP.b #"@",(a5)  :  BNE 'loop_lr
-    ADDQ #1,a5
+    MOVE.b (A5)+,D0  :  BEQ 'loop_l1
+    CMP.b #":",d0    :  BNE 'loop_lr                         ;:@
+    CMP.b #"@",(a5)  :  BNE 'loop_lr
+      ADDQ #1,a5
  'loop_l1
  'loop_l102
   MOVE.w d0,lastchar
@@ -11025,15 +11043,14 @@ makename4:
  'done
   ; new >
   CMP.b #";",d0 : BEQ 'done_l11
-  ; < new
-  CLR.b (A1)
-  ; new >
-  ;move.l (a7)+,a0
-  ; < new
-  TST.w D2
-  RTS
-
-  ; new >
+    ; < new
+    CLR.b (A1)
+    ; new >
+    ;move.l (a7)+,a0
+    ; < new
+    TST.w D2
+    RTS
+    ; new >
  'done_l11
   CLR.b (a1)
   MOVEQ #0,d0
@@ -11167,7 +11184,7 @@ BRA.w reget
 
 .add_Label:        ; was addhere org source
   ;--
-  ;-- add namebuff after a2,d7
+  ;-- add namebuffer after a2,d7
   ;--
   ;-- d2=len of name, name in namebuffer
   ;-- set a2 to address of struct
@@ -11312,39 +11329,39 @@ findvariable:
   MOVEQ #0,d1
 
  'l20
-    MOVE.b (a0)+,d1
-    BEQ 'l15
+    MOVE.b (a0)+,d1 : BEQ 'l15
     !hashalgo
- BRA 'l20
-
+  BRA 'l20
  'l15
+
   AND.l #hashsize,d0
   ASL.l #2,d0
   MOVE.l 0(a2,d0),d0
- BRA 'l11
+  BRA 'l11
 
  'l10
-  MOVE.l 14(A2),D0                                         ;find label
+    MOVE.l 14(A2),D0                                         ;find label
 
- 'l11
-  BEQ findlab_no
-  MOVEA.l D0,A2
-  MOVEQ.l #$00,D0
-  MOVE.b -$1(A2,D7.W),D0
-  LEA namebuffer,A0
-  SUB.w D7,D0
-  SUBQ.l #1,D0
-  CMP.w D0,D2
-   BNE.b 'l10
-  LEA $0(A2,D7.W),A1
-  SUBQ.l #1,D0
+   'l11
+    BEQ findlab_no
+  
+    MOVEA.l D0,A2
+    MOVEQ.l #$00,D0
+    MOVE.b -$1(A2,D7.W),D0
+    LEA namebuffer,A0
+    SUB.w D7,D0
+    SUBQ.l #1,D0
+    CMP.w D0,D2 :  BNE.b 'l10
+  
+    LEA $0(A2,D7.W),A1
+    SUBQ.l #1,D0
 
- 'l201
-    MOVE.b (a1)+,d1
-    CMP.b (a0)+,d1
-    ;CMPM.b (A1)+,(A0)+
-    BNE.b 'l10
-  DBF D0,'l201
+  'l201
+      MOVE.b (a1)+,d1
+      CMP.b (a0)+,d1
+      ;CMPM.b (A1)+,(A0)+
+      BNE.b 'l10
+    DBF D0,'l201
 
   BSR.w reget
   CMP.w D0,D0
@@ -11396,6 +11413,7 @@ RTS
 
  'loop
     CMPA.w #$0,A4 : BEQ.b 'done
+
     MOVEA.l $4(A4),A3
     ;BSR.w 'freevarsb       ; was freevars
     MOVEA.l $8(A4),A3
@@ -11568,34 +11586,33 @@ fetchvars:
   LEA varbase,A2
   
   LEA namebuffer,a0
-  CMP.b #$22,(a0) : BNE fvarback
+  CMP.b #$22,(a0) : BNE fvarback          ; "
     MOVEQ #0,d0 :JMP error
   fvarback:
   
   BSR.w findvariable
-
  'more
-  BNE.w fvaradd
+    BNE.w fvaradd
 
-  ; new >
- 'moreb
-  ; < new
-  MOVE.b flagmask+1,D1
-  MOVE.b $7(A2),D3
-  EOR.b D3,D1 : BNE 'l2
-    CMP.b #2,nowdeclare : BEQ errormsg_declaredtwice
-    BRA.w fvarfound
- 'l2
-  ; < new
-  BSR.w findlab : BNE 'l1
-    CMP.b #2,nowdeclare : BEQ errormsg_declaredtwice
-    CMP.w d0,d0
- 'l1
-  ; < new
- BRA.w 'more
+    ; new >
+  'moreb
+    ; < new
+    MOVE.b flagmask+1,D1
+    MOVE.b $7(A2),D3
+    EOR.b D3,D1 : BNE 'l2
+      CMP.b #2,nowdeclare : BEQ errormsg_declaredtwice
+      BRA.w fvarfound
+   'l2
+    ; < new
+    BSR.w findlab : BNE 'l1
+      CMP.b #2,nowdeclare : BEQ errormsg_declaredtwice
+      CMP.w d0,d0
+   'l1
+    ; < new
+  BRA.w 'more
 
 
-fvaradd:
+.fvaradd:
   MOVE.l a2,-(a7)
   LEA sharebase,a2
   MOVEQ #$f+4,d7
@@ -11607,12 +11624,11 @@ fvaradd:
     CLR.w varmode
     MOVE.b flagmask+1,D1
     MOVE.b $7(A2),D3
-    EOR.b D3,D1
-    BNE vardeclareerr
+    EOR.b D3,D1 : BNE vardeclareerr
     BRA fvarfound
  'cont
   ; < new
-   MOVE.w nonew,D1 :  BNE.w nonewerr
+  MOVE.w nonew,D1 :  BNE.w nonewerr
   ; new >
   TST.b nowdeclare : BNE 'l2b
   TST.b declare2   : BEQ 'l1b
@@ -11653,6 +11669,7 @@ fvaradd:
   CMPI.l #$100,4(A2)  :  BCC.w 'skip3
     MOVE.w 8(A2),D1
  'skip3
+
   TST.w varmode : BEQ.w fvaradd_pit2
     NEG.w D1
     ADD.w D1,globalvarpointer
@@ -11667,9 +11684,8 @@ RTS
 ; new >
 claptonb:                     ; is a copy of fvaradd 'clapton
    BSR.w getparameter2
-  LEA newtypebase,A2
-   BSR.w findtype
-   BNE.w notypeerr
+   LEA newtypebase,A2
+   BSR.w findtype :  BNE.w notypeerr
 
  'usedef
   CMPA.l #newtype_byte,A2 :   BEQ.w 'byte
@@ -11699,18 +11715,18 @@ BRA.w fvaradd_pit2
 
 fvarlocal:
   LEA firstglob,A2
-   BSR.w findvariable2
+  BSR.w findvariable2
 
  'more
-  BNE.w 'hendrix
-  MOVE.b flagmask+1,D1
-  MOVE.b $7(A2),D3
-  EOR.b D3,D1
-   BEQ.w fvarfound
-   BSR.w findlab
- BRA.w 'more
-
+    BNE.w 'hendrix
+    
+    MOVE.b flagmask+1,D1
+    MOVE.b $7(A2),D3
+    EOR.b D3,D1 : BEQ.w fvarfound
+    BSR.w findlab
+  BRA.w 'more
  'hendrix
+
   MOVE.w #$FFFF,varmode           ; was -1
   MOVE.w globalvarpointer,-(A7)
   MOVE.w locvaroff,globalvarpointer
@@ -11733,24 +11749,22 @@ fvarfound:
   ;-- var found, establish if type is correct!
   ;--
   CMP.w #$2E,D0 : BEQ.w 'skipsh         ;'.'
-  CMP.w #$24,D0 : BNE.w 'skip4          ;'$'
-
-  CMPI.l #newtype_string,$A(A3) : BNE.w rongtypeerr
-  BSR.w get1bytemain
-  BRA.w 'skip4
+    CMP.w #$24,D0 : BNE.w 'skip4          ;'$'
+      
+      CMPI.l #newtype_string,$A(A3) : BNE.w rongtypeerr
+      BSR.w get1bytemain
+      BRA.w 'skip4
 
  'skipsh
-  BSR.w getparameter2
-  LEA newtypebase,A2
-  BSR.w findtype
-  BNE.w notypeerr
-  CMPA.l $A(A3),A2 : BNE.w rongtypeerr
+    
+    BSR.w getparameter2
+    LEA newtypebase,A2
+    BSR.w findtype : BNE.w notypeerr
+    CMPA.l $A(A3),A2 : BNE.w rongtypeerr
 
  'skip4
-  BTST #$0,flagmask+1 : BEQ.w 'skipz
-  ;
-  BTST #$0,$7(A3) : BEQ.w pointerr
-
+    BTST #$0,flagmask+1 : BEQ.w 'skipz
+      BTST #$0,$7(A3) : BEQ.w pointerr
  'skipz
   MOVEA.l $A(A3),A2
 RTS
@@ -12068,16 +12082,13 @@ calcvar:
   ;
   ;this shit added lately - after the major fucking crash!
   ;
-  BTST #$0,$7(A3)
-  BEQ.w 'noppnt
-    CMP.w #$5C,D0
-    BNE.w 'pmskip
+  BTST #$0,$7(A3) : BEQ.w 'noppnt
+    CMP.w #$5C,D0 :  BNE.w 'pmskip
       MOVE.w 'pfix(PC),D1
       BSR.w writeword
  'noppnt
-  MOVE.w #$8000,D2
-  BRA.w 'loopml
-
+    MOVE.w #$8000,D2
+    BRA.w 'loopml
  'pmskip
   MOVE.w #$C000,D2
   BRA.w 'loopml
@@ -12089,6 +12100,7 @@ calcvar:
  Even
  'notarr
   CMP.w #$28,D0      : BEQ.w noarrerr                    ;"("
+
   CMPI.l #$100,4(A2) : BCS.w 'simpvar
   BTST #$0,$7(A3) : BEQ.w 'notap
     ;
@@ -12103,16 +12115,16 @@ calcvar:
   MOVE.l movea5a0,D1
   BSR.w pokela5s                                         ;move.l x(a5),a2
 
-  TST.b debugmode                                        ;check read pointer <=0
-  BEQ.w 'skip
+  TST.b debugmode : BEQ.w 'skip                          ;check read pointer <=0
     MOVE.w #$c320,D1 : JSR Atokejsr                      ;runerrlib, checkpointer
- 'skip                                                     ;??looks liks double label??
+ 'skip       
  'loopml
   MOVEQ.l #$00,D3
 
  'loop0
   CMP.w #$5C,D0 : BNE.w 'done                           ;"\"
   CMPI.l #$100,4(A2) : BCS.w rongtypeerr
+
   MOVE.w D2,-(A7)
    BSR.w getparameter2
    BEQ.w syntaxerr
@@ -12130,8 +12142,8 @@ calcvar:
   
   CMP.w #$5B,D0 : BNE.w 'realdone                      ;"["
    
-  BTST #$1,$7(A3)                                           ;a array [] in newtype is found
-  BEQ.w rongtypeerr
+  BTST #$1,$7(A3) : BEQ.w rongtypeerr                  ;a array [] in newtype is found
+
   BSR.w addd0a0
   MOVEM.l A2-A3,-(A7)
   MOVE.w varmode,-(A7)
@@ -12157,8 +12169,7 @@ calcvar:
 
   CMP.w #$5D,D0 :  BNE.w syntaxerr                         ;"]"
 
-  TST.b optimize_integer                                               ;a2,-(a7) array
-  BEQ 'loop0_l10
+  TST.b optimize_integer :   BEQ 'loop0_l10                ;a2,-(a7) array
     CNIF #optibreak
       ILLEGAL
     CEND
@@ -12180,27 +12191,25 @@ calcvar:
   MOVE.l (A7)+,lastoffset_org
   MOVE.w (A7)+,varmode
   MOVEM.l (A7)+,A2-A3
-    ;
-    ;[] ***** error checking here! *****
-    ;
-    ;8(a3) = how many we can handle. special case for 0!
-    ;
-  TST.w debugmode
-  BEQ.b 'nobchk
-  MOVE.w $8(A3),D1
-  BEQ.b 'nobchk                                   ;no [0] checks!
-    ;
-    ;ok, check regat<8(a3)
-    ;
-  MOVE.w D1,brchkcode+2
-  MOVE.w regnum,D1
-  LSL.w #8,D1
-  LSL.w #1,D1
-  OR.w brchkcode0(PC),D1
-  MOVE.w D1,brchkcode
-  MOVE.l brchkcode(PC),D1    : BSR.w writelong
-  MOVE.l brchkcode+4(PC),D1  : BSR.w writelong
-  MOVE.w brchkcode+8(PC),D1  : BSR.w writeword
+  ;
+  ;[] ***** error checking here! *****
+  ;
+  ;8(a3) = how many we can handle. special case for 0!
+  ;
+  TST.w debugmode : BEQ.b 'nobchk
+    MOVE.w $8(A3),D1 : BEQ.b 'nobchk                 ;no [0] checks!
+      ;
+      ;ok, check regat<8(a3)
+      ;
+      MOVE.w D1,brchkcode+2
+      MOVE.w regnum,D1
+      LSL.w #8,D1
+      LSL.w #1,D1
+      OR.w brchkcode0(PC),D1
+      MOVE.w D1,brchkcode
+      MOVE.l brchkcode(PC),D1    : BSR.w writelong
+      MOVE.l brchkcode+4(PC),D1  : BSR.w writelong
+      MOVE.w brchkcode+8(PC),D1  : BSR.w writeword
  'nobchk
  
   MOVEQ.l #$04,D1
@@ -12240,13 +12249,11 @@ calcvar:
 
  'done3
   BSET #$E,D2
-  BTST #$2,$7(A3)
-  BNE.w 'done
+  BTST #$2,$7(A3) : BNE.w 'done
     BSET #$D,D2
  'done
 
-  CMPI.l #$100,4(A2)
-  BCC.w 'done2
+  CMPI.l #$100,4(A2) : BCC.w 'done2
     MOVE.b $7(A2),D2
  'done2
   BRA.w addd0a0
@@ -12256,8 +12263,7 @@ calcvar:
 
  'simpvar2
   MOVE.w $4(A3),D3
-  BTST #$0,$7(A3)
-  BEQ.w 'nopoint
+  BTST #$0,$7(A3) : BEQ.w 'nopoint
     BSET #$E,D2
  'nopoint
 RTS
@@ -12295,7 +12301,7 @@ BRA.w writelong
 
 pokela5s:
   TST.w varmode : BEQ.w writelong
-  BCLR #$10,D1
+    BCLR #$10,D1
 
 .writelong:                                                ;pokel org source
 ; write 4 bytes in D1 to destpointer and increase
@@ -12308,17 +12314,16 @@ pokela5s:
   BCLR #$0,destpointer+3
   MOVEA.l destpointer,A4
 
-  CMPA.l destbufferend,A4
-  BCC.w 'overa
-    MOVE.l D1,(A4)+
+  CMPA.l destbufferend,A4 : BCC.w 'overa
+
+  MOVE.l D1,(A4)+
  'msa
     MOVE.l A4,destpointer
-    CMPA.l bigpc(PC),A4
-    BHI.w 'nbpa
+    CMPA.l bigpc(PC),A4 : BHI.w 'nbpa
       RTS
    'nbpa                                                     ; copied from writeword code  tomsmart1
-    TST.w cfetchmode                                         ; to complete the subroutine
-    BNE.w 'nbp2a                                             ;
+
+    TST.w cfetchmode : BNE.w 'nbp2a                          ; to complete the subroutine
       MOVE.l A4,bigpc                                        ;
    'nbp2a
     RTS
@@ -12329,7 +12334,7 @@ pokela5s:
   CLR.b optimize_fpu
   CLR.b iee                                                ; in writeword this is #2
   ADDQ.w #4,A4
-  BRA.w 'msa
+BRA.w 'msa
   ; < new
 
 
@@ -12351,20 +12356,19 @@ pokela5s:
   ADDQ.l #1,destpointer
   BCLR #$0,destpointer+3
   MOVEA.l destpointer,A4
-  CMPA.l destbufferend,A4
-  BCC.w 'over
-    MOVE.w D1,(A4)+
+  CMPA.l destbufferend,A4 :  BCC.w 'over
+
+  MOVE.w D1,(A4)+
+
  'ms
   MOVE.l A4,destpointer
-  CMPA.l bigpc(PC),A4
-  BHI.w 'nbp
+  CMPA.l bigpc(PC),A4 : BHI.w 'nbp
     RTS
  'nbp
-    TST.w cfetchmode
-    BNE.w 'nbp2
+  TST.w cfetchmode : BNE.w 'nbp2
       MOVE.l A4,bigpc
-   'nbp2
-      RTS
+  'nbp2
+   RTS
 
  'over
   MOVE.w #$FFFF,dontwrite_nomemleft                                  ;#-1 org source
@@ -12377,21 +12381,18 @@ BRA.w 'ms
 
 writebyte:                                                 ;pokebyte org source
   MOVEA.l destpointer,A4
-  CMPA.l destbufferend,A4
-   BCC.w 'over
+  CMPA.l destbufferend,A4 : BCC.w 'over
+
   MOVE.b D1,(A4)+
 
  'ms
   MOVE.l A4,destpointer
-  CMPA.l bigpc(PC),A4
-   BHI.w 'nbp
- RTS
-
+  CMPA.l bigpc(PC),A4 : BHI.w 'nbp
+    RTS
  'nbp
-  TST.w cfetchmode
-   BNE.w 'nbp2
-  MOVE.l A4,bigpc
 
+  TST.w cfetchmode : BNE.w 'nbp2
+    MOVE.l A4,bigpc
  'nbp2
  RTS
 
@@ -12407,14 +12408,16 @@ BRA.w 'ms
 bigpc:   Ds.l 1
 
 
-.pokecode:                                                  ;a0=start of code to poke, a1=end
+.pokecode:
+  ;-- a0 = start of code to poke,
+  ;-- a1 = end
   MOVE.w (A0)+,D1
   BSR.w writeword
  'loop
-    CMPA.l A1,A0
-    BCC.w 'done
-      MOVE.w (A0)+,D1
-      BSR.w writeword
+    CMPA.l A1,A0 : BCC.w 'done
+
+    MOVE.w (A0)+,D1
+    BSR.w writeword
   BRA.w 'loop
  'done
 RTS
@@ -12423,8 +12426,7 @@ RTS
 .pokecode2:
   MOVE.w (A0)+,D1
   BSR.w writeword
-  CMPA.l A1,A0
-  BCS.w pokecode2
+  CMPA.l A1,A0 : BCS.w pokecode2  
 RTS
 
 ;-----------End of poking to Object code------------------;
@@ -12449,10 +12451,8 @@ convert_byte_to_long:   ; was bytetolong
 
 convert_word_to_long:   ; was wordtolong                                             ;word to long word_to_fpu
   ; new >
-  TST.b iee
-  BEQ 'old
-    CMP.b #5,d2
-    BEQ wtof
+  TST.b iee : BEQ 'old
+    CMP.b #5,d2 : BEQ wtof
  'old
   ;< new
   MOVE.w #$48C0,D1                              ; EXT.L
@@ -12513,8 +12513,8 @@ BRA writelong
 
 convert_byte_to_float:  ; was bytetofloat
    ; new >
-   TST.b iee
-   BNE wtof
+   TST.b iee : BNE wtof
+
    ; < new
    BSR.w convert_byte_to_long
 
@@ -12523,9 +12523,9 @@ bytetof2:
 
 fdo2:
    ; new >
-   TST.b iee
-   BNE convert_long2float
+   TST.b iee : BNE convert_long2float
    ; < new
+
    MOVE.w D1,libjsr+2
    BSR.w savereg
   MOVE.l D4,D1
@@ -12542,46 +12542,38 @@ RTS ; dead old code
 convert_word_to_byte:  ; was wordtobyte
   MOVE.w #$C317,D1     ;#wtobover
   ; new >
-  TST.b typecheck
-  BEQ 'l1
-   TST.b notypecheck
-   BNE 'l1
-   TST.l lasttoken
-  CNIF #assign_fulltypecheck
-    BEQ typeerror
-  CEND
-
+  TST.b typecheck : BEQ 'l1
+   TST.b notypecheck : BNE 'l1
+    TST.l lasttoken
+      CNIF #assign_fulltypecheck
+        BEQ typeerror
+      CEND
  'l1                                                       ;??looks like double label??
   ; < new
 
 overchk:
   ;d1=overflow check routine.
-  TST.b debugmode
-   BEQ.w 'skip
-  BTST #$7,overflowcheck      ;;*** was 7! overflow checking?
-   BEQ.w 'skip
-  ;
-  TST.w cfetchmode
-   BNE.w 'skip
-  ;
-  TST.w regnum
-   BEQ.w 'isok
-  MOVE.w D1,-(A7)
-  MOVE.w 'code1(PC),D1
-   BSR.w writeword
-  MOVE.w regnum,D1
-  OR.w 'code3(PC),D1
-   BSR.w writeword
-  MOVE.w (A7)+,D1
-   BSR.w 'isok
-  MOVE.w 'code2(PC),D1
- BRA.w writeword
+  TST.b debugmode : BEQ.w 'skip
+    BTST #$7,overflowcheck : BEQ.w 'skip                   ;;*** was 7! overflow checking?
+    ;
+    TST.w cfetchmode : BNE.w 'skip
+    ;
+    TST.w regnum :  BEQ.w 'isok
+      MOVE.w D1,-(A7)
+      MOVE.w 'code1(PC),D1
+      BSR.w writeword
+      MOVE.w regnum,D1
+      OR.w 'code3(PC),D1
+      BSR.w writeword
+      MOVE.w (A7)+,D1
+      BSR.w 'isok
+      MOVE.w 'code2(PC),D1
+      BRA.w writeword
+   'isok
 
- 'isok
-  MOVEM.l D0-D7/A0-A6,-(A7)
+   MOVEM.l D0-D7/A0-A6,-(A7)
    BSR.w Atokejsr
-  MOVEM.l (A7)+,D0-D7/A0-A6
-
+   MOVEM.l (A7)+,D0-D7/A0-A6
  'skip
  RTS
 
@@ -12599,12 +12591,9 @@ overchk:
 convert_word_to_float:  ; was wordtofloat
   BSR.w convert_word_to_long
   ; new >
-  TST.b iee
-  BEQ 'old
-  CMP.b #5,d2
-  BNE 'old
- RTS
-
+  TST.b iee : BEQ 'old
+  CMP.b #5,d2 : BNE 'old
+    RTS
  'old
  ; < new
 BRA.w bytetof2
@@ -12612,17 +12601,13 @@ BRA.w bytetof2
 convert_long_to_byte:   ; was longtobyte
   MOVE.w #$C316,D1      ; #ltobover
   ; new >
-  TST.b typecheck
-  BEQ 'l1
-  TST.b peekaddrsize
-  BNE 'l1
-  TST.b notypecheck
-  BNE 'l1
-  TST.l lasttoken
-  CNIF #assign_fulltypecheck
-    BEQ typeerror
-  CEND
-
+  TST.b typecheck : BEQ 'l1
+    TST.b peekaddrsize : BNE 'l1
+      TST.b notypecheck : BNE 'l1
+        TST.l lasttoken
+          CNIF #assign_fulltypecheck
+            BEQ typeerror
+          CEND
  'l1
  ; < new
 BRA.w overchk
@@ -12630,17 +12615,13 @@ BRA.w overchk
 convert_long_to_word:   ; was longtoword
   MOVE.w #$C318,D1      ; #ltowover,
   ; new >
-  TST.b typecheck
-  BEQ 'l1
-  TST.b peekaddrsize
-  BNE 'l1
-  TST.b notypecheck
-  BNE 'l1
-  TST.l lasttoken
-  CNIF #assign_fulltypecheck
-    BEQ typeerror
-  CEND
-
+  TST.b typecheck : BEQ 'l1
+    TST.b peekaddrsize : BNE 'l1
+      TST.b notypecheck :  BNE 'l1
+        TST.l lasttoken
+          CNIF #assign_fulltypecheck
+            BEQ typeerror
+          CEND
  'l1
  ; < new
 BRA.w overchk
@@ -12648,15 +12629,12 @@ BRA.w overchk
 convert_long_to_quick:  ; was longtoquick
   MOVE.w #$C318,D1      ;#ltowover,
   ; new >
-  TST.b typecheck
-  BEQ 'l1
-  TST.b notypecheck
-  BNE 'l1
-  TST.l lasttoken
-  CNIF #assign_fulltypecheck
-    BEQ typeerror
-  CEND
-
+  TST.b typecheck : BEQ 'l1
+    TST.b notypecheck : BNE 'l1
+      TST.l lasttoken
+      CNIF #assign_fulltypecheck
+        BEQ typeerror
+      CEND
  'l1
   ; < new
   BSR.w overchk
@@ -12670,15 +12648,12 @@ RTS ; dead old code
 convert_quick_to_byte:     ; was quicktobyte
   MOVE.w #$C319,D1         ; #qtobover,
   ; new >
-  TST.b typecheck
-  BEQ 'l1
-  TST.b notypecheck
-  BNE 'l1
-  TST.l lasttoken
-  CNIF #assign_fulltypecheck
-    BEQ typeerror
-  CEND
-
+  TST.b typecheck : BEQ 'l1
+  TST.b notypecheck : BNE 'l1
+    TST.l lasttoken
+      CNIF #assign_fulltypecheck
+        BEQ typeerror
+      CEND
  'l1
   ; < new
   BSR.w overchk
@@ -12747,18 +12722,15 @@ RTS ; dead old code
 
 convert_float_to_byte:      ; was floattobyte
   ; new >
-  TST.b typecheck
-  BEQ 'l1
-  TST.b notypecheck
-  BNE 'l1
-  TST.l lasttoken
-  CNIF #assign_fulltypecheck
-   BEQ typeerror
-  CEND
-
+  TST.b typecheck : BEQ 'l1
+    TST.b notypecheck : BNE 'l1
+      TST.l lasttoken
+        CNIF #assign_fulltypecheck
+        BEQ typeerror
+        CEND
  'l1
-  TST.b iee
-  BNE ftol
+  TST.b iee : BNE ftol
+
   ; < new
   MOVE.w #$C31A,D1       ; #ftobover
   BSR.w overchk
@@ -12770,18 +12742,15 @@ RTS ; dead old code
 
 convert_float_to_word:    ; was floattoword
   ; new >
-  TST.b typecheck
-  BEQ 'l1
-  TST.b notypecheck
-  BNE 'l1
-  TST.l lasttoken
- CNIF #assign_fulltypecheck
-  BEQ typeerror
- CEND
-
+  TST.b typecheck : BEQ 'l1
+    TST.b notypecheck : BNE 'l1
+    TST.l lasttoken
+      CNIF #assign_fulltypecheck
+      BEQ typeerror
+      CEND
  'l1
-  TST.b iee
-  BNE ftol
+  TST.b iee : BNE ftol
+
   ; < new
   MOVE.w #$C31B,D1         ; #ftowover
   BSR.w overchk
@@ -12793,8 +12762,8 @@ RTS  ; dead old code
 
 convert_float_to_long:       ; was floattolong ;
   ; new >
-  TST.b iee
-  BNE ftol
+  TST.b iee : BNE ftol
+
   ; < new
   MOVE.w #$C31C,D1     ; #ftolover,
   BSR.w overchk
@@ -12847,8 +12816,8 @@ convert_float_to_quick:   ; was floattoquick;
   ;do my own routine here for float to quick conversion
   ;
   ; new >
-  TST.b iee
-  BNE ftoq
+  TST.b iee : BNE ftoq
+
   ; < new
   MOVE.w #$C31B,D1    ; #ftowover,
   BSR.w overchk
@@ -12859,41 +12828,34 @@ BRA.w qtof2
 
 string_to_long:
   ; new >                                      ; allowed as calling parameter for blitzlibs and functions
-   TST.b blitzparloop
-   BNE 'l1
-   TST.b funcparloop
-   BNE 'l1
-   BRA error_convert_types
-
+  TST.b blitzparloop : BNE 'l1
+  TST.b funcparloop : BNE 'l1
+    BRA error_convert_types
  'l1
-  CMP.b #2,optistring
-  BEQ JLrts
+
+  CMP.b #2,optistring : BEQ JLrts
   ; < new
   MOVE.w stol,D1
   BSR.w writeword
   ; new >
-  CMPI.w #$2,sbgot
-  ; < new
-  BCS.w sbtolong                     ; was BRA
-  ; new >
+  CMPI.w #$2,sbgot : BCS.w sbtolong                     ; was BRA
+
   MOVE.w ceos(PC),D1                 ; begin copy of sbtolong
   BSR.w writeword
   ;
   MOVE.w regnum,D1
   LSL.w #8,D1
   LSL.w #1,D1
-  CMPI.w #$2,sbgot
-  BCS.w sbtolong_skip2
+  CMPI.w #$2,sbgot : BCS.w sbtolong_skip2
+
   MOVE.w a2offset,D3
   SUB.w thisstuse,D3
-  CMP.w #$6,D3
-  BNE.w 'lenonly
-  OR.w movestst2,D1
-  BSR.w writeword
-  LEA movestst2+2,A0
-  LEA movestst2f,A1
- BRA.w pokecode2
-
+  CMP.w #$6,D3 : BNE.w 'lenonly
+    OR.w movestst2,D1
+    BSR.w writeword
+    LEA movestst2+2,A0
+    LEA movestst2f,A1
+    BRA.w pokecode2
  'lenonly                                                ;OS call 2 strings fix
   OR.w movea7dn,D1
   BSR.w writeword
@@ -12917,10 +12879,8 @@ RTS
 writeconvertcode:                                          ;convtype org source   ;convert type d3 to d2
   MOVE.w D3,D1
   ; new >
-  CMP.w #7,d1
-  BLE 'ok
-  JMP errorinternalconvert
-
+  CMP.w #7,d1 : BLE 'ok
+    JMP errorinternalconvert
  'ok
   ; < new
   SUBQ.w #1,D1
@@ -12929,15 +12889,12 @@ writeconvertcode:                                          ;convtype org source 
   SUBQ.w #1,D1
   LSL.w #2,D1
   LEA convtable,A0
-  MOVE.l $0(A0,D1.W),D1
-  BEQ.w 'skip
+  MOVE.l $0(A0,D1.W),D1 : BEQ.w 'skip
     MOVEA.l D1,A0
-  ; new >
-    CMP.b #$ff,d3
-    BEQ 'skip
-  ; < new
- JMP (A0)
-
+    ; new >
+    CMP.b #$ff,d3 : BEQ 'skip
+    ; < new
+      JMP (A0)
  'skip
 RTS
 
@@ -12955,11 +12912,11 @@ usedfrom:  Ds.l 1
       LEA path2,A5
       BRA 'g1
    'first
-    ; < new
-    SUBQ.w #1,A5
-    MOVE.l A5,usedfrom
-    LEA usedpath,A5                                          ;read path
-    ; new >
+      ; < new
+      SUBQ.w #1,A5
+      MOVE.l A5,usedfrom
+      LEA usedpath,A5                                          ;read path
+      ; new >
    'g1
     ; < new
     BSR.w get1bytemain
@@ -12978,26 +12935,24 @@ usedfrom:  Ds.l 1
   CMP.w #$2E,D0 : BEQ.w 'morem            ;'.'
   CMP.w #$24,D0 : BNE.w 'done             ;'$'
    
-  ORI.w #$8,flagmask
-   BSR.w storeloc
-   BSR.w get1bytemain
- BRA.w 'morez
+    ORI.w #$8,flagmask
+    BSR.w storeloc
+    BSR.w get1bytemain
+    BRA.w 'morez
 
 
- 'morem
-  BSR.w storeloc
-  MOVE.w D2,-(A7)
-  LEA namebuffer2,A1
-   BSR.w makename3
-   BEQ.w syntaxerr
-  MOVE.w (A7)+,D2
+  'morem
+    BSR.w storeloc
+    MOVE.w D2,-(A7)
+    LEA namebuffer2,A1
+    BSR.w makename3 : BEQ.w syntaxerr
+    MOVE.w (A7)+,D2
 
- 'morez
-   MOVE.w D0,D1
-   BSR.w resloc
-   CMP.w #$28,D1             ;'('
-   BNE.w 'done
-
+  'morez
+    MOVE.w D0,D1
+    BSR.w resloc
+    CMP.w #$28,D1 : BNE.w 'done           ;'('
+    
  'setmask
   ORI.w #$2,flagmask
 
@@ -13005,8 +12960,8 @@ usedfrom:  Ds.l 1
   RTS
 
  'skip
-  CMP.w #$40,D0              ;'@'
-  BNE.w 'skip2
+  CMP.w #$40,D0 :  BNE.w 'skip2          ;'@'
+ 
     MOVE.w #$0005,flagmask
     BRA.w 'more2
  'skip2
@@ -13015,7 +12970,7 @@ BRA.w 'more
 
 
 dopusha3:
-  MOVE.w #$FED3,D1          ; #65235
+  MOVE.w #$FED3,D1          ; #65235 (#strings1lib)
    BSR.w uselib
   LEA pusha3,A0
   LEA pusha3f,A1
@@ -13023,7 +12978,7 @@ BRA.w pokecode
 
 
 dopulla3:
-  MOVE.w #$FED3,D1          ; #65235
+  MOVE.w #$FED3,D1          ; #65235 (#strings1lib)
    BSR.w uselib
   LEA pulla3,A0
   LEA pulla3f,A1
@@ -13037,33 +12992,28 @@ ceos:   Dc.b $42,$1B                                       ;CLR.B   (A3)+       
 Even
 sbtolong:                                                 ;make sbase into a long
   ; new >
-    CMP.b #2,optistring
-   BEQ 'l10
-  ; < new
-   MOVE.w ceos(PC),D1
-   BSR.w writeword                                         ;clr.b (a3)
-  ;
-  ; new >
+  CMP.b #2,optistring : BEQ 'l10
+    ; < new
+    MOVE.w ceos(PC),D1 : BSR.w writeword                   ;clr.b (a3)
+    ; new >
  'l10
   ; new <
   MOVE.w regnum,D1
   LSL.w #8,D1
   LSL.w #1,D1
-  CMPI.w #$2,sbgot
-   BCS.w sbtolong_skip2
+  CMPI.w #$2,sbgot : BCS.w sbtolong_skip2
+
   MOVE.w a2offset,D3                                       ;stackuse,d3 org source
   SUB.w thisstuse,D3
-  CMP.w #$6,D3
-   BNE.w 'lenonly
-  OR.w movestst2,D1
-   BSR.w writeword
-  LEA movestst2+2,A0
-  LEA movestst2f,A1
- BRA.w pokecode2
-
+  CMP.w #$6,D3 : BNE.w 'lenonly
+    OR.w movestst2,D1
+    BSR.w writeword
+    LEA movestst2+2,A0
+    LEA movestst2f,A1
+    BRA.w pokecode2
  'lenonly
-   OR.w movea7dn,D1
-   BSR.w writeword
+  OR.w movea7dn,D1
+  BSR.w writeword
   MOVE.l movea7dn+2,D1
   ; new >
 ;  CNIF #more6string
@@ -13080,16 +13030,12 @@ sbtolong:                                                 ;make sbase into a lon
   BSR writelong
   ; new >
  CNIF #more6string
-   CMP.w #6,regnum
-   BEQ 'l1
-   TST.w stackpar
-   BNE 'l1
-   TST.b funcparloop
-   BEQ 'l1
-   MOVE.l #$48780000,d1
-   BSR writelong
-
- 'l1
+   CMP.w #6,regnum : BEQ 'l1
+   TST.w stackpar : BNE 'l1
+   TST.b funcparloop : BEQ 'l1
+     MOVE.l #$48780000,d1
+     BSR writelong
+  'l1
  CEND
  RTS
   ; < new
@@ -13098,23 +13044,19 @@ sbtolong_skip2:        ;was 'skip
   ; new >
   CNIF #more6string
      MOVE.l d1,-(a7)
-     CMP.w #6,regnum
-     BEQ 'l1
-     TST.w stackpar
-     BNE 'l1
-     TST.b funcparloop
-     BEQ 'l1
-     MOVE.l #$48780000,d1
-     BSR writelong
-
+     CMP.w #6,regnum : BEQ 'l1
+     TST.w stackpar : BNE 'l1
+     TST.b funcparloop : BEQ 'l1
+       MOVE.l #$48780000,d1
+       BSR writelong
     'l1
      MOVE.l (a7)+,d1
   CEND
   ; < new
    OR.w movestdn,D1
-   BSR.w writeword
-  MOVE.w #$FED3,D1        ;#65235
-   BSR.w uselib
+  BSR.w writeword
+  MOVE.w #$FED3,D1        ;#65235 (#strings1lib)
+  BSR.w uselib
   MOVE.w $A(A1),D1
 BRA.w writeword
 
@@ -13236,53 +13178,52 @@ eval:
   MOVEQ.l #$00,D3
 
 maineval:
-    ;CLR.b isconstantvalue
-    ;CLR.l lastconstantvalue
-                                                                                                                                                                                                                                                        
-    ;Big Evaluation routine.....
-    ;
-    ;d2 = type to collect - 0 if unknown
-    ;
-    ;d3 = 0 if conv to original type
-    ;
-    ;d1 = push result flag, 0 = no push, < 0 = push result
-    ;     > 0 = push type when known
-    ;
-    ;result will be pushed anyway if using reg d6+
-    ;
-    ;if getting a string, then strings len is on stack
-    ;(a long), and a3 points at arse end of string
-    ;while D(regat) points to start of string
-    ;
-   CMPI.w #$6,regnum : BCS.w maineval2
-   ; new >
-   MOVEQ #0,d1
-   MOVE.l destpointer,a4
-   CMPA.l destbufferend,A4 : BCC.w 'l2
-      CMP.w #$2f0a,-2(a4)                ;bug is a move.l a2,-(a7) before (show temp calc)?
-                                         ;then put not to stack
-      BNE 'l2
-      ;   JSR linemessage
-      ;   TST.l result
-      ;   BEQ 'l2
-      BRA 'l1
- 'l2
+  ;CLR.b isconstantvalue
+  ;CLR.l lastconstantvalue
+  ;--                                                                                                                                                                                                                                                    
+  ;-- Big Evaluation routine.....
+  ;-- 
+  ;-- d2 = type to collect - 0 if unknown
+  ;-- 
+  ;-- d3 = 0 if conv to original type
+  ;-- 
+  ;-- d1 = push result flag, 0 = no push, < 0 = push result
+  ;--      > 0 = push type when known
+  ;-- 
+  ;-- result will be pushed anyway if using reg d6+
+  ;-- 
+  ;-- if getting a string, then strings len is on stack
+  ;-- (a long), and a3 points at arse end of string
+  ;-- while D(regat) points to start of string
+  ;-- 
+  CMPI.w #$6,regnum : BCS.w maineval2
+    ; new >
+    MOVEQ #0,d1
+    MOVE.l destpointer,a4
+    CMPA.l destbufferend,A4 : BCC.w 'l2
+      CMP.w #$2f0a,-2(a4) : BNE 'l2           ;bug is a move.l a2,-(a7) before (show temp calc)?
+                                              ;then put not to stack
+        ;   JSR linemessage
+        ;   TST.l result
+        ;   BEQ 'l2
+        BRA 'l1
+  'l2
       ; < new
       MOVEQ.l #-$01,D1                                         ;do stackpar write
- 'l1
-  MOVE.w #$0006,regnum                                     ;write a func par To stack
+  'l1
+    MOVE.w #$0006,regnum                                     ;write a func par To stack
 
 maineval2:
-  ;
-  ;d2=type to get, d1=push flag (should I push result?)
-  ;
+  ;-- 
+  ;-- d2=type to get, d1=push flag (should I push result?)
+  ;--
   MOVE.w thisstuse,-(A7)
   MOVE.w a2offset,thisstuse
   ;
   MOVE.w stackpar,-(A7)
   MOVE.w D1,stackpar
   MOVE.w sbgot,-(A7)
-  CLR.w sbgot                ;not pushed yet
+  CLR.w sbgot                                    ;not pushed yet
   MOVE.w unknown(PC),-(A7)
   MOVE.w D3,unknown
   ;
@@ -13290,49 +13231,44 @@ maineval2:
   ; new >
   MOVE.w d2,mode
   ; < new
-   BSR.w eval3
-  MOVE.w (a7)+,d3            ;type asked for
-  BEQ.w 'noconv
-  MOVE.w unknown(PC),D1 : BNE.w 'noconv
-  EXG.l D2,D3
-  ; new >
-   MOVE.l a2,-(a7)
-   TST.b curtemplabel : BEQ 'l10
-   MOVE.l asmbuff,a2
-   CMP.w #$c,8(A2) : BEQ 'l20
-   CMP.w #$d,8(A2) : BEQ 'l20
 
- 'l10
-  CMP.w d2,d3
-  BEQ 'l20
-    BSR.w writeconvertcode
-    CLR.b doimmediate
- 'l20
-  MOVE.l (a7)+,a2
+  BSR.w eval3
 
+  MOVE.w (a7)+,d3 : BEQ.w 'noconv               ;type asked for
+    MOVE.w unknown(PC),D1 : BNE.w 'noconv
+    EXG.l D2,D3
+    ; new >
+    MOVE.l a2,-(a7)
+    TST.b curtemplabel : BEQ 'l10
+      MOVE.l asmbuff,a2
+      CMP.w #$c,8(A2) : BEQ 'l20
+      CMP.w #$d,8(A2) : BEQ 'l20
+   'l10
+      CMP.w d2,d3 : BEQ 'l20
+        BSR.w writeconvertcode
+        CLR.b doimmediate
+   'l20
+    MOVE.l (a7)+,a2
  'noconv
   ; < new
   MOVE.w (A7)+,unknown
-  MOVE.w stackpar,D1
-  BEQ.w 'skipme
-  BMI.w 'skipme
-  ;
-  ;push the type got.
-  ;
+  MOVE.w stackpar,D1 : BEQ.w 'skipme
+                       BMI.w 'skipme
+  ;--
+  ;-- push the type got.
+  ;--
   MOVE.w regnum,D1
   LSL.w #8,D1
   LSL.w #1,D1
-  CMP.w #$7,D2
-  BNE.w 'hi1
+  CMP.w #$7,D2 : BNE.w 'hi1
     ; new >
-    CMP.b #2,optistring
-    BEQ 'hi1a
+    CMP.b #2,optistring : BEQ 'hi1a
     ; < new
     MOVE.w D1,-(A7)
     OR.w getstlen,D1
     BSR.w writeword
     MOVE.w (A7)+,D1
- 'hi1
+  'hi1
   ADDQ.w #2,a2offset                                        ;lib mode to stack
   ;ORI.w #$7000,D1
   ;ADDI.w #$200,D1      ;moveq #x,dREGAT+1
@@ -13350,62 +13286,55 @@ maineval2:
   ; < new
   BSR.w writeword
   ;
-  CMP.w #$7,D2
-  BNE.w 'skipme
+  CMP.w #$7,D2 : BNE.w 'skipme        ; value is as string
     MOVE.w putstlen,D1
     OR.w regnum,D1
     BSR.w writeword
  'skipme
-  CMP.w #$7,D2
-  BNE.w 'notst
-   ;
-   ; new >
-; CNIF #more6string
-;   CMP.w #6,regnum
-;   BEQ 'skipme_l1
-;   TST.b funcparloop
-;   BEQ 'skipme_l1
-;   MOVE.l #$48780000,d1
-;   BSR writelong
-;
-; 'skipme_l1
-; CEND
-  CMP.b #2,optistring
-  BEQ 'skipme_l10
-  ; < new
-  ADDQ.w #4,a2offset     ;a length on da stack.....
-  BSR.w sbtolong
-  BRA.w 'notst2
 
-  ; new >
- 'skipme_l10
-  CNIF #more6string
-    CMP.w #6,regnum
-    BEQ 'skipme_l10_l1
-    TST.b funcparloop
-    BEQ 'skipme_l10_l1
-    MOVE.l #$48780000,d1
-    BSR writelong
+  CMP.w #$7,D2 : BNE.w 'notst
+    ;
+    ; new >
+    ; CNIF #more6string
+    ;   CMP.w #6,regnum
+    ;   BEQ 'skipme_l1
+    ;   TST.b funcparloop
+    ;   BEQ 'skipme_l1
+    ;   MOVE.l #$48780000,d1
+    ;   BSR writelong
+    ;
+    ; 'skipme_l1
+    ; CEND
+    CMP.b #2,optistring : BEQ 'skipme_l10
+      ; < new
+      ADDQ.w #4,a2offset     ;a length on da stack.....
+      BSR.w sbtolong
+      BRA.w 'notst2
+      ; new >
+  'skipme_l10
 
-   'skipme_l10_l1
-  CEND
-  BRA.w 'notst2
+    CNIF #more6string
+      CMP.w #6,regnum : BEQ 'skipme_l10_l1
+      TST.b funcparloop : BEQ 'skipme_l10_l1
+        MOVE.l #$48780000,d1
+        BSR writelong
+    'skipme_l10_l1
+    CEND
+    BRA.w 'notst2
 
- 'hi1a
-  ADDQ.w #2,a2offset
-  BRA 'skipme
-  ; < new
-
+  'hi1a
+    ADDQ.w #2,a2offset
+    BRA 'skipme
+    ; < new
  'notst
-  CMPI.w #$2,sbgot
-  BCS.w 'notst2                                         ;correct stack
+
+  CMPI.w #$2,sbgot : BCS.w 'notst2           ;correct stack
     MOVE.w ststfix(PC),D1
     BSR.w writeword
  'notst2
   MOVE.w (A7)+,sbgot
   ;
-  MOVE.w stackpar,D1
-  BPL.w 'skip
+  MOVE.w stackpar,D1 : BPL.w 'skip
   ; new >
   CMP.b #7,d2         : BEQ 'notst2_l1
   TST.b funcparloop   : BEQ 'notst2_l1
@@ -13418,8 +13347,8 @@ maineval2:
   MOVE.w #$c4ff,d1                                         ;savetemp+regnum
   ADD.w parnum,d1
   JSR Atokejsr
-  TST.w dontwrite_nomemleft
-  BNE 'notst2_l1
+
+  TST.w dontwrite_nomemleft : BNE 'notst2_l1
     MOVE.l data1start,d1
     MOVE.l destpointer,a4
     ADD.l d1,-4(a4)
@@ -13435,8 +13364,8 @@ maineval2:
   ; < new
   ADDQ.w #2,a2offset
   MOVE.w pushd0wd,D1
-  CMP.w #$3,D2                                             ;write parameter to stack
-  BCS.w 'ok
+  CMP.w #$3,D2 : BCS.w 'ok                             ;write parameter to stack
+  
   ADDQ.w #2,a2offset
   ; new >
   TST.b optimize_fpu : BEQ 'notst2_nofpu
@@ -15385,53 +15314,45 @@ RTS
 
 fetch_SizeOf:   ;was _SizeOf
   BSR.w get1bytemain
-  CMP.w #$2E,D0     ; '.'
-   BEQ.b sizeobj
-  ;
-  ;find size of a var!
-  ;
-   ;bsr.w bakup
-  ; new >
-  MOVE.w oldqflag,instringon
-  MOVEA.l lastsourcepos,A5
-  ; < new
-  MOVE.w D2,-(A7)
-   BSR.w getparameter2
-   BEQ.w syntaxerr
-  LEA varbase,A2
-   BSR.w findvariable
-   BNE.w notypeerr         ;!
+  
+  CMP.w #$2E,D0 : BEQ.b sizeobj  ; '.'
+    ;--
+    ;-- find size of a var!
+    ;--
+    BSR.w bakup
 
- 'found
-  MOVE.w 4(A2),D3
-  EXT.l D3
-  MOVE.w (A7)+,D2
-BRA.w fetchnum2
+    MOVE.w D2,-(A7)
 
+    BSR.w getparameter2 : BEQ.w syntaxerr
 
-sizeobj:
-  MOVE.w D2,-(A7)
-   BSR.w getparameter2
-   BEQ.w syntaxerr
-  LEA newtypebase,A2
-   BSR.w findtype
-   BNE.w notypeerr
-  MOVEQ.l #$00,D3
-  CMP.w #$5C,D0     ;'\'
-   BNE.w 'jty
-   BSR.w getparameter2
-   BEQ.w syntaxerr
-  LEA 4(A2),A2
-   BSR.w findvariable2
-   BNE.w noofferr
-  MOVE.w 4(A2),D3
- BRA.w 'jty2
+    LEA varbase,A2
+    BSR.w findvariable : BNE.w notypeerr
 
- 'jty
-  MOVE.w 8(A2),D3
+    MOVE.w 4(A2),D3
+    EXT.l D3
+    BRA.w jty2
+  sizeobj:
 
- 'jty2
-  MOVE.w (A7)+,D2
+    MOVE.w D2,-(A7)
+
+    BSR.w getparameter2 : BEQ.w syntaxerr
+    
+    LEA newtypebase,A2
+    BSR.w findtype : BNE.w notypeerr
+
+    MOVEQ.l #$00,D3
+    CMP.w #$5C,D0 : BNE.w 'jty     ;'\'
+      BSR.w getparameter2 : BEQ.w syntaxerr
+
+      LEA 4(A2),A2
+      BSR.w findvariable2 : BNE.w noofferr
+
+      MOVE.w 4(A2),D3
+      BRA.w jty2
+   'jty
+      MOVE.w 8(A2),D3
+   jty2:
+      MOVE.w (A7)+,D2
 BRA.w fetchnum2
 
 
@@ -18242,7 +18163,7 @@ pushput:
 RTS
 
 
-muld1:                            ;generate code for #d1.w*regat
+muld1:                            ;generate code for #d1.w * regat
   MOVE.l D1,-(A7)                 ;array mul
   MOVEQ.l #$00,D2
   MOVEQ.l #$0F,D3
@@ -18315,8 +18236,8 @@ muld1:                            ;generate code for #d1.w*regat
 
     MOVE.l $16(A2),D1 : BEQ.w 'loop
 
-    MOVE.w 4(A2),D1                              ; check state in D1 and do some things
-    CMP.w #-$2,D1 : BNE.w 'notvar                 ; was #allocvars
+    MOVE.w 4(A2),D1                              ; check libnum in D1 and do some things related to that lib
+    CMP.w #-$2,D1 : BNE.w 'notvar                 ; was #varslib
       BSR.w makevsize
       BRA.w 'more
    'notvar
@@ -18332,12 +18253,12 @@ muld1:                            ;generate code for #d1.w*regat
       BRA.w 'more
    'notdebuglib
 
-    CMP.w #-$12D,D1 : BNE.w 'notstring1              ; was 65235
+    CMP.w #-$12D,D1 : BNE.w 'notstring1              ; was #strings1lib
       BSR.w makessize
       BRA.w 'more
    'notstring1
 
-    CMP.w #-$1F5,D1 : BNE.w 'notexit                 ; was 65035
+    CMP.w #-$1F5,D1 : BNE.w 'notexit                 ; was #exitslib
       MOVE.w #$203C,D1 : BSR.w writeword
       BSR.w addoff
       MOVE.l endop,D1
@@ -18345,7 +18266,7 @@ muld1:                            ;generate code for #d1.w*regat
       BRA.w 'more
    'notexit
 
-    CMP.w #-$3E9,D1 : BNE.w 'notdatalib              ; was 64535
+    CMP.w #-$3E9,D1 : BNE.w 'notdatalib              ; was #datalib
       MOVE.w #$203C,D1 : BSR.w writeword
       BSR.w addoff
       MOVE.l data2at,D1
@@ -18369,7 +18290,7 @@ muld1:                            ;generate code for #d1.w*regat
     MOVE.l $16(A2),D1
     MOVE.w #$FFFF,lasta6     ; was -1
     BSR.w Amakelibsub
-    CMPI.w #$FFFE,4(A2) : BNE.w 'notvar2           ; was #allocvars
+    CMPI.w #$FFFE,4(A2) : BNE.w 'notvar2           ; was #varslib
       MOVE.l intdata1,D1 : BEQ.w 'notvar2
         MOVE.w putidata1,D1
         BSR.w writeword
@@ -18377,15 +18298,18 @@ muld1:                            ;generate code for #d1.w*regat
         MOVE.l intdata1,D1
         BSR.w writelong
    'notvar2
+
     MOVE.w #$2B40,D1
     TST.w $1A(A2) : BEQ.w 'loop
-    BPL.w 'long
-      MOVE.w #$3B40,D1
+      BPL.w 'long
+        MOVE.w #$3B40,D1
    'long
     BSR.w writeword
+
     MOVE.w $A(A2),D1
     BSR.w writeword
-    CMPI.w #$FFFA,4(A2) : BNE.w 'loop              ; was #65530
+
+    CMPI.w #$FFFA,4(A2) : BNE.w 'loop              ; was #memlib
       MOVE.w D7,-(A7)
       MOVE.w numstatic,D4 : BEQ.w 'nostats
         MOVE.l staticdata,D3
@@ -18497,64 +18421,58 @@ BRA.w writelong
 
 
 findhilib:
-    ;find highest lib# under d7. set d7 to this lib number
-    ;
-    ;ne if found, eq if not
-    ;
+  ;-- find highest lib# under d7. set d7 to this lib number
+  ;-- 
+  ;-- ne if found, eq if not
+  ;-- 
   MOVEQ.l #$00,D1
   MOVEA.l libpointer,A1
 
  'loop
-    CMPA.w #$0,A1
-    BEQ.w 'done
-      CMP.w $4(A1),D7
-      BLS.w 'next
-        CMP.w $4(A1),D1
-        BCC.w 'next
+    CMPA.w #$0,A1 : BEQ.w 'done
+      CMP.w $4(A1),D7 : BLS.w 'next
+        CMP.w $4(A1),D1 : BCC.w 'next
           MOVE.w $4(A1),D1
           MOVEA.l A1,A2
+   'next
 
- 'next
     MOVEA.l (A1),A1
- BRA.w 'loop
-
+  BRA.w 'loop
  'done
+
   MOVE.w D1,D7
 RTS
 
 
 findlolib:
-    ;find lowest lib# above d7. set d7 to this lib number
-    ;
-    ;ne if found, eq if not
-    ;
+  ;-- find lowest lib# above d7. set d7 to this lib number
+  ;--
+  ;-- ne if found, eq if not
+  ;-- 
   MOVEQ.l #-$01,D1
   MOVEA.l libpointer,A1
 
  'loop
-    CMPA.w #$0,A1
-     BEQ.w 'done
-    CMP.w $4(A1),D7
-     BCC.w 'next
-    CMP.w $4(A1),D1
-     BLS.w 'next
-    MOVE.w $4(A1),D1
-    MOVEA.l A1,A2
-
- 'next
+    CMPA.w #$0,A1 : BEQ.w 'done
+      CMP.w $4(A1),D7 : BCC.w 'next
+        CMP.w $4(A1),D1 : BLS.w 'next
+          MOVE.w $4(A1),D1
+          MOVEA.l A1,A2
+   'next
+   
     MOVEA.l (A1),A1
-BRA.w 'loop
-
+  BRA.w 'loop
  'done
+
   MOVE.w D1,D7
   CMP.w #-$1,D1
 RTS
 
 
 .makefinits:    ;create jsr's to FINIT routines from libs
-  ;
-  ;also calculate the REGAT variables for inits!
-  ;
+  ;--
+  ;-- also calculate the REGAT variables for inits!
+  ;--
   ADDQ.w #1,globalvarpointer
   BCLR #$0,globalvarpointer+1
   MOVEQ.l #$00,D7
@@ -18614,12 +18532,12 @@ RTS
     ;
     MOVE.w 4(A2),D1
 
-    CMP.w #-$2,D1 : BNE.w 'notvfin              ; was #allocvars
+    CMP.w #-$2,D1 : BNE.w 'notvfin              ; was #varslib
       BSR.w makevsize
       BRA.w 'more
    'notvfin
 
-    CMP.w #-$12D,D1 : BNE.w 'more               ; was #65235
+    CMP.w #-$12D,D1 : BNE.w 'more               ; was #strings1lib
       BSR.w makessize
       BRA.w 'more
    'more
@@ -18657,8 +18575,8 @@ tokejsr2:
   MOVE.w #$FFFF,lasta6
 
 Atokejsr:                                                 ;tokejsr org source
-    ;make a jsr (or simple reg get) from d1
-    ;
+  ;-- make a jsr (or simple reg get) from d1
+  ;-- 
   MOVEM.l D0-d7/A0-a6,-(A7)
   MOVE.b #1,nostringopt
   JSR searchinstr
@@ -24803,7 +24721,6 @@ listsize:  Ds.w 1
   ;    ADDQ #1,a5
   ;  BRA '2
   ; '1
-  ;  MOVE.l a5,lastsourcepos
     MOVE.b #1,dimkeep
     JSR get1bytemain
  'nokeep
@@ -24813,19 +24730,19 @@ listsize:  Ds.w 1
   dodim2:
   CLR.w listadd
   CMP.w ##TokenID_List,D0 : BNE.w 'notalist
-    MOVE.w #$0008,listadd           ; it's a list
+    MOVE.w #$0008,listadd           ; it's a list, we need 8 additional bytes for the links
     MOVE.w #$FFFA,D1 : JSR uselib   ; is #65530, memlib                      
     JSR get1bytemain
  'notalist
 
   CLR.w nonew
-  JSR getparameter
+  JSR getparameter ; load the variable name from current position in D0 into namebuffer
+
+  BTST #$1,flagmask+1 : BEQ.w JUMP_syntaxerr
 
   ;-- check if variable has been already declared as another type
-  JSR checkdoubledeclare
-  
-  BTST #$1,flagmask+1 : BEQ.w JUMP_syntaxerr
-  
+  ;BSR checkdoubledeclare ; is buggy as it destroys content of namebuffer that is needed for fetchvars!!
+
   JSR fetchvars
 
   MOVE.w notshared,D1 : BNE.w 'added
@@ -24836,6 +24753,11 @@ listsize:  Ds.w 1
 
     MOVE.w proceduremode,D2 : BNE.w 'reloc
       ;
+      ;!regs2stack
+      ;!basic
+      ;log2PED{"redim a gobal var!"}
+      ;!asm
+      ;!stack2regs
       MOVE.w globalvarpointer,-(A7)
       MOVE.w $4(A3),globalvarpointer
       ADDQ.w #4,globalvarpointer
@@ -24899,14 +24821,17 @@ JUMP_redimerr JMP redimerr
 
 .write_dim_code:                                           ;dimwrite org source
   MOVE.w #$FFFF,nonew                                      ;#-1,nonew org source
-  MOVE.w beginarr,D1 : JSR writeword
-  MOVEQ.l #$00,D1    : JSR writeword
+  
+  MOVE.w beginarr,D1 : JSR writeword                       ; write ...
+  MOVEQ.l #$00,D1    : JSR writeword                       ; write MOVE.l x,d0
+
   MOVEQ.l #$04,D1
   BTST #$0,flagmask+1 :BNE.w 'pointer
     MOVE.w 8(A2),D1
  'pointer
-  ADD.w listadd(PC),D1                                     ;size of one element.
-  MOVE.w D1,listsize : JSR writeword
+  ADD.w listadd(PC),D1                                     ; size of one element.
+  MOVE.w D1,listsize : JSR writeword                       ; write size to x (see above)
+
   CLR.w temp2                                              ;# dim's got
   MOVE.l A3,-(A7)
 
@@ -24914,7 +24839,7 @@ JUMP_redimerr JMP redimerr
   ADDQ.w #1,temp2
   MOVEQ.l #$03,D2                                          ;get word
   MOVE.w notshared,-(a7)
-  JSR eval
+  JSR eval                                                 ;eval the next parameter ? and write NOVE.L <number arry elements>,D1
   MOVE.w (a7)+,notshared
   
   ;TST.b debugmode : BEQ.w 'norerr0
@@ -24922,10 +24847,10 @@ JUMP_redimerr JMP redimerr
   ;'norerr0
   ;MOVE.w #$C402,D1 : BSR.w Atokejsr
 
-  MOVE.w #$5281,d1 : JSR writeword                         ; opcode addq.l #1,d1
+  MOVE.w #$5281,d1 : JSR writeword                         ; write opcode addq.l #1,d1
   
 
-  ;multiplycode:   Dc.b $0C,$81,$00,$00,$FF,$FF                   ;CMPI.L  #$000FFFF,D1
+  ;multiplycode:   Dc.b $0C,$81,$00,$00,$FF,$FF                   ;CMPI.L  #$0000FFFF,D1
   ;                Dc.b $64,$00,$00,$08                           ;BCC.W   bigmul
   ;                Dc.b $C1,$C1                                   ;  MULS.W D1,D0
   ;                Dc.b $60,$00,$00,$06                           ;  BRA endmul
@@ -24937,10 +24862,10 @@ JUMP_redimerr JMP redimerr
   ;-- write MULS-code variants for 68000/68020+
   MOVE.l multiplycode(PC),D1    : JSR writelong
   MOVE.w multiplycode+4(PC),D1  : JSR writeword
-  MOVE.l multiplycode+6(PC),D1  : JSR writelong
+  MOVE.l multiplycode+6(PC),D1  : JSR writelong            ; code for calculation needed mem size
   MOVE.w multiplycode+10(PC),D1 : JSR writeword
   MOVE.l multiplycode+12(PC),D1 : JSR writelong
-  MOVE.l multiplycode+16(PC),D1 : JSR writelong
+  MOVE.l multiplycode+16(PC),D1 : JSR writelong            
 
   MOVE.w proceduremode,D2 : BEQ.w 'global
     SUBQ.w #4,locvaroff
@@ -24959,12 +24884,12 @@ JUMP_redimerr JMP redimerr
       TST.w notshared : BEQ 'doit_l2
         SUB.l #$00010000,d1
    'doit_l2
-    JSR writelong
+    JSR writelong                                         ; something like  MOVE.L -$7FD3(a5),d1
  'doit_l1
 
-  MOVE.l putarr,D1
+  MOVE.l putarr,D1  
   TST.w notshared : BNE 'doit_l1a
-    JSR writelong
+    JSR writelong                                         ; something like MOVE.l d0,-$7FD3(a5)
     BRA 'doit_l4
  'doit_l1a
     JSR pokela5d                                          ; write A5
@@ -25000,15 +24925,14 @@ JUMP_redimerr JMP redimerr
                                                            ;MOVE.W  #$0000,D3
   MOVE.w $4(A3),$2(A0)                                     ; put values into d2 and d3
   MOVE.w putarr+2,$6(A0)
-  MOVE.l (A0)+,D1 :  JSR writelong
-  MOVE.l (A0),D1  :  JSR writelong
+  MOVE.l (A0)+,D1 :  JSR writelong                         ; something like MOVE.w #-$7FD7,d2 pointer to globalvar: pointer to existing array
+  MOVE.l (A0),D1  :  JSR writelong                         ; something like MOVE.w #-$7FD3,d3 pointer to globalvar: size of existing array
 
   TST.b dimkeep : BNE 'care_l3
    'care_l1                                  ; obsolete label??
     MOVE.w #$C400,D1                         ; arrayslib: newarray
     BRA 'care_l2
  'care_l3
-    JSR do_honitos
     MOVE.w #$C405,d1                         ; arrayslib: newarray2, this will copy the current array to the new one
  'care_l2
 
@@ -25429,48 +25353,57 @@ modetable:   Dc.l typemode
 newtypebase: Dc.l newtype_byte
 
 newtype_byte:                                              ;bytetype     1
-  Dc.l newtype_word,$01
+  Dc.l newtype_word
+  Dc.l $00000001
   Dc.w $0001
   Dc.b 13,"b",0,0
 
 newtype_word:                                              ;wordtype     2
-  Dc.l newtype_long,$02
+  Dc.l newtype_long
+  Dc.l $00000002
   Dc.w $0002
   Dc.b 13,"w",0,0
 
 newtype_long:                                              ;longtype     3
-  Dc.l newtype_quick,$03
+  Dc.l newtype_quick
+  Dc.l $00000003
   Dc.w $0004
   Dc.b 13,"l",0,0
 
 newtype_quick:                                             ;quicktype    4
-  Dc.l newtype_float,$04
+  Dc.l newtype_float
+  Dc.l $00000004
   Dc.w $0004
   Dc.b 13,"q",0,0
 
 newtype_float:                                             ;floattype    5
-  ;Dc.l addresstype,$05
+  ;Dc.l addresstype
+  ;Dc.l $00000005
   Dc.l newtype_double,$05                                  ;make problems on old residents
   Dc.w $0004
   Dc.b 13,"f",0,0
 
 ;addresstype:                                               ;addresstype 6
-;  Dc.l newtype_double,$06
+;  Dc.l newtype_double
+;  Dc.l $00000006
 ;  Dc.w $0004
 ;  Dc.b 13,"a",0,0
 
 newtype_double:                                            ;doubletype   5
-  Dc.l newtype_string,$05                                  ;
+  Dc.l newtype_string
+  Dc.l $00000005
   Dc.w $0008
   Dc.b 13,"d",0,0
 
-newtype_string:
-  Dc.l $0000000,$07                                        ;stringtype   7
+newtype_string:                                            ;stringtype   7
+  Dc.l $0000000
+  Dc.l $00000007
   Dc.w $0004
   Dc.b 13,"s",0,0
 
 dummytype:
-  Dc.l $00,$00
+  Dc.l $00000000
+  Dc.l $00000000
   Dc.w $0000
   Dc.b $01,$00,$00,$00
 
@@ -27746,6 +27679,7 @@ RTS
 
 .checkdoubledeclare                        ; check of double used var names  by bernd roesch  20150315
   MOVEM.l d0-d2/a0-a5,-(a7)
+
   TST.w proceduremode : BEQ 'global       ;1 in function
     LEA firstglob,a2
     JSR findvariable2 : BEQ 'isused
@@ -27758,27 +27692,29 @@ RTS
     MOVEM.l (a7)+,d0-d2/a0-a5
     RTS
  'global
-    JSR findvariable : BNE 'isunused
+  
+  JSR findvariable : BNE 'isunused
 
- 'isused
-  MOVE.w lastchar,-(a7)                                  ; get the typename from source
-  JSR getparameter2
-  MOVE.w (a7)+,lastchar
-  MOVE.l $a(a2),a0                                       ; get the typename
-  LEA $b(a0),a0
-  LEA namebuffer,a1
+   'isused
+    MOVE.w lastchar,-(a7)                               
+    JSR getparameter2                                   ; get the type from source  
+    MOVE.w (a7)+,lastchar
 
- 'again
-    CMPM.b (a0)+,(a1)+ : BNE 'error                      ; compare typenames   
-  TST.b (a1) : BNE 'again                                
-  TST.b (a0) : BNE 'error                                ; it is same variable and same type so it is allowed to redim or redefine  
+    MOVE.l $a(a2),a0                                    ; get the typename
+    LEA $b(a0),a0
+    LEA namebuffer,a1
+
+   'again
+      CMPM.b (a0)+,(a1)+ : BNE 'error                   ; compare typenames   
+    TST.b (a1) : BNE 'again                                
+    TST.b (a0) : BNE 'error                             ; it is same variable and same type so it is allowed to redim or redefine  
 
  'isunused
+
   MOVEM.l (a7)+,d0-d2/a0-a5
 RTS
 
- 'error
-JMP errormsg_declaredtwice
+'error : JMP errormsg_declaredtwice
 
 
 checka4a5
@@ -28826,15 +28762,8 @@ RTS
 
 .honitos_data:
   !regs2stack
-  MOVE.l A0,D0
   !basic
-
-  temp1a0.l = PutRegD0
-  mess11.s = ""
-  For ti.b = 0 To 16 Step 4
-    mess11 + Hex$(Peek.l(temp1a0-4+ti)) + "\\n"
-  Next ti
-  error{mess11}
+  log2PED{"namebuffer: " + Peek.s(?namebuffer)}
   !asm
   !stack2regs
 RTS
