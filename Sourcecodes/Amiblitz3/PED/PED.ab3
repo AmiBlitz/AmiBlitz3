@@ -13,8 +13,8 @@
 ; StringBuffer    = 64000
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
-; Version         = 3.10.0
-; NumberOfBuilds  = 3452
+; Version         = 3.10.1
+; NumberOfBuilds  = 3472
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,11 +30,11 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 7130
-; CursorColumn    = 12
-; LabelSearch     = ""
+; CursorLine      = 3900
+; CursorColumn    = 1
+; LabelSearch     = "_icon"
 ; LabelRemark     = 0
-; LabelAll        = 0
+; LabelAll        = 1
 ; LabelCase       = 0
 ; LabelPosition   = 0
 ; 
@@ -583,7 +583,6 @@ NEWTYPE.ped
   sourceFileHandle.l
   inString.b
   noDetokenizing.b
-  keepString.b
   convertAsm.b
   doTokenize.w
   debugMode.b
@@ -806,7 +805,7 @@ NEWTYPE .winprefs
   console_on.b
 End NEWTYPE
 Dim wpref.winprefs(3)
-DEFTYPE.winprefs wtemp
+DEFTYPE.winprefs winLayout
 
 NEWTYPE.custommenu
   itemname.s
@@ -1042,11 +1041,11 @@ End Macro
 ; ------------------------------------------------------
 .FUNCTIONS
 
-Statement WZ_CloseAllWindows{}                    ; made a Statement to close all (used) Wizard Windows to remove double code  tomsmart1
+Statement WZ_CloseAllWindows{@killmenus.b}
   Gosub close_contexthelp
   Gosub close_popupwindow
 
-  Gosub kill_menus
+  If killmenus Then Gosub kill_menus
 
   Gosub close_instructionbrowser
   Gosub close_definitionbrowser
@@ -2006,13 +2005,20 @@ SHARED ped
   If actualLine = -1 
     actualLine.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
   EndIf
+  
+  ;!log_PrintOut{"setting current sourceline to: " + Str$(actualLine+1)}
 
   *currentSourceLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
-  While actualLine > 0
-    *currentSourceLine = *currentSourceLine\nextLine
-    actualLine - 1
-  Wend
-
+  If actualLine > 0
+    Repeat
+      If *currentSourceLine\nextLine 
+        *currentSourceLine = *currentSourceLine\nextLine
+      Else
+        !log_PrintOut{"There is no next line at: " + Str$(actualLine)}
+      EndIf
+      actualLine - 1
+    Until actualLine = 0
+  EndIf
   ped\ptrCurrentSourceData\CurrentSourceLine = *currentSourceLine
 End Function
 
@@ -2353,7 +2359,7 @@ End Function
 
 Function.b PED_UpdateDefinitionBrowser{action.b, @defname.s,@openwin.b}
 SHARED *newtypebase, *varbase, *constantbase
-SHARED wtemp, ped, AB3Pen()
+SHARED winLayout, ped, AB3Pen()
 SHARED lev, newtype_found, quicktype, pos$(), postype$()
 
   !log_PrintOut{"UpdateDefinitionBrowser action [" + Str$(action) + "], string [" + Str$(defname) + "]"}
@@ -2362,7 +2368,7 @@ SHARED lev, newtype_found, quicktype, pos$(), postype$()
   If openwin = -1
     If NOT WZ_IsOpen{"WIN_NEWTYPE"}
       !log_PrintOut{"opening definitionbrowser."}
-      USEPATH wtemp
+      USEPATH winLayout
       WZWindow WZID("WIN_NEWTYPE"),?wzgui,255,\type_x,\type_y,\type_w,\type_h,WZID("WIN_NEWTYPE")
       WZ_AddMenuStrip{"WIN_NEWTYPE", ped\menuStrip}
       If Peek.l(*varbase) = 0
@@ -2452,13 +2458,13 @@ SHARED lev, newtype_found, quicktype, pos$(), postype$()
     InitArgParse defname
     word1$ = NextArg$
     word2$ = NextArg$
+    CaseSense Off
   EndIf
 
   Select defmode
   Case 0 ; constantlist
     If word1$ <> ""
       WZ_ClearTable{"TYPETABLE"}
-
       *cb.l = *constantbase
       If *cb
         *cb = Peek.l(*cb)
@@ -2581,7 +2587,6 @@ SHARED lev, newtype_found, quicktype, pos$(), postype$()
           WZ_TableSort{"TYPETABLE",3}
         Else
           !log_PrintOut{"searching for type with word1$[" + word1$ + "], word2$["+word2$ + "]"}
-          CaseSense Off
           *nt = Peek.l(*nt)
           While *nt
             b$ = Peek.s(*nt + 11)
@@ -2868,7 +2873,7 @@ End Function
 Function.s PED_DetokenizeText{strLine.s}
 SHARED ped, pedconfig, *preProcessor, linebuff$
 
-  If ped\doTokenize AND ped\noDetokenizing = 0
+  If ped\doTokenize
     _strLen.w = FLen(strLine)
     If _strLen
       If pedconfig\usePreProcessor
@@ -2889,7 +2894,7 @@ SHARED ped, pedconfig, *preProcessor, linebuff$
             ;-- we found a token if the byte is negative?
             If ped\inString = 0
               If (curChar < 0)
-                _token.l = Peek.w(&strLine + i) AND $FFFF
+                _token.l = Peek.w(&strLine + i)
                 _tokname.s = PED_GetTokenName{_token}
                 linebuff$ + _tokname
                 i + 1 ; skip next byte as it is part of the replaced token
@@ -2915,90 +2920,67 @@ Function.s PED_Detokenize{*sourceLine.sourceLine}
   Function Return PED_DetokenizeText{Peek.s(*sourceLine + 9)}
 End Function
 
-Function.b PED_Detokenize2Printbuffer{ptrOrgString.l}
+Function.b PED_Detokenize2Printbuffer{lineaddr.l, strLen.w}
 SHARED ped
 
-  ;-- clear textBufferPrint
-  ;FillMem ped\ptrTextbufferPrint, #MAX_Columns, 0
-  MemCls ped\ptrTextbufferPrint, #MAX_Columns, 0
+  If strLen
+    ;-- detokenize but keep the tokenbit!
+    runnerP.w = 0
+    ped\inString = False
+    For i.w = 0 To strLen - 1
+      curChar.b  = Peek.b(lineaddr + i)
+      ;-- check if we are in a string      
+      If curChar = $22 Then ped\inString = NOT ped\inString
 
-  _strLen.w = Len(Peek.s(ptrOrgString))
-  If _strLen
-    If ped\keepString = 0 Then ped\inString = False
-
-    If ped\noDetokenizing
-      ;-- just copy the current text line to the printBuffer
-      CopyMem_ ptrOrgString, ped\ptrTextbufferPrint, _strLen
-    Else
-      ;-- detokenize but keep the tokenbit!
-      runnerP.w = 0
-      For i.w = 0 To _strLen - 1
-        curChar.b  = Peek.b(ptrOrgString + i)
-        If curChar = $22 Then ped\inString = NOT ped\inString
-        If ped\inString = 0 AND (curChar < 0)
-          _token.l = Peek.w(ptrOrgString + i)
+      ;-- we found a token if the byte is negative?
+      If ped\inString = 0
+        If (curChar < 0)
+          _token.l = Peek.w(lineaddr + i)
           _tokname.s = PED_GetTokenName{_token}
           For j.b = 0 To FLen(_tokname)-1
             Poke.b ped\ptrTextbufferPrint + runnerP, Peek.b(&_tokname + j) BitSet 7
             runnerP + 1 ; skip next byte as it is part of the replaced token
           Next j
-          i + 1
+          i + 1 ; skip next byte as it is part of the replaced token
         Else
           Poke.b ped\ptrTextbufferPrint + runnerP, curChar
           runnerP + 1
         EndIf
-      Next i
-    EndIf
+      Else
+        Poke.b ped\ptrTextbufferPrint + runnerP, curChar
+        runnerP + 1
+      EndIf
+    Next i
   EndIf
 
   Function Return True
 End Function
 
 Statement PED_CopyPrintbuffer2Textbuffer{}
-SHARED ped, sourceWindow
-
-  ;-- copy current printed line to textbuffer
-  tmpColumn.w = ped\ptrCurrentSourceData\Column                           ; save Columnpos as it is changed for process_highlighting
+SHARED ped
 
   char.b = Peek.b(ped\ptrTextbufferPrint)
   If char <> 0
-    tmpD2.w = 0
-    tmpD3.w = 0
+    
     textBufferPos.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-    If char <> ped\labelIdentifier Then Goto jump_into_it
-    ;Gosub copy_to_textBuffer
-    Poke.b textBufferPos + tmpD2, char
-    Repeat
-      tmpD2 + 1
-      char = Peek.b(ped\ptrTextbufferPrint + tmpD2)
-      If char <> 0
-jump_into_it:
-        ;Gosub copy_to_textBuffer
-        Poke.b textBufferPos + tmpD2, char
-      End If
-    Until char = 0
+    runner.w = 0
+
+    While char <> 0
+      Poke.b textBufferPos + runner, char
+
+      runner + 1
+      char = Peek.b(ped\ptrTextbufferPrint + runner)
+    Wend
   EndIf
 
-  ;-- restore Columnposition
-  ped\ptrCurrentSourceData\Column = tmpColumn
-  Statement Return
-
-.copy_to_textBuffer:
-  Poke.b textBufferPos + tmpD2, char
-  ;If tmpD2 <= ped\ptrCurrentSourceData\ColumnsOffset
-  ;  If tmpD3 <= sourceWindow\visibleColumns
-  ;    ped\ptrCurrentSourceData\Column = tmpD3
-  ;    tmpD3 + 1
-  ;  EndIf
-  ;EndIf
-  Return
 End Statement
 
 ;--WIP
-NEWTYPE.helpIndexIncludeFileItem
-  id.b
-  includeFileName.s
-End NEWTYPE
+;NEWTYPE.helpIndexIncludeFileItem
+;  id.b
+;  includeFileName.s
+;End NEWTYPE
+;Dim HelpIndexCacheFiles.helpIndexIncludeFileItem(0)
 
 NEWTYPE.helpIndexItem
   name.s
@@ -3207,7 +3189,7 @@ End Statement
 
 
 Statement PED_CreateHelpIndexTextFile{}
-SHARED pedconfig, HelpIndexCache()
+SHARED pedconfig
 
   ;-- check if Indexfile is available and delete it
   If dos_Exist{pedconfig\HelpIndexTextFile} Then dos_Delete{pedconfig\HelpIndexTextFile}
@@ -3218,8 +3200,6 @@ SHARED pedconfig, HelpIndexCache()
     WZ_ShowMessage{!TRANS{"Updating indexfile for includes onlinehelp..."},0}
   
     CaseSense On
-
-    ClearList HelpIndexCache()
 
     ;-- scan for subdirs
     NEWTYPE.dirs
@@ -3292,8 +3272,8 @@ SHARED pedconfig, HelpIndexCache()
   If fid<>-1
     file_Cache{fid}
     
-    row.s = ""
     ClearList HelpIndexCache()
+    row.s = ""
     While file_EOF{fid} = False
       row = file_ReadLine{fid}
 
@@ -3323,11 +3303,13 @@ SHARED pedconfig, HelpIndexCache()
                 Default     : help$ = typ$
               End Select
             End If
+
             If AddItem(HelpIndexCache())
               HelpIndexCache()\name  = name$
               HelpIndexCache()\helpText  = help$
               HelpIndexCache()\includeFileName = filename$
             End If
+            
           End If
         End If
       End If
@@ -3416,8 +3398,9 @@ SHARED HelpIndexCache()
 
   result.s = ""
   lowerEntry.s = LCase$(entry)
+
   ResetList HelpIndexCache()
-  While NextItemFast(HelpIndexCache()) OR result <> ""
+  While NextItemFast(HelpIndexCache()) AND (result = "")
     If LCase$(HelpIndexCache()\name) = lowerEntry
       Select entrytype
       Case #INDEXHELP_NAME : result = HelpIndexCache()\name
@@ -3426,8 +3409,7 @@ SHARED HelpIndexCache()
       End Select
     End If
   Wend
-
-  Function Return "" 
+  Function Return result
 
 End Function
 
@@ -3642,26 +3624,27 @@ SHARED ped,sourceWindow,AB3Pen()
   
 End Statement
 
-Statement PED_PrintTokenizedText{*textaddr.l, startPos.w, size.w, tposx.w, tposy.w}
+
+Statement PED_PrintTokenizedText{startPos.w, size.w, tposx.w, tposy.w}
 SHARED sourceWindow, ped, pedconfig, AB3Pen()
 USEPATH sourceWindow
+
+  ;-- this function prints the printbuffer (that holds the detokenized source line).
+  ;-- each detokenized tokencharacter has the bit 7 set to be recognized as a token character
+  ;-- the functions checks each character for that bit and prints the characters as normal text or as token text
 
   ;-- work with printbuffer
   tmpString2.s = Peek.s(ped\ptrTextbufferPrint)
 
   ;-- check if source left of display start position has an opened string literal
-  If ped\keepString = 0
-    chkString.b = 0
-
-    If tmpString2 <> ""
-      runner.w = 0
-      While runner < startPos
-        If Peek.b( &tmpString2 + runner) = $22 Then chkString = NOT chkString
-        runner + 1
-      Wend
-    EndIf
+  ped\inString = 0
+  If tmpString2 <> ""
+    runner.w = 0
+    While runner < startPos
+      If Peek.b( &tmpString2 + runner) = $22 Then ped\inString = NOT ped\inString
+      runner + 1
+    Wend
   EndIf
-  ;!log_PrintOut{"we are in a string: " + Str$(chkString)}
 
   tposx = tposx / \font\tf_XSize  
   If size < 0 Then size = \visibleColumns - tposx
@@ -3677,9 +3660,9 @@ USEPATH sourceWindow
     runner + 1
     curChar.b = Peek.b(&tmpPrint + runner)
     If curChar <> 0
-      If curChar = $22 Then chkString.b = NOT chkString
-      If chkString = 0
-        If curChar < 0 Then Goto exit_printloop   ; Token found, goto routine to print token
+      If curChar = $22 Then ped\inString = NOT ped\inString
+      If ped\inString = 0                                        ; ignore characters > 127 if they are in a string
+        If curChar < 0 Then Goto exit_printloop                  ; Token found, goto routine to print token
       EndIf
       tmpExpand + Chr$(curChar)
     EndIf
@@ -3936,29 +3919,50 @@ End Statement
 Statement PED_PrintSourceText{*textaddr.l, startPos.w, size.w, tposx.w, tposy.w, @clearEndOfLine.b}
 SHARED sourceWindow, ped, pedconfig, AB3Pen()
 
-  ;-- detokenize it but keep token indicator (bit7)
-  tmpString1.s = Peeks$(*textaddr,#MAX_Columns - 1)    
-  PED_Detokenize2Printbuffer{&tmpString1}  ; TODO: prepare for syntaxhighlighting
+  ;-- clip to max columns
+  tmpString.s = Peek.s(*textaddr)
+  _strLen.w = FLen(tmpString)
+  If _strLen > #MAX_Columns - 1 Then _strLen = #MAX_Columns - 1
+
+  ;-- clear textBufferPrint
+  MemCls ped\ptrTextbufferPrint, #MAX_Columns, 0
+
+  ;-- just copy the current text line to the printBuffer
+  ;-- or
+  ;-- detokenize it, but keep token indicator (bit7) and copy the text to the printbuffer
+  If ped\noDetokenizing
+    CopyMem_ *textaddr, ped\ptrTextbufferPrint, _strLen
+  Else
+    PED_Detokenize2Printbuffer{*textaddr, _strLen}  ; TODO: prepare for syntaxhighlighting
+  EndIf
 
   ;-- print the sourcetext
   If ped\doTokenize
-    PED_PrintTokenizedText{*textaddr, startPos, size, tposx, tposy}
+    PED_PrintTokenizedText{startPos, size, tposx, tposy}
   Else
     tmpString.s = UnRight$(Peek.s(*textaddr), startPos)
     textlen.w = FLen(tmpString.s)
-    If textlen > size Then textlen = size
-    PED_PrintText{*textaddr + startPos, tposx, tposy, textlen, AB3Pen(#AB3_cother), AB3Pen(#AB3_cbackground)}    
+
+    If (size <> -1) AND (textlen > size) Then textlen = size
+
+    PED_PrintText{*textaddr + startPos, tposx, tposy, textlen, AB3Pen(#AB3_cother), AB3Pen(#AB3_cbackground)}
   EndIf
 
-  ;-- clear end of line
+  ;-- store x position of rastport cursor to clear from there after syntax highlighting
+  clearXfrom.w = sourceWindow\win\RPort\cp_x
+   
+  ;-- do syntax highlighting if activated
+  ;-- printbuffer is used here!  
+  If pedconfig\highlighting 
+    PED_PrintSyntaxHighlighting{startPos, size, tposx, tposy}
+  EndIf
+
+  ;-- optionally clear end of line
   If clearEndOfLine = True
     USEPATH sourceWindow
 
-    If \win\RPort\cp_x <= \BoxLeft
-      rectx.w = \win\RPort\cp_x + 1
-    Else
-      rectx.w = \win\RPort\cp_x
-    EndIf
+    rectx.w = clearXfrom
+    If clearXfrom <= \BoxLeft Then rectx  + 1
     recty.w = \BoxTop + tposy * \font\tf_YSize
     rectw.w = \BoxWidth
     recth.w = recty + \font\tf_YSize-1
@@ -3971,11 +3975,7 @@ SHARED sourceWindow, ped, pedconfig, AB3Pen()
       !log_PrintOut{Str$(recty) + ", " + Str$(recth)}
     EndIf
   EndIf
-  
-  ;-- do syntax highlighting if activated
-  If pedconfig\highlighting 
-    PED_PrintSyntaxHighlighting{startPos, size, tposx, tposy}
-  EndIf
+
 End Statement
 
 Statement PED_PrintLineNumber{}
@@ -4046,7 +4046,6 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   If ped\ptrCurrentSourceData\CurrentSourceLine = 0 Then Statement Return
 
   ;-- clear current line in textBuffer
-  ;FillMem ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns, @" "
   MemCls ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns, @" "
 
   If Peek.b(ped\ptrCurrentSourceData\CurrentSourceLine + 9) <> 0   ; first character of text
@@ -4437,9 +4436,6 @@ SHARED ped, sourceWindow
 
   !PED_storeCursorPosition
 
-  ped\noDetokenizing = 1
-  ped\keepString = 1
-
   Select direction
   Case #SCROLL_LEFT
     curX.w = sourceWindow\visibleColumns - sourceWindow\scrollSize
@@ -4455,12 +4451,11 @@ SHARED ped, sourceWindow
     tsize.w = -1
   End Select
   curX = curX * sourceWindow\font\tf_XSize
-  
+
+  ;-- as we are printing the textbuffer, we do not need to detokenize again!  
+  ped\noDetokenizing = 1                      
+
   lineaddr.l = ped\ptrTextbuffer
-
-  ;!log_PrintOut{"redrawTextbuffer, startPos: " + Str$(startPos) + ", curX " + Str$(curX)}
-  ;!log_PrintOut{"first line of textbufferoffset [" + Peeks$(lineaddr,30) + "]"}
-
   For curY.w = 0 To sourceWindow\visibleLines - 1    
     If Peek.b(lineaddr) <> 0
       PED_PrintSourceText{lineaddr, startPos, tsize, curX, curY, False}
@@ -4471,16 +4466,14 @@ SHARED ped, sourceWindow
     ; -- increase text line pointer in textbufferoffset
     lineaddr + #MAX_Columns
   Next curY
-  
+  ped\noDetokenizing = 0
+
   ;-- redraw or update the block
   If direction = #FULL_REDRAW
     PED_DrawBlockmark{}
   Else
     PED_UpdateScrollBlockmark{direction}
   EndIf
-
-  ped\keepString = 0
-  ped\noDetokenizing = 0
 
   !PED_RestoreCursorPosition
 End Statement
@@ -4493,7 +4486,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   If *tmpcsl = 0 Then Statement Return
 
   *storeCurrentSourceLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
-  !PED_storeCursorPosition
+  !PED_storeCursorPosition 
 
   ;-- clear textbuffer
   PED_ClearTextbuffer{} : ped\ptrCurrentSourceData\TextBufferOffset = 0
@@ -4570,7 +4563,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
 
       *tmpcsl = *tmpcsl\nextLine
     ;Else
-      ;!log_PrintOut{"redraw: no next line at displayline " + Str$(cl),#log_information}
+    ;  !log_PrintOut{"redraw: no next line at displayline " + Str$(cl),#log_information}
     EndIf
   Next cl
 
@@ -4705,7 +4698,7 @@ End Statement
 
 
 Statement PED_KillBlock{}
-SHARED ped
+SHARED ped, sourceWindow
 USEPATH ped\ptrCurrentSourceData
   If \BlockEndY = $FFFFffff Then Statement Return
 
@@ -4783,7 +4776,7 @@ USEPATH ped\ptrCurrentSourceData
       ;-- remove the sourcelines
       If *tempLine
         strline$ = PED_Detokenize{*tempLine}
-        !log_PrintOut{Str$(si) + " deleting " + Left$(strline$, 20)}
+        !log_PrintOut{Str$(si) + " deleting " + Left$(strline$, 20),#log_debug}
         If PED_CutSourceLine{*tempLine} Then PED_DeleteSourceLine{*tempLine}
         killedRows + 1 
         skip_killofline: 
@@ -4796,19 +4789,20 @@ USEPATH ped\ptrCurrentSourceData
     \SourceChanged = $FFFF
   EndIf 
 
-  ;-- remove block selection
-  PED_DrawBlockmark{}
-  !PED_ResetBlockflag
+  !log_PrintOut{"Kill finished, total lines left: " + Str$(\TotalLines)}  
 
-  ;-- adjust the display
-  \Column = \BlockStartX
   ;-- check if we have to move the DisplayLineOffset
-  If \DisplayLineOffset + \DisplayLine > \TotalLines
-    \TotalLines - 1
-    \DisplayLineOffset = \TotalLines
-    \DisplayLine = 0
+  lineNum.l = \DisplayLineOffset + \DisplayLine
+
+  If lineNum > \TotalLines
+    If lineNum + sourceWindow\visibleLines > \TotalLines - 1
+      firstrow.l = Max(0, \TotalLines - sourceWindow\visibleLines)
+
+      \DisplayLineOffset = firstrow
+      \DisplayLine       = \TotalLines - firstrow - 1
+    EndIf
   Else
-    If (\DisplayLineOffset + \DisplayLine) > \BlockStartY AND (\DisplayLineOffset + \DisplayLine) > \BlockEndY
+    If (lineNum > \BlockStartY) AND (lineNum > \BlockEndY)
       !log_PrintOut{"move cursor " + Str$(killedRows) + " lines up, current displayline: " + Str$(\DisplayLine)}
       If \DisplayLine - killedRows < 0
         \DisplayLineOffset - killedRows
@@ -4822,8 +4816,16 @@ USEPATH ped\ptrCurrentSourceData
     EndIf
   EndIf
 
-  ;!log_PrintOut{"Kill finished, totallines left: " + Str$(\TotalLines + 1)}
   PED_SetCurrentSourceLine{}
+
+  ;-- adjust the display
+  \Column = \BlockStartX
+
+  ;-- remove block selection
+  PED_DrawBlockmark{}
+  !PED_ResetBlockflag
+
+  ;-- redraw the source
   PED_RedrawSource{}    
 End Statement
 
@@ -5023,7 +5025,7 @@ USEPATH ped\ptrCurrentSourceData
   *tempLine.sourceLine = \CurrentSourceLine
   newLinenum.l = \DisplayLine + \DisplayLineOffset
   
-  ;!log_PrintOut{"Gotoline: " + Str$(lineNum) + " current line:" + Str$(newLinenum)}
+  !log_PrintOut{"Gotoline: " + Str$(lineNum) + " current line:" + Str$(newLinenum)}
 
   While lineNum <> newLinenum
     If lineNum > newLinenum
@@ -5068,15 +5070,18 @@ USEPATH ped\ptrCurrentSourceData
   EndIf
 
   Select columnMode
+
   Case #LINE_START
     \ColumnsOffset = 0
     \Column = 0
+
   Case #LINE_END
     strline.s = PED_Detokenize{\CurrentSourceLine}
     \Column = FLen(strline)
     PED_CalculateColumnsOffset{}
     ;!log_PrintOut{"set new cursor column to: " + Str$(\ColumnsOffset + \Column)}
   Case #LINE_NOCHANGE  
+
   End Select
 
   !PED_UpdateTextBufferOffset
@@ -5966,11 +5971,11 @@ End Function
 
 
 Statement savewinpref{layoutNum.l}
-  SHARED wpref(),wtemp,pedconfig,sourceWindow
+  SHARED wpref(),winLayout,pedconfig,sourceWindow
 
   used_win.l = Used Window
   ret.l = ask{!TRANS{"The window settings have been saved.\\nPress appropriate FN-Key (F4-F6) to set window configuration."},!TRANS{"Ok"},!TRANS{"Info"}}
-  USEPATH wtemp
+  USEPATH winLayout
 
   \lbrowser_on = 0
   \ibrowser_on = 0
@@ -6062,7 +6067,7 @@ Statement savewinpref{layoutNum.l}
     \console_h = *conwin\Height
   EndIf
   Use Window used_win
-  CopyMem_ &wtemp,&wpref(layoutNum),SizeOf .winprefs
+  CopyMem_ &winLayout,&wpref(layoutNum),SizeOf .winprefs
 End Statement
 
 
@@ -6193,7 +6198,7 @@ Statement map_tokens_to_libs{_tokenMappingFile.s, _updatefile.b}
 End Statement
 
 
-Function.l AutoLayout{*wprefs.winprefs,mode.l}
+Function.l AutoLayout{*wprefs.winprefs, mode.l}
   SHARED sourceWindow, pedconfig
   USEPATH *wprefs
   *scr.Screen = Peek.l(Addr Screen(0))
@@ -6205,33 +6210,32 @@ Function.l AutoLayout{*wprefs.winprefs,mode.l}
   right.l  = *scr\Width-1      - pedconfig\al_rightspace
 
   lock.l = LockIBase_ (0)
-    *myWindow.Window = *scr\FirstWindow
+  *myWindow.Window = *scr\FirstWindow
 
-    While *myWindow
-      rx.l = *myWindow\Width/*myWindow\Height
-      ry.l = *myWindow\Height/*myWindow\Width
-      ;If *myWindow\Title Then rx=1 : ry=1
-      If *myWindow\Flags&#WFLG_BORDERLESS = 0 Then rx=1 : ry=1
-      If rx>2
-        If *myWindow\TopEdge+*myWindow\Height-1 >= bottom
-          bottom = Min(bottom,*myWindow\TopEdge-1)
-        End If
-        If *myWindow\TopEdge<*scr\BarHeight
-          top    = Max(top,*myWindow\TopEdge+*myWindow\Height)
-        End If
+  While *myWindow
+    rx.l = *myWindow\Width/*myWindow\Height
+    ry.l = *myWindow\Height/*myWindow\Width
+    ;If *myWindow\Title Then rx=1 : ry=1
+    If *myWindow\Flags&#WFLG_BORDERLESS = 0 Then rx=1 : ry=1
+    If rx>2
+      If *myWindow\TopEdge+*myWindow\Height-1 >= bottom
+        bottom = Min(bottom,*myWindow\TopEdge-1)
       End If
-
-      If ry>2
-        If *myWindow\LeftEdge+*myWindow\Width-1 >= right
-          right = Min(right,*myWindow\LeftEdge-1)
-        End If
-        If *myWindow\LeftEdge<=0
-          left  = Max(left,*myWindow\LeftEdge+*myWindow\Width)
-        End If
+      If *myWindow\TopEdge<*scr\BarHeight
+        top    = Max(top,*myWindow\TopEdge+*myWindow\Height)
       End If
-      *myWindow = *myWindow\NextWindow
-    Wend
+    End If
 
+    If ry>2
+      If *myWindow\LeftEdge+*myWindow\Width-1 >= right
+        right = Min(right,*myWindow\LeftEdge-1)
+      End If
+      If *myWindow\LeftEdge<=0
+        left  = Max(left,*myWindow\LeftEdge+*myWindow\Width)
+      End If
+    End If
+    *myWindow = *myWindow\NextWindow
+  Wend
   UnlockIBase_ lock
 
   width.l  = right-left+1
@@ -6239,24 +6243,27 @@ Function.l AutoLayout{*wprefs.winprefs,mode.l}
 
 
   Select mode
-    Case 0    ; Layout A
+    Case 0    ; ----- Layout A
       splitpointY.l  = (bottom-top) * 3/4
       splitpointX.l  = (right-left) * 3/4
 
       If splitpointY<700              Then splitpointY=height
       If (right-left)-splitpointX<250 Then splitpointX=right-left-250
 
+      ;-- Source Browser
       \source_x    = left,top,splitpointX,splitpointY
       sourceWindow\WinLeft  = left,top,splitpointX,splitpointY
 
       If (splitpointY<bottom-top+1)
         If (splitpointX>1024)
-          \ibrowser_on = True        ; Instruction Browser
-          \ibrowser_x  = left,(top+splitpointY),(splitpointX/2),bottom-(top+splitpointY)+1
+          ;-- Instruction Browser
+          \ibrowser_on = True
+          \ibrowser_x  = left              ,(top+splitpointY),(splitpointX/2)            ,bottom-(top+splitpointY)+1
+          ;-- Library Browser
           \lbrowser_on = True
           \lbrowser_x  = left+splitpointX/2,(top+splitpointY),splitpointX-(splitpointX/2),bottom-(top+splitpointY)+1
         Else
-          \ibrowser_on = True        ; Instruction Browser
+          \ibrowser_on = True
           \ibrowser_x  = left,(top+splitpointY),(splitpointX),bottom-(top+splitpointY)+1
           \lbrowser_on = False
         End If
@@ -6264,9 +6271,13 @@ Function.l AutoLayout{*wprefs.winprefs,mode.l}
         \lbrowser_on = False
         \ibrowser_on = False
       End If
-      \click_on    = True            ; Source Browser
-      \click_x     = (left+splitpointX),top,width-splitpointX,height*3/5
-      \type_on     = True            ; Definition Browser
+
+      ;-- Source Browser
+      \click_on    = True
+      \click_x     = (left+splitpointX),top             ,width-splitpointX,height*3/5
+
+      ;-- Definition Browser
+      \type_on     = True            
       \type_x      = (left+splitpointX),(top+height*3/5),width-splitpointX,bottom-((height)*3/5)+1-top
 
       If splitpointY<height
@@ -6275,7 +6286,7 @@ Function.l AutoLayout{*wprefs.winprefs,mode.l}
         \console_x   = left,(top),splitpointX,height
       End If
 
-    Case 1    ; Layout B
+    Case 1    ; ----- Layout B
       splitpointX1.l  = (width)  * 1/4 : If splitpointX1<400       Then splitpointX1=400
       splitpointX2.l  = (width)  * 3/4 : If width-splitpointX2<250 Then splitpointX2=width-250
       splitpointY.l   = (height) * 3/5
@@ -6314,7 +6325,7 @@ Function.l AutoLayout{*wprefs.winprefs,mode.l}
       End If
       \console_x    = left,(top+splitpointY),width,height-splitpointY
 
-    Case 2    ; Layout C
+    Case 2    ; ----- Layout C
       splitpointX.l  = (width) * 3/4 : If width-splitpointX<250 Then splitpointX=width-250
       splitpointY.l  = (height) * 3/5
       If splitpointY <400 Then splitpointY=0
@@ -6343,6 +6354,94 @@ Function.l AutoLayout{*wprefs.winprefs,mode.l}
   USELASTPATH
   Function Return True
 End Function
+
+Statement PED_SetWindowLayout{@layout.b}
+SHARED winLayout, wpref(), sourceWindow, ped
+
+  If layout <> -1 Then ped\lastLayout = layout
+
+  CopyMem_ &wpref(ped\lastLayout), &winLayout, SizeOf .winprefs
+
+  USEPATH winLayout
+  If (\lbrowser_w<=0) OR (\lbrowser_h<=0)
+    \lbrowser_x = -2
+    \lbrowser_y = -2
+    \lbrowser_w = -2
+    \lbrowser_h = -2
+  EndIf
+
+  If (\source_h > 0) AND (\source_w > 0)
+    sourceWindow\WinLeft = \source_x
+    sourceWindow\WinTop = \source_y
+    sourceWindow\WinWidth = \source_w
+    sourceWindow\WinHeight = \source_h
+  Else
+    ped\screen = Peek.l(Addr Screen(0))
+    sourceWindow\WinLeft = 0
+    sourceWindow\WinTop  = ped\screen\WBorTop + ped\screen\Font\ta_YSize + 1
+    sourceWindow\WinWidth= ScreenWidth
+    sourceWindow\WinHeight = ScreenHeight - (ped\screen\WBorTop + ped\screen\Font\ta_YSize + 1)
+  EndIf
+End Statement
+
+
+Statement PED_DoWindowlayout{layout.b}
+SHARED ped, sourceWindow, winLayout
+
+  ;-- close alle windows, but don't kill the menu
+  WZ_CloseAllWindows{False}
+
+  ;-- set the layoutsettings
+  If layout = -1
+    AutoLayout{&winLayout, ped\lastAutoLayout}
+  Else
+    PED_SetWindowLayout{layout}
+  EndIf
+
+  ;-- open all windows that are defined in the current layout
+  USEPATH winLayout
+  If \lbrowser_on Then Gosub open_librarybrowser 
+  If \ibrowser_on Then Gosub open_instructionbrowser 
+  If \diag_on Then Gosub open_helpdiag 
+  If \click_on Then Gosub open_sourcebrowser 
+  If \short_on Then Gosub open_shortcuts
+  If \type_on Then Gosub open_definitionbrowser
+
+  ;-- open or resize source window
+  If sourceWindow\win <> 0
+    ChangeWindowBox_ sourceWindow\win,sourceWindow\WinLeft,sourceWindow\WinTop,sourceWindow\WinWidth,sourceWindow\WinHeight
+    RefreshWindowFrame_ sourceWindow\win
+    ; --> recalculations are handled via event IDCMP_CHANGEWINDOW or IDCMP_NEWSIZE !
+  Else
+    Gosub open_sourcewindow
+    If ped\errorCode = #PEDERROR_OPENWINDOW
+      dummy.l = ask{!TRANS{"Unable to open window"},!TRANS{"Ok"},!TRANS{"Error"}}
+      Pop If
+      Goto exit_PED_closeall
+    EndIf
+    PED_CursorOn{}
+  EndIf
+
+  ;-- set focus to defined window
+  FlushEvents
+  If \activewin > 0
+    Activate \activewin
+    Use Window \activewin
+    If Peek.l(Addr Window(\activewin)) <> 0
+      Select \activewin
+        Case 3 : WZ_ActivateGadget{"STRING_LABEL"}
+        Case 2 : WZ_ActivateGadget{"STRING2"}
+        Case 1 : WZ_ActivateGadget{"STRING"}
+        Case 4 : WZ_ActivateGadget{"VAL1"}
+      End Select
+    EndIf
+  Else
+    PED_ActivateSourcewindow{}
+  EndIf
+End Statement
+
+
+
 
 Function.b PED_PanicKill{*exeTask.Task}
   !log_PrintOut{"running exe task [" + Hex$(*exeTask) + "], removing all windows, screen and kill task..."}
@@ -7116,6 +7215,7 @@ exit_PED_closelibraries:
   !log_PrintOut{"closing ports..."}
   If *WBMsgPort Then DeleteMsgPort_ *WBMsgPort
   CNIF #USE_AREXX = 1
+    ;-- send other programs the message to quit now
     !log_PrintOut{"sending AREXX-message QUITPLEASE"}
     ArexxMyMessage.s = "QUITPLEASE" : Gosub arexx_sendmessage
 
@@ -7294,15 +7394,11 @@ Return
 
 .menu_autolayout:
   Select _menuitem.l
-  Case $171 : ped\lastAutoLayout = 0
-  Case $172 : ped\lastAutoLayout = 1
-  Case $173 : ped\lastAutoLayout = 2
+  Case #MENU_GETLAYOUT1 : ped\lastAutoLayout = 0
+  Case #MENU_GETLAYOUT2 : ped\lastAutoLayout = 1
+  Case #MENU_GETLAYOUT3 : ped\lastAutoLayout = 2
   End Select
-  !log_PrintOut{"doing autolayout " + Str$(ped\lastAutoLayout)}
-  AutoLayout{&wtemp,ped\lastAutoLayout}
-  Gosub do_windowlayout
-;  pedconfig\autolayout + 1
-;  If pedconfig\autolayout > 2 Then pedconfig\autolayout = 0
+  PED_DoWindowlayout{-1}
 Return
 
 .menu_settings:
@@ -7311,10 +7407,10 @@ Return
  WZWindow WZID("WIN_SETTINGS"),?wzgui,255,-2,-2,-2,-2,WZID("WIN_SETTINGS")
  Use Window WZID("WIN_SETTINGS")
 
- ; make tab 0 active
+ ;-- make tab 0 active
  WZPrint "SET_PAGES",0
 
-  ; init tempcolors
+ ;-- init tempcolors
  For i.l = 0 To (#MAX_AB3Pens-1) ; relaced wrong 24 by #Max_AB3Pens -1, -1 because 0 to 23  tomsmart1
   AB3RGB_temp(i) = AB3RGB(i)
  Next i
@@ -8249,22 +8345,26 @@ Return
   If *ni
     !log_PrintOut{"writing info-file for [" + ped\sourceFileComplete + "]"}
 
-    ;-- set the icon type as a projectfile
-    *ni\do_Type = #WBPROJECT
-
     ;-- set the default tooltype for the icon
     idefToolTtype.s = "Blitz3:AmiBlitz3"
+
+    ;-- create the Image structure with embedded gfx data
+    iImg.Image\LeftEdge = 0,0, 46,23, 2,?iconImageData,3,0,Null
+
+    ;-- fill the diskobject-structure
+    *ni\do_Magic       =  #WB_DISKMAGIC
+    *ni\do_Version     =  #WB_DISKVERSION
+    *ni\do_Gadget\NextGadget = Null, 0,0,46,24, #GFLG_GADGHBOX|#GFLG_GADGIMAGE, #GACT_IMMEDIATE|#GACT_RELVERIFY, #GTYP_BOOLGADGET, iImg, 0,0,0,0,0,0
+
+    *ni\do_Type        = #WBPROJECT
     *ni\do_DefaultTool = &idefToolTtype
-
-    ;-- create the Image structure with embedded gfx data and assing the Image to the icongadget structure
-    iImg.Image\LeftEdge = 0,0,46,23,2,?iconImageData,3,0,0
-    *ni\do_Gadget\NextGadget = 0,0,0,46,24,5,3,1,iImg,0,0,0,0,0,0
-    *ni\do_CurrentX = #NO_ICON_POSITION ; 92
-    *ni\do_CurrentY = #NO_ICON_POSITION ; 14
-
-    If PutDiskObject_(&ped\sourceFileComplete, *ni) = False
+    *ni\do_CurrentX    = #NO_ICON_POSITION ; 92
+    *ni\do_CurrentY    = #NO_ICON_POSITION ; 14
+    
+    If PutDiskObject_(ped\sourceFileComplete, *ni) = False
       !log_PrintOut{"Could not write DiskObject, error " + Str$(IoErr_),#log_error}
     EndIf
+    FreeDiskObject_(*ni)
   Else
     !log_PrintOut{"Could not init Diskobject structure",#log_error}
   EndIf
@@ -8407,33 +8507,27 @@ Even
     MOVE.l #MODE_OLDFILE,D2
     !ComData_JSR{comFunc_LoadSource}
     !basic
-
-    !log_PrintOut{"loaded " + Str$(ped\ptrCurrentSourceData\TotalLines) + " lines of text"}
-
-    Gosub storeCurrentSourceData
-
-    ;-- restore windows
-    Gosub RestoreLabelAndNewtypeWin
-    project_changelog$ = ""
- 
-    Gosub update_versiongadgets
-    Gosub analyze_loadedsource
-    Gosub calc_SourceWindowDimensions
- 
-    If ped\ptrCurrentSourceData\CursorPosStore
-      !log_PrintOut{"goto stored cursor line: " + Str$(ped\ptrCurrentSourceData\CursorPosStore)}
-      PED_GotoLine{ped\ptrCurrentSourceData\CursorPosStore-1, #LINE_START}
-    EndIf
-
-    !log_PrintOut{"deleting and restoring prefs..."}
-    Gosub delete_tempprefs
-    Gosub save_tempprefs
   Else
-    Gosub other_loading_routine
-    Gosub storeCurrentSourceData
+    Gosub normal_text
+  EndIf
+  !log_PrintOut{"loaded " + Str$(ped\ptrCurrentSourceData\TotalLines) + " lines of text"}
 
-    Gosub analyze_loadedsource
-    Gosub calc_SourceWindowDimensions
+  Gosub storeCurrentSourceData    
+  !log_PrintOut{"deleting and storing xtra prefs..."}
+  Gosub delete_tempprefs
+  Gosub save_tempprefs
+
+  ;-- restore windows
+  Gosub RestoreLabelAndNewtypeWin
+  project_changelog$ = ""
+
+  Gosub update_versiongadgets
+  Gosub analyze_loadedsource
+  Gosub calc_SourceWindowDimensions
+
+  If ped\ptrCurrentSourceData\CursorPosStore
+    !log_PrintOut{"goto stored cursor line: " + Str$(ped\ptrCurrentSourceData\CursorPosStore)}
+    PED_GotoLine{ped\ptrCurrentSourceData\CursorPosStore-1, #LINE_START}
   EndIf
 
   !log_PrintOut{"updating sourcewindow..."}
@@ -8446,7 +8540,7 @@ Even
   PED_ShowMessage{""}
 Return
 
-.other_loading_routine:
+.normal_text:
   !log_PrintOut{"other loading routine called..."}
   ped\sourceFileHandle = PED_OpenFile{loadsourcefilename.s,#MODE_OLDFILE,True}
   ped\sourceFileComplete = loadsourcefilename
@@ -8472,27 +8566,36 @@ Return
   ;ped\ptrCurrentSourceData\SourceDir = dos_PathPart{ped\sourceFileComplete}
   
   PED_SetCurrentDir{}
-
   PED_SetPointerBusy{}
   !PED_ResetBlockflag
-  Gosub free_actualsource
 
+  ;-- set some defaults
+  ped\ptrCurrentSourceData\TextBufferOffset = 0
+  ped\ptrCurrentSourceData\Column = 0
+  ped\ptrCurrentSourceData\ColumnsOffset = 0
+  ped\ptrCurrentSourceData\DisplayLineOffset = 0
+  ped\ptrCurrentSourceData\DisplayLine = 0
+
+  ped\ptrCurrentSourceData\FuncOptimize = 1
+  ped\ptrCurrentSourceData\CreateDebugFile = 0
+  ped\ptrCurrentSourceData\SourceChanged = 0
+  ped\ptrCurrentSourceData\CursorPosStore = 0
+
+  ;--
+  ;-- reading the source
   tmpLine.s = PED_ReadNextLine{}
   If ped\convertAsm Then tmpLine = PED_ConvertASM{tmpLine}
-
+  
   *newLine.sourceLine = PED_CreateNewSourceLine{tmpLine}
   ped\ptrCurrentSourceData\FirstSourceLine = *newLine
   ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
   ped\ptrCurrentSourceData\LastSourceLine = *newLine
+  ped\ptrCurrentSourceData\TotalLines = 1
 
   Repeat
-    *currLine.sourceLine = *newLine
-
     tmpLine = PED_ReadNextLine{}
     If ped\convertAsm Then tmpLine = PED_ConvertASM{tmpLine}
-
     tmpLen.w = FLen(tmpLine)
-    ;!log_PrintOut{Str$(tmpLen) + " [" + tmpLine + "]"}
 
     If tmpLine <> "NoCOntenTwasDelivered"
       If ped\doTokenize AND (ex <> "bb2" AND ex <> "bb")
@@ -8501,14 +8604,17 @@ Return
         ;-- replace TAB with space
         tmpLine = Replace$(tmpLine,Chr$(9)," ")
       EndIf
+
       *newLine = PED_CreateNewSourceLine{tmpLine}
-
-;      !log_PrintOut{"[" + Str$(*newLine\strLength)+ "] >> " + Peek.s(*newLine+9)}
-
-      ped\ptrCurrentSourceData\LastSourceLine = *newLine
-      *currLine\nextLine = *newLine
-      *newLine\previousLine = *currLine
-      ped\ptrCurrentSourceData\TotalLines + 1
+      If *newLine
+        If PED_AppendSourceLine{ped\ptrCurrentSourceData\CurrentSourceLine, *newLine}
+          ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
+        Else
+          !log_PrintOut{"could not append sourceline!",#log_error}
+        EndIf
+      Else
+        !log_PrintOut{"could not create a new sourceline!",#log_error}
+      EndIf
     Else
       tmpLen = 0
     EndIf
@@ -8516,84 +8622,9 @@ Return
 
   PED_CloseFile{ped\sourceFileHandle}
   ped\convertAsm = 0
-  ped\ptrCurrentSourceData\TextBufferOffset = 0
-  ped\ptrCurrentSourceData\SourceChanged = 0
-  ped\ptrCurrentSourceData\Column = 0
-  ped\ptrCurrentSourceData\ColumnsOffset = 0
-  ped\ptrCurrentSourceData\DisplayLineOffset = 0
-  ped\ptrCurrentSourceData\DisplayLine = 0
 
-  ;--
-  ;-- read optional xtrafile
-  ;--
-
-  Goto skip_loadingxtrafile
-
-  If Peek.l(?comFunc_ReadXtraFile) = 0 Then Goto skip_loadingxtrafile
-  tmpStringVar.s = ped\sourceFileComplete + ped\extention_xtra
-  *xtra_fh.l = Open_(&tmpStringVar, #MODE_OLDFILE)
-  If *xtra_fh = 0 Then Goto skip_loadingxtrafile
-
-  PutReg D0,*xtra_fh : MOVE.l d0,-(a7)
-  !asm
-  MOVE.l (a7)+,D7
-  MOVE.l comFunc_ReadXtraFile,D0 : MOVEA.l D0,A5
-  JSR (A5)
-  !basic
-  !log_PrintOut{"opening xtrafile done."}
-  Read_ *xtra_fh, ?comDef_XtraExtendBegin,?comDef_XtraExtendEnd-?comDef_XtraExtendBegin ; xtrabuf,36
-
-;  stackSize.l = Peek.l(?comLong_StackSizeStore)
-;  If stackSize<4096 Then stackSize=4096
-;  Poke.l ?stacksize,stackSize
-;
-  ; -- get the data for creating executables
-  exefilename$ = ""
-  exepathname$ = ""
-  tempexename$ = SPACE$(96)
-
-  Seek_ *xtra_fh,$256,#OFFSET_BEGINNING
-  Read_ *xtra_fh,&tempexename$,96
-  i = 1
-  Repeat
-    char$ = Mid$(tempexename$,i,1)
-    If Asc(char$) <> 0 Then exepathname$ + char$
-    i + 1
-  Until (i = FLen(tempexename$)) OR (Asc(char$) = 0)
-
-  tempexename$ = SPACE$(96)
-  Seek_ *xtra_fh,$316,#OFFSET_BEGINNING
-  Read_ *xtra_fh,&tempexename$,96
-  i = 1
-  Repeat
-    char$ = Mid$(tempexename$,i,1)
-    If Asc(char$)<>0 Then exefilename$ + char$
-    i + 1
-  Until (i = FLen(tempexename$)) OR (Asc(char$) = 0)
-
-;  exepathname$ = dos_Trim{exepathname$}
-;  exefilename$ = dos_Trim{exefilename$}
-;  !cout{exepathname$+"/"+exefilename$} ;$ , dos_GetFileSize2{exepathname$+"/"+exefilename$}}
-
-
-  ; -- restore windows
-  Gosub RestoreLabelAndNewtypeWin
-  project_changelog$ = ""
-  Gosub update_versiongadgets
-
-  Close_ *xtra_fh
-
-  ; update Sourcewindow
-  PED_GotoLine{ped\ptrCurrentSourceData\CursorPosStore+1, #LINE_START}
-
-  ; set default as these options are not stored in old xtra-file
-  ped\ptrCurrentSourceData\FuncOptimize = 1
-  ped\ptrCurrentSourceData\CreateDebugFile = 0
-
-  Gosub delete_tempprefs
-  Gosub save_tempprefs
-
-  skip_loadingxtrafile:
+  ;-- set firstline as current one
+  ped\ptrCurrentSourceData\CurrentSourceLine = ped\ptrCurrentSourceData\FirstSourceLine
 Return
 
 
@@ -9305,8 +9336,8 @@ Return
   If (actualLine < ped\ptrCurrentSourceData\TotalLines) AND (*nextLine <> 0) ; if no nextline, we cannot move down
     If PED_CutSourceLine{*currentLine}
       If PED_AppendSourceLine{*nextLine, *currentLine}
-        f1.s = PED_Detokenize{ped\ptrCurrentSourceData\FirstSourceLine}
-        !log_PrintOut{"f1: " + Left$(f1,20)}
+        ;f1.s = PED_Detokenize{ped\ptrCurrentSourceData\FirstSourceLine}
+        ;!log_PrintOut{"f1: " + Left$(f1,20)}
 
         PED_CursorOff{}
         ;-- print the line that has to be moved up
@@ -9974,10 +10005,13 @@ Return
 
 .storeCurrentSourceData:                      ;copy view data
   ;-- this function is called after a succesfull load of a sourcecode and before and after a switch of the sourcecode
+  ;-- it copies the current xtra-data to the store
 
   GetReg A0, ped\currentSourceEntry
+  
   ;-- skip listentries (next/previous sourceentry)  
   ADDQ.l #8,A0
+
   LEA comLong_XtraBegin + 8,A1                  ; skip "tedsdoc!"
   MOVE.l #comDef_XtraEnd-comLong_XtraBegin - 8, D0 : SUBQ.w #1,D0
  'copyloop
@@ -9990,11 +10024,13 @@ Return
 
 
 .getCurrentSourceData:
-  ;-- zurueckholen der xtra-settings nach sourcewechsel
+  ;-- copy sourcedata to xtra-area
   
   GetReg A0,ped\currentSourceEntry
+
   ;-- skip listentries (next/previous sourceentry)
   ADDQ.l #8,A0   
+
   LEA comLong_XtraBegin + 8,A1                  ; skip "tedsdoc!"
   MOVE.l #comDef_XtraEnd-comLong_XtraBegin - 8, D0 : SUBQ.w #1,D0
  'copyloop:
@@ -10601,7 +10637,7 @@ Return
   runExe\storeOutputStream = runExe\process\pr_COS
 
   ; -- if the console_settings are n/a, set them to something usefull
-  USEPATH wtemp
+  USEPATH winLayout
   If \console_h = 0
     \console_x = 0
     \console_y = ped\screen\BarHeight * 2
@@ -11717,22 +11753,18 @@ Return
 
   Gosub set_storedcolors
 
-  CNIF #USE_AREXX = 1
-  ; -- inform via arexx that the Window is opened
-  ArexxMyMessage = "OPENWINDOW" : Gosub arexx_sendmessage
-  CEND
-
-  ;!log_PrintOut{"init menues"}
   Gosub init_menus
 
-  ;!log_PrintOut{"init windowlayouts"}
-  Gosub load_windowlayouts
+  If pedconfig\autolayout 
+    PED_DoWindowlayout{-1}
+  Else
+    PED_DoWindowlayout{0}
+  EndIf
 
-  If pedconfig\autolayout Then AutoLayout{&wtemp,ped\lastAutoLayout}
-
-  ;!log_PrintOut{"do window layout"}
-  Gosub do_windowlayout
-  ;!log_PrintOut{"do window layout finished"}
+  CNIF #USE_AREXX = 1
+    ; -- inform other programs via arexx that it is ok to reopen their windows now
+    ArexxMyMessage = "OPENWINDOW" : Gosub arexx_sendmessage
+  CEND
 Return
 
 
@@ -11933,12 +11965,12 @@ Return
   SourceWindowIDCMPFlags | #IDCMP_MENUPICK|#IDCMP_GADGETUP|#IDCMP_GADGETDOWN
   SourceWindowIDCMPFlags | #IDCMP_MOUSEMOVE|#IDCMP_MOUSEBUTTONS|#IDCMP_NEWSIZE|#IDCMP_CHANGEWINDOW|#IDCMP_REFRESHWINDOW
   SourceWindowIDCMPFlags | #IDCMP_ACTIVEWINDOW|#IDCMP_INACTIVEWINDOW   ; added to get info if the source win (in)active
-  ; only added OS4 only IDCMP Flags if we are running on OS4  tomsmart1  
   If OSVersion = #AmigaOS4
-    SourceWindowIDCMPFlags | #IDCMP_EXTENDEDMOUSE  ;added #IDCMP_EXTENDEDMOUSE for OS4 Mousewheel support
+    ;-- add #IDCMP_EXTENDEDMOUSE for OS4 Mousewheel support
+    SourceWindowIDCMPFlags | #IDCMP_EXTENDEDMOUSE  
   EndIf
 
-  SourceWindowWFlags.l = #WFLG_NEWLOOKMENUS|#WFLG_WBENCHWINDOW|#WFLG_ACTIVATE|#WFLG_GIMMEZEROZERO
+  SourceWindowWFlags.l = #WFLG_NEWLOOKMENUS|#WFLG_GIMMEZEROZERO|#WFLG_ACTIVATE
   SourceWindowWFlags   | #WFLG_SIZEBBOTTOM|#WFLG_SIZEBRIGHT|#WFLG_SIZEGADGET|#WFLG_CLOSEGADGET|#WFLG_DEPTHGADGET
   SourceWindowWFlags   | #WFLG_DRAGBAR|#WFLG_REPORTMOUSE
 
@@ -12111,8 +12143,8 @@ Return
 
   If pedconfig\use_pubscreen Then PubScreenStatus_ sourceWindow\pedScreen,#PSNF_PRIVATE
 
-  ;-- inform arexxport that the source window is going to be closed
   CNIF #USE_AREXX = 1
+    ;-- inform other programs that they shall close their windows now
     ArexxMyMessage = "CLOSEWINDOW" : Gosub arexx_sendmessage
   CEND
 
@@ -13457,19 +13489,13 @@ Return
     Gosub menu_helpblitzlibs
 
   Case #VANILLAKEY_F4               ; check for "F4"
-    ped\lastLayout = 0
-    Gosub load_windowlayouts
-    Gosub do_windowlayout
+    PED_DoWindowlayout{0}
 
   Case #VANILLAKEY_F5               ; check for "F5"
-    ped\lastLayout  = 1
-    Gosub load_windowlayouts
-    Gosub do_windowlayout
+    PED_DoWindowlayout{1}
 
   Case #VANILLAKEY_F6               ; check for "F6"
-    ped\lastLayout  = 2
-    Gosub load_windowlayouts
-    Gosub do_windowlayout
+    PED_DoWindowlayout{2}
 
   Case #VANILLAKEY_F7               ; check for "F7"
     Gosub navigate_to_previous_label
@@ -13804,10 +13830,10 @@ Return
 Return
 
 .menu_helpcompletion
-  wtemp\ibrowser_x = -2
-  wtemp\ibrowser_y = -2
-  wtemp\ibrowser_w = -2
-  wtemp\ibrowser_h = -2
+  winLayout\ibrowser_x = -2
+  winLayout\ibrowser_y = -2
+  winLayout\ibrowser_w = -2
+  winLayout\ibrowser_h = -2
   Gosub open_instructionbrowser
 Return
 
@@ -14981,7 +15007,7 @@ Return
 
 .open_helpdiag:
   If NOT WZ_IsOpen{"WIN_HELPDIAG"}
-    WZWindow WZID("WIN_HELPDIAG"),?wzgui,80,wtemp\diag_x,wtemp\diag_y,wtemp\diag_w,wtemp\diag_h,WZID("WIN_HELPDIAG")
+    WZWindow WZID("WIN_HELPDIAG"),?wzgui,80,winLayout\diag_x,winLayout\diag_y,winLayout\diag_w,winLayout\diag_h,WZID("WIN_HELPDIAG")
     WZ_AddMenuStrip{"WIN_HELPDIAG", ped\menuStrip}
   End If
   Gosub update_helpdiag
@@ -14990,10 +15016,10 @@ Return
 .close_helpdiag:
   If WZ_IsOpen{"WIN_HELPDIAG"}
     Use Window WZID("WIN_HELPDIAG")
-    wtemp\diag_x = WindowX
-    wtemp\diag_y = WindowY
-    wtemp\diag_w = WindowWidth
-    wtemp\diag_h = WindowHeight
+    winLayout\diag_x = WindowX
+    winLayout\diag_y = WindowY
+    winLayout\diag_w = WindowWidth
+    winLayout\diag_h = WindowHeight
     WZ_CloseWindowAndRemoveMenu{"WIN_HELPDIAG"}
   EndIf
 Return
@@ -15275,7 +15301,7 @@ Return
 
 .open_librarybrowser:
   If NOT WZ_IsOpen{"WIN_LIBRARYBROWSER"}
-    USEPATH wtemp
+    USEPATH winLayout
     WZWindow WZID("WIN_LIBRARYBROWSER"),?wzgui,255,\lbrowser_x,\lbrowser_y,\lbrowser_w,\lbrowser_h,WZID("WIN_LIBRARYBROWSER")
     WZ_AddMenuStrip{"WIN_LIBRARYBROWSER", ped\menuStrip}
     Use Window WZID("WIN_LIBRARYBROWSER")
@@ -15463,7 +15489,7 @@ Return
 .open_instructionbrowser
   Gosub close_popupwindow
   If NOT WZ_IsOpen{"WIN_INSTRUCTIONBROWSER"} ; thilo: why this was commented out!?
-    WZWindow WZID("WIN_INSTRUCTIONBROWSER"),?wzgui,255,wtemp\ibrowser_x,wtemp\ibrowser_y,wtemp\ibrowser_w,wtemp\ibrowser_h,WZID("WIN_INSTRUCTIONBROWSER")
+    WZWindow WZID("WIN_INSTRUCTIONBROWSER"),?wzgui,255,winLayout\ibrowser_x,winLayout\ibrowser_y,winLayout\ibrowser_w,winLayout\ibrowser_h,WZID("WIN_INSTRUCTIONBROWSER")
     WZ_AddMenuStrip{"WIN_INSTRUCTIONBROWSER", ped\menuStrip}
     If search_instruction$<>"" Then WZPrint "INSTRUCTION_STRING",search_instruction$
     WZPrint "macros",browse_macros
@@ -15570,10 +15596,10 @@ Return
 
 .close_instructionbrowser:
   If WZ_IsOpen{"WIN_INSTRUCTIONBROWSER"}
-    wtemp\ibrowser_x = WindowX
-    wtemp\ibrowser_y = WindowY
-    wtemp\ibrowser_w = WindowWidth
-    wtemp\ibrowser_h = WindowHeight
+    winLayout\ibrowser_x = WindowX
+    winLayout\ibrowser_y = WindowY
+    winLayout\ibrowser_w = WindowWidth
+    winLayout\ibrowser_h = WindowHeight
     WZ_KillTable{"INSTRUCTIONTABLE"}
     WZ_CloseWindowAndRemoveMenu{"WIN_INSTRUCTIONBROWSER"}
   EndIf
@@ -15723,7 +15749,7 @@ Return
 
 .open_shortcuts
   If NOT WZ_IsOpen{"WIN_SHORTCUTS"}
-    WZWindow WZID("WIN_SHORTCUTS"),?wzgui,255,wtemp\short_x,wtemp\short_y,wtemp\short_w,wtemp\short_h,WZID("WIN_SHORTCUTS")
+    WZWindow WZID("WIN_SHORTCUTS"),?wzgui,255,winLayout\short_x,winLayout\short_y,winLayout\short_w,winLayout\short_h,WZID("WIN_SHORTCUTS")
     WZ_AddMenuStrip{"WIN_SHORTCUTS", ped\menuStrip}
 
     WZ_InitTable{"WIN_SHORTCUTS","SHORTCUTS",2}
@@ -16161,113 +16187,12 @@ Return
 .close_definitionbrowser:
   If WZ_IsOpen{"WIN_NEWTYPE"}
     Use Window WZID("WIN_NEWTYPE")
-    wtemp\type_x = WindowX
-    wtemp\type_y = WindowY
-    wtemp\type_w = WindowWidth
-    wtemp\type_h = WindowHeight
+    winLayout\type_x = WindowX
+    winLayout\type_y = WindowY
+    winLayout\type_w = WindowWidth
+    winLayout\type_h = WindowHeight
     WZ_KillTable{"TYPETABLE"}
     WZ_CloseWindowAndRemoveMenu{"WIN_NEWTYPE"}
-  EndIf
-Return
-
-
-.load_windowlayouts:
-  USEPATH wtemp
-  CopyMem_ &wpref(ped\lastLayout),&wtemp,SizeOf .winprefs
-
-  If (\lbrowser_w<=0) OR (\lbrowser_h<=0)
-    \lbrowser_x = -2
-    \lbrowser_y = -2
-    \lbrowser_w = -2
-    \lbrowser_h = -2
-  EndIf
-
-  If (\source_h > 0) AND (\source_w > 0)
-    sourceWindow\WinLeft = \source_x
-    sourceWindow\WinTop = \source_y
-    sourceWindow\WinWidth = \source_w
-    sourceWindow\WinHeight = \source_h
-  Else
-    ped\screen = Peek.l(Addr Screen(0))
-    sourceWindow\WinLeft = 0
-    sourceWindow\WinTop  = ped\screen\WBorTop + ped\screen\Font\ta_YSize + 1
-    sourceWindow\WinWidth= ScreenWidth
-    sourceWindow\WinHeight = ScreenHeight - (ped\screen\WBorTop + ped\screen\Font\ta_YSize + 1)
-  EndIf
-Return
-
-
-.do_windowlayout:
-  If \lbrowser_on
-    ;!log_PrintOut{"opening library browser"}
-    Gosub open_librarybrowser
-  Else
-    Gosub close_librarybrowser
-  End If
-
-  If \ibrowser_on
-    ;!log_PrintOut{"opening instruction browser"}
-    Gosub open_instructionbrowser
-  Else
-    Gosub close_instructionbrowser
-  End If
-
-  If \diag_on
-    ;!log_PrintOut{"opening diag window"}
-    Gosub open_helpdiag
-  Else
-    Gosub close_helpdiag
-  End If
-
-  If \click_on
-    ;!log_PrintOut{"opening source browser"}
-    Gosub open_sourcebrowser
-  Else
-    Gosub close_sourcebrowser
-  End If
-
-  If \short_on
-    Gosub open_shortcuts
-  Else
-    Gosub close_shortcuts
-  End If
-
-  If \type_on
-    ;!log_PrintOut{"opening definition browser"}
-    Gosub open_definitionbrowser
-  Else
-    Gosub close_definitionbrowser
-  End If
-
-  ;!log_PrintOut{"opening/updating source window"}
-  If sourceWindow\win <> 0
-    ChangeWindowBox_ sourceWindow\win,sourceWindow\WinLeft,sourceWindow\WinTop,sourceWindow\WinWidth,sourceWindow\WinHeight
-    RefreshWindowFrame_ sourceWindow\win
-    ; --> recalculations are handled via event IDCMP_CHANGEWINDOW or IDCMP_NEWSIZE !
-  Else
-    Gosub open_sourcewindow
-    If ped\errorCode = #PEDERROR_OPENWINDOW
-      dummy.l = ask{!TRANS{"Unable to open window"},!TRANS{"Ok"},!TRANS{"Error"}}
-      Pop If
-      Goto exit_PED_closeall
-    EndIf
-    PED_CursorOn{}
-  EndIf
-
-  FlushEvents
-  If \activewin > 0
-    Activate \activewin
-    Use Window \activewin
-    If Peek.l(Addr Window(\activewin)) <> 0
-      Select \activewin
-        Case 3 : WZ_ActivateGadget{"STRING_LABEL"}
-        Case 2 : WZ_ActivateGadget{"STRING2"}
-        Case 1 : WZ_ActivateGadget{"STRING"}
-        Case 4 : WZ_ActivateGadget{"VAL1"}
-      End Select
-    EndIf
-  Else
-    PED_ActivateSourcewindow{}
   EndIf
 Return
 
@@ -16411,10 +16336,10 @@ Return
 .close_sourcebrowser:
   If WZ_IsOpen{"WIN_LABELS"}
      Use Window WZID("WIN_LABELS")
-     wtemp\click_x  = WindowX
-     wtemp\click_y  = WindowY
-     wtemp\click_w  = WindowWidth
-     wtemp\click_h  = WindowHeight
+     winLayout\click_x  = WindowX
+     winLayout\click_y  = WindowY
+     winLayout\click_w  = WindowWidth
+     winLayout\click_h  = WindowHeight
      WZ_CloseWindowAndRemoveMenu{"WIN_LABELS"}     
   End If
 Return
@@ -16740,29 +16665,10 @@ Return
     WZDisable "CHECK_OVERFLOW"                           ;                "
   EndIf
 
-  If Peek.b(Ptr_Autorun_Byte)=-128
-    WZPrint "AUTORUN",1
-  Else
-    WZPrint "AUTORUN",0
-  EndIf
-
-  If Peek.b(Ptr_Interruptcheck_Byte)=-128
-    WZPrint "CHECK_INTERRUPT",1
-  Else
-    WZPrint "CHECK_INTERRUPT",0
-  EndIf
-
-  If Peek.b(Ptr_Assemblercheck_Byte)=-128
-    WZPrint "CHECK_ASSEMBLER",1
-  Else
-    WZPrint "CHECK_ASSEMBLER",0
-  EndIf
-
-  If Peek.b(Ptr_Overflowcheck_Byte)=-128
-    WZPrint "CHECK_OVERFLOW",1
-  Else
-    WZPrint "CHECK_OVERFLOW",0
-  EndIf
+  If Peek.b(Ptr_Autorun_Byte)=-128 Then WZPrint "AUTORUN",1 Else WZPrint "AUTORUN",0
+  If Peek.b(Ptr_Interruptcheck_Byte)=-128 Then WZPrint "CHECK_INTERRUPT",1 Else WZPrint "CHECK_INTERRUPT",0
+  If Peek.b(Ptr_Assemblercheck_Byte)=-128 Then WZPrint "CHECK_ASSEMBLER",1 Else WZPrint "CHECK_ASSEMBLER",0
+  If Peek.b(Ptr_Overflowcheck_Byte)=-128 Then WZPrint "CHECK_OVERFLOW",1 Else WZPrint "CHECK_OVERFLOW",0
 
 
   ;Event handling of the compiler settings window
