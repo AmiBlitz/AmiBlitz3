@@ -3,26 +3,26 @@
 ; 
 ; General Info
 ; -------------------------------------------------------
-; ExePath         = ""
+; ExePath         = "RAM Disk:"
 ; ExeFile         = "romulusCrunchLib.obj"
-; CreateIcon      = 1
+; CreateIcon      = 0
 ; Residents       = "libmacs.res,libnums.res,all.res,libjsrs.res"
 ; 
 ; Compiler
 ; -------------------------------------------------------
 ; StringBuffer    = 10240
-; MakeSmallest    = 0
+; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 0
+; NumberOfBuilds  = 3
 ; 
 ; Debugger
 ; -------------------------------------------------------
 ; CliArgs         = ""
 ; StackSize       = 8191
-; RuntimeDebug    = 1
+; RuntimeDebug    = 0
 ; DebugInfo       = 0
-; CreateDbgFile   = 65535
+; CreateDbgFile   = 0
 ; OverflowCheck   = 0
 ; AssemblerCheck  = 0
 ; InterruptCheck  = 1
@@ -30,11 +30,12 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1
-; CursorColumn    = 1
+; CursorLine      = 1001
+; CursorColumn    = 22
 ; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
+; LabelCase       = 0
 ; LabelPosition   = 0
 ; 
 ; Blitz Objects
@@ -59,6 +60,8 @@
 ; Max Console     = 5
 ; Max TCPSock     = 5
 ; Max Tape        = 5
+; Max TagList     = 5
+; Max Database    = 16
 ; Max Sound       = 10
 ; Max MedModule   = 8
 ; Max Buffer      = 10
@@ -107,6 +110,12 @@
 !libs
 !subs{_ppdecrunch,0,0}
 !name{"PPDecrunch","Bufferadr,Bufferend,Destinationadr"}
+
+!astatement
+!args{#long,#long}
+!libs
+!subs{_zx0_decompress,0,0}
+!name{"ZX0Decrunch","Bufferadr,Destinationadr"}
 
 !libfin
 
@@ -1383,4 +1392,81 @@ EndOfLoop:
   BCS.l LoopCheckCrunch
   RTS
 
+;  unzx0_68000.s - ZX0 decompressor for 68000 - 88 bytes
+;
+;  in:  a0 = start of compressed data
+;       a1 = start of decompression buffer
+;
+;  Copyright (C) 2021 Emmanuel Marty
+;  ZX0 compression (c) 2021 Einar Saukas, https://github.com/einar-saukas/ZX0
+;
+;  This software is provided 'as-is', without any express or implied
+;  warranty.  In no event will the authors be held liable for any damages
+;  arising from the use of this software.
+;
+;  Permission is granted to anyone to use this software for any purpose,
+;  including commercial applications, and to alter it and redistribute it
+;  freely, subject to the following restrictions:
+;
+;  1. The origin of this software must not be misrepresented; you must not
+;     claim that you wrote the original software. If you use this software
+;     in a product, an acknowledgment in the product documentation would be
+;     appreciated but is not required.
+;  2. Altered source versions must be plainly marked as such, and must not be
+;     misrepresented as being the original software.
+;  3. This notice may not be removed or altered from any source distribution.
 
+_zx0_decompress:
+               MOVE.l D0,A0
+               MOVE.l D1,A1
+               MOVEM.l a2/d2,-(A7)  ; preserve registers
+               MOVEQ #-128,d1       ; initialize empty bit queue
+                                    ; plus bit to roll into carry
+               MOVEQ #-1,d2         ; initialize rep-offset to 1
+
+.literals:     BSR.s get_elias     ; read number of literals to copy
+               SUBQ.l #1,d0         ; dbf will loop until d0 is -1, not 0
+.copy_lits:    MOVE.b (a0)+,(a1)+   ; copy literal byte
+               DBF d0,copy_lits    ; loop for all literal bytes
+               
+               ADD.b d1,d1          ; read 'match or rep-match' bit
+               BCS.s get_offset    ; if 1: read offset, if 0: rep-match
+
+.rep_match:    BSR.s get_elias     ; read match length (starts at 1)
+.do_copy:      SUBQ.l #1,d0         ; dbf will loop until d0 is -1, not 0
+.do_copy_offs: MOVE.l a1,a2         ; calculate backreference address
+               ADD.l d2,a2          ; (dest + negative match offset)               
+.copy_match:   MOVE.b (a2)+,(a1)+   ; copy matched byte
+               DBF d0,copy_match   ; loop for all matched bytes
+
+               ADD.b d1,d1          ; read 'literal or match' bit
+               BCC.s literals      ; if 0: go copy literals
+
+.get_offset:   MOVEQ #-2,d0         ; initialize value to $fe
+               BSR.s elias_loop    ; read high byte of match offset
+               ADDQ.b #1,d0         ; obtain negative offset high byte
+               BEQ.s done          ; exit if EOD marker
+               MOVE.w d0,d2         ; transfer negative high byte into d2
+               LSL.w #8,d2          ; shift it to make room for low byte
+
+               MOVEQ #1,d0          ; initialize length value to 1
+               MOVE.b (a0)+,d2      ; read low byte of offset + 1 bit of len
+               ASR.l #1,d2          ; shift len bit into carry/offset in place
+               BCS.s do_copy_offs  ; if len bit is set, no need for more
+               BSR.s elias_bt      ; read rest of elias-encoded match length
+               BRA.s do_copy_offs  ; go copy match
+
+.get_elias:    MOVEQ #1,d0          ; initialize value to 1
+.elias_loop:   ADD.b d1,d1          ; shift bit queue, high bit into carry
+               BNE.s got_bit       ; queue not empty, bits remain
+               MOVE.b (a0)+,d1      ; read 8 new bits
+               ADDX.b d1,d1         ; shift bit queue, high bit into carry
+                                    ; and shift 1 from carry into bit queue
+
+.got_bit:      BCS.s got_elias     ; done if control bit is 1
+.elias_bt:     ADD.b d1,d1          ; read data bit
+               ADDX.l d0,d0         ; shift data bit into value in d0
+               BRA.b elias_loop    ; keep reading
+
+.done:         MOVEM.l (A7)+,a2/d2  ; restore preserved registers
+.got_elias:    RTS
