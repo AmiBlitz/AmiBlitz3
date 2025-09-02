@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.10.1
-; NumberOfBuilds  = 3472
+; NumberOfBuilds  = 3517
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 3900
-; CursorColumn    = 1
-; LabelSearch     = "_icon"
+; CursorLine      = 3733
+; CursorColumn    = 6
+; LabelSearch     = "highlight"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -50,8 +50,8 @@
 ; Max BitMap      = 1
 ; Max Screen      = 5
 ; Max IntuiFont   = 5
-; Max BlitzFont   = 4
 ; Max Window      = 25
+; Max BlitzFont   = 4
 ; Max IconInfo    = 1
 ; Max MUIObject   = 50
 ; Max AsyncReq    = 4
@@ -88,9 +88,9 @@
 ;/                                                                             /
 ;/ Authors: 1990...1996 Mark Silby                                             /
 ;/          1991...2003 Red When Excited                                       /
-;/          2003...2009 Bernd Roesch, Sven Droege                              /
+;/          2003...2009 Bernd Roesch, Sven Dr�ge                               /
 ;/          2009...2016 The Opensource Team                                    /
-;/          2019...     Sven Droege                                            /
+;/          2019...     Sven Dr�ge                                             /
 ;/                                                                             /
 ;/ Requirements: AmigaOS 2.05+                                                 /
 ;/                                                                             /
@@ -400,23 +400,6 @@ Macro IsIllegalChar
   Peek.b(ped\illegalCharTable + `1)
 End Macro
 
-Macro removeTokenbits
-  ;-- clear token bit info but dont trash strings
-  ma_nostring.b = 0
-  For i.l = `1 To `1 + `2
-    If ma_nostring = 0
-      Poke.b i,Peek.b(i) AND $7f
-      If Peek.b(i) = $22 Then ma_nostring = 1
-    Else
-      If Peek.b(i) = $22 Then ma_nostring = 0
-    End If
-    ; workaround:
-    ; sometimes there is a 0 in a linestring perhaps due to a wrong lineaddr
-    ; the 0 is been replaced by a space
-    If Peek.b(i) = 0 Then Poke.b i,32
-  Next
-End Macro
-
 Macro mul48f
   _floattemp.f = (`1)
   _floattemp = _floattemp * (`2)
@@ -582,6 +565,7 @@ NEWTYPE.ped
   oldDirLock.l
   sourceFileHandle.l
   inString.b
+  inComment.b
   noDetokenizing.b
   convertAsm.b
   doTokenize.w
@@ -637,6 +621,8 @@ NEWTYPE.ped
 
   ptrTextbuffer.l
   ptrTextbufferPrint.l
+  ptrTextbufferHighlight.l
+
   ptrLineUndeleteStore.l
 End NEWTYPE
 DEFTYPE.ped ped
@@ -1511,7 +1497,7 @@ End Statement
 Statement PED_CursorOn{}
 SHARED sourceWindow
   If sourceWindow\cursorEnabled
-    !log_PrintOut{"CURSOR: double ON!"}
+    ;!log_PrintOut{"CURSOR: double ON!"}
   Else
     sourceWindow\cursorEnabled = True
     PED_SwitchCursor{}
@@ -1794,12 +1780,15 @@ SHARED ped,readcache
     Repeat
       ; this is the EOL of ClipBoard!
       If readcache\currentbyte = $0A Then Function Return resultString
+      If readcache\currentbyte = $0D Then Function Return resultString
+
       ; no further bytes left
       If readcache\currentbyte = $00 Then Function Return resultString
 
-      If readcache\currentbyte = $9  Then readcache\currentbyte = $20 ; replace TAB by space
+      ; replace TAB by space
+      If readcache\currentbyte = $9  Then readcache\currentbyte = $20 
 
-      If readcache\currentbyte <> $0D Then resultString + Chr$(readcache\currentbyte)
+      resultString + Chr$(readcache\currentbyte)
     Until NOT PED_ReadNextByte{}
   EndIf
 
@@ -1811,10 +1800,10 @@ SHARED ped
 
   If *storeLine = 0 Then Function Return False
 
-  If *storeLine\strLength <> 0
-    !log_PrintOut{"storing line [" + Str$(*storeLine\strLength AND $FF) + "]: " + Peek.s(*storeLine + 9)}
+  If *storeLine\strLength <> 1
     ped\undeleteStrLen = *storeLine\strLength AND $FF
     CopyMem_ *storeLine + 9, ped\ptrLineUndeleteStore, ped\undeleteStrLen
+    !log_PrintOut{"stored line [" + Str$(ped\undeleteStrLen) + "]: " + Peek.s(*storeLine + 9)}
   Else
     Function Return False
   EndIf
@@ -2696,12 +2685,11 @@ End Function
 Function.s PED_GetTokenName{tokenNumber.l}
 SHARED *tokenbase, ped
 
-  ;-- search in tokencache
-  _tn.w = (tokenNumber BitClr $F) AND $FFFF
-  _libnum.w = _tn LSR 7
-  _entry.w = _tn - (_libnum LSL 7)
+  ;-- remove the token indicator (Bit 7 of the first byte)
+  _tn.w = (tokenNumber BitClr $F) AND $FFFF 
   ;!log_PrintOut{"searching for token " + Hexw$(_tn) + ": libnum " + Str$(_libnum) + ", entry " + Str$(_entry), #log_debug}
 
+  ;-- first, search in tokencache
   *token.tokendata = Peek.l(ped\tokenCache + _tn * 4)
   If *token
     ;!log_PrintOut{"token " + Hexw$(tokenNumber) + ": " + Peek.s(&*token\dat) + " found in cache.", #log_debug}
@@ -2711,7 +2699,7 @@ SHARED *tokenbase, ped
     While *token
       If *token\number = _tn
         ;!log_PrintOut{"token " + Hexw$(tokenNumber) + " cached.", #log_debug}
-        ;-- add token to tokencache
+        ;-- add found token to tokencache
         Poke.l ped\tokenCache + _tn * 4, *token
 
         Pop If : Pop While
@@ -2720,6 +2708,8 @@ SHARED *tokenbase, ped
       *token = *token\next_token
     Wend
   EndIf
+  _libnum.w = _tn LSR 7
+  _entry.w = _tn - (_libnum LSL 7)
   !log_PrintOut{"*** unknown tokennumber " + Hexw$(_tn) + ": libnum " + Str$(_libnum) + ", entry " + Str$(_entry) ,#log_warning}
   Function Return "????Lib "+ Str$(_libnum) + "/" + Str$(tokenNumber AND $7f)
 End Function
@@ -2796,7 +2786,7 @@ End Function
 Function.b PED_CheckForClassicToken{_token.l}
     _libnum.l = _token ASR 7
 
-    ; check for a classic lib
+    ;-- check for a classic lib
     ccounter.b = 0
     Repeat
       classicID.l = Peek.w(?classiccommands + ccounter)
@@ -2807,8 +2797,7 @@ Function.b PED_CheckForClassicToken{_token.l}
       ccounter + 2
     Until classicID = 0
 
-    ; check for a classic command
-    exit_classicloop.b = False
+    ;-- check for a classic command
     Repeat
       classicID.l = Peek.w(?classiccommands + ccounter)
       If (classicID > 0) AND (classicID = _token)
@@ -2816,7 +2805,8 @@ Function.b PED_CheckForClassicToken{_token.l}
         Function Return True
       EndIf
       ccounter + 2
-    Until classicID = 0 OR exit_classicloop
+    Until classicID = 0
+
     Function Return False
 End Function
 
@@ -2874,8 +2864,8 @@ Function.s PED_DetokenizeText{strLine.s}
 SHARED ped, pedconfig, *preProcessor, linebuff$
 
   If ped\doTokenize
-    _strLen.w = FLen(strLine)
-    If _strLen
+    strLen.w = FLen(strLine)
+    If strLen
       If pedconfig\usePreProcessor
         ;-- Function returns a string with a 0a-byte at the end in some conditions!
         byteLength.l = preproc_Detokenize{*preProcessor,&strLine, &linebuff$, FLen(strLine)}
@@ -2884,25 +2874,24 @@ SHARED ped, pedconfig, *preProcessor, linebuff$
         strLine = Peeks$(&linebuff$, byteLength)
       Else
         linebuff$ = ""
-        If _strLen > 0
-          ped\inString = False
-          For i.w = 0 To _strLen - 1
+        If strLen > 0
+          ped\inString = False : ped\inComment = False
+
+          For i.w = 0 To strLen - 1
             curChar.b  = Peek.b(&strLine + i)
-            ;-- check if we are in a string
-            If curChar = $22 Then ped\inString = NOT ped\inString
             
-            ;-- we found a token if the byte is negative?
-            If ped\inString = 0
-              If (curChar < 0)
-                _token.l = Peek.w(&strLine + i)
-                _tokname.s = PED_GetTokenName{_token}
-                linebuff$ + _tokname
-                i + 1 ; skip next byte as it is part of the replaced token
-              Else
-                If curChar > 0 Then linebuff$ + Chr$(curChar) ; skip the 0 byte at the end
-              EndIf
+            ;-- check if we are in a string or comment
+            If (NOT ped\inComment) AND (curChar = $22) Then ped\inString = NOT ped\inString
+            If (NOT ped\inString) AND (curChar = @";") Then ped\inComment = True
+
+            ;-- we found a token if the byte is negative, so detokenize it            
+            If (curChar BitTst 7) AND NOT (ped\inString OR ped\inComment)
+              _token.l = Peek.w(&strLine + i)
+              _tokname.s = PED_GetTokenName{_token}
+              linebuff$ + _tokname
+              i + 1 ; skip next byte as it is part of the replaced token
             Else
-              linebuff$ + Chr$(curChar)
+              If curChar > 0 Then linebuff$ + Chr$(curChar) ; skip the 0 byte at the end
             EndIf
           Next i
         EndIf
@@ -2921,59 +2910,116 @@ Function.s PED_Detokenize{*sourceLine.sourceLine}
 End Function
 
 Function.b PED_Detokenize2Printbuffer{lineaddr.l, strLen.w}
-SHARED ped
+SHARED ped, pedconfig
 
   If strLen
-    ;-- detokenize but keep the tokenbit!
-    runnerP.w = 0
-    ped\inString = False
-    For i.w = 0 To strLen - 1
-      curChar.b  = Peek.b(lineaddr + i)
-      ;-- check if we are in a string      
-      If curChar = $22 Then ped\inString = NOT ped\inString
+    ped\inString = False : ped\inComment = False
+    inConstant.b = False
+    inNewtype.b = False
+    inMacro.b = False
 
-      ;-- we found a token if the byte is negative?
-      If ped\inString = 0
-        If (curChar < 0)
+    runnerP.w = 0
+    For i.w = 0 To strLen - 1
+      highlightType.b = 0
+      curChar.b = Peek.b(lineaddr + i)
+
+      ;-- check if we are in a string or a comment
+      If (NOT ped\inComment) AND (curChar = $22) Then ped\inString = NOT ped\inString
+      If (NOT ped\inString) AND (curChar = @";") Then ped\inComment = True
+
+      If NOT (ped\inString OR ped\inComment)
+        ;-- we found a token if the tokenbit (7) is set in a character
+        If curChar BitTst 7
           _token.l = Peek.w(lineaddr + i)
           _tokname.s = PED_GetTokenName{_token}
-          For j.b = 0 To FLen(_tokname)-1
-            Poke.b ped\ptrTextbufferPrint + runnerP, Peek.b(&_tokname + j) BitSet 7
-            runnerP + 1 ; skip next byte as it is part of the replaced token
-          Next j
-          i + 1 ; skip next byte as it is part of the replaced token
+          _toklen.b = FLen(_tokname)
+          i + 1 ; skip next byte as it is part of the replaced token        
+
+          ;-- update Highlight-info
+          FillMem ped\ptrTextbufferHighlight + runnerP, _toklen, @"1"
+          PokeS ped\ptrTextbufferPrint + runnerP, _tokname
+
+          runnerP + _toklen
+          Pop If : Pop If : Goto skip_me
         Else
-          Poke.b ped\ptrTextbufferPrint + runnerP, curChar
-          runnerP + 1
+          If pedconfig\highlighting
+            ;-- check for constant
+            If curChar = @"#" Then inConstant = True
+            If inConstant
+              If curChar <> @"$" AND curChar <> @"%"; OR checkchr = @"-"
+                If !IsIllegalChar{curChar} Then inConstant = False
+              EndIf
+            EndIf
+            If inConstant Then highlightType = @"4"
+
+            ;-- check for newtype
+            If curChar = @"\" Then inNewtype = True
+            If inNewtype
+              ;If curChar <> @"\"
+                If !IsIllegalChar{curChar} Then inNewtype = False
+              ;EndIf
+            EndIf
+            If inNewtype Then highlightType = @"5"
+
+            ;-- check for macro
+            If curChar = @"!" Then inMacro = True
+            If inMacro
+              If !IsIllegalChar{curChar} Then inMacro = False
+            EndIf
+            If inMacro Then highlightType = @"6"
+ 
+            ;If inNewtype Then highlightType = @"5"          
+              ;If AB3Pen(#AB3_cmacro) <> AB3Pen(#AB3_cother)
+              ;  For i2.w = i + 1 To #MAX_Columns - 1
+              ;    If !IsIllegalChar{Peek.b(lineaddr + i2)}
+              ;      FillMem ped\ptrTextbufferHighlight + runnerP, i2 - i, @"6"
+              ;      Pop For : Goto skip_macro
+              ;    EndIf
+              ;  Next i2
+              ;  skip_macro:
+              ;EndIf
+            ;EndIf
+
+            ;-- check for statement/function
+            If curChar = @"{"
+              ;If AB3Pen(#AB3_cfunction) <> AB3Pen(#AB3_cother)
+                For i2.w = i - 1 To 0 Step -1
+                  checkchr.b = Peek.b(lineaddr + i2)
+
+                  ;-- check if we have a macro instead of an statement/function
+                  If checkchr = @"!"; OR (checkchr < 0) 
+                    Pop For : Goto skip_function
+                  EndIf
+
+                  If !IsIllegalChar{checkchr} OR (i2 = 0)
+                    If i2 > 0 Then i2 + 1
+                    FillMem ped\ptrTextbufferHighlight + runnerP - (i - i2), i - i2, @"7"
+                    
+                    Pop For : Goto skip_function
+                  EndIf
+                Next i2
+                skip_function:
+              ;EndIf       
+            EndIf    
+          EndIf
         EndIf
-      Else
-        Poke.b ped\ptrTextbufferPrint + runnerP, curChar
-        runnerP + 1
+      Else ; -- we are in a string or comment
+        If pedconfig\highlighting
+          If ped\inString Then highlightType = @"2"
+          If ped\inComment Then highlightType = @"3"
+        EndIf
       EndIf
+
+      Poke.b ped\ptrTextbufferHighlight + runnerP, highlightType
+      Poke.b ped\ptrTextbufferPrint + runnerP, curChar
+      runnerP + 1
+      skip_me:
     Next i
   EndIf
-
+  ;!log_HexDump{ped\ptrTextbufferHighlight,32}
   Function Return True
 End Function
 
-Statement PED_CopyPrintbuffer2Textbuffer{}
-SHARED ped
-
-  char.b = Peek.b(ped\ptrTextbufferPrint)
-  If char <> 0
-    
-    textBufferPos.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-    runner.w = 0
-
-    While char <> 0
-      Poke.b textBufferPos + runner, char
-
-      runner + 1
-      char = Peek.b(ped\ptrTextbufferPrint + runner)
-    Wend
-  EndIf
-
-End Statement
 
 ;--WIP
 ;NEWTYPE.helpIndexIncludeFileItem
@@ -3625,101 +3671,110 @@ SHARED ped,sourceWindow,AB3Pen()
 End Statement
 
 
-Statement PED_PrintTokenizedText{startPos.w, size.w, tposx.w, tposy.w}
+Statement PED_PrintHighlightedText{startPos.w, size.w, tposx.w, tposy.w}
 SHARED sourceWindow, ped, pedconfig, AB3Pen()
 USEPATH sourceWindow
 
   ;-- this function prints the printbuffer (that holds the detokenized source line).
-  ;-- each detokenized tokencharacter has the bit 7 set to be recognized as a token character
-  ;-- the functions checks each character for that bit and prints the characters as normal text or as token text
+  ;-- it uses highlighting information stored in ptrTextbufferHighlight as follows
+  ;-- 00  standard text
+  ;-- "1" token
+  ;-- "2" string
+  ;-- "3" comment
+  ;-- "4" constants
+  ;-- "5" newtype
+  ;-- "6" macro
+  ;-- "7" function/statement
 
   ;-- work with printbuffer
-  tmpString2.s = Peek.s(ped\ptrTextbufferPrint)
-
-  ;-- check if source left of display start position has an opened string literal
-  ped\inString = 0
-  If tmpString2 <> ""
-    runner.w = 0
-    While runner < startPos
-      If Peek.b( &tmpString2 + runner) = $22 Then ped\inString = NOT ped\inString
-      runner + 1
-    Wend
+  If Peek.b(ped\ptrTextbufferPrint) = 0
+    !log_PrintOut{"PED_PrintHighlightedText(): nothing to print.", #log_warning}
+    Statement Return
   EndIf
 
+  ;-- should be not necessary as the printbuffer should have a length of #max_columns 
+  ;If Len(Peek.s(ped\ptrTextbufferPrint)) < startPos
+  ;  !log_PrintOut{"PED_PrintHighlightedText(): startPos greater than stringlength!", #log_warning}
+  ;  ;!log_PrintOut{Peeks$(ped\ptrTextbufferPrint,Min(5,Len(Peek.s(ped\ptrTextbufferPrint))))}
+  ;  Statement Return
+  ;EndIf
+
+  ;-- calculate the maximum size of the text that may be printed in the source area
   tposx = tposx / \font\tf_XSize  
   If size < 0 Then size = \visibleColumns - tposx
   If size > \visibleColumns - tposx Then size = \visibleColumns - tposx
 
-  tmpPrint.s = UnRight$(tmpString2, startPos)
-  tmpPrint = Left$(tmpPrint, size)
+  tcolor.w = AB3Pen(#AB3_cother)
+  tcolorb.w = -1
 
-  runner.w = -1
-  print_loop:
-  tmpExpand.s = ""
+  ;-- loop the printbuffer and the highlight mask
+  tmpExpand.s = "" : highlightType.b = 0 : runner.w = 0
   Repeat
-    runner + 1
-    curChar.b = Peek.b(&tmpPrint + runner)
+    curChar.b = Peek.b(ped\ptrTextbufferPrint + startPos + runner)
     If curChar <> 0
-      If curChar = $22 Then ped\inString = NOT ped\inString
-      If ped\inString = 0                                        ; ignore characters > 127 if they are in a string
-        If curChar < 0 Then Goto exit_printloop                  ; Token found, goto routine to print token
-      EndIf
-      tmpExpand + Chr$(curChar)
+      curHigh.b = Peek.b(ped\ptrTextbufferHighlight + startPos + runner)    
+
+      ;-- If there is a change in highlight mode, print the current highlight text
+      If highlightType <> curHigh Then Gosub print_it
+
+      tmpExpand + Chr$(curChar)      
+      highlightType = curHigh      
     EndIf
-  Until curChar = 0
-  exit_printloop:
-
-  ;-- print all normal characters we found so far...
-  If FLen(tmpExpand)
-    PED_PrintText{&tmpExpand, tposx, tposy, FLen(tmpExpand), AB3Pen(#AB3_cother)}
-    tposx + FLen(tmpExpand)
-  EndIf
-  If curChar = 0 Then Goto exit_print
-  If curChar > 0 Then Goto print_loop
-
-  ;-- if we have a token, print it ...
-  tmpExpand.s = ""
-  While curChar < 0
-    tmpExpand + Chr$(curChar BitClr 7)
     runner + 1
-    curChar = Peek.b(&tmpPrint + runner)
-  Wend
-  runner - 1
-
+  Until (curChar = 0); OR (runner >= size)
+ 
+  print_it:
   If FLen(tmpExpand)
-    tcolor.w = AB3Pen(#AB3_ctoken)
-    tcolorb.w = -1
-    If AB3Pen(#AB3_ctokenbackground) <> AB3Pen(#AB3_cbackground) Then tcolorb = AB3Pen(#AB3_ctokenbackground)
+    Select highlightType
+    Case @"1";-- Token
+      tcolor.w = AB3Pen(#AB3_ctoken)
+      tcolorb.w = AB3Pen(#AB3_ctokenbackground)
 
-    ;-- check for classic token and set color else set standard token color
-    If AB3Pen(#AB3_cclassic) > 0
-      _token.l = PED_GetTokenID{tmpExpand}
-      If PED_CheckForClassicToken{_token} Then tcolor.w = AB3Pen(#AB3_cclassic)
-    EndIf
+      ;-- check for classic token and set classic color
+      If (pedconfig\highlighting) AND (tcolor <> AB3Pen(#AB3_cclassic))
+        _token.l = PED_GetTokenID{tmpExpand}
+        If PED_CheckForClassicToken{_token} Then tcolor = AB3Pen(#AB3_cclassic)
+      EndIf
 
-    ;-- print the token
-    If pedconfig\bold_tokens
-      ;SetFont_ \win\RPort, \fontB
-      SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
-    EndIf
+      If pedconfig\bold_tokens Then SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
+      PED_PrintText{&tmpExpand, tposx, tposy, FLen(tmpExpand), tcolor, tcolorb}
+      If pedconfig\bold_tokens THen SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
+      Pop Select : Goto skip_highprint
+
+    Case @"2";-- Strings
+      tcolor = AB3Pen(#AB3_cstring) : tcolorb = -1
+
+    Case @"3";-- Comments
+      tcolor = AB3Pen(#AB3_cremarkforeground) : tcolorb = AB3Pen(#AB3_cremarkbackground)
+
+    Case @"4";-- Constants
+      tcolor = AB3Pen(#AB3_cconstant) : tcolorb = -1
+
+    Case @"5";-- Newtype
+      tcolor = AB3Pen(#AB3_cnewtype) : tcolorb = -1
+
+    Case @"6";-- Macro
+      tcolor = AB3Pen(#AB3_cmacro) : tcolorb = -1
+
+    Case @"7";-- Function/Statement
+      tcolor = AB3Pen(#AB3_cfunction) : tcolorb = -1
+
+    Default  ;-- Standardtext
+      tcolor = AB3Pen(#AB3_cother) : tcolorb = -1
+
+    End Select
 
     PED_PrintText{&tmpExpand, tposx, tposy, FLen(tmpExpand), tcolor, tcolorb}
-
-    ;-- reset font and style
-    If pedconfig\bold_tokens
-      ;SetFont_ \win\RPort, \font
-      SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
-    EndIf
-
+    skip_highprint:
+    
     tposx + FLen(tmpExpand)
-
-    If curChar <> 0 Then Goto print_loop
+    tmpExpand = ""
   EndIf
+  If curChar <> 0 Then Return
 
-  exit_print:
 End Statement
 
-Function PED_PrintChar{enteredChar.b, @instru.b}
+Function PED_PrintChar{enteredChar.b}
 SHARED sourceWindow,ped,AB3Pen()
 USEPATH ped\ptrCurrentSourceData
 
@@ -3734,187 +3789,9 @@ USEPATH ped\ptrCurrentSourceData
   tcolor.w = AB3Pen(#AB3_cother)
   textaddr.l = &enteredChar
 
-  If Peek.b(textaddr) < 0
-    If instru <> -1 ; tokenbit in textbuffer is set!
-      !log_PrintOut{"printing an instruction? removing token bit in testbuffer.", #log_warning}
-      Poke.b textaddr, Peek.l(textaddr) BitClr 7
-    EndIf
-    tcolor.w = AB3Pen(#AB3_cclassic)
-  EndIf
-
-  If Peek.b(textaddr) > 0
-    ;!log_PrintOut{"Print ["  + Chr$(enteredChar) + "] at " + Str$(tposx) + ", " + Str$(tposy) + " - offset " + Str$(\ColumnsOffset)}
-    PED_PrintText{textaddr, \Column, \DisplayLine, 1, tcolor}
-  EndIf
+  ;!log_PrintOut{"Print ["  + Chr$(enteredChar) + "] at " + Str$(\Column) + ", " + Str$(\DisplayLine) + " - offset " + Str$(\ColumnsOffset)}
+  PED_PrintText{textaddr, \Column, \DisplayLine, 1, tcolor}
 End Function
-
-
-Statement PED_PrintSyntaxHighlighting{startPos.w, size.w, tposx.w, tposy.w}
-SHARED pedconfig, ped, sourceWindow, AB3Pen()
-
-  lineaddr.l = ped\ptrTextbufferPrint
-  offset.w = 0 
-
-  exit_highlight.b = False
-  Repeat
-    textlen.w = 0
-    tlen.w    = 0
-    tcolor.w  = -1
-    tcolorb.w = -1
-
-    curChar.b = Peek.b(lineaddr + offset)
-
-    Select curChar
-    Case @";" ;-------- comments
-      If (AB3Pen(#AB3_cremarkforeground) <> AB3Pen(#AB3_cother)) OR (AB3Pen(#AB3_cremarkbackground) <> AB3Pen(#AB3_cbackground))
-        If Peeks$(lineaddr + offset + 1,2) <> ":@"
-          textlen = Len(Trim$(Peek.s(lineaddr + offset)))
-          tcolor = AB3Pen(#AB3_cremarkforeground)
-          tcolorb = AB3Pen(#AB3_cremarkbackground)
-          exit_highlight = True
-        EndIf         
-      EndIf
-
-    Case $22 ;-------- strings
-      If AB3Pen(#AB3_cstring) <> AB3Pen(#AB3_cother)
-        ;!log_PrintOut { "search string [" + Peeks$(lineaddr + offset + 1,40) + "]"}
-        textlen = Instr(Peek.s(lineaddr + offset + 1), Chr$($22))   ; search for second string mark
-        If textlen
-          textlen + 1
-          tcolor = AB3Pen(#AB3_cstring)
-        EndIf
-      EndIf
-
-    Case @"#" ;-------- constants
-      If AB3Pen(#AB3_cconstant) <> AB3Pen(#AB3_cother)
-        For i.w = offset + 1 To #MAX_Columns - 1
-          checkchr.b = Peek.b(lineaddr + i)
-          ;!log_PrintOut{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
-          If checkchr <> @"$" AND checkchr <> @"%"; OR checkchr = @"-"
-            If !IsIllegalChar{Peek.b(lineaddr + i)}
-              textlen = i - offset
-              tcolor = AB3Pen(#AB3_cconstant)
-              Pop For : Pop If : Pop If : Pop If
-              Goto Exit_constant
-            EndIf
-          EndIf
-        Next i
-        Exit_constant:
-      EndIf
-
-    Case @"\" ;-------- newtypes
-      If AB3Pen(#AB3_cnewtype) <> AB3Pen(#AB3_cother)
-        For i.w = offset + 1 To #MAX_Columns - 1
-          checkchr.b = Peek.b(lineaddr + i)
-          ;!log_PrintOut{"macro checking [" + Chr$(checkchr) +  "] in "+ Peeks$(lineaddr,20)}
-          If checkchr <> @"\"
-            If !IsIllegalChar{Peek.b(lineaddr + i)}
-              textlen = i - offset
-              tcolor = AB3Pen(#AB3_cnewtype)
-              Pop For : Pop If : Pop If : Pop If
-              Goto Exit_newtype
-            EndIf
-          EndIf
-        Next i
-        Exit_newtype:
-      EndIf
-
-    Case @"!" ;-------- macros
-      If AB3Pen(#AB3_cmacro) <> AB3Pen(#AB3_cother)
-        For i.w = offset + 1 To #MAX_Columns - 1
-          If !IsIllegalChar{Peek.b(lineaddr + i)}
-            textlen = i - offset
-            tcolor = AB3Pen(#AB3_cmacro)
-            Pop For : Pop If
-            Goto Exit_macro
-          EndIf
-        Next i
-        Exit_macro:
-      EndIf
-
-    Case @"{" ;-------- basic functions/statements
-      If AB3Pen(#AB3_cfunction) <> AB3Pen(#AB3_cother)
-        For i.w = offset - 1 To 0 Step -1
-          checkchr.b = Peek.b(lineaddr + i)
-
-          ; check if we have a macro instead of an statement/function
-          If checkchr = @"!"; OR (checkchr < 0) 
-            Pop For : Pop If : Pop If : Pop If
-            Goto Exit_function
-          EndIf
-
-          If !IsIllegalChar{checkchr} OR (i = 0)
-            If i > 0 Then i + 1
-            textlen = offset - i
-            offset = offset - textlen
-            tcolor = AB3Pen(#AB3_cfunction)
-            Pop For : Pop If : Pop If : Pop If
-            Goto Exit_function
-          EndIf
-        Next i
-        Exit_function:
-      EndIf       
-    End Select
-
-    ;-- print the highlighted text
-    ;-- but only of it is in visible area
-    If textlen 
-      If (offset + textlen => startPos) AND (offset - startPos <= sourceWindow\visibleColumns-1)
-        ; --
-        ; startPos < ----- > size to check !!!!
-        ; --
-
-        textaddr.l = lineaddr + offset
-        tlen = textlen
-        tx.w = 0
-
-        ;-- scrolling mode, so just update the scroll area left or right
-        If (size > 0)  
-          ;-- check if text is in visible area
-          If (offset + textlen < startPos) OR (offset > startPos)
-            ;!log_PrintOut{"IGNORING offset " + Str$(offset) + " tlen " + Str$(tlen) + "   " + Peeks$(textaddr,tlen)}
-            tlen = 0
-          Else
-            ;--                             #ID_ | VALUE
-            ;-- check if startPos is left or right of found text
-            tx = offset - startPos
-
-            If tx < 0        ; startPos is left of begin of text 
-              textaddr - tx
-            Else
-              textaddr + tx  ; startPos is right of begin of text 
-            EndIf
-
-            If tposx = 0 Then tx = 0 Else tx = sourceWindow\visibleColumns - size
-            If tlen > size Then tlen = size
-            ;!log_PrintOut{"SCROLL offset " + Str$(offset) + " startpos " + Str$(startPos) + " tx " + Str$(tx) + " tlen " + Str$(tlen) + "  " + Peeks$(textaddr,tlen)}
-
-          EndIf
-        Else
-          ;-- clipping of full text to visible area
-          tx = offset - startPos          
-          If tx < 0       
-            textaddr - tx
-            tlen + tx
-            tx = 0
-          EndIf
-        EndIf
-
-        If tlen > 0        
-          ;!log_PrintOut{"SYNTAX tx " + Str$(tx) + " | " + Peeks$(textaddr,tlen)}
-          PED_PrintText{textaddr, tx, tposy, tlen, tcolor, tcolorb}
-        EndIf
-      Else
-        ;!log_PrintOut{"text is outside of view: offset " + Str$(offset) + " startPos " + Str$(startPos) + " tl " + Str$(textlen)  + " | " + Peeks$(lineaddr + offset, textlen)}
-      EndIf
-
-      offset = offset + textlen
-    EndIf
-
-    offset + 1
-  Until (exit_highlight) OR (curChar = 0) OR (offset >= #MAX_Columns - 1)
-End Statement
-
 
 Statement PED_PrintSourceText{*textaddr.l, startPos.w, size.w, tposx.w, tposy.w, @clearEndOfLine.b}
 SHARED sourceWindow, ped, pedconfig, AB3Pen()
@@ -3925,44 +3802,34 @@ SHARED sourceWindow, ped, pedconfig, AB3Pen()
   If _strLen > #MAX_Columns - 1 Then _strLen = #MAX_Columns - 1
 
   ;-- clear textBufferPrint
-  MemCls ped\ptrTextbufferPrint, #MAX_Columns, 0
-
-  ;-- just copy the current text line to the printBuffer
-  ;-- or
-  ;-- detokenize it, but keep token indicator (bit7) and copy the text to the printbuffer
-  If ped\noDetokenizing
-    CopyMem_ *textaddr, ped\ptrTextbufferPrint, _strLen
-  Else
-    PED_Detokenize2Printbuffer{*textaddr, _strLen}  ; TODO: prepare for syntaxhighlighting
-  EndIf
+  MemCls ped\ptrTextbufferPrint, #MAX_Columns, @" "
+  MemCls ped\ptrTextbufferHighlight, #MAX_Columns, 0
 
   ;-- print the sourcetext
   If ped\doTokenize
-    PED_PrintTokenizedText{startPos, size, tposx, tposy}
+    ;-- detokenize it and copy the text to the printbuffer
+    ;-- prepare mask for syntax highlighting
+    PED_Detokenize2Printbuffer{*textaddr, _strLen}
+
+    ;-- print the source line with syntax highlighting using the printbuffer
+    PED_PrintHighlightedText{startPos, size, tposx, tposy}
   Else
+    ;-- just copy the source text to the printbuffer
+    PokeS ped\ptrTextbufferPrint, tmpString
+
+    ;-- simple print of text without anything special
     tmpString.s = UnRight$(Peek.s(*textaddr), startPos)
     textlen.w = FLen(tmpString.s)
-
     If (size <> -1) AND (textlen > size) Then textlen = size
-
     PED_PrintText{*textaddr + startPos, tposx, tposy, textlen, AB3Pen(#AB3_cother), AB3Pen(#AB3_cbackground)}
-  EndIf
-
-  ;-- store x position of rastport cursor to clear from there after syntax highlighting
-  clearXfrom.w = sourceWindow\win\RPort\cp_x
-   
-  ;-- do syntax highlighting if activated
-  ;-- printbuffer is used here!  
-  If pedconfig\highlighting 
-    PED_PrintSyntaxHighlighting{startPos, size, tposx, tposy}
   EndIf
 
   ;-- optionally clear end of line
   If clearEndOfLine = True
     USEPATH sourceWindow
 
-    rectx.w = clearXfrom
-    If clearXfrom <= \BoxLeft Then rectx  + 1
+    rectx.w = sourceWindow\win\RPort\cp_x
+    If rectx <= \BoxLeft Then rectx  + 1
     recty.w = \BoxTop + tposy * \font\tf_YSize
     rectw.w = \BoxWidth
     recth.w = recty + \font\tf_YSize-1
@@ -3974,8 +3841,9 @@ SHARED sourceWindow, ped, pedconfig, AB3Pen()
       !log_PrintOut{Str$(rectx) + ", " + Str$(rectw)}
       !log_PrintOut{Str$(recty) + ", " + Str$(recth)}
     EndIf
-  EndIf
 
+  EndIf
+  
 End Statement
 
 Statement PED_PrintLineNumber{}
@@ -4037,20 +3905,28 @@ SHARED sourceWindow, pedconfig, AB3Pen(), ped
   ped\ptrCurrentSourceData\DisplayLine = actualLine
 End Statement
 
-
+;--
+;-- This statement detokenizes the current source line if needed, prepares the syntax highlighting
+;-- and fills the textbuffer with the decoded text - or just copies the nontokenized text to the textbuffer
+;-- and the printbuffer of the current line
+;-- 
 Statement PED_PrintCurrentSourceLine{@clearEndOfLine.b}
 SHARED pedconfig, ped, sourceWindow, AB3Pen()
 
   If pedconfig\linenumbers Then PED_PrintLineNumber{}
 
-  If ped\ptrCurrentSourceData\CurrentSourceLine = 0 Then Statement Return
-
   ;-- clear current line in textBuffer
   MemCls ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns, @" "
 
+  If ped\ptrCurrentSourceData\CurrentSourceLine = 0
+    !log_PrintOut{"PrintCurrentSourceLine(): Current sourceline is NULL.", #log_error}
+    Statement Return
+  EndIf
+
   If Peek.b(ped\ptrCurrentSourceData\CurrentSourceLine + 9) <> 0   ; first character of text
     PED_PrintSourceText{ped\ptrCurrentSourceData\CurrentSourceLine + 9, ped\ptrCurrentSourceData\ColumnsOffset, -1,0,ped\ptrCurrentSourceData\DisplayLine, clearEndOfLine}
-    PED_CopyPrintbuffer2Textbuffer{}
+    ;-- copy the detokenized text to the textbuffer
+    PokeS ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, Peek.s(ped\ptrTextbufferPrint)
   Else
     USEPATH sourceWindow
     SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
@@ -4062,8 +3938,8 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
       RectFill_ \win\RPort, xMin, yMin, xMax, yMax
     Else
       !log_PrintOut{"illegal clear area for PrintCurrentSourceLine!", #log_error}
-      !log_PrintOut{Str$(xMin) + ", " + Str$(xMax)}
-      !log_PrintOut{Str$(yMin) + ", " + Str$(yMax)}
+      !log_PrintOut{Str$(xMin) + ", " + Str$(xMax), #log_error}
+      !log_PrintOut{Str$(yMin) + ", " + Str$(yMax), #log_error}
     EndIf
 
     ;-- move cursor to next line
@@ -4452,9 +4328,6 @@ SHARED ped, sourceWindow
   End Select
   curX = curX * sourceWindow\font\tf_XSize
 
-  ;-- as we are printing the textbuffer, we do not need to detokenize again!  
-  ped\noDetokenizing = 1                      
-
   lineaddr.l = ped\ptrTextbuffer
   For curY.w = 0 To sourceWindow\visibleLines - 1    
     If Peek.b(lineaddr) <> 0
@@ -4466,7 +4339,6 @@ SHARED ped, sourceWindow
     ; -- increase text line pointer in textbufferoffset
     lineaddr + #MAX_Columns
   Next curY
-  ped\noDetokenizing = 0
 
   ;-- redraw or update the block
   If direction = #FULL_REDRAW
@@ -4863,12 +4735,15 @@ SHARED ped, readcache
   actualColumn.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
 
   ; -- get first part of current line
-  ped\inString = 0
-  beginString.s = ""
+  ped\inString = False : ped\inComment = False
+
+  beginString.s = "" ; Peeks$(lineaddr, actualColumn-1)
   For p.w = 0 To actualColumn - 1
     currentbyte.b = Peek.b(lineaddr + p)
-    If currentbyte = $22 Then ped\inString = NOT ped\inString
-    If NOT ped\inString Then currentbyte = currentbyte BitClr 7
+    ;-- check if we are in a string or a comment
+    If (NOT ped\inComment) AND (currentbyte = $22) Then ped\inString = NOT ped\inString
+    If (NOT ped\inString) AND (currentbyte = @";") Then ped\inComment = True
+    If (NOT ped\inString) AND (NOT ped\inComment) Then currentbyte = currentbyte BitClr 7
     beginString + Chr$(currentbyte)
   Next p
 
@@ -4940,8 +4815,6 @@ SHARED ped, readcache
 
   If blockfile <> "" Then PED_CloseFile{ped\sourceFileHandle}
 
-  ped\inString = False
-
   !PED_ResetBlockflag
   PED_RedrawSource{}
   PED_UpdateStatusArea{}
@@ -4997,7 +4870,10 @@ USEPATH ped\ptrCurrentSourceData
 End Statement
 
 
-
+;-- returns the stringlength at the memory position
+;-- it searches from right to left in the text buffer 
+;-- the textbuffer is filled with spaces
+;-- returns the length of the string until there are only spaces left (starts with 0)
 Function.w getLineLength{lineaddr.l}
   _length.w = #MAX_Columns - 1
   exit_loop.b = False
@@ -5009,8 +4885,8 @@ Function.w getLineLength{lineaddr.l}
     Else
       _length - 1
     EndIf
-  Until exit_loop OR _length < 1
-  _length + 1
+  Until exit_loop OR (_length < 1)
+  ;_length + 1
   Function Return _length
 End Function
 
@@ -5158,6 +5034,7 @@ USEPATH sourceWindow
 
   ;--------------------------------------------
   ;-- draw the new lines after scrolling left or right
+  !log_PrintOut{"scrolling and updating text"}
   PED_RedrawTextbuffer{direction}
 End Statement
 
@@ -5790,9 +5667,6 @@ End Function
 
 Function.w PED_PreparseTextLine{lineaddr.l}
   SHARED ped, pedconfig, operators$(),num_operators
-
-  ;--  clear token flags but dont trash strings
-  !removeTokenbits{lineaddr, #MAX_Columns}
 
   strg$ = Peeks$(lineaddr,#MAX_Columns)
   absColumnPos.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
@@ -6682,10 +6556,11 @@ readcache\fib = AllocDosObject_ (#DOS_FIB,0)
 
 ; --
 ; -- alloc memory for textbuffer of source editor
-tempMemPtr.l = PED_AllocMem{(#MAX_Columns + 4) * 2}
+tempMemPtr.l = PED_AllocMem{(#MAX_Columns + 4) * 3}
 If tempMemPtr = 0 Then Goto exit_PED_closelibraries
 ped\ptrTextbufferPrint   = tempMemPtr + (#MAX_Columns + 4) * 0
-ped\ptrLineUndeleteStore = tempMemPtr + (#MAX_Columns + 4) * 1
+ped\ptrTextbufferHighlight= tempMemPtr + (#MAX_Columns + 4) * 1
+ped\ptrLineUndeleteStore = tempMemPtr + (#MAX_Columns + 4) * 2
 
 ; --
 ; -- alloc memory for tokencache
@@ -6758,6 +6633,8 @@ MOVE.l (a7)+,A0 : PutReg A0,ptr_compilersource.l
 ;!log_PrintOut{"Constantbase= " + Hex$(*constantbase)}
 ;!log_PrintOut{"Macrobase   = " + Hex$(*macrobase)}
 ;!log_PrintOut{"Varbase     = " + Hex$(*varbase)}
+;!log_PrintOut{"Quotation: " + Chr$(Peek.b(?comByte_QuotationIdentifier))}
+;!log_PrintOut{"Comment  : " + Chr$(Peek.b(?comByte_CommentIdentifier))}
 
 ; ------------------------------------------------------------------------------------
 ; AUSWERTEN DER TOOLTYPES
@@ -7334,6 +7211,7 @@ Return
         newline$ = Peeks$(lineaddr,#MAX_Columns)
         newline$ = StripTrail$(newline$,@" ")
         newline$ = PED_TokenizeText{newline$}
+        ;!log_HexDump{&newline$,32}
         *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
         PED_ReplaceCurrentSourceLine{*newLine}
     
@@ -8508,7 +8386,7 @@ Even
     !ComData_JSR{comFunc_LoadSource}
     !basic
   Else
-    Gosub normal_text
+    Gosub load_normal_text
   EndIf
   !log_PrintOut{"loaded " + Str$(ped\ptrCurrentSourceData\TotalLines) + " lines of text"}
 
@@ -8540,7 +8418,7 @@ Even
   PED_ShowMessage{""}
 Return
 
-.normal_text:
+.load_normal_text:
   !log_PrintOut{"other loading routine called..."}
   ped\sourceFileHandle = PED_OpenFile{loadsourcefilename.s,#MODE_OLDFILE,True}
   ped\sourceFileComplete = loadsourcefilename
@@ -8595,6 +8473,7 @@ Return
   Repeat
     tmpLine = PED_ReadNextLine{}
     If ped\convertAsm Then tmpLine = PED_ConvertASM{tmpLine}
+
     tmpLen.w = FLen(tmpLine)
 
     If tmpLine <> "NoCOntenTwasDelivered"
@@ -8886,6 +8765,80 @@ Return
   EndIf
 Return
 
+.menu_saveblockas:
+  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
+    !log_PrintOut{"no block marked."}
+  EndIf  
+
+  blockfn$ = PED_RequestFile{"","","Name to save block as","(#?.info)", False}
+  If blockfn$ <> ""
+    *write_fh.l = Open_(&blockfn$, #MODE_NEWFILE)
+    If *write_fh <> 0
+      PED_SetPointerBusy{}
+      *tempLine.sourceLine = PED_GetFirstBlockLine{}
+      strline$ = PED_Detokenize{*tempLine}
+      strlng.w = FLen(strline$)
+
+      If PED_GetCountOfMarkedLines{} < 2
+        If strlng >= ped\ptrCurrentSourceData\BlockEndX
+          strlng = ped\ptrCurrentSourceData\BlockEndX - ped\ptrCurrentSourceData\BlockStartX + 2
+        EndIf
+        strlng = strlng - 1
+        strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX, strlng) ;+ Chr$(10)
+        ;!log_PrintOut{">>" + strline$}
+        Write_ *write_fh,&strline$,FLen(strline$)
+      Else
+        If strlng <= ped\ptrCurrentSourceData\BlockStartX
+          ;-- end of String...
+          strline$ = Chr$(10)
+          WriteChunkBytes_ *write_fh, &strline$,1
+        EndIf
+
+          ;-- copy first line
+          strlng = strlng - ped\ptrCurrentSourceData\BlockStartX
+          strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX, strlng) + Chr$(10)
+          Write_ *write_fh, &strline$, Len(strline$)
+
+          ;-- copy most lines
+          For si.w = 1 To PED_GetCountOfMarkedLines{} - 2
+            If *tempLine\nextLine
+              *tempLine = *tempLine\nextLine
+              strline$ = PED_Detokenize{*tempLine}
+              strlng.w = FLen(strline$)
+              If ped\verticalCopyMode <> 0 AND (strlng > ped\ptrCurrentSourceData\BlockStartX)
+                strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX, strlng - ped\ptrCurrentSourceData\BlockStartX) + Chr$(10)
+              Else
+                strline$ = Left$(strline$, strlng) + Chr$(10)
+              EndIf
+              Write_ *write_fh,&strline$,FLen(strline$)
+            Else
+              error{"Error copying to clipboard: no next line!",#log_error}
+            EndIf
+          Next si
+
+          ;-- copy last selected Line
+          *tempLine = *tempLine\nextLine
+          If *tempLine
+            strline$ = PED_Detokenize{*tempLine}
+            strline$ = Left$(strline$,ped\ptrCurrentSourceData\BlockEndX)
+            strlng = Len(strline$)
+            If ped\verticalCopyMode <> 0 AND (strlng > ped\ptrCurrentSourceData\BlockStartX)
+              strline$ = UnRight$(strline$,ped\ptrCurrentSourceData\BlockStartX-1) + Chr$(10)
+            Else
+              strline$ = strline$ + Chr$(10)
+            EndIf
+            Write_ *write_fh, &strline$, Len(strline$)
+          EndIf
+      EndIf
+      Close_ *write_fh
+      PED_SetPointerNormal{}
+    Else
+      dummy.l = ask{!TRANS{"Error writing file!"},!TRANS{"OK"},"Error!"}
+    End If
+  End If
+Return
+
+
 .menu_about:
   PED_SetPointerBusy{}
 
@@ -8953,8 +8906,18 @@ Return
   PED_ActivateSourcewindow{}
 Return
 
-.menu_find:
 
+.menu_top:
+  PED_HistoryAddEntry{}
+  PED_GotoLine{0, #LINE_START}
+Return
+
+.menu_bottom:
+  PED_HistoryAddEntry{}
+  PED_GotoLine{ped\ptrCurrentSourceData\TotalLines, #LINE_START}
+Return
+
+.menu_find:
   ts.s = PED_Detokenize{ped\ptrCurrentSourceData\CurrentSourceLine}
   actualword$ = PED_GetWordAtPos{ts, ped\ptrCurrentSourceData\Column,False}
   If actualword$ <> ""
@@ -9591,15 +9554,76 @@ USEPATH ped\ptrCurrentSourceData
   !log_PrintOut{"menu joinlines finished."}
 Return
 
-.menu_top:
-  PED_HistoryAddEntry{}
-  PED_GotoLine{0, #LINE_START}
+.menu_copy:
+  !log_PrintOut{"menu copy called."}
+  PED_CopyBlock{}
+
+  ; -- remove block selection
+  PED_DrawBlockmark{}
+  ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
 Return
 
-.menu_bottom:
-  PED_HistoryAddEntry{}
-  PED_GotoLine{ped\ptrCurrentSourceData\TotalLines, #LINE_START}
+.menu_cut:
+  !log_PrintOut{"menu cut called."}
+  If ped\ptrCurrentSourceData\BlockEndY <> $ffffFFFF
+    PED_CutBlock{}
+  Else
+    Gosub menu_deleteline
+  EndIf
 Return
+
+.menu_paste:
+  !log_PrintOut{"menu paste called."}
+  ;-- remove any existing selection
+  PED_KillBlock{}
+  ;-- paste the stored block
+  PED_PasteBlock{""}
+Return
+
+.menu_kill:
+  !log_PrintOut{"menu kill called."}
+  PED_KillBlock{}
+Return
+
+
+.menu_dublicate:
+  !log_PrintOut{"menu dublicate called."}
+  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
+    !log_PrintOut{"no block selected."}
+    PED_SetPointerNormal{}
+    Pop If: Return
+  EndIf
+
+  error{"Function disabled, WIP."}
+
+  PED_RedrawSource{}
+  !log_PrintOut{"menu dublicate finished."}
+Return
+
+
+.menu_forget:
+  !log_PrintOut{"menu forget called."}
+  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
+    !log_PrintOut{"no block selected."}
+    PED_SetPointerNormal{}
+    Pop If : Return
+  EndIf
+
+  error{"Function disabled, WIP."}
+  !PED_ResetBlockflag
+  PED_RedrawSource{}
+Return
+
+
+.menu_includeblock:
+  !log_PrintOut{"includeblock"}
+
+  includeblockfile.s = PED_RequestFile{"","","Name of block to load","(#?.info)", False}
+  If includeblockfile <> ""
+    PED_PasteBlock{includeblockfile}
+  EndIf
+Return
+
 
 
 ; -- handle compilermenu
@@ -10101,144 +10125,6 @@ Return
   Gosub read_tempprefs
 
   PED_UpdateStatusArea{#STATUS_REDRAW}
-Return
-
-.menu_copy:
-  !log_PrintOut{"menu copy called."}
-  PED_CopyBlock{}
-
-  ; -- remove block selection
-  PED_DrawBlockmark{}
-  ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
-Return
-
-
-.menu_cut:
-  !log_PrintOut{"menu cut called."}
-  PED_CutBlock{}
-Return
-
-.menu_paste:
-  !log_PrintOut{"menu paste called."}
-  PED_KillBlock{}
-  PED_PasteBlock{""}
-Return
-
-.menu_kill:
-  !log_PrintOut{"menu kill called."}
-  PED_KillBlock{}
-Return
-
-.menu_saveblockas:
-  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
-    !log_PrintOut{"no block marked."}
-  EndIf  
-
-  blockfn$ = PED_RequestFile{"","","Name to save block as","(#?.info)", False}
-  If blockfn$ <> ""
-    *write_fh.l = Open_(&blockfn$, #MODE_NEWFILE)
-    If *write_fh <> 0
-      PED_SetPointerBusy{}
-      *tempLine.sourceLine = PED_GetFirstBlockLine{}
-      strline$ = PED_Detokenize{*tempLine}
-      strlng.w = FLen(strline$)
-
-      If PED_GetCountOfMarkedLines{} < 2
-        If strlng >= ped\ptrCurrentSourceData\BlockEndX
-          strlng = ped\ptrCurrentSourceData\BlockEndX - ped\ptrCurrentSourceData\BlockStartX + 2
-        EndIf
-        strlng = strlng - 1
-        strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX, strlng) ;+ Chr$(10)
-        ;!log_PrintOut{">>" + strline$}
-        Write_ *write_fh,&strline$,FLen(strline$)
-      Else
-        If strlng <= ped\ptrCurrentSourceData\BlockStartX
-          ;-- end of String...
-          strline$ = Chr$(10)
-          WriteChunkBytes_ *write_fh, &strline$,1
-        EndIf
-
-          ;-- copy first line
-          strlng = strlng - ped\ptrCurrentSourceData\BlockStartX
-          strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX, strlng) + Chr$(10)
-          Write_ *write_fh, &strline$, Len(strline$)
-
-          ;-- copy most lines
-          For si.w = 1 To PED_GetCountOfMarkedLines{} - 2
-            If *tempLine\nextLine
-              *tempLine = *tempLine\nextLine
-              strline$ = PED_Detokenize{*tempLine}
-              strlng.w = FLen(strline$)
-              If ped\verticalCopyMode <> 0 AND (strlng > ped\ptrCurrentSourceData\BlockStartX)
-                strline$ = Mid$(strline$, ped\ptrCurrentSourceData\BlockStartX, strlng - ped\ptrCurrentSourceData\BlockStartX) + Chr$(10)
-              Else
-                strline$ = Left$(strline$, strlng) + Chr$(10)
-              EndIf
-              Write_ *write_fh,&strline$,FLen(strline$)
-            Else
-              error{"Error copying to clipboard: no next line!",#log_error}
-            EndIf
-          Next si
-
-          ;-- copy last selected Line
-          *tempLine = *tempLine\nextLine
-          If *tempLine
-            strline$ = PED_Detokenize{*tempLine}
-            strline$ = Left$(strline$,ped\ptrCurrentSourceData\BlockEndX)
-            strlng = Len(strline$)
-            If ped\verticalCopyMode <> 0 AND (strlng > ped\ptrCurrentSourceData\BlockStartX)
-              strline$ = UnRight$(strline$,ped\ptrCurrentSourceData\BlockStartX-1) + Chr$(10)
-            Else
-              strline$ = strline$ + Chr$(10)
-            EndIf
-            Write_ *write_fh, &strline$, Len(strline$)
-          EndIf
-      EndIf
-      Close_ *write_fh
-      PED_SetPointerNormal{}
-    Else
-      dummy.l = ask{!TRANS{"Error writing file!"},!TRANS{"OK"},"Error!"}
-    End If
-  End If
-Return
-
-
-.menu_includeblock:
-  !log_PrintOut{"includeblock"}
-
-  includeblockfile.s = PED_RequestFile{"","","Name of block to load","(#?.info)", False}
-  If includeblockfile <> ""
-    PED_PasteBlock{includeblockfile}
-  EndIf
-Return
-
-
-.menu_dublicate:
-  !log_PrintOut{"menu dublicate called."}
-  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
-    !log_PrintOut{"no block selected."}
-    PED_SetPointerNormal{}
-    Pop If: Return
-  EndIf
-
-  error{"Function disabled, WIP."}
-
-  PED_RedrawSource{}
-  !log_PrintOut{"menu dublicate finished."}
-Return
-
-
-.menu_forget:
-  !log_PrintOut{"menu forget called."}
-  If ped\ptrCurrentSourceData\BlockEndY = $ffffFFFF
-    !log_PrintOut{"no block selected."}
-    PED_SetPointerNormal{}
-    Pop If : Return
-  EndIf
-
-  error{"Function disabled, WIP."}
-  !PED_ResetBlockflag
-  PED_RedrawSource{}
 Return
 
 .event_leftmousebutton:
@@ -10934,22 +10820,21 @@ SHARED ped, tmpTokeStr
     Else
       strLen.w = FLen(strLine)
       runner.w = 0
-      ped\inString = False
-      CLR.w comWord__QuoteFlag
+      ped\inString = False : ped\inComment = False
 
       Repeat
         curChar.b = Peek.b(&strLine + runner)
-        If curChar = $22 Then ped\inString = NOT ped\inString
-        If ped\inString = False Then curChar = curChar BitClr 7
+
+        ;-- check if we are in a string or a comment
+        If (NOT ped\inComment) AND (curChar = $22) Then ped\inString = NOT ped\inString
+        If (NOT ped\inString) AND (curChar = @";") Then ped\inComment = True
+        If NOT (ped\inString OR ped\inComment) Then curChar = curChar BitClr 7
 
         If curChar = $22 ;Peek.b(?comByte_QuotationIdentifier)
-          NOT.w comWord__QuoteFlag
           tmpTokeStr + Chr$(curChar)
         EndIf
 
-;        If Peek.w(?comWord__QuoteFlag)
           tmpTokeStr + Chr$(curChar)
- ;       EndIf
 
         If NOT IsLetter{curChar}
           If (curChar > $29 AND curChar < $58) OR curChar = @"_" OR curChar = @"." OR curChar = @"\"  ; check if char is a number or special char
@@ -10992,8 +10877,7 @@ End Function
   CMPI.b #$20,$0(A2,D1.W)              ; -------  check spaces from right to left
   BNE.w JL_0_5F7E
     JL_0_5F72:
-    SUBQ.w #1,D1
-    BPL.b JL_0_5F68
+    SUBQ.w #1,D1 : BPL.b JL_0_5F68     
       ADDQ.w #4,A7                     ; adjust stack as we put A1 into it
       CLR.b (A1)
       MOVEQ.l #$01,D5                  ; only spaces in string, so return length 1 as we dont store only 1 space
@@ -11001,200 +10885,196 @@ End Function
   JL_0_5F7E:
 
   MOVE.l A4,-(A7)                      ; save A4
+                                       ; O.K. d1=last char on line
   MOVEQ.l #$00,D0
   MOVE.w D0,comWord__QuoteFlag
   CLR.b instring2
 
-  JL_0_5F88:
+  ;--
+  ;-- the main tokenise loop...
+  ;--
+ 'tok_loop:
     MOVE.b (A2)+,D2
 
     CMP.b #$22,d2 : BNE 'l10           ; ------------------ check for string "
       NOT.b instring2
    'l10
-    TST.b instring2 : BNE 'l11
-      BCLR #$7,D2                      ; remove tokenflag in string
-   'l11
+   ; TST.b instring2 : BNE 'l11
+   ;   BCLR #$7,D2                      ; remove tokenflag if we are in a string
+   ;'l11
 
-    CMP.b comByte_QuotationIdentifier,D2
-    BNE.w JL_0_5FA2
-      JL_0_5F96:
+    CMP.b comByte_QuotationIdentifier,D2 : BNE.w 'noquote
+     'quoteon
       NOT.w comWord__QuoteFlag
 
-      JL_0_5F9C:
-      JSR copyD2toA1
-      BRA.b JL_0_5F88
-    JL_0_5FA2:
+     'pch
+   ;   TST.w comWord__QuoteFlag : BNE 'skip_bitclear
+   ;     BCLR #$7,D2                      ; remove tokenflag if we are in a string
+   ;  'skip_bitclear
 
-    MOVE.w comWord__QuoteFlag,D4
-    BNE.b JL_0_5F9C                    ; ----------------------------------------------------
+      JSR putCharToA1
+      BRA.b 'tok_loop
+   'noquote:
 
-    JSR checkD2ForLetter
-    BEQ.w findToken                    ; go to tokenfinder
+    MOVE.w comWord__QuoteFlag,D4 : BNE.b 'pch  ; optimierzbg BNE.b skip_bitclear / check the result of the quotation check again ----
 
-    JL_0_5FB0:
-    CMP.b #$30,d2                      ; number 0-9
-    BLT 'l10
-      CMP.b #$39,d2
-      BGT 'l10
-        BRA JL_0_6066
-   'l10:
+    JSR checkD2ForLetter : BEQ.w 'findtoken  ; go to tokenfinder
 
-    CMP.b #"_",D2 :    BEQ.w JL_0_6066 ; "_"
+   'ppp2:
+    CMP.b #$30,d2 : BLT 'l10a      ; number 0-9
+    CMP.b #$39,d2 : BGT 'l10a
+      BRA 'unto2
+   'l10a:
 
-    CMP.b #$2E,D2 :    BEQ.w JL_0_6066 ; "."
+    CMP.b #"_",D2 :    BEQ.w 'unto2
+    CMP.b #".",D2 :    BEQ.w 'unto2
+    CMP.b #"\",D2 :    BEQ.w 'unto2
 
-    CMP.b #"\",D2 :    BEQ.w JL_0_6066 ; "\"
-
-    CMP.b comByte_CommentIdentifier,D2 ; comment found
-    BNE.w JL_0_5FDC
-      JL_0_5FD0:
-        JSR copyD2toA1
+    CMP.b comByte_CommentIdentifier,D2 : BNE.w 'notrem     ; comment found
+     'remloop:
+        JSR putCharToA1
         MOVE.b (A2)+,D2
-        BCLR #$7,D2
-      BRA.b JL_0_5FD0
-    JL_0_5FDC:
+        ;BCLR #$7,D2                ; disable removal of token bit (7) for comments, enabling special characters inside comments
+      BRA.b 'remloop
+   'notrem:
 
-    CMP.b #"'",d2                       ; do not tokenize ' $ #
-    BEQ JL_0_5FE4
-      CMP.b #"#",D2
-      BEQ.w JL_0_5FE4
-        CMP.b #"$",D2
-        BNE.w JL_0_6018
+    CMP.b #"'",d2 : BEQ.w 'hexloop                         ; do not tokenize ' $ #
+    CMP.b #"#",D2 : BEQ.w 'hexloop
+    CMP.b #"$",D2 : BNE.w 'nothex
 
-      JL_0_5FE4:
-        JSR copyD2toA1
-        MOVE.b (A2)+,D2
-        BCLR #$7,D2
-        CMP.b #$22,d2                  ; "
-        BNE 'l10
-          BRA JL_0_5FE4
-       'l10
-        CMP.b #"_",d2 : BEQ JL_0_5FE4
-        CMP.b #"0",D2 : BCS.w JL_0_6018
-        CMP.b #"z",D2 : BHI.w JL_0_6018
-        CMP.b #"9",D2 : BLS.b JL_0_5FE4
-        CMP.b #"A",D2 : BCS.w JL_0_6018
-        CMP.b #"a",D2 : BCC.b JL_0_5FE4
-        CMP.b #"Z",D2 : BLS.b JL_0_5FE4
-    JL_0_6018:
+   'hexloop:
+      JSR putCharToA1
+      MOVE.b (A2)+,D2
+      ;BCLR #$7,D2
+      CMP.b #$22,d2 : BNE 'l10b                            ; "
+        BRA 'hexloop
+     'l10b
+      CMP.b #"_",d2 : BEQ 'hexloop
+      CMP.b #"0",D2 : BCS.w 'nothex
+      CMP.b #"z",D2 : BHI.w 'nothex
+      CMP.b #"9",D2 : BLS.b 'hexloop
+      CMP.b #"A",D2 : BCS.w 'nothex
+      CMP.b #"a",D2 : BCC.b 'hexloop
+    CMP.b #"Z",D2 : BLS.b 'hexloop
+   'nothex:
 
-    JSR copyD2toA1
+    JSR putCharToA1
     MOVE.b (A2)+,D2
-    CMP.b #$22,d2 : BNE 'l10
-      NOT.b instring2
-   'l10
-    TST.b instring2 : BNE 'l11
-      BCLR #$7,D2                      ;morechar
-   'l11
-    CMP.b comByte_QuotationIdentifier,D2
-    BEQ.w JL_0_5F96
 
-    JSR checkD2ForLetter
-    BNE.b JL_0_5FB0
+    CMP.b #$22,d2 : BNE 'l10c
+    NOT.b instring2
+   'l10c
+   ; TST.b instring2 : BNE 'l11c
+   ;   BCLR #$7,D2                      ;morechar
+   ;'l11c
 
-    findToken:                         ; ------ start tokenizing
+    CMP.b comByte_QuotationIdentifier,D2 : BEQ.w 'quoteon
+  ;  TST.w comWord__QuoteFlag : BNE 'l11c
+  ;      BCLR #$7,D2                      ;morechar
+  ; 'l11c
+
+    JSR checkD2ForLetter : BNE.b 'ppp2
+
+   'findtoken:                         ; ------ start tokenizing, ascii_to_token
     SUBQ.w #1,A2
     MOVEA.l comPtr_TokenBase,A3
 
-    JL_0_6036:
-    MOVEA.l A2,A4
-    MOVE.l A3,-(A7)
-    ADDQ.w #6,A3
+   'tokfind_loop:
+      MOVEA.l A2,A4                      ; reset
+      MOVE.l A3,-(A7)
+      ADDQ.w #6,A3
 
-    JL_0_603C:
-    MOVE.b (A3)+,D3                    ; char of Tokenname -> D3
-    BEQ.w JL_0_6082
-      MOVE.b (A4)+,D2                  ; char of string    -> D2
-      BCLR #$7,D2
-      ORI.b #$20,D3                    ; or space ?
-      ORI.b #$20,D2
-      CMP.b D3,D2
-      BEQ.b JL_0_603C
+     'loop4:
+        MOVE.b (A3)+,D3 : BEQ.w 'found   ; char of Tokenname -> D3
+          MOVE.b (A4)+,D2                ; char of string    -> D2
 
-      JL_0_6054:
-      MOVEA.l (A7)+,A3
-      MOVE.l (A3),D3                   ; move to next token
-      BEQ.w JL_0_6060                  ; no token left
-      MOVEA.l D3,A3
-      BRA.b JL_0_6036
+          BCLR #$7,D2                    ; remove tokenbit of found token
+          ORI.b #$20,D3                  ; or space ?
+          ORI.b #$20,D2
+      CMP.b D3,D2 : BEQ.b 'loop4
 
-      JL_0_6060:                       ; no token found, so write the char
-      MOVE.b (A2)+,D2
-      BCLR #$7,D2
+      'next:
+        MOVEA.l (A7)+,A3
+        MOVE.l (A3),D3                   ; move to next token
+        BEQ.w 'notokenfound                  ; no token left
+        MOVEA.l D3,A3
+    BRA.b 'tokfind_loop
 
-      JL_0_6066:
-      JSR copyD2toA1
-      MOVE.b (A2)+,D2
-      CMP.b #$22,d2
-      BNE 'l10
-        NOT.b instring2
-     'l10
-      TST.b instring2
-      BNE 'l11
-        BCLR #$7,D2
-     'l11
-      CMP.b comByte_QuotationIdentifier,D2
-      BEQ.w JL_0_5F96
+   'notokenfound:                       ; no token found, so write the char
+    MOVE.b (A2)+,D2
+   ; BCLR #$7,D2
 
-      JSR checkD2ForLetter
-      BEQ.b JL_0_6066
+   'unto2:
+    JSR putCharToA1
+    MOVE.b (A2)+,D2
 
-      BRA.w JL_0_5FB0
-    JL_0_6082:
+    CMP.b #$22,d2 : BNE 'l10d
+      NOT.b instring2
+   'l10d
+  ;  TST.b instring2 : BNE 'l11d
+  ;    BCLR #$7,D2
+  ; 'l11d
 
+    CMP.b comByte_QuotationIdentifier,D2 : BEQ.w 'quoteon
+   ; TST.w comWord__QuoteFlag : BNE 'l11d
+   ;    BCLR #$7,D2
+   ; 'l11d
+
+    JSR checkD2ForLetter : BEQ.b 'unto2
+
+    BRA.w 'ppp2
+
+   'found:
     MOVE.b (A4),D2
     BCLR #$7,D2
-    JSR checkD2ForLetter
-    BEQ.b JL_0_6054
+    JSR checkD2ForLetter : BEQ.b 'next
 
-    CMP.b #$30,d2                     ; number  0-9
-    BLT 'l10
-      CMP.b #$39,d2
-      BGT 'l10
-        BRA JL_0_6054
-   'l10:
-    CMP.b #"_",D2
-    BEQ.b JL_0_6054
+    CMP.b #$30,d2 : BLT 'l10e         ; number  0-9
+    CMP.b #$39,d2 : BGT 'l10e
+      BRA 'next
+   'l10e:
+    CMP.b #"_",D2 : BEQ.b 'next
 
     MOVEA.l (A7)+,A3                  ; copy token word to destination string
     ADDQ.w #4,A3
+
     MOVE.b (A3)+,(A1)
-    BSET #$7,(A1)+
+    BSET #$7,(A1)+                    ; set tokenbit for marking a token
     MOVE.b (A3),(A1)+
+
     MOVE.l A4,D4
     SUB.l A2,D4
     ADD.w D4,D0
-    CMP.w D1,D0                       ; d1: maxcolumns - 1
+    CMP.w D1,D0                       ; d1: strlength (maxcolumns - 1)
     BHI.w leaveParsing
     MOVEA.l A4,A2
-  BRA.w JL_0_5F88
+  BRA.w 'tok_loop
 
-.copyD2toA1:
+.putCharToA1:
   MOVE.b D2,(A1)+
   ADDQ.w #1,D0
-  CMP.w D1,D0
-  BHI.w JL_0_60BE
+  CMP.w D1,D0 : BHI.w 'pchover
     RTS
-  JL_0_60BE:
+ 'pchover:
   ADDQ.w #4,A7
 
 leaveParsing:
   MOVEA.l (A7)+,A4                    ; restore pointer to tokenstring to A4
   CLR.b (A1)+
   MOVE.l A1,D5
-  SUB.l (A7)+,D5                   ; return the length of the string in D5
+  SUB.l (A7)+,D5                      ; return the length of the string in D5
 RTS
 
 
 .checkD2ForLetter:
-  CMP.b #"A",D2 : BCS.w JL_0_60E8
-  CMP.b #"z",D2 : BHI.w JL_0_60E8
-  CMP.b #"[",D2 : BCS.w JL_0_60E6
-  CMP.b #"a",D2 : BCS.w JL_0_60E8
-  JL_0_60E6:
+  CMP.b #"A",D2 : BCS.w 'done
+  CMP.b #"z",D2 : BHI.w 'done
+  CMP.b #"[",D2 : BCS.w 'yes
+  CMP.b #"a",D2 : BCS.w 'done
+  'yes:
   CMP.w D2,D2
 
-  JL_0_60E8:
+  'done:
 RTS
 
 Even
@@ -11208,33 +11088,33 @@ Even
 ;  MOVE.l d0,a2                    ; D0: expandstore
 ;  MOVEA.l comPtr_TokenBase,A3
 ;
-;  JL_0_6036b:
+;  'tokfind_loopb:
 ;    MOVEA.l A2,A4
 ;    MOVE.l A3,-(A7)
 ;    ADDQ.w #6,A3
 ;
-;    JL_0_603Cb:
+;    'loop4b:
 ;      MOVE.b (A3)+,D3
-;      BEQ.w JL_0_6082b     ;found
+;      BEQ.w 'foundb     ;found
 ;        MOVE.b (A4)+,D2
 ;        ;BCLR #$7,D2
 ;        ;ORI.b #$20,D3
 ;        ;ORI.b #$20,D2
 ;    CMP.b D3,D2
-;    BEQ.b JL_0_603Cb
+;    BEQ.b 'loop4b
 ;
-;    JL_0_6054b:
+;    'nextb:
 ;    MOVEA.l (A7)+,A3
 ;    MOVE.l (A3),D3
-;    BEQ.w JL_0_6060b
+;    BEQ.w 'notokenfoundb
 ;      MOVEA.l D3,A3
-;  BRA.b JL_0_6036b
-;  JL_0_6082b:
+;  BRA.b 'tokfind_loopb
+;  'foundb:
 ;
 ;  MOVE.b (A4),D2
-;  BNE JL_0_6054b
+;  BNE 'nextb
 ;  BCLR #$7,D2
-;  BNE.b JL_0_6054b       ;not found
+;  BNE.b 'nextb       ;not found
 ;  MOVEA.l (A7)+,A3
 ;  ADDQ.w #4,A3
 ;  MOVEQ #0,d0
@@ -11244,7 +11124,7 @@ Even
 ;  MOVEM.l (a7)+,d1-d7/a0-a6
 ;RTS
 ;
-; JL_0_6060b
+; 'notokenfoundb
 ;  MOVEQ #0,d0
 ;  MOVEM.l (a7)+,d1-d7/a0-a6
 ;RTS
@@ -11342,12 +11222,15 @@ Return
 
       Case 3    ; -- labelmode = all remarks
         If Peek.w(?comWord_LabelRemark)
-          ped\inString = 0
+          ped\inString = False : ped\inComment = False
           ped\labelEntryType = $FFFE : found.b = False
           Repeat
             checkByte.b = Peek.b(&tmpStr) AND $FF
-            If checkByte = $22 Then ped\inString = NOT ped\inString
-            If checkByte = @";" AND (ped\inString = 0) Then found = True
+
+            ;-- check if we are in a string or a comment
+            If (NOT ped\inComment) AND (checkByte = $22) Then ped\inString = NOT ped\inString
+            If (NOT ped\inString) AND (checkByte = @";") Then found = True
+
             tmpStr = UnRight$(tmpStr,1)
           Until found OR tmpStr = ""
         EndIf
@@ -12304,7 +12187,6 @@ Return
 
 .moveCursorToBeginOfWord:
   lineaddr = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-  textlen.w = getLineLength{lineaddr}
 
   cursorpos.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
   If cursorpos > 1
@@ -12583,22 +12465,23 @@ Return
   _token.l = 0 
   While *sourceLine
     ptrString.l = *sourceLine + 9
-    ped\inString = 0
-    skip_rest_of_line.b = False
+    ped\inString = False : ped\inComment = False
     Repeat
-      curchar.b = Peek.b(ptrString)
+      curChar.b = Peek.b(ptrString)
 
-      If curchar = $22 Then ped\inString = NOT ped\inString
-      If curchar = @";" AND NOT ped\inString Then skip_rest_of_line = True
-      If curchar < 0 AND NOT ped\inString
+      ;-- check if we are in a string or a comment
+      If (NOT ped\inComment) AND (curChar = $22) Then ped\inString = NOT ped\inString
+      If (NOT ped\inString) AND (curChar = @";") Then ped\inComment = True
+
+      If (curChar BitTst 7) AND NOT (ped\inString OR ped\inComment)
         _token.l = Peek.w(ptrString) AND $FFFF
-        If _token > $8000 Then _token - $8000
+        If _token > $8000 Then _token - $8000 ; Bit 7 is set? remove it to get the real Token-Id!
         usedTokensTable(_token) = usedTokensTable(_token) + 1
         ptrString + 1
       EndIf
 
       ptrString + 1
-    Until skip_rest_of_line OR curchar = 0
+    Until ped\inComment OR curChar = 0
 
     If (scanned_lines MOD 10) = 0 Then !WZ_Update_Gauge{scanned_lines, ped\ptrCurrentSourceData\TotalLines}
     
@@ -12658,20 +12541,10 @@ Return
   Next cupos
   Poke.b lineaddr + #MAX_Columns-1, $20 ; add space at the end (overwriting last character)
 
-  ;-- check for "" in line and prevent parsing of instructions
   ped\ptrCurrentSourceData\Column = \visibleColumns - 1
   newcol.w = \visibleColumns + ped\ptrCurrentSourceData\ColumnsOffset - 1
-  quotation.b = 0
-  For cupos.w = newcol To 0 Step -1
-    If Peek.b(lineaddr + cupos) = $22 Then quotation + 1
-  Next cupos
 
-  ;-- show character that comes visible at the right if line is longer than visiblecolumns
-  If NOT (quotation AND 1) 
-    PED_PrintChar{Peek.b(lineaddr + newcol),1}
-  Else
-    PED_PrintChar{Peek.b(lineaddr + newcol)}  
-  EndIf
+  PED_PrintChar{Peek.b(lineaddr + newcol)}  
 
   ped\ptrCurrentSourceData\Column = ped\ptrCurrentSourceData\StoreColumn
 Return
@@ -14631,16 +14504,20 @@ Return
   *prthandle.l = Open_ (&printerDevice,#MODE_NEWFILE)
   If *prthandle
     *currentline.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
-    ped\inString = 0
+
+    ped\inString = False : ped\inComment = False
     While *currentline
       newstr.s = ""
       ptrString.l = *currentline + 9
       Repeat
         curchar.b = Peek.b(ptrString)
         If curchar
-          If curchar = $22 Then ped\inString = NOT ped\inString
+          ;-- check if we are in a string or comment
+          If (NOT ped\inComment) AND (curchar = $22) Then ped\inString = NOT ped\inString
+          If (NOT ped\inString) AND (curChar = @";") Then ped\inComment = True
+
           ;-- here comes a token
-          If (curchar < 0) AND (ped\inString = 0)
+          If (curchar BitTst 7) AND NOT (ped\inString OR ped\inComment)
             toknum.w = Peek.w(ptrString)
             newstr + "\\1B[1m"
             newstr + PED_GetTokenName{toknum}
