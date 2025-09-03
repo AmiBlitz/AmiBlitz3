@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.10.1
-; NumberOfBuilds  = 3517
+; NumberOfBuilds  = 3527
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 3733
-; CursorColumn    = 6
+; CursorLine      = 2108
+; CursorColumn    = 43
 ; LabelSearch     = "highlight"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -176,6 +176,8 @@ DEBUG
 #SCROLL_RIGHT    = -1
 #SCROLL_CURRENT_LINE = 1
 #FULL_REDRAW     = 2
+#FROM_HERE       = 3
+#FROM_TOP        = 4
 
 ; -- Keycodes
 ; Raw
@@ -1142,6 +1144,8 @@ End Statement
 Statement PED_ClearTextbuffer{}
 SHARED sourceWindow,ped
 
+  ped\ptrCurrentSourceData\TextBufferOffset = 0
+  
   ;_from.l = ped\ptrTextbuffer
   ;_to.l = _from + (#MAX_Columns / 2) * sourceWindow\visibleLines - 1
   ;For tb.l = _from To _to Step 2
@@ -1433,6 +1437,77 @@ SHARED oldSourceChanged.w
   PED_ShowStatusSymbol{"D",2,ped\debugMode}
   PED_ShowStatusSymbol{"T",1,ped\doTokenize}
 End Statement
+
+Statement PED_ShowMessage{textMessage.s,@target.b,@style.b}
+  SHARED pedmessage,sourceWindow,AB3Pen()            ; has to be shared, because on exit of function the variable will be discarded
+
+  If sourceWindow\win
+
+    If target = -1
+      SetAPen_ sourceWindow\win\RPort,AB3Pen(#AB3_screenfill)
+      RectFill_ sourceWindow\win\RPort, 0,0, sourceWindow\win\GZZWidth,sourceWindow\font\tf_YSize
+
+      If style<>-1
+        SetSoftStyle_ sourceWindow\win\RPort,style,style
+      ;Else
+        ;SetSoftStyle_ sourceWindow\win\RPort,#FSF_BOLD,#FSF_BOLD
+      EndIf
+      SetAPen_ sourceWindow\win\RPort,AB3Pen(#AB3_screenshine)
+      SetBPen_ sourceWindow\win\RPort,AB3Pen(#AB3_screenfill)
+      Move_ sourceWindow\win\RPort,0,sourceWindow\font\tf_Baseline
+      Text_ sourceWindow\win\RPort,&textMessage,FLen(textMessage)
+    Else
+      SetWindowTitles_ sourceWindow\win,-1,&textMessage
+    EndIf
+
+  EndIf
+End Statement
+
+Statement PED_ClearSourceWindow{mode.b}
+SHARED ped, pedconfig, sourceWindow, AB3Pen()
+
+  ;!log_PrintOut{"clear source window"}
+
+  If sourceWindow\win
+    USEPATH sourceWindow
+
+    ; -- clear the codelines in window
+    posY.w = 0
+    If mode = #FROM_HERE
+      posY = ped\ptrCurrentSourceData\DisplayLine * \font\tf_YSize
+    EndIf
+
+    xMin.w = \BoxLeft
+    yMin.w = \BoxTop + posY
+    xMax.w = \BoxWidth
+    yMax.w = \statusAreaY-1
+
+    If (xMax => xMin) AND (yMax => yMin)
+      SetAPen_ \win\RPort, AB3Pen(#AB3_cbackground)    
+      RectFill_ \win\RPort, xMin, yMin, xMax, yMax
+      ; -- draw vertical line to seperate numbers and source code      
+      If pedconfig\linenumbers
+        SetAPen_  \win\RPort, AB3Pen(#AB3_screenfill)
+        RectFill_ \win\RPort, 0, yMin, xMin - 1,yMax
+        SetAPen_ \win\RPort,AB3Pen(#AB3_screenshine)
+        Move_ \win\RPort,xMin - 1, yMin
+        Draw_ \win\RPort,xMin - 1, yMax
+      EndIf      
+    Else
+      !log_PrintOut{"PED_ClearSourceWindow(): illegal clear area!", #log_error}
+      !log_PrintOut{Str$(xMin) + ", " + Str$(xMax), #log_error}
+      !log_PrintOut{Str$(yMin) + ", " + Str$(yMax), #log_error}
+    EndIf
+
+    If mode = #FULL_REDRAW
+      PED_UpdateStatusArea{#STATUS_REDRAW}
+      PED_ShowMessage{""}
+      PED_ClearTextbuffer{}
+    EndIf
+    ;!log_PrintOut{"clear source window done."}
+  EndIf 
+End Statement
+
 
 
 Statement PED_SwitchCursor{}
@@ -2100,35 +2175,53 @@ SHARED pedconfig, *preProcessor.preprocessor
       nextpos + 1
     Until CheckChr{char,checklist} OR (nextpos > (tlen+1))
   EndIf
-  Function Return StripLead$(result,@" ")
+
+  Function Return Trim$(result)
 End Function
 
+Function.w PED_GetWordBeginPos{text$, textX.w, removechars.b, @disablePreProc.b}
+SHARED pedconfig, *preProcessor.preprocessor
 
-Statement PED_ShowMessage{textMessage.s,@target.b,@style.b}
-  SHARED pedmessage,sourceWindow,AB3Pen()            ; has to be shared, because on exit of function the variable will be discarded
+  tlen.w = FLen(text$)
+  If tlen < 2 Then Function Return -1
+  If Mid$(text$,textX+1,1) = " " Then Function Return -1
 
-  If sourceWindow\win
+  If pedconfig\usePreProcessor AND (NOT disablePreProc)
+    !log_PrintOut{"using preprocessor to find string in source: " + text$}
+    result.s = preproc_CropToken{*preProcessor, text$, textX}                         ; works without loaded tokens to
+  Else
+    If removechars Then checklist.s = " .,+&!|(){}[]<>\\22" Else checklist = " "
+    Repeat
+      textX - 1
+      char.s = Mid$(text$, textX+1, 1)
+      !log_PrintOut{char + "  " + Str$(textX)}
+    Until CheckChr{char,checklist} OR (textX = 0)
+    If textX<>0 Then textX + 1
+  EndIf  
+  Function Return textX
+End Function
 
-    If target = -1
-      SetAPen_ sourceWindow\win\RPort,AB3Pen(#AB3_screenfill)
-      RectFill_ sourceWindow\win\RPort, 0,0, sourceWindow\win\GZZWidth,sourceWindow\font\tf_YSize
+Function.w PED_GetWordEndPos{text$, textX.w, removechars.b, @disablePreProc.b}
+SHARED pedconfig, *preProcessor.preprocessor
 
-      If style<>-1
-        SetSoftStyle_ sourceWindow\win\RPort,style,style
-      ;Else
-        ;SetSoftStyle_ sourceWindow\win\RPort,#FSF_BOLD,#FSF_BOLD
-      EndIf
-      SetAPen_ sourceWindow\win\RPort,AB3Pen(#AB3_screenshine)
-      SetBPen_ sourceWindow\win\RPort,AB3Pen(#AB3_screenfill)
-      Move_ sourceWindow\win\RPort,0,sourceWindow\font\tf_Baseline
-      Text_ sourceWindow\win\RPort,&textMessage,FLen(textMessage)
-    Else
-      SetWindowTitles_ sourceWindow\win,-1,&textMessage
-    EndIf
+  tlen.w = FLen(text$)
+  If tlen < 2 Then Function Return -1
+  If Mid$(text$,textX+1,1) = " " Then Function Return -1
 
+  If pedconfig\usePreProcessor AND (NOT disablePreProc)
+    !log_PrintOut{"using preprocessor to find string in source: " + text$}
+    result.s = preproc_CropToken{*preProcessor, text$, textX}                         ; works without loaded tokens to
+  Else
+    If removechars Then checklist.s = " .,+&!|(){}[]<>\\22" Else checklist = " "
+    Repeat
+      textX + 1
+      char.s = Mid$(text$, textX+1, 1)
+      !log_PrintOut{char + "  " + Str$(textX)}
+    Until CheckChr{char,checklist} OR (textX = tlen)
+    If textX<>tlen Then textX - 1
   EndIf
-End Statement
-
+  Function Return textX
+End Function
 
 Statement Show_Helpfile{libname$, node$, helpdir$}
   SHARED pedconfig,ped
@@ -2934,10 +3027,10 @@ SHARED ped, pedconfig
           _tokname.s = PED_GetTokenName{_token}
           _toklen.b = FLen(_tokname)
           i + 1 ; skip next byte as it is part of the replaced token        
+          CopyMem_ &_tokname, ped\ptrTextbufferPrint + runnerP, _toklen
 
           ;-- update Highlight-info
           FillMem ped\ptrTextbufferHighlight + runnerP, _toklen, @"1"
-          PokeS ped\ptrTextbufferPrint + runnerP, _tokname
 
           runnerP + _toklen
           Pop If : Pop If : Goto skip_me
@@ -3014,7 +3107,7 @@ SHARED ped, pedconfig
       Poke.b ped\ptrTextbufferPrint + runnerP, curChar
       runnerP + 1
       skip_me:
-    Next i
+    Next i    
   EndIf
   ;!log_HexDump{ped\ptrTextbufferHighlight,32}
   Function Return True
@@ -3815,9 +3908,9 @@ SHARED sourceWindow, ped, pedconfig, AB3Pen()
     PED_PrintHighlightedText{startPos, size, tposx, tposy}
   Else
     ;-- just copy the source text to the printbuffer
-    PokeS ped\ptrTextbufferPrint, tmpString
+    CopyMem_ &tmpString, ped\ptrTextbufferPrint, _strLen
 
-    ;-- simple print of text without anything special
+    ;-- simple print of text without anything special but respect the start of printing if text is scrolled.
     tmpString.s = UnRight$(Peek.s(*textaddr), startPos)
     textlen.w = FLen(tmpString.s)
     If (size <> -1) AND (textlen > size) Then textlen = size
@@ -3880,6 +3973,7 @@ SHARED sourceWindow, pedconfig, AB3Pen(), ped
   ;!log_PrintOut{"update linenumbers, mode: " + Str$(mode)}
   If pedconfig\linenumbers = False Then Statement Return
 
+  ;-- clear the complete linenumbers area
   If mode = #FULL
     USEPATH sourceWindow
     SetAPen_ \win\RPort, AB3Pen(#AB3_screenfill)
@@ -3924,9 +4018,10 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   EndIf
 
   If Peek.b(ped\ptrCurrentSourceData\CurrentSourceLine + 9) <> 0   ; first character of text
+
     PED_PrintSourceText{ped\ptrCurrentSourceData\CurrentSourceLine + 9, ped\ptrCurrentSourceData\ColumnsOffset, -1,0,ped\ptrCurrentSourceData\DisplayLine, clearEndOfLine}
     ;-- copy the detokenized text to the textbuffer
-    PokeS ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, Peek.s(ped\ptrTextbufferPrint)
+    CopyMem_ ped\ptrTextbufferPrint, ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns
   Else
     USEPATH sourceWindow
     SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
@@ -4361,7 +4456,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   !PED_storeCursorPosition 
 
   ;-- clear textbuffer
-  PED_ClearTextbuffer{} : ped\ptrCurrentSourceData\TextBufferOffset = 0
+  PED_ClearTextbuffer{}
   
   CNIF #hardfold = 1
     ped\foldNumber = PED_CheckFoldingState{}
@@ -4440,30 +4535,7 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   Next cl
 
   ; -- better refresh: clear bottom
-  USEPATH sourceWindow
-  If ped\ptrCurrentSourceData\DisplayLine < sourceWindow\visibleLines
-    ;!log_PrintOut{"redraw: clear rest of window at displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine+1)}
-    SetAPen_  \win\RPort, AB3Pen(#AB3_cbackground)
-    rectx.w = \BoxLeft
-    recty.w = \BoxTop + (ped\ptrCurrentSourceData\DisplayLine) * \font\tf_YSize
-    rectw.w = \BoxWidth
-    recth.w = \statusAreaY-1
-    If (rectw => rectx) AND (recth => recty)
-      RectFill_ \win\RPort, rectx, recty, rectw, recth
-      If pedconfig\linenumbers
-        SetAPen_  \win\RPort, AB3Pen(#AB3_screenfill)
-        RectFill_ \win\RPort, 0, recty, rectx-1,recth
-        SetAPen_ \win\RPort,AB3Pen(#AB3_screenshine)
-        Move_ \win\RPort,rectx - 1, recty
-        Draw_ \win\RPort,rectx - 1, recth
-      EndIf
-    Else
-      !log_PrintOut{"illegal area for clear bottom:",#log_error}
-      !log_PrintOut{"displayline: " + Str$(ped\ptrCurrentSourceData\DisplayLine+1) + "   visibleLines: " + Str$(sourceWindow\visibleLines-1)}
-      !log_PrintOut{Str$(rectx) + ", " + Str$(rectw),#log_error}
-      !log_PrintOut{Str$(recty) + ", " + Str$(recth),#log_error}
-    EndIf
-  EndIf
+  PED_ClearSourceWindow{#FROM_HERE}
 
   ; -- restore saved values
   ped\ptrCurrentSourceData\CurrentSourceLine = *storeCurrentSourceLine
@@ -4821,16 +4893,26 @@ SHARED ped, readcache
 End Statement 
 
 
-Statement PED_SetBlockStart{}
+Statement PED_SetBlockStart{@bstartx.w, @bstarty.l}
 SHARED ped
 USEPATH ped\ptrCurrentSourceData
-  storeBlockStartX      = \ColumnsOffset + \Column
-  \BlockStartDisplayLine = \DisplayLineOffset + \DisplayLine
+  If bstartx = -1
+    storeBlockStartX = \ColumnsOffset + \Column
+  Else
+    storeBlockStartX = bstartx
+  EndIf 
+
+  If bstarty = -1
+    \BlockStartDisplayLine = \DisplayLineOffset + \DisplayLine
+  Else
+    \BlockStartDisplayLine = bstarty
+  EndIf 
+    
   !log_PrintOut{"set blockstart to: " + Str$(storeBlockStartX) + "," + Str$(\BlockStartDisplayLine)}
 
 End Statement
 
-Statement PED_SetBlockEnd{}
+Statement PED_SetBlockEnd{@bendx.w, @bendy.l}
 SHARED ped
 USEPATH ped\ptrCurrentSourceData
   If storeBlockStartX < 0
@@ -4839,8 +4921,18 @@ USEPATH ped\ptrCurrentSourceData
     ;-- remove old blockselection
     PED_DrawBlockmark{}
 
-    endX.w = \ColumnsOffset + \Column
-    endY.l = \DisplayLineOffset + \DisplayLine
+    If bendx = -1
+      endX.w = \ColumnsOffset + \Column
+    Else
+      endX.w = bendx
+    EndIf 
+
+    If bendy = -1
+      endY.l = \DisplayLineOffset + \DisplayLine
+    Else
+      endY.l = bendy
+    EndIf 
+
     If (endX = storeBlockStartX) AND (endY = \BlockStartDisplayLine)
         !log_PrintOut{"blockstart is equal to blockend position, resetting block"}
         !PED_ResetBlockflag
@@ -4886,7 +4978,7 @@ Function.w getLineLength{lineaddr.l}
       _length - 1
     EndIf
   Until exit_loop OR (_length < 1)
-  ;_length + 1
+  If _length > 1 Then _length + 1
   Function Return _length
 End Function
 
@@ -5089,7 +5181,8 @@ USEPATH sourceWindow
         \CurrentSourceLine = \CurrentSourceLine\previousLine
 
         If \CurrentSourceLine = 0
-          !log_PrintOut{"PED_ScrollVertical(): there is no line to display!"}        
+          !log_PrintOut{"PED_ScrollVertical(): there is no further line to display!"}        
+          PED_ClearSourceWindow{#FROM_HERE}          
           Pop If : Pop Repeat : Goto no_line
         EndIf
       End If
@@ -5103,18 +5196,19 @@ USEPATH sourceWindow
         \CurrentSourceLine = \CurrentSourceLine\nextLine
 
         If \CurrentSourceLine = 0
-          !log_PrintOut{"PED_ScrollVertical(): there is no line to display!"}        
+          !log_PrintOut{"PED_ScrollVertical(): there is no further line to display!"}        
+          PED_ClearSourceWindow{#FROM_HERE}          
           Pop If : Pop Repeat : Goto no_line
         EndIf
       EndIf
     Until \DisplayLine = (sourceWindow\visibleLines-1)
     \TextBufferOffset = #MAX_Columns * (sourceWindow\visibleLines-1) ; we print at the last line into the textbuffer
   EndIf
-
   ;-- display the calculated source line at the displayline
-  PED_PrintCurrentSourceLine{False}
+  PED_PrintCurrentSourceLine{True}
 
   no_line:
+  ;-- update linenumbers after scrolling
   If (direction = #SCROLL_UP) AND (ped\ptrCurrentSourceData\TotalLines < sourceWindow\visibleLines)
     PED_UpdateLinenumbers{#FULL}
   Else 
@@ -9483,6 +9577,7 @@ Return
   *currentLine.sourceLine = ped\ptrCurrentSourceData\CurrentSourceLine
   *nextLine.sourceLine = *currentLine\nextLine
   *prevLine.sourceLine = *currentLine\previousLine
+  PED_CursorOff{}
   If *nextLine <> 0
     If PED_CutSourceLine{*currentLine}
       PED_StoreSourceLine{*currentLine}
@@ -9490,29 +9585,31 @@ Return
       ped\ptrCurrentSourceData\CurrentSourceLine = *nextLine
       PED_ScrollVertical{#SCROLL_UP, ped\ptrCurrentSourceData\DisplayLine}
       PED_UpdateStatusArea{#STATUS_SCROLLERS}
-      ;PED_UpdateLinenumbers{#FULL}
     EndIf
   Else
     If *prevLine <> 0
+      !log_PrintOut{"no next line, but previous line available"}
       If PED_CutSourceLine{*currentLine}
         PED_StoreSourceLine{*currentLine}
         PED_DeleteSourceLine{*currentLine}
         ped\ptrCurrentSourceData\CurrentSourceLine = *prevLine
         ped\ptrCurrentSourceData\LastSourceLine = *prevLine
-        PED_ScrollVertical{#SCROLL_UP, ped\ptrCurrentSourceData\DisplayLine}
-        PED_UpdateStatusArea{#STATUS_SCROLLERS}
-        ;PED_UpdateLinenumbers{#FULL}
+
+        PED_ClearSourceWindow{#FROM_HERE}
+        If ped\ptrCurrentSourceData\DisplayLine Then ped\ptrCurrentSourceData\DisplayLine - 1
       EndIf
     Else
+      !log_PrintOut{"no next line, and no previous line creating a single new line"}
       PED_StoreSourceLine{*currentLine}
       PED_DeleteSourceLine{*currentLine}
       *newLine.sourceLine = PED_CreateNewSourceLine{""}
       ped\ptrCurrentSourceData\FirstSourceLine = *newLine
       ped\ptrCurrentSourceData\LastSourceLine = *newLine
       ped\ptrCurrentSourceData\CurrentSourceLine = *newLine
-      Gosub clear_sourcewindow
+      PED_PrintCurrentSourceLine{}
     EndIf
   EndIf
+  PED_CursorOn{}
   !log_PrintOut{"menu deleteline finished"}
 Return
 
@@ -9774,7 +9871,7 @@ Return
 
   PED_SetCurrentDir{}
 
-  WZ_LockAllOpenWindows{}
+  PED_SetPointerBusy{}
 
   CompileMenuCallID.l = _menuitem - #MENU_COMPILERUN
   !log_PrintOut{"*** calling compiler with function id [" + Hex$(CompileMenuCallID) + "]"}
@@ -9804,7 +9901,7 @@ Return
   previoussearch_instruction$ = "|"
 
   PED_ShowMessage{""}
-  WZ_UnlockAllOpenWindows{}
+  PED_SetPointerNormal{}
 
   !log_PrintOut{"*** compiler finished with return code [" + Hex$(compile_state) + "]"}
 Return
@@ -9908,7 +10005,7 @@ Return
   !log_PrintOut{"*** reset_sourcewindow called."}
 
   Gosub calc_SourceWindowDimensions
-  Gosub clear_sourcewindow
+  PED_ClearSourceWindow{#FULL_REDRAW}
   Gosub reset_labellist
 
   Gosub analyze_loadedsource
@@ -11463,7 +11560,7 @@ Return
   ped\ptrCurrentSourceData\SourceName[0] = 0
   ped\ptrCurrentSourceData\TotalLines = 1
 
-  Gosub clear_sourcewindow
+  PED_ClearSourceWindow{#FULL_REDRAW}
 
   *tempLine.sourceLine = PED_CreateNewSourceLine{""}
   If *tempLine
@@ -11937,7 +12034,7 @@ Return
   ;EndIf
 
   SetWindowTitles_ sourceWindow\win,&ped\defaultScreenTitle,-1
-  Gosub clear_sourcewindow
+  PED_ClearSourceWindow{#FULL_REDRAW}
   PED_SetPointerNormal{}
   PED_RedrawSource{}
 Return
@@ -12135,31 +12232,6 @@ Return
 
 
 
-.clear_sourcewindow:
-  ;!log_PrintOut{"clear source window"}
-
-  ; -- clear the codelines in window
-  USEPATH sourceWindow
-  SetAPen_ \win\RPort,AB3Pen(#AB3_cbackground)
-  RectFill_ \win\RPort,\BoxLeft,\BoxTop,\BoxWidth,\statusAreaY-1
-
-  ; -- draw vertical line to seperate numbers and source code
-  If pedconfig\linenumbers
-    lx.w = \BoxLeft - 1
-    SetAPen_ \win\RPort,AB3Pen(#AB3_screenfill)
-    RectFill_ \win\RPort,0,\BoxTop,lx,\statusAreaY-1
-
-    lx - 1
-    SetAPen_ \win\RPort,AB3Pen(#AB3_screenshine)
-    Move_ \win\RPort,lx, \BoxTop
-    Draw_ \win\RPort,lx, \statusAreaY-1
-  EndIf
-
-  PED_UpdateStatusArea{#STATUS_REDRAW}
-  PED_ShowMessage{""}
-  PED_ClearTextbuffer{}
-  ;!log_PrintOut{"clear source window done."}
-Return
 
 
 .moveCursorToEndOfLine:
@@ -12620,7 +12692,7 @@ Return
   
   Gosub calc_SourceWindowDimensions
   Gosub allocate_textbuffer
-  Gosub clear_sourcewindow
+  PED_ClearSourceWindow{#FULL_REDRAW}
   PED_RedrawSource{}
 Return
 
@@ -13005,10 +13077,23 @@ Return
     If pedMessage\_MouseX = Mmx.w AND pedMessage\_MouseY = Mmy.w Then isSameMousePosition.b = True Else isSameMousePosition = False
     Mmx = pedMessage\_MouseX
     Mmy = pedMessage\_MouseY
+
     If isDoubleClick AND isSameMousePosition
       strline$ = PED_Detokenize{ped\ptrCurrentSourceData\CurrentSourceLine}
       actualword$ = PED_GetWordAtPos{strline$, ped\ptrCurrentSourceData\Column, True}
       !log_PrintOut{"doubleclick on ==>" + actualword$}
+
+      ;-- get start and end pos of word
+      autoselect_mode.b = NOT autoselect_mode
+
+      sx.w = PED_GetWordBeginPos{strline$,ped\ptrCurrentSourceData\Column, autoselect_mode}
+      If sx<>-1 Then sy.w = PED_GetWordEndPos{strline$,ped\ptrCurrentSourceData\Column, autoselect_mode}
+      If sx<>-1 AND sy<>-1
+        !log_PrintOut{"auto select: " + Str$(sx)+","+Str$(sy)}
+        PED_SetBlockStart{sx}
+        PED_SetBlockEnd{sy}
+      EndIf
+
       If WZ_IsOpen{"WIN_LABELS"}
         LabelListSearchString = StripLead$(actualword$,32)
         If Left$(LabelListSearchString,1)="." Then LabelListSearchString = UnRight$(LabelListSearchString,1)
@@ -13017,6 +13102,7 @@ Return
         Gosub reset_labellist
       EndIf
     Else
+      autoselect_mode = False
       exit_eventloop = True
     EndIf
 
