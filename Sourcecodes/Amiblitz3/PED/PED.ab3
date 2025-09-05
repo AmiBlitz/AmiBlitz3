@@ -31,7 +31,7 @@
 ; Editor
 ; -------------------------------------------------------
 ; CursorLine      = 11650
-; CursorColumn    = 51
+; CursorColumn    = 1
 ; LabelSearch     = "highlight"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -313,6 +313,7 @@ DEBUG
 #MENU_DEFINITIONBROWSER   = $00000055
 #MENU_LIBRARYBROWSER      = $000001F7
 #MENU_UPDATEHELPINDEX     = $000001F8
+#MENU_UPDATEINSTRUCTIONINDEX   = $000001F9
 
 ;/* Custom */
 #MENU_CUSTOMITEM1         = $00000260      ; must be greater than #MENU_CUSTOMEDIT because hat now its own ID  tomsmart1
@@ -796,12 +797,14 @@ DEFTYPE.winprefs winLayout
 
 NEWTYPE.custommenu
   itemname.s
-  shortcut.s
-  id.l
   path.s
-  runwbmode.l
+  arguments.s
+  shortcut.s
+  runwbmode.w
+  execute.w
+  id.l
   stacksize.l
-  prio.l
+  prio.w
 End NEWTYPE
 Dim List custommenu.custommenu(0)
 
@@ -1377,7 +1380,7 @@ SHARED oldSourceChanged.w
   If statusmode = #STATUS_REDRAW
     PED_DrawStatusArea{}
   EndIf
-
+ 
   ;-- update Scrollers
   If !checkOption{statusmode,#STATUS_CURSOR|#STATUS_SCROLLERS}
     ;!log_PrintOut{"updating scrollers"}
@@ -2189,7 +2192,7 @@ SHARED pedconfig, *preProcessor.preprocessor
     !log_PrintOut{"using preprocessor to find string in source: " + text$}
     result.s = preproc_CropToken{*preProcessor, text$, textX}                         ; works without loaded tokens to
   Else
-    If removechars Then checklist.s = " .,+&!|(){}[]<>\\22" Else checklist = " "
+    If removechars Then checklist.s = " .,=-+&!|(){}[]<>\\22" Else checklist = " "
     Repeat
       textX - 1
       char.s = Mid$(text$, textX+1, 1)
@@ -2211,7 +2214,7 @@ SHARED pedconfig, *preProcessor.preprocessor
     !log_PrintOut{"using preprocessor to find string in source: " + text$}
     result.s = preproc_CropToken{*preProcessor, text$, textX}                         ; works without loaded tokens to
   Else
-    If removechars Then checklist.s = " .,+&!|(){}[]<>\\22" Else checklist = " "
+    If removechars Then checklist.s = " .,=-+&!|(){}[]<>\\22" Else checklist = " "
     Repeat
       textX + 1
       char.s = Mid$(text$, textX+1, 1)
@@ -5592,12 +5595,15 @@ USEPATH ped\ptrCurrentSourceData
         PED_RedrawSource{}
       Else
         PED_CursorOff{}
-        PED_ScrollVertical{#SCROLL_DOWN, \DisplayLine}
-        PED_PrintCurrentSourceLine{True} ; update the old line
+        ;-- scroll everything down after the current line
+        PED_ScrollVertical{#SCROLL_DOWN, \DisplayLine + 1}
+        ;-- update the currentline
+        PED_PrintCurrentSourceLine{True} 
       EndIf
       PED_MoveCursorDown{}
       PED_CursorOff{}
-      PED_PrintCurrentSourceLine{True} ; draw the new line
+      ;-- draw the splitted line
+      PED_PrintCurrentSourceLine{True}
       PED_CursorOn{}      
       PED_UpdateStatusArea{#STATUS_SCROLLERS}  
     Else
@@ -9797,6 +9803,14 @@ Return
     _menuitem = #MENU_COMPILERUN
     Gosub call_compiler
 
+  Case #MENU_CREATERELEASEEXE
+    Gosub call_compiler
+
+    ;-- start menu entries configured to be started at compiler finish
+    If compile_state = -1
+      Gosub start_custom_after_compile
+    EndIf
+
   Case #MENU_RELOAD_USERLIBS
     !log_PrintOut{"reload libs"}
 
@@ -13829,16 +13843,18 @@ Return
 
 .menu_helpbuildindex:
   PED_SetPointerBusy{}
-
   PED_BuildHelpIndex{}
+  PED_SetPointerNormal{}
+Return
 
+.menu_helpupdateinstructionindex:
   If pedconfig\usePreProcessor
+    PED_SetPointerBusy{}  
     WZ_ShowMessage{!TRANS{"updating token hashmap for preprocessor ..."}}
     Gosub update_preprocessor
     WZ_HideMessage{}
+    PED_SetPointerNormal{}
   End If
-
-  PED_SetPointerNormal{}
 Return
 
 .write_newprefs
@@ -14092,7 +14108,8 @@ Return
    GTMenuItem  0,0,5,10,!TRANS{"Definition Browser"          },""          ,0,#MENU_DEFINITIONBROWSER
    GTMenuItem  0,0,5,11,!TRANS{"Library Browser"             },""          ,0,#MENU_LIBRARYBROWSER
    GTMenuItem  0,0,5,12
-   GTMenuItem  0,0,5,13,!TRANS{"Update Instruction Index"    },""          ,0,#MENU_UPDATEHELPINDEX
+   GTMenuItem  0,0,5,13,!TRANS{"Update Help Index"           },""          ,0,#MENU_UPDATEHELPINDEX
+   GTMenuItem  0,0,5,14,!TRANS{"Update Instruction Index"    },""          ,0,#MENU_UPDATEINSTRUCTIONINDEX
 
   Gosub load_custommenus
   If FirstItem(custommenu())                                                   ; changed code the CustomMenu only apear if there ar an entry  tomsmart1
@@ -14121,31 +14138,6 @@ Return
     If WZ_IsOpen{"WIN_LIBRARYBROWSER"}     Then Use Window WZID("WIN_LIBRARYBROWSER")     : SetMenuStrip_ WZWindowAddr,ped\menuStrip
   EndIf
 Return
-
-
-.load_custommenus:
-  If dos_Exist{pedconfig\menuFile}
-    fid.l = file_Open{pedconfig\menuFile,#file_read}
-    If fid >= 0
-      ClearList custommenu()
-      While file_EOF{fid} = False
-        textline.s = file_ReadLine{fid}
-        If textline <> "" AND AddLast(custommenu())
-          InitArgParse textline
-          custommenu()\itemname  = NextArgChar$(@",")
-          custommenu()\shortcut  = NextArgChar$(@",")
-          custommenu()\id        = Vallong(NextArgChar$(@","))
-          custommenu()\path      = NextArgChar$(@",")
-          custommenu()\runwbmode = Vallong(NextArgChar$(@","))
-          custommenu()\stacksize = Vallong(NextArgChar$(@","))
-          custommenu()\prio      = Vallong(NextArgChar$(@","))
-        EndIf
-      Wend
-      file_Close{fid}
-    End If
-  EndIf
-Return
-
 
 Even
 .menutable:
@@ -14213,15 +14205,16 @@ Even
   ; -- MENU COMPILER
 
   ; -- MENU HELP
-  Dc.l #MENU_WHATSNEW,0,menu_helpnews
-  Dc.l #MENU_GENERALGUIDE,0, menu_helpgeneral
-  Dc.l #MENU_PROGRAMGUIDE,0,menu_helpprogramming
-  Dc.l #MENU_BLITZLIBSGUIDE,0,menu_helpblitzlibs
-  Dc.l #MENU_INCLUDEGUIDE,0,menu_helpincludesguide
+  Dc.l #MENU_WHATSNEW,        0,menu_helpnews
+  Dc.l #MENU_GENERALGUIDE,    0, menu_helpgeneral
+  Dc.l #MENU_PROGRAMGUIDE,    0,menu_helpprogramming
+  Dc.l #MENU_BLITZLIBSGUIDE,  0,menu_helpblitzlibs
+  Dc.l #MENU_INCLUDEGUIDE,    0,menu_helpincludesguide
   Dc.l #MENU_INSTRUCTIONBROWSER,0, menu_helpcompletion
   Dc.l #MENU_SHORTCUTREFERENCE,0, menu_helpshortcuts
-  Dc.l #MENU_LIBRARYBROWSER,0,  menu_helplibrarybrowser
-  Dc.l #MENU_UPDATEHELPINDEX,0,menu_helpbuildindex
+  Dc.l #MENU_LIBRARYBROWSER,  0,  menu_helplibrarybrowser
+  Dc.l #MENU_UPDATEHELPINDEX, 0,menu_helpbuildindex
+  Dc.l #MENU_UPDATEINSTRUCTIONINDEX, 0,menu_helpupdateinstructionindex
   ; end of menutable
   Dc.l $FFFFFFFF
 Even
@@ -14636,237 +14629,54 @@ Return
     error{"Couldnot open printer [" + printerDevice + "]"}
   EndIf
 Return
-
+ 
 
 .call_pluginmenuentry:
+  !log_PrintOut{"call pluginmenuentry..."}
   If _menuitem = #MENU_CUSTOMEDIT
     Gosub open_menueditor
+    ;-- update menues if changed
     Gosub init_menus
   Else
-    _menuitem - #MENU_CUSTOMITEM1                        ; to get the correct CostumMenu entry  tomsmart 1
+    _menuitem - #MENU_CUSTOMITEM1                        ; to get the correct CostumMenu entry
     If _menuitem >= 0
       ResetList custommenu()
       menuentry = 0
-      While _menuitem >= menuentry                       ; changed to get the correct entry  tomsmart1
+      While _menuitem >= menuentry 
         dummy = NextItem(custommenu())
         menuentry + 1
       Wend
-      If custommenu()\path <> ""
-        If custommenu()\runwbmode = False
-          dos_RunCli{custommenu()\path,custommenu()\prio,custommenu()\stacksize,False}
-        Else
-          dos_RunWB{custommenu()\path}
-        EndIf
-      EndIf
+      Gosub start_customentry
     EndIf
   EndIf
 Return
 
+.start_custom_after_compile:
+  ResetList custommenu()
+  While NextItem(custommenu())
+    If custommenu()\execute
+      !log_PrintOut{"starting custom menu entry after compile: " + custommenu()\path}
+      Gosub start_customentry
+    EndIf
+  Wend
+Return
 
-.update_menueditorgadgets                                  ; moved to subroutine to remove double code tomsmart1
-    WZPrint "MENUED_ITEMNAME",custommenu()\itemname
-    WZPrint "MENUED_STACK"   ,custommenu()\stacksize
-    WZPrint "MENUED_PRIO"    ,custommenu()\prio
-    If custommenu()\runwbmode = 1
-      WZPrint "MENUED_RUNMODE",On
-      WZDisable "MENUED_STACK" : WZDisable "MENUED_PRIO"
+.start_customentry:
+  If custommenu()\path <> ""
+    If custommenu()\runwbmode = False
+      !log_PrintOut{"running from cli <" + custommenu()\path + ">, arguments: " + custommenu()\arguments}
+      dummy = dos_RunCli{custommenu()\path,custommenu()\prio,custommenu()\stacksize,False,custommenu()\arguments}
     Else
-      WZPrint "MENUED_RUNMODE",Off
-      WZEnable "MENUED_STACK" : WZEnable "MENUED_PRIO"
+      !log_PrintOut{"running from wb <" + custommenu()\path + ">"}
+      dummy = dos_RunWB{custommenu()\path}
     EndIf
-    WZEnable "MENUED_DEL" : WZEnable "MENUED_SORT"
-    WZEnable "MENUED_RUNMODE"
-    WZEnable "MENUED_PATH"
-Return
-
-.disable_menueditorgadgets                                 ; moved to subroutine to remove double code tomsmart1
-    WZPrint "MENUED_ITEMNAME",""
-    WZPrint "MENUED_STACK"   ,8192
-    WZPrint "MENUED_PRIO"    ,-1
-    WZPrint "MENUED_RUNMODE" ,Off
-    WZDisable "MENUED_DEL"   : WZDisable "MENUED_SORT"
-    WZDisable "MENUED_STACK" : WZDisable "MENUED_PRIO"
-    WZDisable "MENUED_RUNMODE"
-    WZDisable "MENUED_PATH"
-Return
-
-.open_menueditor:
-  PED_SetPointerBusy{}
-  If NOT WZ_IsOpen{"WIN_MENUED"}
-    WZWindow WZID("WIN_MENUED"),?wzgui,255,-2,-2,-2,-2,WZID("WIN_MENUED")
-  End If
-  DEFTYPE.List menuedlist
-  ; -- get all the defined menuentries
-  If FirstItem(custommenu())                               ; test if we have a (first) entry in the list
-    item_counter.b = 0
-    Repeat
-      WZListAdd menuedlist,custommenu()\itemname,-2
-      item_counter+1
-    Until NOT NextItem(custommenu())
-    WZPrint "MENUED_LIST",0,menuedlist                     ; merged two IF-Thens to one and that fixed Hits if ther are no entrys in the list  tomsmart1
-    item_counter = 0
-    dummy = FirstItem(custommenu())                        ; back to entry 1 to set the status gadgets
-    Gosub update_menueditorgadgets
-  Else
-    Gosub disable_menueditorgadgets
+    !log_PrintOut{"return code: " + Str$(dummy)}
   EndIf
-  menued_exit.b = False
-
-  Repeat
-    menued_ev.l = WaitEvent
-
-    Select menued_ev
-      Case #IDCMP_CLOSEWINDOW
-        menued_exit = True
-
-      Case #IDCMP_VANILLAKEY:
-        If EventCode = #VANILLAKEY_ESC Then menued_exit = True
-
-      Case #IDCMP_IDCMPUPDATE
-        Select WZGadName
-          Case "MENUED_ADD"
-            ResetList custommenu()
-            If AddLast (custommenu())
-                WZListAdd menuedlist,"",-2
-                custommenu()\itemname = ""
-                custommenu()\path     = ""
-                custommenu()\runwbmode = False
-                custommenu()\stacksize = 8192
-                custommenu()\prio = -1
-            EndIf
-            item_counter = WZListItems (menuedlist)-1
-            WZPrint "MENUED_LIST",item_counter,menuedlist,0 ; neue Position in der Liste anspringen und Liste erneuern ; changed that the selection get not lost  tomsmart1
-            dummy.l = LastItem(custommenu())
-            Gosub update_menueditorgadgets
-            WZDisable "MENUED_SAVE"                         ; added to only allow 1 new entry to prevent empty entrys  tomsmart1
-            WZDisable "MENUED_ADD"
-            WZDisable "MENUED_SORT"
-            WZDisable "MENUED_LIST"
-
-          Case "MENUED_DEL"
-            ResetList custommenu()
-            item_counter = 0
-            While (item_counter < WZListNum ("MENUED_LIST")) AND NextItem(custommenu())
-              item_counter + 1
-            Wend
-            If item_counter = WZListNum ("MENUED_LIST")
-              KillItem custommenu()
-              WZListRemove menuedlist,WZListNum ("MENUED_LIST")
-              WZPrint "MENUED_LIST",0,menuedlist,0
-            EndIf
-            If FirstItem(custommenu())
-              Gosub update_menueditorgadgets
-            Else
-              Gosub disable_menueditorgadgets
-            EndIf
-            WZEnable "MENUED_SAVE"
-            WZEnable "MENUED_ADD"                          ; added to only allow 1 new entry to prevent empty entrys  tomsmart1
-            WZEnable "MENUED_LIST"
-
-          Case "MENUED_SORT"
-            If FirstItem(custommenu())                     ; merged If-Thens to one  tomsmart1
-
-              StringSort custommenu(),SizeOf.custommenu    ; command changed to fix sorting  tomsmart1
-
-              WZListRemove menuedlist
-              dummy = FirstItem(custommenu())
-              Repeat
-                WZListAdd menuedlist,custommenu()\itemname,-2
-              Until NOT NextItem (custommenu())
-
-              WZPrint "MENUED_LIST",0,menuedlist,0
-              dummy = FirstItem(custommenu())              ; back to entry 1 to set the status gadgets
-              Gosub update_menueditorgadgets
-              WZEnable "MENUED_SAVE"
-            Else
-              Gosub disable_menueditorgadgets
-            EndIf
-
-
-          Case "MENUED_LIST"
-            item_counter = 0
-            ResetList custommenu()
-            While (item_counter < WZListNum ("MENUED_LIST")) AND NextItem(custommenu())
-              item_counter + 1
-            Wend
-            If item_counter = WZListNum ("MENUED_LIST")
-              Gosub update_menueditorgadgets
-            Else
-              Gosub disable_menueditorgadgets
-            EndIf
-
-          Case "MENUED_PATH"
-            aslfr_SetRequesterTitle {0,!TRANS{"Select a Programm"},"Ok","Cancel"}
-            ; replaced to set always a vaild path  tomsmart1
-            If custommenu()\path <> ""
-              aslfr_SetPath {0,dos_PathPart{custommenu()\path},dos_FilePart{custommenu()\path} }
-            Else
-              aslfr_SetPath {0,pedconfig\mainDir,""}
-            EndIf
-            If aslfr_Request {0,False,False,False,sourceWindow\pedScreen}
-              custommenu()\path = aslfr_GetNextFile{}
-              If custommenu()\path <>""
-                custommenu()\itemname = dos_FilePart{custommenu()\path}
-                WZPrint "MENUED_ITEMNAME",custommenu()\itemname
-
-                WZListRemove menuedlist
-                ResetList custommenu()
-                While NextItem (custommenu())
-                  WZListAdd menuedlist,custommenu()\itemname,-2
-                Wend
-
-                WZPrint "MENUED_LIST",item_counter,menuedlist,0  ; changed that the selection get not lost  tomsmart1
-                WZEnable "MENUED_SAVE"
-                WZEnable "MENUED_ADD"                            ; added to only allow 1 new entry to prevent empty entrys  tomsmart1
-                WZEnable "MENUED_SORT"
-                WZEnable "MENUED_LIST"
-              EndIf
-            EndIf
-
-          Case "MENUED_STACK"
-            stacksize.l = WZInput
-            custommenu()\stacksize = stacksize
-            If custommenu()\itemname<>"" Then WZEnable "MENUED_SAVE"  ; changed to prevent empty entrys  tomsmart1
-
-          Case "MENUED_PRIO"
-            prio.l = WZInput
-            custommenu()\prio = prio
-            If custommenu()\itemname<>"" Then WZEnable "MENUED_SAVE"  ; changed to prevent empty entrys  tomsmart1
-
-          Case "MENUED_RUNMODE"
-            checked.l = WZInput
-            If checked = 1
-              custommenu()\runwbmode = 1
-              WZDisable "MENUED_STACK" : WZDisable "MENUED_PRIO"
-            Else
-              custommenu()\runwbmode = False
-              WZEnable "MENUED_STACK" : WZEnable "MENUED_PRIO"
-            EndIf
-            If custommenu()\itemname<>"" Then WZEnable "MENUED_SAVE"  ; changed to prevent empty entrys  tomsmart1
-
-          Case "MENUED_SAVE"
-            ; removed code to fix Hits if entrys are deleted  tomsmart1
-            fid.l = file_Open{pedconfig\menuFile,#file_forcewrite}
-            If fid >= 0
-              If FirstItem(custommenu())
-                Repeat
-                  file_WriteLine{fid,custommenu()\itemname+",~,0,"+custommenu()\path+","+Str$(custommenu()\runwbmode)+","+Str$(custommenu()\stacksize)+","+Str$(custommenu()\prio)}
-                Until NOT NextItem(custommenu())
-              EndIf
-            EndIf
-            file_Close{fid}
-            WZDisable "MENUED_SAVE"
-
-          Case "MENUED_EXIT" : menued_exit = True
-        End Select
-    End Select
-  Until menued_exit = True
-
-  FlushEvents
-  WZListRemove menuedlist
-  WZCloseWindow WZID("WIN_MENUED")
-  PED_SetPointerNormal{}
 Return
+
+
+
+
 
 .jump_historyup:
   Gosub storeline
@@ -16944,6 +16754,12 @@ Goto skip_arexxinit
 XINCLUDE "PED_arexx.ab3"
 skip_arexxinit:
 CEND
+
+;CNIF #USE_MENUEDITOR = 1
+Goto skip_menueditorinit
+XINCLUDE "PED_menueditor.ab3"
+skip_menueditorinit:
+;CEND
 ; -----------------------------------------------------------------------------------------------
 
 
