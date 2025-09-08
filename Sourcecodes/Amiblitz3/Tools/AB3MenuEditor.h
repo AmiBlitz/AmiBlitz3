@@ -1,0 +1,21 @@
+#define SMALL SIZE 0x1
+#define MY DEFAULT-FONT 0x2
+#define MIDDLE SIZE 0x3
+#define KSERVICES 0x1
+#define AMIBLITZ3_LOGO 0x2
+#define WIN_MENUED 0x12
+#define WIN_MENUED_GADGETS 0x2C
+#define MENUED_ADD 0x3
+#define MENUED_DEL 0x4
+#define MENUED_SORT 0x6
+#define LIST 0x9
+#define MENUED_LIST 0xA
+#define MENUED_ITEMNAME 0x13
+#define MENUED_PATH 0x14
+#define MENUED_ARGUMENTS 0x25
+#define MENUED_STACK 0x17
+#define MENUED_PRIO 0x1A
+#define MENUED_RUNMODE 0x1D
+#define MENUED_EXECUTE 0x2B
+#define MENUED_SAVE 0x20
+#define MENUED_EXIT 0x22
