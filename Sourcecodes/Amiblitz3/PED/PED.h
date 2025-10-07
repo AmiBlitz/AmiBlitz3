@@ -189,6 +189,7 @@
 #define WIN_WELCOME_GADGETS 0x24
 #define KEYVISUAL 0x2
 #define WELCOME_IMAGE 0x4
+#define WELCOME_SUBTEXT 0x6
 #define LDATA 0xA
 #define LCOMPILER 0xB
 #define LPED 0xC
@@ -207,6 +208,8 @@
 #define DEFLIBS_TEXT 0x1B
 #define OSLIBS_TEXT 0x1C
 #define CSLIBS_TEXT 0x1D
+#define COPYRIGHT_TEXT1 0x1F
+#define COYPRIGHT_TEXT2 0x21
 #define WELCOME_OK 0x23
 #define WIN_GOTO 0x9
 #define WIN_GOTO_GADGETS 0x4
