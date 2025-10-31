@@ -2,7 +2,7 @@ Short:        ProTracker player w/ support for ext. sfx
 Author:       Frank Wille
 Uploader:     frank@phoenix.owl.de
 Type:         mus/play
-Version:      6.1
+Version:      6.4
 Requires:     Assembler
 Architecture: m68k-amigaos
 
@@ -22,6 +22,8 @@ developers:
 
 - No busy waiting. DMA and repeat pointers are set with timer interrupts.
 
+- Optionally works without timer interrupts at all.
+
 - E8 command can be used as a trigger for your main program.
 
 - Lots of tables for best performance. No multiplications or divisions.
@@ -31,8 +33,8 @@ The sound fx system gives you the possibility to play samples on a channel
 of your choice or on the channel which the player thinks is the best one.
 
 It may be a channel which is currently not replaying music and/or has
-the longest period of silence ahead. This has the effect that the replayed
-song is often not disturbed at all.
+the longest period of inactivity ahead. This has the effect that the
+replayed song is often not disturbed at all.
 
 Up to four sound effects can be played at the same time and any of them
 has its own priority, which is especially useful when trying to play
@@ -43,12 +45,13 @@ For automatic channel selection you can additionally reserve specific
 channels for music only, or define the maximum number of channels which
 may be used for sound effects at once.
 
-The master volume is always applied to the music, but does not affect
-external sound effects at all.
+The master volume is always applied to the music, but does never affect
+external sound effects.
 
 NOTE: When playing external sound effects, always make sure the first
 word is cleared! It is used for idling when the effect stopped. This
 is the same technique as used by the music samples in Amiga trackers.
+(Alternatively, refer to the NULL_IS_CLEARED option.)
 
 
 How to use:
@@ -63,7 +66,7 @@ a) By default ptplayer.asm assembles into a single code section. The
    This requires a working RS directive, which is provided by many
    assemblers, like e.g. vasm, PhxAss, Devpac, Basm, AsmOne, SNMA.
 
-b) By defining the SDATA symbol ptplayer.asm assembles into a code
+b) By defining the SDATA symbol, ptplayer.asm assembles into a code
    section and a small-data section (called __MERGED). All player
    routines expect that the base register A4 is set up with the
    small-data base pointer (provided by the linker through _LinkerDB).
@@ -72,7 +75,10 @@ b) By defining the SDATA symbol ptplayer.asm assembles into a code
 
 2. Selecting optional features
 
-By default ptplayer builds with all features included.
+By default ptplayer builds the CIA-B timer version, for games/demos which
+take over the hardware, with all features included:
+MINIMAL=0, ENABLE_SAWRECT=1, NULL_IS_CLEARED=0, NO_TIMERS=0,
+VBLANK_MUSIC=0 and OSCOMPAT=0.
 
 a) By defining the symbol MINIMAL=1 (defaults to 0) you get just a
    standard Protracker player, without the ability to insert external
@@ -80,7 +86,7 @@ a) By defining the symbol MINIMAL=1 (defaults to 0) you get just a
    This approximately halves the code size.
 
 b) By defining the symbol ENABLE_SAWRECT=0 (defaults to 1) you may
-   disable sawtooth and rectangle vibratos/tremolos. When selected,
+   disable sawtooth and rectangle vibratos/tremolos. When disabled,
    they are replaced by sine-waves. These wave forms are extremely
    rare and disabling them saves another 2K for the tables.
 
@@ -89,46 +95,115 @@ c) By defining the symbol NULL_IS_CLEARED=1 (defaults to 0) you indicate
    will be used for idle-looping of audio channels. Might be useful when
    dynamically loading new samples.
 
+d) Setting NO_TIMERS=1 disables the use of both CIA-B timers completely,
+   which means that the player doesn't depend on level-6 EXTER interrupts
+   anymore. NO_TIMERS=1 automatically includes VBLANK_MUSIC=1 (see below).
+   With NO_TIMERS set, your main program has to call all music subroutines
+   itself. The typical procedure in a VERTB-based main loop would be:
+   1. call _mt_music
+   2. wait at least 550 ticks, then call _mt_dmaon
+   3. wait at least 550 ticks again, then call _mt_setrep
+   The last two steps could for example be done by Copper interrupts.
+   CAUTION: You should know what you do, if you use this mode! It is up
+   to you to take care that calling a ptplayer function is not interrupted
+   by another ptplayer function.
+
+e) Define VBLANK_MUSIC=1 (defaults to 0) if you don't want ptplayer
+   to set up a CIA-B Timer-A interrupt for music replay, which means
+   you cannot set the tempo with the F-command anymore (only the speed)
+   and you have to call _mt_music yourself out of your own VBlank
+   interrupt handler. Also sound effects will no longer work, when no
+   music is playing.
+   NOTE: CIA-B Timer-B is still used for enabling Audio DMA and setting
+   the loop pointers (unless you define NO_TIMERS=1). So it doesn't free
+   the Level-6 interrupt vector. This is just an option if you must
+   synchronize your music with your game or demo running in VBlank interrupts.
+
+f) Define OSCOMPAT=1 (defaults to 0) to build a ptplayer-version which
+   uses AmigaOS to register CIA interrupts and allocates all audio channels
+   via audio.device. The default version is a little bit faster and
+   smaller, but may NOT work correctly with AmigaOS alive!
+   Note, that _mt_install and _mt_remove take different arguments, when
+   OSCOMPAT is set.
+
 You may change these symbols either directly in the source or override
 them via the assembler's command line.
 
 
-3. Common usage
+3. Common usage (standard version with CIA-B timer interrupts)
 
-a) Install a Level-6 interrupt handler for CIA-B timer interrupts
-   by calling mt_install_cia(). Do this once, during program init.
+a) Install a Level-6 interrupt handler for CIA-B timer interrupts by
+   calling _mt_install. Do this once, during program init.
 
-b) For every new MOD file to play initialize it with mt_init().
+b) For every new MOD file to play initialize it with _mt_init.
    Most common case is to pass a pointer to the MOD in A0 and set A1
    and D0 to zero, which will play the song from the beginning.
    Everything is initialized for replay now, but nothing is played.
 
-c) Set the byte-variable mt_Enable to non-zero to start the replay.
+c) Set the byte-variable _mt_Enable to non-zero to start the replay.
    Clearing that variable again pauses the song.
+   VBLANK_MUSIC=1: You have to call _mt_music yourself out of a 50Hz
+   interrupt. _mt_Enable is ignored in this case.
 
-d) Stop playing and set all volumes to zero by calling mt_end().
+d) Stop playing and set all volumes to zero by calling _mt_end.
 
 e) Finally, in the cleanup routine of your program, remove the Level-6
    interrupt handler again and reset all CIA registers by calling
-   mt_remove_cia().
+   _mt_remove.
+
+
+4. Common usage (NO_TIMERS=1)
+
+a) For every new MOD file to play initialize it with _mt_init.
+   Most common case is to pass a pointer to the MOD in A0 and set A1
+   and D0 to zero, which will play the song from the beginning.
+   Everything is initialized for replay now, but nothing is played.
+
+b) As with VBLANK_MUSIC=1, you have to call _mt_music 50 times per
+   second to play the MOD. For example out of a VERTB interrupt.
+   Then wait for at least 550 ticks (12 raster lines) and call _mt_dmaon.
+   Thereafter wait for at least another 550 ticks and call _mt_setrep.
+
+c) Stop playing and set all volumes to zero by calling _mt_end. Also
+   make sure that you don't call _mt_music, _mt_dmaon or _mt_setrep
+   anymore.
 
 
 Exported functions:
 
-Note that the leading underscore disappears when a symbol is referenced
-from C. CUSTOM is the custom-chip register set base address $dff000.
+Note, that the leading underscore disappears when a symbol is referenced
+from C (you can use ptplayer.h to include all prototypes).
+CUSTOM is the Amiga custom-chip base address $dff000.
 
-_mt_install_cia(a6=CUSTOM, a0=VectorBase, d0=PALflag.b)
-  Install a CIA-B interrupt for calling _mt_music or mt_sfxonly.
+Also note that the arguments for _mt_install and _mt_remove differ,
+depending on whether you have built ptplayer with OS-compatibility
+enabled (define OSCOMPAT) or not. When calling the OS-compatible
+ptplayer routines from C, define __OSCOMPAT before including ptplayer.h.
+
+[OSCOMPAT=0] _mt_install(a6=CUSTOM, a0=VectorBase, d0=PALflag.b)
+  Install a CIA-B interrupt for calling _mt_music or mt_sfxonly
+  automatically. The music module is replayed via _mt_music when _mt_Enable
+  is non-zero. Otherwise the interrupt handler calls mt_sfxonly to play
+  sound effects only.
+  VectorBase is 0 for 68000, otherwise set it to the CPU's VBR register.
+  A non-zero PALflag selects PAL-clock for the CIA timers (NTSC otherwise).
+
+[OSCOMPAT=1] ok = _mt_install()
+  Register CIA-B interrupts with AmigaOS for calling mt_music or
+  mt_sfxonly. Allocate all Paula audio channels via audio.device.
   The music module is replayed via _mt_music when _mt_Enable is non-zero.
   Otherwise the interrupt handler calls mt_sfxonly to play sound
-  effects only. VectorBase is 0 for 68000, otherwise set it to the CPU's
-  VBR register. A non-zero PALflag selects PAL-clock for the CIA timers
-  (NTSC otherwise).
+  effects only.
+  Returns true (1) on success, false (0) otherwise.
+  You must not call _mt_remove(), when _mt_install() failed!
 
-_mt_remove_cia(a6=CUSTOM)
-  Remove the CIA-B music interrupt, restore the previous handler and
+[OSCOMPAT=0] _mt_remove(a6=CUSTOM)
+  Remove the  CIA-B music interrupt, restore the previous handler and
   reset the CIA timer registers to their original values.
+
+[OSCOMPAT=1] _mt_remove()
+  Unregister the CIA-B interrupts handlers and deallocate all
+  audio channels.
 
 _mt_init(a6=CUSTOM, a0=TrackerModule, a1=Samples|NULL, d0=InitialSongPos.b)
   Initialize a new module.
@@ -138,7 +213,7 @@ _mt_init(a6=CUSTOM, a0=TrackerModule, a1=Samples|NULL, d0=InitialSongPos.b)
   which is the usual case.
 
 _mt_end(a6=CUSTOM)
-  Stop playing current module and sound effects.
+  Stop playing the current module and sound effects.
 
 _mt_soundfx(a6=CUSTOM, a0=SamplePointer,
             d0=SampleLength.w, d1=SamplePeriod.w, d2=SampleVolume.w)
@@ -150,7 +225,7 @@ channelStatus = _mt_playfx(a6=CUSTOM, a0=SfxStructurePointer)
   Request playing of a prioritized external sound effect, either on a
   fixed channel or on the most unused one.
   Structure layout of SfxStructure:
-    void *sfx_ptr  (pointer to sample start in Chip RAM, even address)
+    void *sfx_ptr  (pointer to raw sample start in Chip RAM, even address)
     WORD  sfx_len  (sample length in words)
     WORD  sfx_per  (hardware replay period for sample)
     WORD  sfx_vol  (volume 0..64, is unaffected by the song's master volume)
@@ -162,10 +237,11 @@ channelStatus = _mt_playfx(a6=CUSTOM, a0=SfxStructurePointer)
   The chosen channel is blocked for music until the effect has
   completely been replayed.
   RETURN VALUES: A pointer to a channel-status structure (see ptplayer.h)
-  when the sample is scheduled for playing, and NULL when the request was
+  when the sample is scheduled for playing, or NULL when the request was
   ignored.
-  NOTE: Always make sure the first word of your sound effect sample
-  are zero!
+  NOTE: Remember that sfx_ptr points to raw sample data (no IFF header
+  or similar). And always make sure the first two bytes of your sound
+  effect sample are zero! Alternatively, refer to NULL_IS_CLEARED.
   MINIMAL=0 only.
 
 _mt_loopfx(a6=CUSTOM, a0=SfxStructurePointer)
@@ -174,11 +250,11 @@ _mt_loopfx(a6=CUSTOM, a0=SfxStructurePointer)
   It uses the same SfxStructure as _mt_playfx, but the priority is
   ignored. A looped sound effect has always highest priority and will
   replace a previous effect on the same channel. No automatic channel
-  selection possible!
+  selection is possible!
   Also make sure the sample starts with a zero-word, which is used
-  for idling when the effect is stopped. This word is included in the
-  total length calculation, but excluded when actually playing the loop.
-  MINIMAL=0 only.
+  for idling when the effect is stopped by _mt_stopfx. This word is
+  included in the total length calculation, but excluded when actually
+  playing the loop. MINIMAL=0 only.
 
 _mt_stopfx(a6=CUSTOM, d0=Channel.b)
   Immediately stop a currently playing sound effect on a channel (0..3)
@@ -189,6 +265,8 @@ _mt_stopfx(a6=CUSTOM, d0=Channel.b)
 _mt_musicmask(a6=CUSTOM, d0=ChannelMask.b)
   Bits set in the mask define which specific channels are reserved
   for music only. Set bit 0 for channel 0, ..., bit 3 for channel 3.
+  Additionally a cleared bit prevents any access to the sample pointers
+  of this channel.
   When calling _mt_soundfx or _mt_playfx with automatic channel selection
   (sfx_cha=-1) then these masked channels will never be picked.
   The mask defaults to 0. MINIMAL=0 only
@@ -205,8 +283,26 @@ _mt_samplevol(d0=SampleNumber.w, d1=Volume.b)
   The new volume is persistent. Even when the song is restarted.
   MINIMAL=0 only.
 
+_mt_channelmask(a6=CUSTOM, d0=ChannelMask.b)
+  Bits cleared in the mask define which specific channels are muted
+  for music replay. Clear bit 0 for channel 0, ..., bit 3 for channel 3.
+  The mask defaults to all channels unmuted (bits set) and is reset to
+  this state on _mt_init and _mt_end. MINIMAL=0 only.
+
 _mt_music(a6=CUSTOM)
-  The replayer routine. Is called automatically after _mt_install_cia.
+  The replayer routine. Can be called from your own VERTB interrupt
+  handler when VBLANK_MUSIC or NO_TIMERS is set. Is otherwise called
+  automatically by Timer-A interrupts after _mt_install.
+
+_mt_dmaon()
+  NO_TIMERS=1 only!
+  MUST be called ca. 550 ticks after calling _mt_music. Enables Audio
+  DMA to play a new note.
+
+_mt_setrep()
+  NO_TIMERS=1 only!
+  MUST be called ca. 550 ticks after calling _mt_dmaon. Sets the
+  repetition pointers and lengths for looped samples.
 
 
 Exported byte-sized variables:
@@ -214,7 +310,8 @@ Exported byte-sized variables:
 _mt_Enable
   Set this byte to non-zero to play music, zero to pause playing.
   Note that you can still play sound effects, while music is stopped.
-  It is set to 0 by _mt_install_cia.
+  It is set to 0 by _mt_install. No effect, when VBLANK_MUSIC or
+  NO_TIMERS is set.
 
 _mt_E8Trigger
   This byte reflects the value of the last E8 command.
@@ -235,32 +332,38 @@ Get it from Aminet: http://aminet.net/dev/c/SDI_headers.lha
 
 License:
 
-Written by Frank Wille in 2013, 2016, 2017, 2018, 2019, 2020, 2021.
-I, the copyright holder of this work, hereby release it into the
-public domain. This applies worldwide.
+Written by Frank Wille in 2013, 2016 - 2024.
+I, the copyright holder of this work, hereby release it into the public
+domain. This applies worldwide.
 
 If still in doubt, please read the included file "LICENSE".
 
 
 FAQ:
 
-- The player doesn't work. I am hearing no music.
+- The player doesn't work. I'm hearing no music.
+
   A: This can have multiple reasons. Most likely is that you didn't
-  call _mt_install_cia at all or with a wrong Vector Base pointer.
+  call _mt_install at all or with a wrong Vector Base pointer (OSCOMPAT=0).
   The Vector Base is 0 for 68000 systems. Otherwise you *must* read
   it from the CPU's VBR register, which is only available in supervisor
-  mode. Also don't forget to set _mt_enable to true to start playing.
-  This player is intended for games/demos which take over the hardware
-  and disable the OS. Running with the OS alive may work, as the OS
-  doesn't use the CIA-B timers, but it is not recommended.
+  mode. Also don't forget to set _mt_Enable to true to start playing.
+  The default version of ptplayer is intended for games/demos which take
+  over the hardware and disable the OS. Running with the OS alive may work,
+  as the OS doesn't use the CIA-B timers, but it is not recommended.
+  If you want the player to use and run under AmigaOS, define OSCOMPAT=1.
 
 - I want to run the player in VERTB interrupt.
-  A: No. That's currently not possible. Although the player routine
-  _mt_music could theoretically run in a 50Hz VERTB, it requires
-  CIA-B Timer-B interrupts to enable Audio DMA and set the loop
-  pointers.
+
+  A: You have two options. Either define VBLANK_MUSIC=1 to free CIA-B
+  Timer-A and call the music replay routine _mt_music 50 times per
+  second yourself (Timer-B is still used for DMA enable and looped
+  samples), or define NO_TIMERS=1 to free all timers and don't use any
+  level 6 interrupts. In the last case you also have to call _mt_dmaon
+  and _mt_setrep after at least 550 ticks to make music replay work.
 
 - I am hearing a high-pitched noise in my music.
+
   A: Amiga players use the first two bytes of a sample for idle-looping.
   Make sure they are zeroed.
   Alternatively, assemble ptplayer with NULL_IS_CLEARED=1 and make sure
@@ -268,19 +371,28 @@ FAQ:
 
 - I am hearing a high-pitched noise when playing an empty sample.
   My first initialized sample is looped or unused, so how can that be?
+
   A: Check the first two bytes of your first initialized sample.
   These bytes are used by ptplayer for all empty samples.
   Alternatively, assemble ptplayer with NULL_IS_CLEARED=1 and make sure
   the bytes at $0 and $1 are zero.
 
 - I am hearing a high-pitched noise after playing a sound effect.
+
   A: The same technique is used for playing sound effects as for
   playing instrumental samples. The sound effect idles in the first
   two bytes after being played. So make sure they are zero.
 
 - But I don't want to clear the first two bytes in sound effects.
+
   A: Then make sure that the bytes at address $0 and $1 are zero, and
   assemble the player with NULL_IS_CLEARED=1.
+
+- I am hearing some clicking noise at the beginning of a sound effect.
+
+  A: Make sure your sample pointer points to the raw sample data, and
+  not to any form of file header (e.g. IFF-8SVX, etc.). When loading
+  external sound effects you have to parse the file header yourself.
 
 
 History:
@@ -289,10 +401,10 @@ History:
 - Try not to break channels with sound effects, which are currently
   playing a looped sample.
 - Sound effects can also be started when the music is not playing
-  (mt_Enable=0).
+  (_mt_Enable=0).
 
 3.1:
-- Do not trash d2/a2 in mt_init().
+- Do not trash d2/a2 in _mt_init.
 - Unused samples with length 0 are played like a 1-word null-sample,
   for compatibility with other players.
 - Make sure all samples start with two zero-bytes.
@@ -301,19 +413,19 @@ History:
 - For better maintenance there is only a single source text now. The
   default is a PC-relative, single-section version, which uses a local
   base register. Small data mode can be enabled by defining SDATA.
-- mt_install_cia() also initializes the channel structures, like mt_init()
+- _mt_install also initializes the channel structures, like _mt_init
   does. So it should be possible to play sound effects without loading
   a tracker module.
 - New sound effects system, which truly supports playing multiple sound
   effects per frame (e.g. stereo). It also supports priorities and
   channel selection.
-- New exported function mt_playfx() which passes a pointer to an sfx
+- New exported function _mt_playfx which passes a pointer to an sfx
   structure, includes the new parameters like channel and priority.
-  The old API through mt_soundfx() is still supported and emulated by
-  mt_playfx().
-- New exported function mt_musicmask() defines which specific channels
+  The old API through _mt_soundfx is still supported and emulated by
+  _mt_playfx.
+- New exported function _mt_musicmask defines which specific channels
   are dedicated for music and won't be used for sound effects.
-- New exported variable mt_MusicChannels defines a limit for the
+- New exported variable _mt_MusicChannels defines a limit for the
   maximum number of channels to be used for sound effects in parallel.
 
 5.0:
@@ -323,7 +435,7 @@ History:
 - All exported symbols (functions and variables) have got a leading
   underscore now, to make them directly accessible to C programs.
   So in assembler you have to call _mt_init now, while in C you can
-  call mt_init().
+  call mt_init.
 
 5.1:
 - Included C header file, ptplayer.h, provided by BSzili.
@@ -374,7 +486,7 @@ History:
 - Fixed note delay command (EDx), which still played the previous note
   in some situations (Antiriad/EAB).
 - Fixed sample-offset command (9) with empty note-field (h0ffman/EAB).
-- mt_mastervol() must change the volumes of all channels immediately
+- _mt_mastervol must change the volumes of all channels immediately
   and shouldn't wait for the next sample being played (suggested by
   h0ffman/EAB).
 - Symbol ENABLE_SAWRECT may be used to disable sawtooth and rectangle
@@ -385,6 +497,40 @@ History:
   of audio channels (suggested by h0ffman).
 - Removed cia.i and custom.i include files and included the required
   symbols directly into the source.
-- New function mt_loopfx() for playing looped sound effects (suggested by
+- New function _mt_loopfx for playing looped sound effects (suggested by
   mcgeezer/EAB).
-- New function mt_stopfx() for immediately stopping a sound effect.
+- New function _mt_stopfx for immediately stopping a sound effect.
+
+6.2:
+- Fixed master volume again, which must not immediately change a channel's
+  volume when it is playing a sound effect (h0ffman/EAB).
+- _mt_end also has to stop and reset looped sound effects. Otherwise
+  channels may be blocked when starting the next mod.
+- Fixed a few more channel state variables, which were not reset during
+  _mt_end (e.g. from the funk and glissando command).
+- New function mt_channelmask() to mute specific music channels at
+  any time (Marek Duda).
+- Symbol VBLANK_MUSIC skips CIA Timer-A initialization and lets you call
+  _mt_music out of your own VBlank interrupt handler.
+
+6.3:
+- MINIMAL version compiles again (broken in V6.2).
+- Avoid potential overflow with command 1 (portamento up).
+- Muted channels by mt_channelmask() no longer touch sample pointer
+  and length registers (AUDxLC, AUDxLEN) (patch by roondar).
+
+6.4:
+- Fixed channel selection logic for sound effects, which was broken in
+  certain situations (all channels busy or looped samples) since V6.0,
+  and selected the worst channel instead.
+- E0x command didn't work! The filter was always disabled.
+- Defining NO_TIMERS disables the use of CIB-B timers and interrupts
+  completely. As with VBLANK_MUSIC you have to call _mt_music 50 times
+  per second, followed by _mt_dmaon and _mt_setrep after at least 550 ticks
+  each.
+- Define OSCOMAPT to build a version which uses AmigaOS to register
+  interrupts and allocate audio channels. Patch submitted by Piru.
+- Renamed mt_install_cia to mt_install and mt_remove_cia to mt_remove,
+  because there are now OS-compliant versions of these routines, which
+  additionally do other things, like allocating audio channels.
+  The old names remain as an alias for compatibility reasons.

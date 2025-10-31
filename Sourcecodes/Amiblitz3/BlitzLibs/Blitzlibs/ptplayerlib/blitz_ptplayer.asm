@@ -11,6 +11,11 @@ banklib  equ   76
 ; This Blitz library
 ptplayerlib equ 48
 
+; Build options
+OSCOMPAT	equ	0
+ENABLE_SAWRECT	equ	0
+NULL_IS_CLEARED	equ	1
+
 		libheader ptplayerlib,0,0,blitz_finit,0
 		
 		astatement
@@ -22,11 +27,19 @@ ptplayerlib equ 48
 			subs	MTInit,0,0
 		name "MTInit","Bank#, startpos | module addr, instr addr, startpos (inserts module into player)",0
 		
+		ifne !OSCOMPAT
 		astatement
 			args	byte
 			libs
 			subs	MTInstall,0,0
 		name "MTInstall","Install player routine. PAL=true, NTSC=false",0
+		else
+		afunction	long
+			args	
+			libs
+			subs	MTInstall,0,0
+		name "MTInstall","Install player routine, OS compatible",0
+		endc
 		
 		astatement
 			args	byte
@@ -128,7 +141,11 @@ blitz_finit:
 
 ; Deinitialisation for Blitz so that user doesn't have to call MTRemove
 _blitz_mt_lib_finit:
+	ifne !OSCOMPAT
 	bra	_mt_remove_cia
+	else
+	bra	_mt_remove
+	endc
 ;--------------------
 
 ; Macros by earok / Scorpion 
@@ -169,13 +186,21 @@ getvbr:
 
 ; Install a CIA-B interrupt for calling mt_music.
 MTInstall:
-	storeAddressRegistersVBR	
+	storeAddressRegistersVBR
+	ifne !OSCOMPAT
 	jsr _mt_install_cia
+	else
+	jsr _mt_install
+	endc
 	restoreAddressRegisters
 
 MTRemove:
 	storeAddressRegisters	
+	ifne !OSCOMPAT
 	jsr _mt_remove_cia
+	else
+	jsr _mt_remove
+	endc
 	restoreAddressRegisters
 
 ;---------------------------------------------------------------------------
