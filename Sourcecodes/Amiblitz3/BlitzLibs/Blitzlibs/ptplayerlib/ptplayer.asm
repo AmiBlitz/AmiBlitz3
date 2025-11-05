@@ -170,7 +170,7 @@ MINIMAL		equ	0
 ; will be replaced by sine-waves. They are rarely used and disabling
 ; them will free a lot of memory for the tables.
 	ifnd	ENABLE_SAWRECT
-ENABLE_SAWRECT	equ	0
+ENABLE_SAWRECT	equ	1
 	endc
 
 ; Set this if you can guarantee that the word at $0 is cleared, and if
@@ -3027,13 +3027,16 @@ mt_tremoctrl:
 	move.b	d0,n_tremoloctrl(a2)
 	rts
 
-
+; E8 fix backported from 6.5, from phx
+; https://eab.abime.net/showpost.php?p=1755857&postcount=220
 mt_e8:
 ; cmd E 8 x (x = trigger value)
 ; d0 = x
 
-	move.b	d0,mt_E8Trigger(a4)
-	rts
+        tst.b   mt_Counter(a4)
+        bne     .1
+        move.b  d0,mt_E8Trigger(a4)
+.1:     rts
 
 
 mt_retrignote:

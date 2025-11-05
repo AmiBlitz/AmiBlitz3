@@ -129,7 +129,7 @@ End Macro
 
 ;********************************* Libheader
 ;             libnum  first last  init return finit error
-!syslibheader{#memlib,$c000,$c008,init,1,     finit,errorhandling}
+!syslibheader{#memlib,$c000,$c009,init,1,     finit,errorhandling}
 
 !nullsub{do_localalloc,0,0}       ; $C000
 !nullsub{do_localfree,0,0}        ; $C001
@@ -137,16 +137,21 @@ End Macro
 !nullsub{do_globalfree,0,0}       ; $C003
 !nullsub{do_newmemnode,0,0}       ; $C004
 !nullsub{do_freememnode,0,0}      ; $C005
-!nullsub{codefinit,0,0}           ; %C006
-!nullsub{allocret,0,0}            ; $c007
-
+!nullsub{codefinit,0,0}           ; $C006
+!nullsub{allocret,0,0}            ; $C007
+!nullsub{do_usedmem,0,0}          ; $C008
 init: !nullsub{codeinit,0,0}
 finit: !nullsub{codefinit,0,0}
 !libfin
 
 ;*************************************************************************************
-memlist:  Ds.l 1
-AL_0_EE:  Ds.w 1
+memlist:         Ds.l 1
+AL_0_EE:         Ds.w 1
+mempool:         Dc.l 0
+mempoolchip:     Dc.l 0
+kick2_available: Dc.w 0
+debug:           Dc.w 0
+allocedmemsize:  Dc.l 0
 
 ;-- OK, here's how our mem linking works:
 ;--
@@ -185,15 +190,17 @@ AL_0_EE:  Ds.w 1
     ADDQ.l #1,D0
  'notodd
 
-CNIF #mungwall=1
+  CNIF #mungwall=1
   ADD.l #16+16*2,d0
-CELSE
+  CELSE
   ADD.l #16,D0
-CEND
+  CEND
 
   MOVE.l D0,-(A7)                   ; requested memsize + management data
   MOVEA.l _SysBase,A6
                                     ; CRASH ONLY WITH KICK 1.3 !!!
+  ADD.l D0,allocedmemsize      
+                                
   TST.w kick2_available : BNE 'pooling
     JSR _AllocMem(A6)
     BRA 'poolend
@@ -213,7 +220,7 @@ CEND
     ;  MOVE.l A0,$4(A1)
     MOVE.l (A7)+,12(A0)             ;size was 4, requested memsize+management data
 
-CNIF #mungwall=1
+    CNIF #mungwall=1
     MOVE.l a0,a1
     SUB.w #16,a1
     ADD.l 12(a0),a1        ; add of size
@@ -227,9 +234,9 @@ CNIF #mungwall=1
     MOVE.l #$EADDEADA,(a1)+
     MOVE.l #$ADDEADAD,(a1)+
     MOVE.l #$DAEAD987,(a1)+
-CELSE
+    CELSE
     ADD.w #16,A0
-CEND
+    CEND
 
     MOVE.l A0,D0
  'l1
@@ -250,7 +257,7 @@ CEND
   MOVE.l (A7)+,12(A0)  ;was 4
   MOVE.l #"ChIp",8(a0)
 
-CNIF #mungwall=1
+  CNIF #mungwall=1
   MOVE.l a0,a1
   SUB.w #16,a1
   ADD.l 4(a0),a1
@@ -264,9 +271,9 @@ CNIF #mungwall=1
   MOVE.l #$EADDEADA,(a1)+
   MOVE.l #$ADDEADAD,(a1)+
   MOVE.l #$DAEAD987,(a1)+
-CELSE
+  CELSE
   ADD.w #16,A0
-CEND
+  CEND
 
   MOVE.l A0,D0
   MOVEM.l (A7)+,A0-A1/A6
@@ -305,10 +312,6 @@ RTS
   CLR.w AL_0_EE
 RTS
 
-mempool: Dc.l 0
-mempoolchip: Dc.l 0
-
-
 .codefinit:                   ; free all allocated memnodes
 ;CNIF #mungwall=0
   TST.w kick2_available
@@ -339,7 +342,6 @@ RTS
     MOVE #1,kick2_available
  'nokick2
 RTS
-kick2_available: Dc.w 0
 
 call_localalloc:  BRA.w do_localalloc
 call_localfree:   BRA.w do_localfree
@@ -354,6 +356,7 @@ call_globalfree:  BRA.w do_globalfree
   MOVE.l A0,memlist
 RTS
 
+
 .do_globalalloc                    ; AJL_0_136
   MOVE.l A0,-(A7)
   MOVEA.l memlist(PC),A0
@@ -363,6 +366,7 @@ RTS
   MOVE.l (A7)+,memlist
   MOVEA.l (A7)+,A0
 RTS
+
 
 .do_globalfree                     ; AJL_0_150
   MOVE.l A0,-(A7)
@@ -374,6 +378,7 @@ RTS
   MOVEA.l (A7)+,A0
 RTS
 
+
 .do_localalloc:                    ;allocate some memory in the local region!    AJL_0_16A
   MOVEM.l A0-A1/A6,-(A7)
 
@@ -381,15 +386,17 @@ RTS
     ADDQ.l #1,D0
  'notodd
 
-CNIF #mungwall=1
+  CNIF #mungwall=1
   ADD.l #16+16*2,d0
-CELSE
+  CELSE
   ADD.l #18,D0                     ;2 bytes must be larger or field fails
-CEND
+  CEND
 
   MOVE.l D0,-(A7)
   MOVEA.l _SysBase,A6
   JSR _Forbid(a6)
+
+  ADD.l D0,allocedmemsize          ; track the allocated memory size
 
   TST.w kick2_available : BEQ 'nopooling
     BTST #1,d1 : BNE 'chipm
@@ -411,7 +418,7 @@ CEND
 ;  MOVE.l d0,8(a1)
   MOVE.l (A7)+,12(A0);was 4
 
-CNIF #mungwall=1
+  CNIF #mungwall=1
   MOVE.l a0,a1
   SUB.w #16,a1
   ADD.l 12(a0),a1   ;size of mem
@@ -425,9 +432,9 @@ CNIF #mungwall=1
   MOVE.l #$EADDEADA,(a1)+
   MOVE.l #$ADDEADAD,(a1)+
   MOVE.l #$DAEAD987,(a1)+
-CELSE
+  CELSE
   ADD.w #16,A0
-CEND
+  CEND
 
   JSR _Permit(a6)
   MOVE.l A0,D0
@@ -448,7 +455,7 @@ CEND
   MOVE.l (A7)+,12(A0)   ;was 4
   MOVE.l #"ChIp",8(a0)
 
-CNIF #mungwall=1
+  CNIF #mungwall=1
   MOVE.l a0,a1
   SUB.w #16,a1
   ADD.l 12(a0),a1
@@ -462,9 +469,9 @@ CNIF #mungwall=1
   MOVE.l #$EADDEADA,(a1)+
   MOVE.l #$ADDEADAD,(a1)+
   MOVE.l #$DAEAD987,(a1)+
-CELSE
+  CELSE
   ADD.w #16,A0
-CEND
+  CEND
 
   JSR _Permit(a6)
   MOVE.l A0,D0
@@ -475,24 +482,23 @@ RTS
 .do_localfree    ;a1=mem, d0=len(ignored!)    / AJL_0_19E
   MOVEM.l D1/A0/A6,-(A7)
   ;MOVE.l $1c(a7),-(a7)  ;put call address to stack so wipeout stacktrace show correct call address
-  MOVE.l memlist(PC),D1 : BEQ.w JL_0_1C6
-  CMP.l #0,a1 : BEQ JL_0_1C6
+  MOVE.l memlist(PC),D1 : BEQ.w exit_localfree
+  CMP.l #0,a1 : BEQ exit_localfree
 
-CNIF #mungwall=1
+  CNIF #mungwall=1
   SUB.w #16+16,a1
-CELSE
+  CELSE
   SUB.w #16,A1
-CEND
+  CEND
 
   MOVEA.l D1,A0
   ADDQ.w #4,A0
   MOVEA.l _SysBase,A6
   JSR _Forbid(a6)
 
-JL_0_1B0:
+  JL_0_1B0:
   MOVE.l 4(a1),a0
-  CMPA.l (A0),A1
-  BNE.w errormem
+  CMPA.l (A0),A1 : BNE.w errormem
 
   MOVEA.l D1,A0
   MOVE.l 12(A1),D0
@@ -502,6 +508,7 @@ JL_0_1B0:
   MOVE.l (a7)+,a1
   ;MOVE.l (A1),(A0)
 
+  SUB.l D0,allocedmemsize
 
   TST.w kick2_available : BNE 'pooling
     JSR _FreeMem(A6)
@@ -541,10 +548,10 @@ JL_0_1B0:
 
   JL_0_1C6b:
   JSR _Permit(a6)
-  JL_0_1C6:
+  exit_localfree:
   ;ADDQ.l #4,a7
   MOVEM.l (A7)+,D1/A0/A6
-  RTS
+RTS
 
 ;CNIF #poolmem=1
 CNIF #mungwall=1
@@ -602,13 +609,12 @@ CEND
 
 JL_0_1CC:
   MOVE.l (A0),D1
-  MOVEA.l D1,A0
-  BNE.w JL_0_1B0
-  MOVE.w AL_0_EE(PC),D1
-  BNE.w JL_0_1C6
+  MOVEA.l D1,A0 : BNE.w JL_0_1B0
+  MOVE.w AL_0_EE(PC),D1 : BNE.w exit_localfree
   NOT.w AL_0_EE
-errormem:
-  MOVE.l #AL_0_277,D0
+
+  errormem:
+  MOVE.l #errorFreeMem,D0
   TRAP #$0
 BRA JL_0_1C6b
 
@@ -618,6 +624,8 @@ BRA JL_0_1C6b
   MOVEQ.l #20,D0            ; 20bytes
   MOVEQ.l #$01,D1           ; MEMF_PUBLIC
   MOVEA.l _SysBase,A6
+
+  ADD.l D0,allocedmemsize
 
   TST.w kick2_available : BNE 'pooling
     JSR _AllocMem(A6)
@@ -638,6 +646,7 @@ BRA JL_0_1C6b
   !init
   MOVEM.l (A7)+,D0-D1/A0-A1/A6
 RTS
+
 
 .do_freememnode:                           ;free up most recent node, return eq=1 if none!  AJL_0_218
   MOVEM.l D0-D1/A0-A2/A6,-(A7)
@@ -665,32 +674,34 @@ RTS
   MOVE.l 12(A2),D0 ;was 4
   MOVEA.l (A2),A2
 
+  SUB.l D0,allocedmemsize
+
   TST.w kick2_available : BNE 'pooling
     JSR _FreeMem(A6)
     BRA poolingend
  'pooling
     CNIF #mungwall=1
-      MOVE.l a1,a0
-      ADD.w #20,a0
-      ;CMP.l #$DEADDEAD,(a0)+ : BNE munghit2
-      CMP.l #$EADDEADA,(a0)+ : BNE munghit2
-      CMP.l #$ADDEADAD,(a0)+ : BNE munghit2
-      CMP.l #$DAEAD987,(a0)+ : BNE munghit2
-      
-      MOVE.l a0,d1
-      mungr2:
-      MOVE.l a1,a0
-      SUB.w #16,a0
-      ADD.l d0,a0
-      CMP.l #$DEADDEAD,(a0)+ : BNE munghit3
-      CMP.l #$EADDEADA,(a0)+ : BNE munghit3
-      CMP.l #$ADDEADAD,(a0)+ : BNE munghit3
-      CMP.l #$DAEAD987,(a0)+ : BNE munghit3
-      mungr3:
-      MOVE.l d1,a0
-      MOVE.l #$abcdefcd,(a0)+
-      MOVE.l #$bcdefefe,(a0)+
-      MOVE.l #$ccdefefe,(a0)+
+    MOVE.l a1,a0
+    ADD.w #20,a0
+    ;CMP.l #$DEADDEAD,(a0)+ : BNE munghit2
+    CMP.l #$EADDEADA,(a0)+ : BNE munghit2
+    CMP.l #$ADDEADAD,(a0)+ : BNE munghit2
+    CMP.l #$DAEAD987,(a0)+ : BNE munghit2
+    
+    MOVE.l a0,d1
+    mungr2:
+    MOVE.l a1,a0
+    SUB.w #16,a0
+    ADD.l d0,a0
+    CMP.l #$DEADDEAD,(a0)+ : BNE munghit3
+    CMP.l #$EADDEADA,(a0)+ : BNE munghit3
+    CMP.l #$ADDEADAD,(a0)+ : BNE munghit3
+    CMP.l #$DAEAD987,(a0)+ : BNE munghit3
+    mungr3:
+    MOVE.l d1,a0
+    MOVE.l #$abcdefcd,(a0)+
+    MOVE.l #$bcdefefe,(a0)+
+    MOVE.l #$ccdefefe,(a0)+
     CEND
     MOVE.l mempool,a0
     CMP.l #"ChIp",8(a1) : BNE 'l1
@@ -703,7 +714,9 @@ RTS
 
   JL_0_254:
   MOVE.l (a7)+,a1
+  
   MOVEQ.l #20,D0
+  SUB.l D0,allocedmemsize
 
   TST.w kick2_available : BNE 'pooling
     JSR _FreeMem(A6)            ; (a1:memoryBlock, d0:byteSize)
@@ -718,14 +731,17 @@ RTS
   MOVEM.l (A7)+,D0-D1/A0-A2/A6
 RTS
 
-debug: Dc.w 0
+.do_usedmem:
+  MOVE.l allocedmemsize,D0
+RTS
 
+; ====================================================================================
 outOfMemoryb:
 CNIF #return0=1
   MOVEM.l (A7)+,D0-D1/A0-A2/A6
   RTS
 CELSE
-  MOVE.l #errorhandling,D0
+  MOVE.l #errorOutOfMem,D0
   TRAP #$0
 CEND
 
@@ -736,7 +752,7 @@ CNIF #return0=1
   MOVEM.l (A7)+,A0-A1/A6
   RTS
 CELSE
-  MOVE.l #errorhandling,D0
+  MOVE.l #errorOutOfMem,D0
   TRAP #$0
 CEND
 
@@ -744,17 +760,13 @@ outOfMemoryc:
 CNIF #return0=1
   RTS
 CELSE
-  MOVE.l #errorhandling,D0
+  MOVE.l #errorOutOfMem,D0
   TRAP #$0
 CEND
 
-errorhandling:  Dc.b "OuT of Memory!",0,0
-AL_0_277:       Dc.b "Unable to Free Memory (Hint: program overide illegal mem)",0
+; =============================================================================================================================
+errorhandling:
+errorOutOfMem:  Dc.b "OuT of Memory!",0,0
+errorFreeMem:   Dc.b "Unable to Free Memory (Hint: program overide illegal mem)",0
 mungtext:       Dc.b "Mungwall Hit",0,0
 mungtext2:      Dc.b "Mungwall Hit Upper Bound",0,0
-Even
-do_globalfreestate:Dc.b 0
-Dc.b "p",0
-Dc.b "Nu",0
-Dc.b $01 ;.
-Even
