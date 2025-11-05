@@ -27,20 +27,11 @@ Everything you need as of:
 ## Where do I get further informations about it all?
 Try the following sources:
 
-https://www.facebook.com/groups/342460143062811 | english facebook-group
-
-https://www.amiblitz.de                         | various documentation about AmiBlitz3 (outdated)
-
-https://www.amiforce.de                         | additional information and fora
-
-
-## Known Problems
-Under OS 3.2, workbench does not react anymore after exiting the IDE, due to a bug with removing an assign.
-That problem has been solved with OS 3.2.1.
-
+[blitzbasic.dev on Discord](https://discord.gg/whVrUAPb) \
+[english facebook-group](https://www.facebook.com/groups/342460143062811) \
+[various documentation about AmiBlitz3 (outdated)](https://www.amiblitz.de) \
+[additional information and fora](https://www.amiforce.de) \
 
 ## Do you want to support me?
 Its easy, just buy me a coffee: [<img src="../../assets/36992035/8f0985f2-4fab-47cb-a2f3-778cd51a8ec1" width=150 height=40 style="margin: 5px"/>](https://www.buymeacoffee.com/honitos)
 [<img src="../../assets/36992035/971249ac-88ef-4999-b970-87db51584356" width=150 height=40 style="margin: 5px"/>](https://paypal.me/honitos)
-
-
