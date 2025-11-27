@@ -9946,7 +9946,7 @@ Return
 
   Default ; we have got an error line, jump to that pos
     !log_PrintOut{"there where errors, let's look at them..."}
-    Gosub handleCompileError
+    Gosub handle_CompileError
 
   End Select
 
@@ -10838,10 +10838,10 @@ RTS
   MOVEA.l A0,A2
 
   MOVEQ.l #$00,D1   ; check length of string in A0
-  JL_0_44E6:
+ 'loop:
     ADDQ.w #1,D1
     TST.b (A0)+
-  BNE.b JL_0_44E6
+  BNE.b 'loop
 
   MOVEA.l A2,A1
   SUBQ.w #1,D1
@@ -10866,7 +10866,7 @@ RTS
 RTS
 
 
-.handleCompileError:
+.handle_CompileError:
   fid.l = file_Open{dos_AddPart{pedconfig\systemDir,"ab_compileerror.txt"},#file_read}
   If fid <> -1
     error_type.s    = Mid$(file_ReadLine{fid},9)
@@ -10908,13 +10908,17 @@ RTS
     msg$ = !TRANS{Replace$(error_type,"\n","\\n")} + "\\n"
     msg$ + !TRANS{"Line "} + error_line + ": "
 
+    If error_source <> "NULL"
+      msg$ + error_source + "\\n"    
+    EndIf
+
     If error_lineptr <> ""
       *errorline.sourceLine = Vallong(error_lineptr)
-      error_sourceline.s = Trim$(PED_Detokenize{*errorline})
-      msg$ + "--> " + error_sourceline + "\\n"
+      error_source = Trim$(PED_Detokenize{*errorline})
+      msg$ + "--> " + error_source + "\\n"
 
       !log_PrintOut{"Sourceline pointer provided by compiler: $" + Hex$(*errorline)}
-      !log_PrintOut{"affected sourceline: [" + error_sourceline + "]"}
+      !log_PrintOut{"affected source: [" + error_source + "]"}
     Else
       msg$ + "\\n"
     EndIf
@@ -10952,7 +10956,7 @@ Return
 ;                       ; D7: includeline
 ;  !regs2stack
 ;  !basic
-;  Gosub handleCompileError
+;  Gosub handle_CompileError
 ;  !asm
 ;  !stack2regs
 ;;  MOVE.l (A7)+,D7
@@ -11055,142 +11059,106 @@ End Function
       NOT.w comWord__QuoteFlag
 
      'pch
-      JSR putCharToA1
+      BSR putCharToA1
       BRA.b 'tok_loop
    'noquote:
-    MOVE.w comWord__QuoteFlag,D4 : BNE.b 'pch
+    MOVE.w comWord__QuoteFlag,D4 : BNE.b 'pch              ; ---- copy all chars until end of string
 
-    BSR checkD2ForLetter : BEQ.w 'findtoken    ; go to tokenfinder
-
+    BSR checkD2ForLetter : BNE.w 'ppp2
+      BRA 'findtoken    ; go to tokenfinder
    'ppp2:
-    CMP.b #$30,d2 : BLT 'l10a      ; number 0-9
-    CMP.b #$39,d2 : BGT 'l10a
-      BRA 'unto2
-   'l10a:
 
-    CMP.b #"_",D2 :    BEQ.w 'unto2
-    CMP.b #".",D2 :    BEQ.w 'unto2
-    CMP.b #"\",D2 :    BEQ.w 'unto2
-
-    CMP.b comByte_CommentIdentifier,D2 : BNE.w 'notrem     ; comment found
+    CMP.b comByte_CommentIdentifier,D2 : BNE.w 'notrem     ; comment found, just copy all characters 
      'remloop:
-        JSR putCharToA1
+        BSR putCharToA1
         MOVE.b (A2)+,D2
-        ;BCLR #$7,D2                ; disable removal of token bit (7) for comments, enabling special characters inside comments
       BRA.b 'remloop
    'notrem:
 
-    CMP.b #"'",d2 : BEQ.w 'hexloop                         ; do not tokenize ' $ #
-    CMP.b #"#",D2 : BEQ.w 'hexloop
-    CMP.b #"$",D2 : BNE.w 'nothex
+    CMP.b #"$",D2 : BNE.w 'nofastloop
 
-   'hexloop:
-      JSR putCharToA1
+    CMP.b #"_",D2 : BEQ.w 'fastloop         ; do not tokenize ...    
+    CMP.b #".",D2 : BEQ.w 'fastloop
+    CMP.b #"\",D2 : BEQ.w 'fastloop
+
+    CMP.b #"'",d2 : BEQ.w 'fastloop
+    CMP.b #"#",D2 : BEQ.w 'fastloop
+    CMP.b #"0",d2 : BCC.w 'fastloop
+    CMP.b #"9",d2 : BLE.w 'fastloop
+
+   'fastloop:
+      BSR putCharToA1
       MOVE.b (A2)+,D2
-      ;BCLR #$7,D2
-      CMP.b #$22,d2 : BNE 'l10b                            ; "
-        BRA 'hexloop
-     'l10b
-      CMP.b #"_",d2 : BEQ 'hexloop
-      CMP.b #"0",D2 : BCS.w 'nothex
-      CMP.b #"z",D2 : BHI.w 'nothex
-      CMP.b #"9",D2 : BLS.b 'hexloop
-      CMP.b #"A",D2 : BCS.w 'nothex
-      CMP.b #"a",D2 : BCC.b 'hexloop
-    CMP.b #"Z",D2 : BLS.b 'hexloop
-   'nothex:
 
-    JSR putCharToA1
-    MOVE.b (A2)+,D2
+      CMP.b #$22,d2 : BEQ.w 'quoteon
+      CMP.b #"_",d2 : BEQ.w 'fastloop
 
-    CMP.b #$22,d2 : BNE 'l10c
-    NOT.b instring2
-   'l10c
-   ; TST.b instring2 : BNE 'l11c
-   ;   BCLR #$7,D2                      ;morechar
-   ;'l11c
+      CMP.b #"z",D2 : BHI.w 'nofastloop     ; character after "z" found
+      CMP.b #"A",D2 : BCS.w 'nofastloop     ; character before "A" found
+      CMP.b #"a",D2 : BCC.w 'fastloop       ; character after "a" found
+      CMP.b #"Z",D2 : BLS.w 'fastloop       ; character before "Z" found
 
-    CMP.b comByte_QuotationIdentifier,D2 : BEQ.w 'quoteon
-  ;  TST.w comWord__QuoteFlag : BNE 'l11c
-  ;      BCLR #$7,D2                      ;morechar
-  ; 'l11c
+      CMP.b #"0",D2 : BCS.w 'nofastloop
+      CMP.b #"9",D2 : BLS.w 'fastloop
+   'nofastloop:
+    BSR putCharToA1
+  BRA 'tok_loop
 
-    JSR checkD2ForLetter : BNE.b 'ppp2
+ 'findtoken:                          ; ------ start tokenizing, ascii_to_token
+  SUBQ.w #1,A2
+  MOVEA.l comPtr_TokenBase,A3
 
-   'findtoken:                         ; ------ start tokenizing, ascii_to_token
-    SUBQ.w #1,A2
-    MOVEA.l comPtr_TokenBase,A3
+ 'tokfind_loop:
+    MOVEA.l A2,A4                     ; reset
+    MOVE.l A3,-(A7)
+    ADDQ.w #6,A3
 
-   'tokfind_loop:
-      MOVEA.l A2,A4                      ; reset
-      MOVE.l A3,-(A7)
-      ADDQ.w #6,A3
+   'loop4:
+      MOVE.b (A3)+,D3 : BEQ.w 'found  ; char of Tokenname -> D3
 
-     'loop4:
-        MOVE.b (A3)+,D3 : BEQ.w 'found   ; char of Tokenname -> D3
-          MOVE.b (A4)+,D2                ; char of string    -> D2
+      MOVE.b (A4)+,D2                 ; char of string    -> D2
+      BCLR #$7,D2                     ; remove tokenbit of found token
+      ORI.b #$20,D3                   ; or space ?
+      ORI.b #$20,D2
+    CMP.b D3,D2 : BEQ.b 'loop4
 
-          BCLR #$7,D2                    ; remove tokenbit of found token
-          ORI.b #$20,D3                  ; or space ?
-          ORI.b #$20,D2
-      CMP.b D3,D2 : BEQ.b 'loop4
+   'next:
+      MOVEA.l (A7)+,A3
+      MOVE.l (A3),D3                  ; move to next token
+      BEQ.w 'notokenfound             ; no token left
+      MOVEA.l D3,A3
+  BRA.b 'tokfind_loop
 
-      'next:
-        MOVEA.l (A7)+,A3
-        MOVE.l (A3),D3                   ; move to next token
-        BEQ.w 'notokenfound                  ; no token left
-        MOVEA.l D3,A3
-    BRA.b 'tokfind_loop
+ 'notokenfound:                       ; no token found, so write the char
+  MOVE.b (A2)+,D2
+  BRA 'nofastloop
+  
+ 'found:
+  MOVE.b (A4),D2
+  BCLR #$7,D2
+  BSR checkD2ForLetter : BEQ.b 'next
 
-   'notokenfound:                       ; no token found, so write the char
-    MOVE.b (A2)+,D2
-   ; BCLR #$7,D2
+  CMP.b #"_",D2 : BEQ.w 'next         ; underscore for lib calls ?
 
-   'unto2:
-    JSR putCharToA1
-    MOVE.b (A2)+,D2
+  CMP.b #"0",D2 : BLT.w 'l10e         ; number  0-9
+  CMP.b #"9",D2 : BGT.w 'l10e
+    BRA 'next
+ 'l10e:
 
-    CMP.b #$22,d2 : BNE 'l10d
-      NOT.b instring2
-   'l10d
-  ;  TST.b instring2 : BNE 'l11d
-  ;    BCLR #$7,D2
-  ; 'l11d
+  MOVEA.l (A7)+,A3                    ; copy token word to destination string
+  ADDQ.w #4,A3
 
-    CMP.b comByte_QuotationIdentifier,D2 : BEQ.w 'quoteon
-   ; TST.w comWord__QuoteFlag : BNE 'l11d
-   ;    BCLR #$7,D2
-   ; 'l11d
+  MOVE.b (A3)+,(A1)
+  BSET #$7,(A1)+                      ; set tokenbit for marking a token
+  MOVE.b (A3),(A1)+
 
-    JSR checkD2ForLetter : BEQ.b 'unto2
-
-    BRA.w 'ppp2
-
-   'found:
-    MOVE.b (A4),D2
-    BCLR #$7,D2
-    JSR checkD2ForLetter : BEQ.b 'next
-
-    CMP.b #$30,d2 : BLT 'l10e         ; number  0-9
-    CMP.b #$39,d2 : BGT 'l10e
-      BRA 'next
-   'l10e:
-    CMP.b #"_",D2 : BEQ.b 'next
-
-    MOVEA.l (A7)+,A3                  ; copy token word to destination string
-    ADDQ.w #4,A3
-
-    MOVE.b (A3)+,(A1)
-    BSET #$7,(A1)+                    ; set tokenbit for marking a token
-    MOVE.b (A3),(A1)+
-
-    MOVE.l A4,D4
-    SUB.l A2,D4
-    ADD.w D4,D0
-    CMP.w D1,D0 : BHI.w leaveParsing  ; d1: strlength (maxcolumns - 1)
-    
-    MOVEA.l A4,A2
-BRA.w 'tok_loop
+  MOVE.l A4,D4
+  SUB.l A2,D4
+  ADD.w D4,D0
+  CMP.w D1,D0 : BHI.w leaveParsing    ; d1: strlength (maxcolumns - 1)
+  
+  MOVEA.l A4,A2
+  BRA.w 'tok_loop
 
 .putCharToA1:
   MOVE.b D2,(A1)+
@@ -11201,10 +11169,10 @@ BRA.w 'tok_loop
   ADDQ.w #4,A7
 
 leaveParsing:
-  MOVEA.l (A7)+,A4                    ; restore pointer to tokenstring to A4
+  MOVEA.l (A7)+,A4                      ; restore pointer to tokenstring to A4
   CLR.b (A1)+
   MOVE.l A1,D5
-  SUB.l (A7)+,D5                      ; return the length of the string in D5
+  SUB.l (A7)+,D5                        ; return the length of the string in D5
 RTS
 
 
@@ -12738,8 +12706,6 @@ Return
 Return
 
 .resize_sourcewindow:
-  ;!log_PrintOut{"resize sourcewindow"}
-  
   Gosub calc_SourceWindowDimensions
 
   PED_AllocateTextbuffer{}
@@ -12855,76 +12821,73 @@ Return
 Return
 
 .handle_event_gadget:
-   *gadget.Gadget = pedMessage\_IAddress
-
+  *gadget.Gadget = pedMessage\_IAddress
+  Select *gadget\GadgetID
+  Case #GID_UARROW: ped\lastVanillaKey = $1C : Gosub handle_event_vanillakey
+  Case #GID_DARROW: ped\lastVanillaKey = $1D : Gosub handle_event_vanillakey
+  Case #GID_RARROW: ped\lastVanillaKey = $1E : Gosub handle_event_vanillakey
+  Case #GID_LARROW: ped\lastVanillaKey = $1F : Gosub handle_event_vanillakey
+  Case #GID_XPROP
     exit_gadgetloop.b = False
-    ;!log_PrintOut{"GADGETDOWN " + Hex$(pedMessage\_Class)}
-    ;!log_PrintOut{"GadgetID " + Str$(*gadget\GadgetID) + ", Type " + Hex$(*gadget\GadgetType) + ", Activation " + Hex$(*gadget\Activation)}
-    ;!log_PrintOut{"byte type " + Str$(*gadget\GadgetType AND $00FF)}
+    PED_ParseCurrentTextbufferline{}
+    FlushEvents
+    DEFTYPE.l pos_hprop
+    Repeat
+      If pedMessage\_Class <> 0
+        If pedMessage\_Class <> #IDCMP_GADGETUP
+          GetAttr_ #PGA_Top, sourceWindow\horizprop, &pos_hprop                                                                                                                                                                                        
+          PED_MoveCursorToX{pos_hprop}                                                                                                                                                                                                  
+        Else
+          *g.Gadget = pedMessage\_IAddress
+          ;If pedMessage\_Class = #IDCMP_GADGETUP AND pedMessage\_Code <> 0 OR pedMessage\_Window<>0
+          If *g\GadgetID = #GID_XPROP  Then exit_gadgetloop = True
+        EndIf
+      EndIf
+      PED_GetIntuiMessage{False}
+    Until exit_gadgetloop = True
 
-    Select *gadget\GadgetID
-    Case #GID_UARROW: ped\lastVanillaKey = $1C : Gosub handle_event_vanillakey
-    Case #GID_DARROW: ped\lastVanillaKey = $1D : Gosub handle_event_vanillakey
-    Case #GID_RARROW: ped\lastVanillaKey = $1E : Gosub handle_event_vanillakey
-    Case #GID_LARROW: ped\lastVanillaKey = $1F : Gosub handle_event_vanillakey
-    Case #GID_XPROP
-      DEFTYPE.l pos_hprop
-      FlushEvents
+  Case #GID_YPROP
+    exit_gadgetloop.b = False    
+    ;-- maybe triggered by a wheel up/down event of WinUAE
+    If ped\ptrCurrentSourceData\DisplayLineOffset < ped\ptrCurrentSourceData\TotalLines
+      PED_ParseCurrentTextbufferline{}      
+      tmpCurrentline.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
+
       Repeat
         If pedMessage\_Class <> 0
+
           If pedMessage\_Class <> #IDCMP_GADGETUP
-            GetAttr_ #PGA_Top, sourceWindow\horizprop, &pos_hprop                                                                                                                                                                                        
-            PED_MoveCursorToX{pos_hprop}                                                                                                                                                                                                  
+            GetAttr_ #PGA_Top,sourceWindow\vertiprop, &slider_top.l
+            totallines.l = ped\ptrCurrentSourceData\TotalLines
+            If totallines >= #max_slider_res
+              !mul48f{slider_top,totallines,#max_slider_res,realline.l}
+            Else
+              realline = slider_top
+            EndIf
+            realline + ped\ptrCurrentSourceData\DisplayLine
+
+            If realline <> tmpCurrentline
+              ped\ptrCurrentSourceData\LinePosStartX = realline
+              PED_GotoLine{realline}
+              PED_UpdateStatusArea{#STATUS_CURSOR|#STATUS_SCROLLERS}
+            EndIf
+
+            ;If pedMessage\_Class = #IDCMP_RAWKEY Then exit_gadgetloop = True
+            If pedMessage\_Class = #IDCMP_MOUSEBUTTONS Then exit_gadgetloop = True
           Else
+            ; cannot check For GadgetID because of tools like FreeWheel, I do not get the correct GadgetID everytime !?
             *g.Gadget = pedMessage\_IAddress
-            ;If pedMessage\_Class = #IDCMP_GADGETUP AND pedMessage\_Code <> 0 OR pedMessage\_Window<>0
-            If *g\GadgetID = #GID_XPROP  Then exit_gadgetloop = True
+            If *g\GadgetID = #GID_YPROP AND pedMessage\_Class = #IDCMP_GADGETUP Then exit_gadgetloop = True
           EndIf
+          ;!log_PrintOut{"YPROP " + Hex$(pedMessage\_Class) + " " + Hexw$(pedMessage\_Code) + " " + Str$(pedMessage\_Window) + "  GadID: " + Str$(*g\GadgetID)}
+          ;!log_PrintOut{"IAddress: " +Str$(pedMessage\_IAddress) + "  type: " + Hex$(*g\GadgetType) + " x:" + Str$(*g\LeftEdge) + ", y:" + Str$(*g\TopEdge)}
         EndIf
         PED_GetIntuiMessage{False}
       Until exit_gadgetloop = True
-
-    Case #GID_YPROP
-      ;-- maybe triggered by a wheel up/down event of WinUAE
-      If ped\ptrCurrentSourceData\DisplayLineOffset < ped\ptrCurrentSourceData\TotalLines
-        
-        tmpCurrentline.l = ped\ptrCurrentSourceData\DisplayLineOffset + ped\ptrCurrentSourceData\DisplayLine
-
-        Repeat
-          If pedMessage\_Class <> 0
-            *g.Gadget = pedMessage\_IAddress
-
-            If pedMessage\_Class <> #IDCMP_GADGETUP
-              GetAttr_ #PGA_Top,sourceWindow\vertiprop, &slider_top.l
-              totallines.l = ped\ptrCurrentSourceData\TotalLines
-              If totallines >= #max_slider_res
-                !mul48f{slider_top,totallines,#max_slider_res,realline.l}
-              Else
-                realline = slider_top
-              EndIf
-              realline + ped\ptrCurrentSourceData\DisplayLine
-
-              If realline <> tmpCurrentline
-                ped\ptrCurrentSourceData\LinePosStartX = realline
-                PED_GotoLine{realline}
-                PED_UpdateStatusArea{#STATUS_CURSOR|#STATUS_SCROLLERS}
-              EndIf
-
-              ;If pedMessage\_Class = #IDCMP_RAWKEY Then exit_gadgetloop = True
-              If pedMessage\_Class = #IDCMP_MOUSEBUTTONS Then exit_gadgetloop = True
-            Else
-              ; cannot check For GadgetID because of tools like FreeWheel, I do not get the correct GadgetID everytime !?
-              If *g\GadgetID = #GID_YPROP AND pedMessage\_Class = #IDCMP_GADGETUP Then exit_gadgetloop = True
-            EndIf
-            ;!log_PrintOut{"YPROP " + Hex$(pedMessage\_Class) + " " + Hexw$(pedMessage\_Code) + " " + Str$(pedMessage\_Window) + "  GadID: " + Str$(*g\GadgetID)}
-            ;!log_PrintOut{"IAddress: " +Str$(pedMessage\_IAddress) + "  type: " + Hex$(*g\GadgetType) + " x:" + Str$(*g\LeftEdge) + ", y:" + Str$(*g\TopEdge)}
-          EndIf
-          PED_GetIntuiMessage{False}
-        Until exit_gadgetloop = True
-        
-        ;!log_PrintOut{"exit proploop"}
-      EndIf
-    End Select
+      
+      ;!log_PrintOut{"exit proploop"}
+    EndIf
+  End Select
 Return
 
 
@@ -16827,6 +16790,3 @@ wzgui:                IncBin "ped.wizard"
                       Dc.w $4d08 ;get a shape
 
                       Dc.w 0     ;say end
-
-BSS
-Even
