@@ -2487,7 +2487,7 @@ findmacro:   ;expandmax org source
     MOVE.l a3,a5
     SUBQ.l #1,a5
     MOVE.w #$0,inmacro
-    BSR debugstuffa
+    BSR insertDebugTrapa
     MOVE.w #$FFFF,inmacro
     MOVE.l (a7)+,a5
     MOVE.w ##opcode_NOP,d1 : JSR writeword
@@ -3230,10 +3230,10 @@ RTS
   MOVE.l d1,destpointer
   
   MOVE.b debugmode(PC),D1 : BEQ.b 'nodb
-    BSR.w debugstuff
+    BSR.w insertDebugTrap
     MOVE.w #$C300,D1 : JSR Atokejsr                      ; (runerrslib/finalscheck)
-    BSR.w debugstuff
-    MOVE.l eopcode(PC),D1 : JSR writelong
+    BSR.w insertDebugTrap
+    MOVE.l eopcode(PC),D1 : JSR writelong                ; write end of code info for debugger
     MOVE.l lastcontlink(PC),D1 : BEQ.b 'nocl
       MOVEA.l D1,A0
       CLR.w $6(A0)
@@ -3250,7 +3250,7 @@ RTS
  'nobl
 
   TST.w intsused : BEQ.b 'noints
-    MOVE.w #$C105,D1 : JSR tokejsr2                      ;#intlib: interupts off!
+    MOVE.w #$C105,D1 : JSR tokejsr2                      ;#intlib: clear and free all Interrupts
  'noints
 
   BSR.w calcstatic
@@ -3307,9 +3307,10 @@ RTS
   BSR.w close_compilewin
 RTS
 
+; end of program message
 ;------                                                  ;disassembled code begin
 eopcode:    Dc.w $7003                                   ;MOVEQ #$03,D0
-            Dc.w opcode_TRAP0                            ;TRAP  #00
+            Dc.w #opcode_TRAP0                           ;TRAP  #00
 ;------                                                  ;disassembled code end
 endjmpat:   Ds.l 1
 
@@ -3356,8 +3357,8 @@ errchx2:
 errchx:
   MOVE.l D1,-(A7)
   MOVE.l firstsel,D1   :   BNE.w 'err1
-  MOVE.l firstrep,D1   :   BNE.w 'err2
-  MOVE.w intstring,D1  :   BNE.w 'err3
+  MOVE.l firstrep,D1   :   BNE.w 'err2   ;Repeat-block too large
+  MOVE.w intstring,D1  :   BNE.w 'err3   ;SetInt without End SetInt
   MOVE.l 4(a7),d1
   MOVE.w proceduremode,D1: BNE.w 'err6
   MOVE.l firstiff,d1     : BNE.w 'err5
@@ -3539,11 +3540,11 @@ writetrap:                                                 ;maketrap org source
 BRA.w JUMP_writeword
 
 
-debugstuff:
+insertDebugTrap:
   TST.b debugmode : BEQ.w debugstuffa_rts
 
   ; new <
-debugstuffa:
+insertDebugTrapa:
   CNIF #debugmacro=0
     TST.w inmacro : BNE debugstuffa_rts                     ;disable to show macros in debugger
   CEND
@@ -3556,23 +3557,22 @@ debugstuffa:
   ;
   MOVEM.l D0-D1,-(A7)
   ;
-  MOVEQ.l #$01,D1 : BSR.w writetrap                         ;write the adress to sourceline
-  ;
-  ;hook up cont address...
+  MOVEQ.l #$01,D1 : BSR.w writetrap                         ;write a TRAP #1 instruction before each basic sourceline
+  ;                                                         ; after that write the current sourceline pointer as long word
+  ;hook up cont address...                                  ; then write 
   ;
   MOVE.l destpointer,D0
   MOVE.l cont_pc,D1
   MOVE.l D0,cont_pc
   MOVE.l D1,cont_pc2 : BEQ.b 'skip
-    ;
     TST.w dontwrite_nomemleft : BNE.b 'skip
-    ; 
-    MOVEA.l D1,A4
-    SUB.l A4,D0
-    MOVE.w D0,$6(A4)
-    MOVE.l A4,lastcontlink
+      MOVEA.l D1,A4
+      SUB.l A4,D0
+      MOVE.w D0,$6(A4)
+      MOVE.l A4,lastcontlink
     ; new >
  'skip
+
   TST.w ininclude  ;BEQ 'noinc
   TST.w makeexec : BEQ 'l1
     TST.w exdebug :  BEQ 'noinc
@@ -3599,82 +3599,78 @@ debugstuffa:
 
   MOVE.l destpointer,d2
   MOVE.l d1,d3
-  SUB.l destbufferstart,d1
-  OR.l #$80000000,d1
-  JSR writelong
+  SUB.l destbufferstart,d1 : OR.l #$80000000,d1 : JSR writelong
+
   TST.w inmacro : BEQ 'sc1
     MOVE.l macroline,a0
     ;SUBQ.l #1,a0
     BRA 'inc2
  'sc1
-  TST.w ininclude : BEQ 'inc
-    MOVE.l includesourceline,a0
-    BRA 'inc2
- 'inc
-    MOVE.l sourceline,a0
-    LEA 9(a0),a0
+    TST.w ininclude : BEQ 'inc
+      MOVE.l includesourceline,a0
+      BRA 'inc2
+   'inc
+      MOVE.l sourceline,a0
+      LEA 9(a0),a0
  'inc2
 
   MOVE.l d1,d2
   MOVE.l A5,D1
-  SUB.l a0,D1
-  ADD.l #9,d1
-  BSR.w JUMP_writeword
+  SUB.l a0,D1 : ADD.l #9,d1 : BSR.w JUMP_writeword
+  
   CMP.l #9,d1 : BEQ 'pos1
     TST.w dontwrite_nomemleft : BNE 'nopad
+    
     MOVE.l lastsourceline,d1
     MOVE.l d1,-6(a4)
     BRA 'nopad
  'pos1
-  MOVE.l d2,lastsourceline
-  MOVE.l destpointer,lastdestpointer
-  MOVEQ #0,d1
-  MOVE.l data1,d2
-  SUB.l destbufferstart,d2
-  JSR writedatalong
-  TST.w dontwrite_nomemleft : BNE 'no2
-    JSR addhunkoffset
- 'no2
-  MOVE.l data1,d2
-  SUB.l destbufferstart,d2
-  JSR writedatalong
-  TST.w dontwrite_nomemleft : BNE 'no
-    JSR addhunkoffset
-    MOVE.l lastwritedat,a1
-    CMP.l #0,a1 : BEQ 'no
-      MOVE.l d3,(a1)
-      MOVE.l prevwritedat,4(a1)
-      MOVE.l lastwritedat,prevwritedat
- 'no
-  MOVE.l d3,lastwritedat
-  MOVEQ #4,d1
-  BSR pokedata1b
- 'loop
-    MOVE.b (a0)+,d1 : BEQ 'done
-    BSR pokedata1b
-  BRA 'loop
- 'done
-
-  MOVEQ #0,d1 : BSR pokedata1b
-  MOVE.l data1,d1
-  BTST #0,d1 : BEQ 'nopad
+    MOVE.l d2,lastsourceline
+    MOVE.l destpointer,lastdestpointer
     MOVEQ #0,d1
+    MOVE.l data1,d2
+    SUB.l destbufferstart,d2
+    JSR writedatalong
+    TST.w dontwrite_nomemleft : BNE 'no2
+      JSR addhunkoffset
+   'no2
+    MOVE.l data1,d2
+    SUB.l destbufferstart,d2
+    JSR writedatalong
+    TST.w dontwrite_nomemleft : BNE 'no
+      JSR addhunkoffset
+      MOVE.l lastwritedat,a1
+      CMP.l #0,a1 : BEQ 'no
+        MOVE.l d3,(a1)
+        MOVE.l prevwritedat,4(a1)
+        MOVE.l lastwritedat,prevwritedat
+   'no
+    MOVE.l d3,lastwritedat
+    MOVEQ #4,d1
     BSR pokedata1b
+   'loop
+      MOVE.b (a0)+,d1 : BEQ 'done
+      BSR pokedata1b
+    BRA 'loop
+   'done
+  
+    MOVEQ #0,d1 : BSR pokedata1b
+    MOVE.l data1,d1
+    BTST #0,d1 : BEQ 'nopad
+      MOVEQ #0,d1
+      BSR pokedata1b
  'nopad
   MOVEM.l (a7)+,a0-a1/d2/d3
   BRA 'noinc2
-
  'noinc
+
   ; < new
-  MOVE.l sourceline,D1
-  JSR writelong
+  MOVE.l sourceline,D1    : JSR writelong                   ;write address of sourceline for debugger
   MOVE.l A5,D1
-  SUB.l sourceline,D1
-  JSR writeword
+  SUB.l sourceline,D1     : JSR writeword                   ;write position of current command in current sourceline
 
  'noinc2
-  MOVEQ.l #$00,D1
-  JSR writeword          ;next cont goes here!                                  ; was: BSR.w writeword
+  MOVEQ.l #$00,D1 : JSR writeword                           ;next cont goes here! 
   ;
   MOVEM.l (A7)+,D0-D1
 
@@ -3782,48 +3778,36 @@ RTS
   
      'lf9b
       CMP.w #$22,d0 : BNE 'nos                            ;'"'
-       NOT.b instringf
+        NOT.b instringf
      'nos
+
       TST.b instringf : BNE 'sk3
-        CMP.w ##TokenID_Statement,d0                      ; $8008
-        ;BEQ 'lf4
-        CMP.w ##TokenID_Function,d0                       ; $8009
-        ;BEQ 'lf4
-    
-       'sk1
-        CMP.w ##TokenID_XINCLUDE,d0 : BNE 'sk2            ; xinclude $8012
+        CMP.w ##TokenID_Statement,d0 : ;BEQ 'lf4
+        CMP.w ##TokenID_Function,d0 : ;BEQ 'lf4
+        CMP.w ##TokenID_XINCLUDE,d0 : BNE 'sk2
           ADDQ.l #2,lastsourcepos
           JSR do_xinclude
        'sk2
-        CMP.w ##TokenID_INCLUDE,d0 : BNE 'sk3             ; include $8013
+        CMP.w ##TokenID_INCLUDE,d0 : BNE 'sk3             
           ADDQ.l #2,lastsourcepos
           JSR do_INCLUDE
      'sk3
     TST.w lastchar : BNE 'lf9
-   RTS
+    RTS
 
    'lf4
-   RTS
+    RTS
   CEND
-   ; < new
-   ;    bsr debugstuff
-   ;
-   ;bra    handlechar
-   ;
-
 
 .funcscanskip:    ; was  handlechar   org source
-  ;Handle the first character in statement
-  ;
-  ;BSR.w get1bytemain                                       ;gettokenmain
-  ;new >
 
+  ;-- Handle the first character in statement
   TST.b debugmode :  BEQ.s 'l10
     TST.b exdebug :  BEQ 'l10a
       MOVE.w (a5),d0
-      CMP.w ##TokenID_Dc,d0 : BEQ 'l10                      ; $8025      
+      CMP.w ##TokenID_Dc,d0 : BEQ 'l10      
    'l10a
-    BSR.w debugstuffa                                       ;insert runtimecode debugcode
+    BSR.w insertDebugTrapa                                       ;insert runtimecode debugcode
  'l10
 
  'l1
@@ -4702,12 +4686,9 @@ check_for_infoextention:                                     ;does a0 end in .in
   MOVE.b (A0),D0
   ORI.b #" ",D0
   MOVE.b D0,$5(A1)
-  TST.b (A0)+
-   BNE.w 'loop2
-  CMPI.w #$2E69,(A1)+                                      ;".i"
-   BNE.w 'no
+  TST.b (A0)+ : BNE.w 'loop2
+  CMPI.w #$2E69,(A1)+ : BNE.w 'no                          ;".i"
   CMPI.l #$6E666F20,(A1)                                   ;"nfo "
-
  'no
 RTS
 
@@ -4798,18 +4779,12 @@ JMP writelong
     MOVE.w #$7000,D1                                         ;moveq #0,d0
  'vcont
   JSR writeword
-  MOVE.w #$C104,D1                                         ; intlib, 
+  MOVE.w #$C104,D1                                         ; intlib, vwaitint
 JMP Atokejsr
 
-
-fvwait:
-  SUBQ.w #1,D0
-
-cgoblitz:
-  Dc.w $3b7c,$ffff,0                                       ;move.w #$FFFF,$0(A5) ;noopt
-
-cgoamiga:
-  Dc.l $426d0001                                           ;clr.w $0(A5)
+fvwait:    SUBQ.w #1,D0
+cgoblitz:  Dc.w $3b7c,$ffff,0                                       ;move.w #$FFFF,$0(A5) ;noopt
+cgoamiga:  Dc.l $426d0001                                           ;clr.w $0(A5)
 
 
 debugmode_codelabel:                                       ;debugmode org source
@@ -4822,7 +4797,7 @@ RTS
 .do_BLITZ:                                                 ;go into Blitz mode!
   BSET #$0,blitzmode
   BSET #$7,blitzmode
-  MOVE.w #$C200,D1 : JSR Atokejsr
+  MOVE.w #$C200,D1 : JSR Atokejsr                          ; switchlib, goblitz
   TST.b debugmode : BEQ.w 'done
     MOVE.w cgoblitz(PC),D1 : JSR writeword
     MOVEQ.l #-$01,D1 : JSR writeword
@@ -4833,11 +4808,11 @@ BRA.w debugmode_codelabel
 
 
 .do_AMIGA:                                                 ;go into Amiga mode
-  MOVE.w #$C201,D1
+  MOVE.w #$C201,D1                                         ; switchlib, goamiga
 BRA.w do_AMIGA_toamode
 
 .do_QAMIGA:                                                ;go into quick amiga mode
-  MOVE.W  #$C202,D1
+  MOVE.W  #$C202,D1                                        ; switchlib, goqamiga
 
 do_AMIGA_toamode:
   BSET #$0,blitzmode
@@ -4852,11 +4827,8 @@ do_AMIGA_toamode:
 BRA.w debugmode_codelabel
 
 
-intstart0:
-  MOVEM.l D2-D7/A2-A4,-(A7)
-
-intfin:
-  MOVEM.l (A7)+,D2-D7/A2-A4
+intstart0: MOVEM.l D2-D7/A2-A4,-(A7)
+intfin:    MOVEM.l (A7)+,D2-D7/A2-A4
 
 
 .do_ClrInt:
@@ -4866,7 +4838,7 @@ intfin:
   MOVE.w #$7000,D1                                         ; MOVEQ#0,D0
   OR.w D3,D1
   JSR writeword
-  MOVE.w #$C101,D1                                         ; intlib, ClrAnInt
+  MOVE.w #$C101,D1                                         ; intlib, ClrAnInt,  libnum 65520
 JMP Atokejsr                                               
 
 
@@ -4876,19 +4848,8 @@ errcode:     Ds.l 1
 
 
 .do_ClrErr:
-  MOVE.W  #$D202,D1
+  MOVE.W  #$D202,D1                                        ;
 JMP Atokejsr                                               ;BRA.W Atokejsr
-
-
-doendseterr:
-  MOVE.w inerr(PC),D1 : BEQ.w errerr3
-
-  CLR.w inerr
-  MOVE.w dontwrite_nomemleft,D1 : BNE.w 'skip
-    MOVEA.l errjmp(PC),A0
-    MOVE.l destpointer,(A0)
- 'skip
-BRA.w get1bytemain
 
 
 .do_ErrFail:
@@ -4900,65 +4861,84 @@ JMP Atokejsr
   MOVE.w proceduremode,D1 : BNE.w errerr1
   MOVE.w inerr(PC),D1 : BNE.w errerr2
 
-  LEA inerr,a0
+  LEA inerr,a0                                             ; set inerr to indicate we are in a error routine definitions
   NOT.w (a0)                                               ;reass
-  MOVE.w #$203C,D1                                         ;move.l #x,d0
+  
+  ;-- pass current "pc" to errhandler routine
+  MOVE.w #$203C,D1                                         ;move.l <current pc>,d0
   JSR writeword
   MOVE.l destpointer,errcode
   BSR.w addoff
-  JSR writelong
+  JSR writelong                                             ; write dummy long, will be filled with real adress later
 
-  MOVE.w #$D201,D1 : JSR Atokejsr
 
+  ;-- register code in trap handler
+  MOVE.w #$D201,D1 : JSR Atokejsr                           ; call errroutinecaller
+
+  ;-- insert a jump to skip the error code  
   MOVE.w ##opcode_JMP,D1 : JSR writeword
-
   MOVE.l destpointer,errjmp
   BSR.w addoff
-  JSR writelong
+  JSR writelong                                             ; write dummy long, will be filled with real adress later
+
   MOVE.w dontwrite_nomemleft,D1 : BNE.w 'skip
     MOVEA.l errcode(PC),A0
-    MOVE.l destpointer,(A0)
+    MOVE.l destpointer,(A0)                                 ; patch address of errorcode begin into generated code
  'skip
 RTS
 
 
-intlineat:  Ds.l 1
+doendseterr:
+  MOVE.w inerr(PC),D1 : BEQ.w errerr3                       ; end seterr without set err
+
+  CLR.w inerr
+
+  MOVE.w dontwrite_nomemleft,D1 : BNE.w 'skip
+    MOVEA.l errjmp(PC),A0                                   ; patch address of reentry code into generated code
+    MOVE.l destpointer,(A0)
+ 'skip
+BRA.w get1bytemain
+
+
+
+
+intlineat:  Ds.l 1        ; storing the current line for routine errchx
 
 
 .do_SetInt:
   MOVEQ.l #-$01,D1                                        ;type - need new string space
   BSR.w errchx
-  MOVE.w D1,intstring
+  MOVE.w D1,intstring                                     ;indicate that an setint is there
   MOVE.l linenumat,intlineat
+
   JSR evalconst                                           ;get constant - int level
   CMP.l #$E,D3 :  BCC.w interr4
 
   ST intsused
   MOVE.w D3,intlevel
-  MOVE.w #$7000,D1                                      ;MOVEQ#0,D0  
-  OR.w D3,D1                                              
-  JSR writeword                                         ;moveq #x,d0
 
-  MOVE.w #$223C,D1 : JSR writeword                      ;move.l #x,d1
-  
+  MOVE.w #$7000,D1                                        
+  OR.w D3,D1                                            ;MOVEQ #<d3>,d0 ... intlevel to pass to addanInt 
+  JSR writeword                                         
+
+  MOVE.w #$223C,D1 : JSR writeword                      ;move.l #x,d1   ... 
   BSR.w addoff
   MOVE.l destpointer,-(A7)
-  JSR writelong
+  JSR writelong                                         ;write dummy long, real address will be patched later
+
   MOVE.w #$C100,D1 : JSR Atokejsr                       ;intlib: addAnInt
-  
-  MOVE.w ##opcode_JMP,D1 : JSR writeword
-  
+
+  MOVE.w ##opcode_JMP,D1 : JSR writeword  
   BSR.w addoff
   MOVE.l destpointer,intjmpat
-  JSR writelong
+  JSR writelong                                         ;write dummy long, readl adress will be patched in End SetInt
   MOVEA.l (A7)+,A0
 
-  MOVE.w dontwrite_nomemleft,D1
-  BNE.w 'dontpoke
-    MOVE.l destpointer,(A0)
+  MOVE.w dontwrite_nomemleft,D1 : BNE.w 'dontpoke      
+    MOVE.l destpointer,(A0)                             ; patch address for begin of interrupt code (see above)
  'dontpoke
 
-  MOVE.l intstart0(PC),D1 : JSR writelong
+  MOVE.l intstart0(PC),D1 : JSR writelong               ; code to store registers on stack
 
   TST.b debugmode : BEQ.w 'norerr
     ;
@@ -4972,22 +4952,21 @@ intlineat:  Ds.l 1
  'norerr
 
   MOVE.w #$FED3,D1 : BSR.w uselib                           ; 65235, strings1lib
-  MOVE.w #$C102,D1 : JSR Atokejsr                           ; intlib, 
+  MOVE.w #$C102,D1 : JSR Atokejsr                           ; (intlib, restoreA5): set A5 to value at startup
   MOVE.w #$FFFF,lasta6
   MOVE.l linenumat,intline
 RTS
 
 
-;intallox:                                                 ;mask for allocates for interrupts
-            Ds.w 1                                         ;??looks like obsolved data??
-
+;intallox:  Ds.w 1                                         ;mask for allocates for interrupts
+            
 intdata1:   Ds.l 1                                         ;where in data1 a5 is being kept
 
 intjmpat:   Ds.l 1
 intline:    Ds.l 1
 intstring:  Ds.w 1                                         ;flag 0 = no setint
-                                                           ;>0=setint, no st space
-                                                           ;<0=set, st space
+                                                           ;>0=setint, no string space
+                                                           ;<0=set, string space
 intlevel:   Ds.w 1
 intcleanat: Ds.l 1
 ret15add:   Ds.l 1
@@ -10220,8 +10199,7 @@ RTS
   ;--
   ;-- add pc to list of offsets
   MOVE.l D2,-(A7)
-  MOVE.l destpointer,D2
-  SUB.l destbufferstart,D2
+  MOVE.l destpointer,D2 : SUB.l destbufferstart,D2
   BSR.w addhunkoffset
   MOVE.l (A7)+,D2
 RTS
@@ -10526,9 +10504,8 @@ RTS
     MOVE.w D1,D2
     ANDI.w #$F,D2
     ADDI.w #$30,D2
-    CMP.w #$3A,D2
-    BCS.w 'skip
-     ADDQ.w #7,D2
+    CMP.w #$3A,D2 : BCS.w 'skip   ;":"
+      ADDQ.w #7,D2
    'skip
     MOVE.b D2,$0(A0,D0.W)
     LSR.w #4,D1
@@ -11835,7 +11812,7 @@ calcvar:
   BRA.w 'loopml
 
 ;------                                                  ;disassembled code begin
- 'pfix:   Dc.b $24,$52                                   ;MOVEA.L (A2),A2
+ 'pfix:   Dc.w $2452                                     ;MOVEA.L (A2),A2
 ;------                                                  ;disassembled code end
 
  Even
@@ -12009,15 +11986,15 @@ calcvar:
  'nopoint
 RTS
 
-
+;offset out of range error
 ;------                             ; disassembled code begin
 brchkcode0:  Dc.w $B07C,$0000       ; CMP.W   #$0000,D0
 brchkcode:   Dc.w $B07C,$0000       ; CMP.W   #$0000,D0
              Dc.w $6504             ; BCS.B   brchkcode_ok
              Dc.w $7002             ; MOVEQ   #$02,D0
-             Dc.w opcode_TRAP0             ; TRAP    #00
+             Dc.w #opcode_TRAP0     ; TRAP    #00
 brchkcode_ok:
-;------                                                  ;disassembled code end
+;------                             ;disassembled code end
 
 
 ;-----------Poking to Object code stuff-------------------;
@@ -15218,15 +15195,15 @@ BRA.w writeword
 
 doern:
   ;-- read err number
-  MOVE.w #$D200,D1 : BSR.w Atokejsr     ; was #ern,
+  MOVE.w #$D200,D1 : BSR.w Atokejsr                      ; was #ern,  getErrorNum
   MOVEQ.l #$03,D2
 RTS
 
 
 ;------                                                  ;disassembled code begin
-addrcode:  Dc.b $20,$6D,$00,$00                            ;MOVEA.L $0000(A5),A0
-           Dc.b $D0,$C0                                    ;ADDA.W  D0,A0
-           Dc.b $20,$08                                    ;MOVE.L  A0,D0
+addrcode:  Dc.w $206D,$0000                              ;MOVEA.L $0000(A5),A0
+           Dc.w $D0C0                                    ;ADDA.W  D0,A0
+           Dc.w $2008                                    ;MOVE.L  A0,D0
 addrcodef:
 ;------                                                  ;disassembled code end
 
@@ -17764,14 +17741,12 @@ muld1:                            ;generate code for #d1.w * regat
     BSR.w Amakelibsub
     CMPI.w #$FFFE,4(A2) : BNE.w 'notvar2           ; was #varslib
       MOVE.l intdata1,D1 : BEQ.w 'notvar2
-        MOVE.w putidata1,D1
-        BSR.w writeword
+        MOVE.w putidata1,D1 : BSR.w writeword
         BSR.w addoff
-        MOVE.l intdata1,D1
-        BSR.w writelong
+        MOVE.l intdata1,D1 : BSR.w writelong
    'notvar2
 
-    MOVE.w #$2B40,D1
+    MOVE.w #$2B40,D1                                ;MOVE.L  D0,$0000(A5)
     TST.w $1A(A2) : BEQ.w 'loop
       BPL.w 'long
         MOVE.w #$3B40,D1
@@ -17860,12 +17835,9 @@ RTS
 
 
 ;------                                                  ;disassembled code begin
-;prepd1:                                                   ;??looks like label not used??
-  Dc.b $22,$2D,$00,$00                                     ;MOVE.L  $0000(A5),D1
-putidata1:
-  Dc.b $23,$CD,$00,$00,$00,$00                             ;MOVE.L  A5,$00000000
-;prepint:                                                  ;??looks like label not used??
-  Dc.b $24,$7C,$00,$00,$00,$00                             ;MOVEA.L #$00000000,A2
+;prepd1:    Dc.w $222D,$0000                             ;MOVE.L  $0000(A5),D1
+putidata1:  Dc.w $23CD,$0000,$0000                       ;MOVE.L  A5,$00000000
+;prepint:   Dc.w $247C,$0000,$0000                       ;MOVEA.L #$00000000,A2
 ;------                                                  ;disassembled code end
 Even
 
@@ -18978,14 +18950,15 @@ toreg:
 BRA.w writeword
 
 
-;------                                                  ;disassembled code begin
+; "no currently used object" error
+;------                                                ;disassembled code begin
  'theretest
             Dc.w $4AAD,$0000                           ;TST.L  $0000(A5)
             Dc.w $6600,$0006                           ;BNE.W  'ttskip
             Dc.w $7001                                 ;MOVEQ  #$01,D0
-            Dc.w opcode_TRAP0                                 ;TRAP   #00
+            Dc.w #opcode_TRAP0                         ;TRAP   #00
  'ttskip
-;------                                                  ;disassembled code end
+;------                                                ;disassembled code end
 
  'norm
   LSR.w #8,D2
@@ -20753,7 +20726,7 @@ macline:    Ds.l 1
       CLR.b thenmode
    'l3a
     ; < new
-    MOVEQ.l #$3A,D0
+    MOVEQ.l #$3A,D0  ;":"
     ; new >
     MOVE.b #1,temp
     ; < new
@@ -22179,18 +22152,14 @@ JMP get1bytemain
 
 
 linkput:
-  MOVE.w dontwrite_nomemleft,D1
-  BNE.w 'skip
+  MOVE.w dontwrite_nomemleft,D1 : BNE.w 'skip
     MOVE.l destpointer,-(A7)
     ;
     MOVE.l A0,destpointer
-    MOVE.l linksize,D1
-    BSR.w writelong                                         ;writefunctions jumppos
-    ; new >
+    MOVE.l linksize,D1 : BSR.w writelong                        ; LINK A4, -$0000
+
     TST.b fastfunc : BNE 'skip1
-      ; < new
-      MOVE.w #$CC00,D1                                        ; was #clrloc
-      BSR.w tokejsr2                                          ;write clearvars
+      MOVE.w #$CC00,D1 : BSR.w tokejsr2                         ; was #clrloc, clear local vars
    'skip1
     MOVE.l (A7)+,destpointer
  'skip
@@ -22200,20 +22169,20 @@ RTS
 JUMP_errormsg_nofast  JMP errormsg_nofast
 
 procfixer:
-  ;fix up procs!
-  ;
+  ;-- fix up procs!
+  ;--
   MOVEA.l currentfunction,A2
-  MOVEA.l 14(A2),A0                       ;pc of proc
-  MOVE.w $6(A2),D1 :BEQ.w 'skiplink
-    MOVE.w D1,linksize+2
-    MOVE.w 8(A2),D1 : BNE.w 'howdy          ;check if function memalloc need
+  MOVEA.l 14(A2),A0                         ;pc of proc
+  MOVE.w 6(A2),D1 : BEQ.w 'skiplink
+    MOVE.w D1,linksize+2                    ; set link size
+    MOVE.w 8(A2),D1 : BNE.w 'howdy          ; check if function memalloc need
       ;
       ;link only
       ;
       ADDQ.w #6,A0
       MOVE.l A0,14(A2)
       BRA.w linkput
-  'howdy
+   'howdy
     ;link and jsr
     ;
     MOVE.l A0,-(A7)
@@ -22237,8 +22206,7 @@ procfixer:
     ; < new
     MOVE.l destpointer,-(A7)
     MOVE.l A0,destpointer
-    MOVE.w ##opcode_JSR,D1      ;jsr
-    BSR.w writeword
+    MOVE.w ##opcode_JSR,D1 : BSR.w writeword
     JSR addoff
     BSR.w writelong
     ;
@@ -22249,11 +22217,10 @@ procfixer:
  'contskip
 
   MOVE.w 8(A2),D4 : BPL.w 'linky
-    MOVE.w #$C004,D1            ; #newlocalmem: create a new local memory node
-    BSR.w tokejsr2
+    MOVE.w #$C004,D1 : BSR.w tokejsr2            ; #newlocalmem: create a new local memory node
     MOVEA.l currentfunction,A2
     MOVE.w 8(A2),D4
-    ANDI.w #$7FFF,D4        ;#32767,
+    ANDI.w #$7FFF,D4                             ;#32767,
  'linky
   BEQ.w 'skipstat
   ;
@@ -22263,18 +22230,16 @@ procfixer:
   ANDI.w #$F,D1
   MOVE.w D1,-(A7)
   CMP.w #$5,D1 : BCS.w 'npush
-    MOVE.w #$2F04,D1
-    BSR.w writeword
+    MOVE.w #$2F04,D1 : BSR.w writeword
  'npush
   MOVE.l locdatast,D3
   JSR datastart
-  MOVE.w #$C501,D1    ; was #localstat
-  BSR.w tokejsr2
+  MOVE.w #$C501,D1 : BSR.w tokejsr2              ; was #localstat
+  
   ;
   MOVE.w (A7)+,D1
   CMP.w #$5,D1 : BCS.w 'skipstat
-    MOVE.w #$281F,D1
-    BSR.w writeword
+    MOVE.w #$281F,D1 : BSR.w writeword
  'skipstat ;
   MOVE.w ##opcode_RTS,D1
 BRA.w writeword
@@ -22551,7 +22516,7 @@ doend2:
     JSR get1bytemain
     JSR get1bytemain
     JSR get1bytemain
-    MOVE.w #$3a,lastchar
+    MOVE.w #$3a,lastchar    ;":"
     BRA 'done
  'l1
   CMP.w #"d0",-1(a5) : BNE 'l2
@@ -22596,61 +22561,56 @@ RTS
     MOVEA.l currentfunction,A0
     CMP.l #0,a0 : BEQ 'nof
     CMP.b #5,$5(a0) : BNE 'nof
-    MOVE.l #$f23c5000,d1                           ;fmove.w #-1,fpx
-    BSR writelong
-    MOVE.w #0,d1
-    BSR writeword
+    MOVE.l #$f23c5000,d1 : BSR writelong           ;fmove.w #-1,fpx
+    MOVE.w #0,d1 : BSR writeword
  'nof
-    ; < new
-    MOVE.w #$7000,D1                                         ;end function moveq #0,d0
-    BSR.w writeword
+    MOVE.w #$7000,D1 : BSR.w writeword             ;end function moveq #0,d0
+    
     MOVEA.l currentfunction,A0
-    ; new >
-    CMP.l #0,a0
-    BEQ 'state
+    CMP.l #0,a0 : BEQ 'state
+   
     MOVE.l destpointer,d1
     SUB.l $e(a0),d1
     MOVE.l d1,isfunc+1(a0)
-    ; < new
-    CMPI.b #$7,$5(A0)
-    BNE.w 'state
-    MOVE.w putstlen,D1
-    BSR.w writeword
+ 
+    CMPI.b #$7,$5(A0) : BNE.w 'state
+    MOVE.w putstlen,D1 : BSR.w writeword
     BRA.w 'state
 
  'notfunc
   CMP.w ##TokenID_SetInt,D0 : BNE.w 'notsetint         ; was #$8000+48
   
-  MOVE.w proceduremode,D1 :BNE.w JUMP_interr3
-  ;
-  TST.b debugmode : BEQ.w 'norerrf1
-    MOVEQ.l #$03,D1 : JSR writetrap
-    MOVE.w dontwrite_nomemleft,D1 : BNE.w 'norerrf1
-      MOVEA.l intcleanat,A0
-      MOVE.l destpointer,(A0)
-      MOVE.w #$C30C,D1 : BSR.w Atokejsr      ; (runerrlib, gouser)
- 'norerrf1
+    MOVE.w proceduremode,D1 : BNE.w JUMP_interr3
 
-  MOVE.w intstring,D1 : BEQ.w JUMP_interr
-  BPL.w 'nosp
-    MOVE.w intlevel,D1
-    ORI.w #$7200,D1 : JSR writeword       ;moveq #level,d1
-    MOVE.w #$C103,D1 : BSR.w Atokejsr  ; was #oldint,    
-    CLR.w intlevel
- 'nosp
+    ;-- close interrupt code defined by SetInt
+    TST.b debugmode : BEQ.w 'norerrf1
+      MOVEQ.l #$03,D1 : JSR writetrap
+      MOVE.w dontwrite_nomemleft,D1 : BNE.w 'norerrf1
+        MOVEA.l intcleanat,A0
+        MOVE.l destpointer,(A0)
+        MOVE.w #$C30C,D1 : BSR.w Atokejsr      ; (runerrlib, gouser)
+   'norerrf1
 
-  CLR.w intstring
-  ;
-  MOVE.l intfin,D1 : JSR writelong
-  ;
-  MOVE.l #$70004E75,D1 : JSR writelong                ;MOVEQ #0,d0:RTS
-  ;
-  MOVE.w dontwrite_nomemleft,D1 : BNE.w 'sintdone
-    MOVEA.l intjmpat,A0
-    MOVE.l destpointer(PC),(A0)
- 'sintdone
-JMP get1bytemain
+    MOVE.w intstring,D1 : BEQ.w JUMP_interr
+    BPL.w 'nosp
+      MOVE.w intlevel,D1
+      ORI.w #$7200,D1 : JSR writeword       ;moveq #level,d1
+      MOVE.w #$C103,D1 : BSR.w Atokejsr  ; was #oldint,    
+      CLR.w intlevel
+   'nosp
 
+    CLR.w intstring
+    ;
+    MOVE.l intfin,D1 : JSR writelong                    ;restore registers after interrupt code
+    MOVE.l #$70004E75,D1 : JSR writelong                ;MOVEQ #0,d0:RTS
+    
+
+    MOVE.w dontwrite_nomemleft,D1 : BNE.w 'sintdone
+      MOVEA.l intjmpat,A0                               ;patch jmp command right before interrupt routine (see setint)
+      MOVE.l destpointer(PC),(A0)
+   'sintdone
+    JMP get1bytemain
+ 
  'notsetint
   CMP.w ##TokenID_Select,D0 : BEQ.w doendsel   ; was #$800e     ;end select?
   CMP.w ##TokenID_SetErr,D0 : BNE.w 'notseterr ; was #$8001+tnum
@@ -22681,37 +22641,27 @@ RTS
 .do_Stop:
   TST.w direct_mode : BNE.w JUMP_baddirerr
   
-  ; new >
   MOVE.w d0,d1 : BEQ 'l10
-    CMP.b #$3a,d0 : BEQ 'l10
+    CMP.b #$3a,d0 : BEQ 'l10    ;":"
       JSR get1bytemain
  'l10
-  ; < new
-  TST.b debugmode : BEQ.w newstop
 
-  MOVE.w #$D501,D1                                            ; debuglib/Stop
-BRA.w Atokejsr
-
-
-; new >
-newstop
-  CNIF #stopignore
-    RTS
-  CEND
-  MOVE.w d1,d0
-  BEQ 'l10
-    CMP.b #$3a,d0
-    BEQ 'l10
-      SUB.b #$30,d0
-      MOVE.w #opcode_TRAP0,d1
-      BRA 'l11
- 'l10
-    MOVE.w #$4e4a,d1      ; TRAP #10 ?
-    JMP writeword
- 'l11
-  ADD.b d0,d1
+  TST.b debugmode : BEQ.w 'newstop
+    MOVE.w #$D501,D1 : BRA.w Atokejsr                            ; debuglib/Stop
+ 'newstop
+    CNIF #stopignore
+      RTS
+    CEND
+    MOVE.w d1,d0 : BEQ 'l10
+      CMP.b #$3a,d0 : BEQ 'l10     ;":"
+        SUB.b #$30,d0
+        MOVE.w #opcode_TRAP0,d1
+        BRA 'l11
+   'l10
+      MOVE.w #$4e4a,d1 : JMP writeword      ; TRAP #10 ?
+   'l11
+    ADD.b d0,d1
 JMP writeword
-; < new
 
 .do_Cont:
 JMP badconterr        ;cont not currently supported!
@@ -22743,21 +22693,21 @@ JUMP_badpenderr JMP badpenderr                            ; Illegal End procedur
 JUMP_noenderr   JMP noenderr
 
 endstate:                                                 ;End Statement
-    ;
-    ;first, fill in any FUNCTION RETURN type shit.....
-    ;
+  ;--
+  ;-- first, fill in any FUNCTION RETURN type shit.....
+  ;-- 
   MOVE.w proceduremode,D1 : BEQ.w JUMP_badpenderr
   ;
   MOVE.w dontwrite_nomemleft,D1 : BNE.w 'ship
-  MOVEA.l firstpend,A2
+    MOVEA.l firstpend,A2
 
- 'loop0
-    CMPA.w #$0,A2 : BEQ.w 'ship
+   'loop0
+      CMPA.w #$0,A2 : BEQ.w 'ship
 
-    MOVEA.l 4(A2),A0
-    MOVE.l destpointer,(A0)
-    MOVEA.l (A2),A2
-  BRA.w 'loop0
+      MOVEA.l 4(A2),A0
+      MOVE.l destpointer,(A0)
+      MOVEA.l (A2),A2
+    BRA.w 'loop0
  'ship
 
   TST.b debugmode : BEQ.b 'ship2
@@ -22875,19 +22825,16 @@ droplocals:
   MOVE.l firstlocal,D0
   CLR.l firstlocal
   MOVE.l D0,$4(A0)
+  
   MOVE.l firstglob,D1
   CLR.l firstglob
   MOVE.l D1,$8(A0)
   ;
-  TST.b debugmode
-   BEQ.b 'skip
-  TST.w dontwrite_nomemleft
-   BNE.b 'skip
-  ;
-  MOVEA.l proclocals(PC),A0
-  MOVE.l D0,(A0)+
-  MOVE.l D1,(A0)
-
+  TST.b debugmode : BEQ.b 'skip
+    TST.w dontwrite_nomemleft : BNE.b 'skip
+      MOVEA.l proclocals(PC),A0
+      MOVE.l D0,(A0)+
+      MOVE.l D1,(A0)
  'skip
 RTS
 
@@ -23504,7 +23451,7 @@ dolet2:
   ; new >
   ;MOVE.l (a7)+,currtype
   ; < new
-  MOVE.w #$2B40,D1
+  MOVE.w #$2B40,D1                              ;MOVE.L  D0,$0000(A5)
   MOVE.w varmode,D4 : BEQ.w 'skip1
     BCLR #$9,D1
  'skip1
