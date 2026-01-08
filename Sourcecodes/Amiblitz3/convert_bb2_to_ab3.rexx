@@ -1,4 +1,4 @@
-/*ADDRESS REXX*/
+/* tool to convert all files in a given directory from old bb2 format ab3 */
 SAY "HELLO"
 SAY "checking rexxsupport.library..."
 IF SHOW(L,"rexxsupport.library") = 1 THEN
@@ -11,8 +11,12 @@ ELSE
         EXIT
     END
 
+/* ------------------------------------------------------------- */
+
 basedir = "Blitz3:Sourcecodes/includes/os"
+
 SAY "listing directory of " || basedir
+
 dirlist = SHOWDIR(basedir)
 DO forever
     PARSE VAR dirlist dirname dirlist
