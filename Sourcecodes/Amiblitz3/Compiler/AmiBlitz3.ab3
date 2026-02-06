@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.11.1
-; NumberOfBuilds  = 602
+; NumberOfBuilds  = 616
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 5256
-; CursorColumn    = 21
+; CursorLine      = 1748
+; CursorColumn    = 27
 ; LabelSearch     = "make smallest"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -136,13 +136,13 @@ End Macro
 NEWTYPE.environment
   lock_CurrentDir.l
   lock_ExePath.l
+  consoleFileHandle.l
+  ;
   signalPanicBitNum.l     ;panicbit
   signalPanicMask.l       ;panicmask
   signalStopBitNum.l     
   signalStopMask.l       
   ;
-  *exeTask.Task
-  *PEDTask.Task
   *msgportPED.MsgPort
   ;
   progdir.s
@@ -161,6 +161,7 @@ NEWTYPE.configuration
   clone_wbscreen.b
   use_wbscreen.b
   con_on_wb.b
+  console_wait.b
 
   blitz3assign.s
   path_system.s
@@ -262,7 +263,7 @@ Statement log2PED_HexDump{maddr.l, size.w}
     memdata2.l= PeekL(memaddr + 4)
 
     logtxt$ = Hex$(memaddr-maddr) + " (" + LSet$(Str$(imh),4) + ") # "
-    logtxt$ + Hex$(memaddr) + ": " + Hex$(memdata)+" "+Hex$(memdata2)+"  "+CharStream{Peeks$(memaddr,8)}+" "
+    logtxt$ + Hex$(memaddr) + ": " + Hex$(memdata) + " " + Hex$(memdata2) + "  " + CharStream{Peeks$(memaddr,8)} + " "
     logtxt$ + Str$(memdata) + "  " + Str$(memdata2)
     log2PED{logtxt$}
   Next
@@ -354,7 +355,8 @@ config\path_userlibs = dos_AddPart{config\blitz3assign , "BlitzLibs/UserLibs"}
 config\OnePassCompiling = dos_GetToolState{"ONEPASSCOMPILING"}
 
 ; -- check screen settings for bringing PED-screen to back and to front after executing 
-If dos_GetToolState{"CON_ONWB"} = True Then config\con_on_wb = True
+If dos_GetToolState{"CON_ONWB"} = -1 Then config\con_on_wb = True
+If dos_GetToolState{"CON_WAIT"} = -1 Then config\console_wait = True 
 
 If dos_GetToolState{"CLONE_WBSCREEN"}   = True
   config\clone_wbscreen = True : config\use_wbscreen = False
@@ -1033,8 +1035,7 @@ End Function
   LEA tokens,A0
  'loop
     ADDQ.w #1,D0
-    MOVE.l (A0),D1
-    BEQ.w 'gotlast
+    MOVE.l (A0),D1 : BEQ.w 'gotlast
       MOVEA.l D1,A0
   BRA.w 'loop
  'gotlast
@@ -1067,7 +1068,7 @@ End Function
     EndIf
 
     ; --
-    ; -- calculate entryaddress for starting segment (BPTR)
+    ; -- calculate entryaddress for starting segment from BPTR-Pointer
     ; --
     GetRegD0 config\ptr_seg_ped
     !asm
@@ -1086,7 +1087,7 @@ End Function
       Goto shutdown_compiler
     EndIf
   EndIf
-  !ComData_GetL{comData_Magic,D0} : tmpL.l = PutRegD0        ;"~::~",D0    ; replace with a constant  tomsmart1 2012 03 09
+  !ComData_GetL{comData_Magic,D0} : tmpL.l = PutRegD0        ;"~::~"
   If tmpL <> #MagicIdentifier_Long
     Goto shutdown_compiler
   EndIf
@@ -1245,6 +1246,8 @@ End Function
   ;-- resetting the current path in cli structure
   SetCurrentDir{environment\progdir}
 
+  ;---
+
   !coutclose
   MOVEQ #0,D0
   !exitasm
@@ -1336,20 +1339,16 @@ End
   End If
 
   If cli_run
-    If comerr=False
+    If comerr = False
       If cli_exefile
         log2PED{"Recompiling " + cli_sourcefile + " for debug...",1}
         comerr.l = CompileSource{"",cli_debuginfo,cli_release,cli_comdbgflags,cli_comstrbufsize} ; re-compile for launch! ; expand to support CLI compiler and debugger settings  tomsmart1
       End If
       log2PED{"Running program...",1}
+
       RunSource{cli_debuginfo,cli_exestacksize}         ; added debug info to indicate ted.lib use becaus is only needed for Debugging  tomsmart1 2011 06 11
-      Repeat
-        CLR.l d0
-        !ComData_GetB{comByte_RunningFlag,D0}
-        PutReg D0,running.l
-        If running Then Delay_ 50
-        ;NPrint "Runnign flag: ",running
-      Until running=False
+
+
       If environment\_runerror
         log2PED{"\\1b[1m*** ERROR: Unable to run compiled program!\\1b[0m"}
         err = True
@@ -1719,23 +1718,25 @@ RTS
     End If
   End If
 
-  If environment\_noPED
-    !asm
-    !ComData_JSR{comFunc_CloseGUI}
-    !basic
+  If CLIMode
+    NPrint "Running executable..."
   Else
-    
-    !asm
-    BSR init_compilerequester
-    !basic
-
-    comstatusstr  = !TRANS{"Running executable..."}
-    calcpro = 100
-    GetReg D0,&comstatusstr : !ComData_SetL{comPtr_CompileStatusString,d0}
-    GetReg D0,&calcpro      : !ComData_SetL{comPtr_CompileCalcProLong ,d0}
-    !asm
-    !ComData_JSR{comFunc_UpdateCompileStatusWin}          
-    !basic
+    If environment\_noPED
+      !asm
+      !ComData_JSR{comFunc_CloseGUI}
+      !basic
+    Else
+      !asm
+      BSR init_compilerequester
+      !basic
+      comstatusstr  = !TRANS{"Running executable..."}
+      calcpro = 100
+      GetReg D0,&comstatusstr : !ComData_SetL{comPtr_CompileStatusString,d0}
+      GetReg D0,&calcpro      : !ComData_SetL{comPtr_CompileCalcProLong ,d0}
+      !asm
+      !ComData_JSR{comFunc_UpdateCompileStatusWin}          
+      !basic
+    EndIf
   EndIf
 
   ;-- lock the current path or the set executable
@@ -1751,141 +1752,220 @@ RTS
     CurrentDir_ environment\lock_CurrentDir
   EndIf
 
+  ; -- close the compiler requester
+  If environment\_noPED = False AND CLIMode = False
+    !asm
+    BSR.w close_compilewin
+    !basic
+  EndIf
+
+  ; -- bring wb to front if needed...
+  If (NOT config\use_wbscreen) AND config\con_on_wb Then WBenchToFront_
+
+  ; -- optionally open the console
+  If environment\_noCLI = False
+    log2PED{"opening console window out of executable"}
+    !asm
+    !ComData_JSR{comFunc_OpenConsole}
+    !basic
+    environment\consoleFileHandle = PutD0
+  EndIf
+
   processName.s = "AmiBlitz3 Program Process"
   log2PED{"creating the exe process [" + processName + "] with stack " + Str$(PeekL(?stacksize)),3}
-
-  *processMsgPort.l = CreateNewProc_(Tags(#NP_Entry,?processStart,@@
-                                          #NP_Name,&processName,@@
-                                          #NP_StackSize,PeekL(?stacksize),@@
-                                          #TAG_END,0))
-  If *processMsgPort
-    *exeTask.Task = Null                    ; will be set within process in a few moments
-    !asm
-    !ComData_SetB{comByte_RunningFlag,#1}   ; this should be done here, straigt after it is clear that the program task is running
-    !basic
-
-    If environment\_noPED = False
-      !asm
-      BSR.w close_compilewin
-      !basic
+  If PeekS(?str_cliarguments) <> "" Then log2PED{"passing Arguments: " + PeekS(?str_cliarguments)}
+  
+  If environment\consoleFileHandle
+    If config\console_wait
+      processTags.l = Tags(#NP_Entry,?processStart,@@
+                           #NP_Name,&processName,@@
+                           #NP_StackSize,PeekL(?stacksize),@@
+                           #NP_HomeDir,environment\lock_ExePath,@@
+                           #NP_CurrentDir, environment\lock_ExePath,@@
+                           #NP_Arguments,?str_cliarguments,@@
+                           #NP_Input,environment\consoleFileHandle, #NP_CloseInput,False,@@ 
+                           #NP_Output,environment\consoleFileHandle, #NP_CloseOutput,False,@@ 
+                           #TAG_END,0)
+    Else
+      processTags.l = Tags(#NP_Entry,?processStart,@@
+                           #NP_Name,&processName,@@
+                           #NP_StackSize,PeekL(?stacksize),@@
+                           #NP_HomeDir,environment\lock_ExePath,@@
+                           #NP_CurrentDir, environment\lock_ExePath,@@
+                           #NP_Arguments,?str_cliarguments,@@                           
+                           #NP_Input,environment\consoleFileHandle, #NP_CloseInput,True,@@ 
+                           #NP_Output,environment\consoleFileHandle, #NP_CloseOutput,True,@@ 
+                           #TAG_END,0)
     EndIf
+  Else
+    processTags.l = Tags(#NP_Entry,?processStart,@@
+                         #NP_Name,&processName,@@
+                         #NP_StackSize,PeekL(?stacksize),@@
+                         #NP_HomeDir,environment\lock_ExePath,@@                         
+                         #NP_CurrentDir, environment\lock_ExePath,@@
+                         #TAG_END,0)  
+  EndIf
+
+  *panicProcess.Process = CreateNewProc_(processTags)
+  If *panicProcess
+    ; -- set the running flag for IDE
+    !asm
+    !ComData_SetB{comByte_RunningFlag,#1}
+    !basic
+    
+    log2PED{"process created at address $"  + Hex$(*panicProcess) + ", name: " + Peek.s(*panicProcess\pr_Task\tc_Node\ln_Name)}
+
+    If PeekL(?stacksize) < #MIN_STACKSIZE
+      log2PED{"WARNING: The stacksize is too low: " + Str$(PeekL(?stacksize)) + " should be at least " + Str$(#MIN_STACKSIZE),#log_warning}
+    Else
+      tmpstack.l  = *panicProcess\pr_Task\tc_SPUpper - *panicProcess\pr_Task\tc_SPLower
+      log2PED{"Stacksize: " + Str$(tmpstack) + " bytes"}
+    EndIf
+    log2PED{"Address of MsgPort: $" + Hex$(*panicProcess\pr_MsgPort)}
+
 
     log2PED{"program is running, waiting to stop..."}
 
-    ; TODO: implment a complete signalling between exe, compiler and PED
-    ;;-- OK, task should be running here! see if we get a panic or stop!
+    ; TODO: implement a complete signalling between exe, compiler and PED
+    ; atm we can not use normal signalling here, as we cannot react to a crashes executable
+    ; old blitz worked with exceptcode in case of a crash
+    ;-- OK, task should be running here! see if we get a normal stop or panic stop from PED!
     ;signalSet.l = environment\signalPanicMask|environment\signalStopMask
     ;receivedSignal.l = Wait_(signalSet)
     ;If receivedSignal AND environment\signalPanicMask
     ;  log2PED{"received Panic signal..."}
     ;Else
     ;  If receivedSignal AND environment\signalStopMask
-    ;    log2PED{"received Stop signal..."}
+    ;   log2PED{"received Stop signal..."}
     ;  EndIf
     ;EndIf
 
-    ;Repeat
-    ;    CLR.l d0 : !ComData_GetB{comByte_RunningFlag,D0} : PutReg D0,running.l
-    ;    If running Then Delay_ 10
-    ;Until running = False
+    ;-- currently we are just waiting for the runningflag to be changed by the exe process or PED indicating a stop
+    Repeat
+      ; -- call event routine for ompilestatuswin
+      !asm
+      !ComData_JSR{comFunc_UpdateCompileStatusWin}
+      !basic
+
+      CLR.l d0 : !ComData_GetB{comByte_CompileStatusAbortByte,d0} : PutReg d0,c_abort.b
+      If c_abort
+        log2PED{"There was an panic stop event from PED!"}
+        !asm
+        !ComData_SetB{comByte_CompileStatusAbortByte,0}
+        !basic
+      EndIf
+
+      CLR.l d0 : !ComData_GetB{comByte_RunningFlag,D0} : PutReg D0,running.l
+      If running
+        Forbid_
+        *panicProcess.Process = FindTask_("AmiBlitz3 Program Process")
+        If *panicProcess
+          Select *panicProcess\pr_Task\tc_State 
+          ;Case #TS_FROZEN
+          ;  log2PED{"The executable has been freezed!"}
+          Case #TS_EXCEPT
+            log2PED{"The executable had an exception!"}
+          Case #TS_REMOVED
+            log2PED{"The executable has been removed!"}
+            ;!asm
+            ;!ComData_SetB{comByte_RunningFlag,0}
+            ;!basic
+          Default
+            If *panicProcess\pr_Task\tc_State <> #TS_WAIT
+              log2PED{"task state: " + Str$(*panicProcess\pr_Task\tc_State)}
+            EndIf
+          End Select
+        Else
+          log2PED{"The task has gone without an ending signal!"}
+        EndIf
+        Permit_
+
+        Delay_ 25
+      EndIf      
+    Until running = False
+
+    log2PED{"we are back from the executable!"}  
 
     environment\_runerror = 0
   Else
+    ; IoErr does not return in all cases an error value, says RKRM DOS
+    log2PED{"process could not be created: " + Str$(IoErr_)}
     environment\_runerror = 1
   EndIf
 
+  ; the lock will be freed by CreatNewProc when process has finished!
+  ;If environment\lock_ExePath Then UnLock_ environment\lock_ExePath
+
   CLR.l firstlocal
   CLR.l firstglob
 
-  If environment\_noPED
-    !asm
-    !ComData_JSR{comFunc_CreateGUI}
-    !basic
+  If CLIMode = False 
+    ; -- optionally close the console
+    If environment\_noCLI = False AND config\console_wait
+      !asm
+      !ComData_JSR{comFunc_CloseConsole}
+      !basic
+    EndIf  
+
+    If environment\_noPED 
+      !asm
+      !ComData_JSR{comFunc_CreateGUI}
+      !basic
+    EndIf
+
+    If (NOT config\use_wbscreen) AND config\con_on_wb 
+    log2PED{"bringing PED-screen to front again..."}  
+    WBenchToBack_
+    EndIf
   EndIf
+
   !asm
 RTS
 
+
+;-- old blitzbasic worked with an Exec exception here that listened to a stop-Signal from the compiler requester
+;-- in case of an stop-signal, the compiler would just stop the waitloop for ending the executable or stop the compilation process
+;-- we are going to change that soon
 stopit:     Ds.w 1
-.processStart: 
-  !basic
-  *exeTask.Task = *eb\ThisTask                                     ; getting this task via execbase
-  *exeProcess.Process = FindTask_(0)
-  log2PED{"I am exetask is at address "  + Hex$(*exeTask) + ", tasknum: " + Str$(*exeProcess\pr_TaskNum) + ", name: " + Peek.s(*exeTask\tc_Node\ln_Name)}
+;exceptcode:
+;  move stopit(pc),d1 : bne.s skip
+;
+;  move stopbit(pc),d1
+;
+; btst d1,d0 : beq.s skip
+;   move #-1,stopit
+;   ;
+;   movem.l d0/a6,-(a7)
+;   move.l panicmask(pc),d0
+;   move.l us,a1
+;   move.l 4,a6
+;   JSR Signal(a6)
+;   movem.l (a7)+,d0/a6
+;   ;
+;  skip:
+;rts
 
-  If environment\lock_ExePath
-    log2PED{"setting currentdir for exetask..."}
-    CurrentDir_ environment\lock_ExePath
-  EndIf
 
-  If PeekL(?stacksize) < #MIN_STACKSIZE
-    error{"The stacksize is too low: " + Str$(PeekL(?stacksize))}
-  EndIf
-
-  ; -- set the running flag for IDE
-  !asm
-  !ComData_SetB{comByte_RunningFlag,#1}
-  !basic
-
-  ; -- optionally open the console
-  If environment\_noCLI = False
-    log2PED{"opening console window"}
-    !asm
-    !ComData_JSR{comFunc_OpenConsole}
-    !basic
-  EndIf
-
-  If (NOT config\use_wbscreen) AND config\con_on_wb Then WBenchToFront_
-  !asm
-
-  ;BSR.w calculate_VBR
-  ;MOVEA.l vbr,A0
-  ;MOVE.l $84(a0),lasttrap1                                 ;activate for 68k low level trap
-  ;MOVE.l #tokens,$84(A0)                                   ;set trap vectors  1
-  ;MOVE.l newtype_string,$88(A0)                            ;2 activate for 68k low level trap
-  ;MOVE.l #directTrap15,$BC(A0)                             ;15 for expression calculation
+.processStart: ;(runtheprog)
   CLR.w direct_mode
   CLR.l firstglob
   CLR.l firstlocal
-  ;MOVE.l destpointer,directbuffer                          ;direct buffer
 
-  MOVE.l stacksize,D2
-  MOVE.l #$624C745A,D7                                      ;#'bLtZ',d7 org source ;force cli-type run
-  LEA str_cliarguments,A0                                   ;cli arguement
+  BSR.w clear_Cache               ; clear the cache if available (V37+ only!)
+  MOVE.l stacksize,D2             ; put the stacksize into D2, no one knows why, can eventually removed
+  MOVE.l #"bLtZ",D7               ; hack for wbstartuplib: simulate stared from cli
   MOVEA.l destbufferstart,A1
+  JSR (A1)                        ; execute compiled code (Run the thing!)
 
-  BSR.w clear_Cache
-
-  JSR (A1)                                                 ; execute compiled code  ;Run the thing!
-
-  ;MOVEA.l vbr,A0
-  ;MOVE.l lasttrap1,$84(a0)
   CLR.l firstglob
   CLR.l firstlocal
 
-  !ComData_SetB{comByte_RunningFlag,#0}
-
   !basic
-  
-  log2PED{"We are back from the executable!"}  
-
-  If environment\lock_ExePath Then UnLock_ environment\lock_ExePath
-
-  ; -- optionally close the console and bring ide to front
-  If environment\_noCLI = False
-    !asm
-    !ComData_JSR{comFunc_CloseConsole}
-    !basic
-  EndIf
-
   ;-- send compilertask the signal that the task has stopped OK!
   PokeW ?stopit, 1
   Signal_ *compilerTask, environment\signalStopMask
-
-  If (NOT config\use_wbscreen) AND config\con_on_wb 
-    log2PED{"bringing PED-screen to front again..."}  
-    WBenchToBack_
-  EndIf
   !asm
+  !ComData_SetB{comByte_RunningFlag,#0}  
 RTS
 
 
@@ -3495,7 +3575,12 @@ RTS
 
   ;--
   ;-- gostop
+  !regs2stack
+  !basic
+  log2PED{"abort signal received"}
+  !asm
   BSR.w close_compilewin
+  !stack2regs
   ;
   MOVEA.l errstack,A7
   MOVEA.l errcont,A0
@@ -24073,8 +24158,6 @@ JMP get1bytemain
 ;-----------data-----------------------;
 
 .mydata
-
-;vbr:                Ds.l 1
 cfetchmode:         Ds.w 1                               ;1=fetching a constant
                     ;intercept uselib!
 constlibs           Dc.w $FDA7,$FCDF,$FD43               ;64935,64735,64835: ffplib, ldivlib, lmullib
@@ -25165,7 +25248,7 @@ Even
 RTS
 
 Even
-str_cliarguments: Ds.b 255   ; a command line can acutally be 255 characters long
+str_cliarguments: Ds.b 255                                  ; a command line can actually be 255 characters long
 
 Even
 
@@ -25183,7 +25266,7 @@ Even
    ; < new
 
 
-.skipme:                                                   ;??Looks like double label??
+.skipme:                                                   ;skip functions
  'l1
     MOVE.b (a5)+,d0
     BEQ 'l2
@@ -27693,7 +27776,7 @@ inctab               Ds.l 40
 includeline          Ds.l 1
 objectcount          Ds.w 1
 savefuncspace        Ds.l 1
-lasttrap1            Ds.l 1
+;lasttrap1            Ds.l 1
 currentfunccall      Ds.l 1
 skipfunc             Ds.b 1
 resdisable           Ds.b 1
