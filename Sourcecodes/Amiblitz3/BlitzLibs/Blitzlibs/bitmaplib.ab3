@@ -154,27 +154,47 @@ _free:!nullsub{_freebitmap,0,0}
 
 !libfin{_toke,_load,_save,_use,_free,10,6}
 
-;new bitmap struct:
+;-- new bitmap struct:
 ;
-;0.w _ebwidth/_linemod
-;2.w _height
-;4.w _depth
-;6.w _flags (OS's 4..5 bytes) ; btst #2 to see if interleaved
-;8.l...39 _data ; bitplane pointer
-;40 layer in systemmode
-;52 _mem ; contiguos memory occupied by bitmap!
-;56 _memlen ; bytes occupied by _mem
-;60 _xclip in pixels...
-;62 _isreal ; 0=no bitmap here, 1=borrowed, -1=ours
+;  0.w _ebwidth/_linemod
+;  2.w _height
+;  4.w _depth
+;  6.w _flags (OS's 4..5 bytes) ; btst #2 to see if interleaved
+;  8.l...39 _data ; bitplane pointer
+; 40 struct layer in systemmode
+; 52 _mem ; contiguos memory occupied by bitmap!
+; 56 _memlen ; bytes occupied by _mem
+; 60 _xclip in pixels...
+; 62 _isreal ; 0=no bitmap here, 1=borrowed, -1=ours
+
+; 3.0 BITMAP HANDLING: internal Bitmap-object
+; NewType.Bitmap
+; _   ebwidth[0]     ;00: for compatability.
+; _   linemod.w      ;00: value to get from one scanline to next.
+; _   height.w       ;02: currently pixel height - but open to commodore 'enhancement'.
+; _   depth.w        ;04: number of bitplanes.
+; _   pad.b[2]       ;06: nothing.
+; _   data.l[8]      ;08: actual bitplane pointers.
+; _   pad2.b[12]     ;40: zilch.
+; _   flags.w        ;52: 0=normal bitmap, <0=interleaved.
+; _   bitplanemod.w  ;54: value to get from one bitplane to next. MAY BE 0!
+; _   xclip.w        ;56: pixel width for render clipping
+; _   yclip.w        ;58: pixel height for render clipping
+; _   cclip.w        ;60: number of colours available on bitmap ( = 2^_depth)
+; _   isreal.w       ;62: 0=no bitmap here, <0=blitz created bitmap, >0=borrowed
+; 	                 ;64: sizeof
+; End NEWTYPE
+
+
 
 ;********************* Code Follows *************************
 
 _bitmaprastport
-  MOVE.l 40(a3),d0
-  BEQ errornosys
-    MOVE.l d0,a0
-    MOVE.l $c(a0),d0
-    RTS
+  MOVE.l 40(a3),d0 : BEQ errornosys   ; get the Layer struct
+
+  MOVE.l d0,a0
+  MOVE.l $c(a0),d0                    ; get the corresponding RastPort
+RTS
 
 _systembitmap
   MOVE.b d0,system
@@ -186,6 +206,7 @@ _cludgebitmap  ;a3=bitmap d1 d2 d3 d4.l= width height depth mem
   MOVEM.l d1-d4,-(a7)
   BSR _freebitmap
   MOVEM.l (a7)+,d1-d4
+
   MOVE #1,62(a3)
   ADD #15,d1
   LSR #4,d1
@@ -219,7 +240,7 @@ RTS
   BSR _freebitmap
   MOVE (a2),d0:MULU 2(a2),d0:MOVE.l d0,d7:LSR.l #1,d7
   MOVE 2(a2),d0:MULU 4(a2),d0:MULU (a2),d0
-  MOVEQ #2,d1:ALibJsr $c002:MOVE.l d0,a0
+  MOVEQ #2,d1:ALibJsr #globalalloc:MOVE.l d0,a0
   ;
   MOVE.l (a2),(a3):MOVE.l 4(a2),4(a3):MOVE #-1,62(a3)
   MOVE.l a3,-(a7)
@@ -265,75 +286,77 @@ BRA prepxtra
   DBF d0,'loop
 BRA prepxtra
 
-._bitload2:;d1=filename, a1=bitmap, a0=palette item
+._bitload2:                     ;d1=filename, a1=bitmap, a0=palette item
   MOVEM.l d1/a1,-(a7)
   MOVE.l a0,a1
   MOVE.l d1,a0
   ALibJsr #palettelib LSL 7+3
   MOVEM.l (a7)+,d1/a1
 
-._bitload:;d1=filename, a1=BitMap
+._bitload:                     ;d1=filename, a1=BitMap
   MOVE.l d1,a0
-  ALibJsr #ilbmifflib LSL 7+3:;load bitmap
+  ALibJsr #ilbmifflib LSL 7+3: ;load bitmap
 RTS
 
-._bitmap:;a3=item,d1=w,d2=h,d3=depth
+._bitmap:                      ;a3=item,d1=w,d2=h,d3=depth
   MOVE.l a3,0(a5,d6)
+
   MOVEM.l d1-d3,-(a7)
   BSR _freebitmap
   MOVEM.l (a7)+,d1-d3
+
   MOVE #-1,62(a3)
 
-extbitmap
-  ;a3=bitmap struct
-  ;d1=pix width, d2=pix height, d3=depth
-  ;
+extbitmap                      ;a3=bitmap struct, d1=pix width, d2=pix height, d3=depth
   NOP
   MOVE.w d1,pixwidth
   ADD #15,d1
   LSR #4,d1
-  ADD d1,d1  ;even byte width.
-  MOVE d1,(a3)
-  MOVE d2,2(a3)
-  CLR.b 4(a3)
-  MOVE.b d3,5(a3)
+  ADD d1,d1                    ;even byte width.
+  MOVE d1,(a3)                 ; scanline length
+  MOVE d2,2(a3)                ; height
+  CLR.b 4(a3)                  ; depth (hibyte)
+  MOVE.b d3,5(a3)              ; depth (lobyte)
   ;
   MOVE d2,d0
   MULU d3,d0
   MULU d1,d0
   MULU d1,d2
-  MOVE.l #$10002,d1                 ; #MEMF_CLEAR|#MEMF_CHIP
-  ALibJsr $c002                     ; memlib: globalalloc, d0:bytesize, d1:requirements
+  MOVE.l #$10002,d1            ; #MEMF_CLEAR|#MEMF_CHIP
+  ALibJsr #globalalloc         ; d0:bytesize, d1:requirements
 
-  LEA 8(a3),a0                      ; set address of memoryblock into bitplane-pointers
+  LEA 8(a3),a0                 ; set address of memoryblock into bitplane-pointers
   SUBQ #1,d3
  'loop:
     MOVE.l d0,(a0)+
     ADD.l d2,d0
   DBF d3,'loop
 
-.prepxtra  ;initialize new fields....
-  MOVE 4(a3),6(a3):CLR.b 4(a3):CLR 52(a3)
-  MOVE 2(a3),58(a3):MOVEQ #1,d0:MOVE 4(a3),d1:LSL d1,d0:MOVE d0,60(a3)
-  MOVE (a3),d0
+.prepxtra                      ; initialize new fields....
+  MOVE 4(a3),6(a3)             ; copy depth-info to new location in struct
+  CLR.b 4(a3)
+  CLR 52(a3)
+  MOVE 2(a3),58(a3)
+
+  MOVEQ #1,d0
+  MOVE 4(a3),d1
+  LSL d1,d0
+  MOVE d0,60(a3)               ; calc number of colors by left-shifting depth
+
+  MOVE (a3),d0                 ; scanline length
   LSL #3,d0
-  CMP #2,4(a3)
-  BLT 'notint
+  CMP #2,4(a3) : BLT 'notint
     MOVE.l 12(a3),d2
-    SUB.l 8(a3),d2
-    BEQ 'notint
-      CMP.l #32768,d2
-      BCC 'notint
-        CMP (a3),d2
-        BHI 'notint
+    SUB.l 8(a3),d2 : BEQ 'notint
+      CMP.l #32768,d2 : BCC 'notint
+        CMP (a3),d2 : BHI 'notint
           DIVU d1,d0
           BSET #7,52(a3)
  'notint:
   MOVE d0,56(a3)
 
-  MOVE.l 12(a3),d0:SUB.l 8(a3),d0:;CMP.l #32768,d0:BCC 'fail
-  SUBQ #3,d1
-  BMI 'ok
+  MOVE.l 12(a3),d0 : SUB.l 8(a3),d0:;CMP.l #32768,d0:BCC 'fail
+  SUBQ #3,d1 : BMI 'ok
     LEA 12(a3),a0
    'loop:
       MOVE.l 4(a0),d2
@@ -344,11 +367,9 @@ extbitmap
  'ok:
   MOVE d0,54(a3)
 
-  TST.b system
-  BEQ 'l1
+  TST.b system : BEQ 'l1
     MOVE.l d0,-(a7)
-    TST.l layerbase
-    BNE 'skipopen
+    TST.l layerbase : BNE 'skipopen
       MOVEQ #0,d0
       LEA layername,a1
       MOVE.l $4,a6
@@ -379,30 +400,27 @@ extbitmap
 RTS
 
 ._freebitmap
-  MOVE 62(a3),d0
-  BPL 'done
-    TST.b system
-    BEQ 'l1
-      MOVE.l 40(a3),d0
-      BEQ 'l1
-      MOVE.l a6,-(a7)
-      MOVE.l layerbase,a6
-      SUBA.l a0,a0          ; a0 : dummy
-      MOVE.l d0,a1          ; a1 : struct Layer
-      MOVE.l $44(a1),d2
-      JSR -$5a(a6)          ; DeleteLayer_ ; a1:struct layer
-      MOVE.l d2,a0
-      JSR -$96(a6)          ; DisposeLayerInfo_
-      MOVE.l (a7)+,a6
+  MOVE 62(a3),d0 : BPL 'done
+    TST.b system : BEQ 'l1
+      MOVE.l 40(a3),d0 : BEQ 'l1
+        MOVE.l a6,-(a7)
+        MOVE.l layerbase,a6
+        SUBA.l a0,a0          ; a0 : dummy
+        MOVE.l d0,a1          ; a1 : struct Layer
+        MOVE.l $44(a1),d2     ; get LayerInfo
+        JSR -$5a(a6)          ; DeleteLayer_ ; a1:struct layer
+        MOVE.l d2,a0
+        JSR -$96(a6)          ; DisposeLayerInfo_
+        MOVE.l (a7)+,a6
    'l1
     MOVE 2(a3),d0
     MULU 4(a3),d0
     MULU (a3),d0
     MOVE.l 8(a3),a1
-    ALibJsr $c003           ; memlib
+    ALibJsr #globalfree       ; memlib
  'done:
   CLR 62(a3)
-  RTS
+RTS
 
 
 ;********************* local data store *********************
