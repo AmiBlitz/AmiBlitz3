@@ -3,7 +3,7 @@
 ; 
 ; General Info
 ; -------------------------------------------------------
-; ExePath         = "ram:"
+; ExePath         = "Development:AmiBlitz3/Sourcecodes/Includes"
 ; ExeFile         = "Empty"
 ; CreateIcon      = 0
 ; Residents       = "all.res"
@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 85
+; NumberOfBuilds  = 87
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 322
-; CursorColumn    = 32
+; CursorLine      = 348
+; CursorColumn    = 2
 ; LabelSearch     = "log_"
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -121,9 +121,10 @@ XINCLUDE "file.include.ab3"
 #log_function = 3
 
 ; -- output destination
-#log_toconsole = 0
-#log_tofile    = 1
-#log_toboth    = 2
+#log_toconsole = 1
+#log_tofile    = 2
+#log_toserial  = 4
+#log_toboth    = 3
 
 NEWTYPE.logconfig
   level.b
@@ -145,6 +146,10 @@ levelstr$(4) = "MAINT"
 ; -- pointer to logwindow
 DEFTYPE.l __ptr_consolelog
 
+; -- pointer to logwindow
+DEFTYPE.l __ptr_IOExtSer
+
+
 ; -- set default values
 DEFTYPE.logconfig logconfig
 logconfig\destination = #log_toconsole
@@ -154,10 +159,15 @@ logconfig\_format = #log_normal
 logconfig\_fileid = -1
 logconfig\_file = dos_GetProgDir{"ram:"} + dos_GetProgFile{"unknown"} + ".log"
 
-Function.b log_IsAvailable{}
-SHARED __ptr_consolelog
+Function.b log_IsConsoleAvailable{}
+SHARED __ptr_consolelog, __ptr_IOExtSer
+  If __ptr_consolelog Then Function Return True
+End Function
 
-  If __ptr_consolelog then Function Return True
+Function.b log_IsAvailable{}
+SHARED __ptr_consolelog, __ptr_IOExtSer
+  If __ptr_consolelog Then Function Return True
+  If __ptr_IOExtSer Then Function Return True
 End Function
 
 Function.l FAST log_GetFileHandle{}
@@ -180,44 +190,47 @@ Function.s CharStream{stream.s}
 End Function
 
 Statement log_Close{}
-SHARED __ptr_consolelog
+SHARED __ptr_consolelog, __ptr_IOExtSer
   If __ptr_consolelog <> 0 Then Close_ __ptr_consolelog : __ptr_consolelog = 0
+  If __ptr_IOExtSer <> 0 Then CloseSerial 0 : __ptr_IOExtSer = 0
 End Statement
 
 Function.b log_Init{consolestr.s}
-SHARED __ptr_consolelog, logconfig
+SHARED __ptr_consolelog,  __ptr_IOExtSer, logconfig
 
-  If __ptr_consolelog Then log_Close{}
+  If __ptr_consolelog OR __ptr_IOExtSer
+    log_Close{}
+  EndIf
 
-  If (logconfig\destination = #log_toconsole) OR (logconfig\destination = #log_toboth)
-    If consolestr = "" Then consolestr = "CON:/18/640/200/AB3 Log/CLOSE"
+  If (logconfig\destination AND #log_toconsole)
+    If consolestr = "" Then consolestr = "CON:/18/640/200/General Log/CLOSE"
     __ptr_consolelog = Open_(&consolestr,1006)
   EndIf
 
-  Function Return __ptr_consolelog
+  If (logconfig\destination AND #log_toserial)
+    __ptr_IOExtSer = OpenSerial("serial.device",0,9600,0)
+  EndIf
+
+  Function Return __ptr_consolelog OR __ptr_IOExtSer 
 End Function
                                                                                                                                                                                                                 
 !autoexit{log_Close}
 
 Function.b log_out{ls1.s,@ls2.s}
-SHARED __ptr_consolelog, logconfig
+SHARED __ptr_consolelog, __ptr_IOExtSer, logconfig
 
-  If (logconfig\destination = #log_toconsole) OR (logconfig\destination = #log_toboth)
-    If __ptr_consolelog = 0
-      log_Init{""}
-    EndIf
+  If (logconfig\destination AND #log_toconsole) OR (logconfig\destination AND #log_toserial)
+    If __ptr_consolelog = 0 Then log_Init{""}
+
+    __cout$ = UStr$(ls1)
+    If ls2 <> "" Then __cout$  + " " + UStr$(ls2)
+    __cout$ + Chr$($a)
+
+    If (logconfig\destination AND #log_toconsole)  Then Write_ __ptr_consolelog, __cout$, FLen(__cout$)
+    If (logconfig\destination AND #log_toserial) Then WriteSerialString 0, __cout$ + Chr$(13)    
   EndIf
 
-  If (logconfig\destination = #log_toconsole) OR (logconfig\destination = #log_toboth)
-    If ls2 <> ""
-      __cout$ = UStr$(ls1) + " " + UStr$(ls2) + Chr$($a)
-    Else
-      __cout$ = UStr$(ls1) + Chr$($a)
-    EndIf
-    Write_ __ptr_consolelog ,__cout$,FLen(__cout$)
-  EndIf
-
-  If (logconfig\destination = #log_tofile) OR (logconfig\destination = #log_toboth)
+  If (logconfig\destination AND #log_tofile)
     ;If logconfig\_fileid = -1
     logconfig\_fileid = file_Open{logconfig\_file,#file_open}
     ;EndIf
@@ -301,7 +314,7 @@ End Macro
 
 Statement log_Reset{}
 SHARED logconfig
-  If logconfig\destination = #log_tofile
+  If logconfig\destination AND #log_tofile = #log_tofile
     DeleteFile_ logconfig\_file
   EndIf
 End Statement
@@ -314,7 +327,7 @@ End Statement
 Statement log_SetDestination{dest.b,@fname$}
 SHARED logconfig
   logconfig\destination = dest
-  If fname$<>""
+  If fname$ <> ""
     logconfig\_file = fname$
   EndIf
 End Statement
@@ -367,7 +380,7 @@ SHARED logconfig
 End Statement
 
 ; -- intern
-Statement log_PrintN{text$,header$}
+Statement log_PrintN{text$, header$}
   ret.w = Instr(text$,Chr$(10))
   If ret = 0
     log_Output{text$,header$}
@@ -396,7 +409,7 @@ SHARED logconfig,levelstr$()
 ; -- Pm=49 : default background color
 
   If level = -1 Then level = logconfig\level
-  If (logconfig\level <= level) AND (logconfig\level<>#log_nothing)
+  If (logconfig\level <= level) AND (logconfig\level <> #log_nothing)
     header$ = "\\1B[2m" + log_GetTimeStamp{} + "\\1B[0m "
     header$ + "\\1B[1m" + LSet$(levelstr$(level),5) + "\\1B[0m "
     Select level
@@ -416,7 +429,7 @@ log_SetDestination{#log_toboth}
 log_SetFile{"ram:logging.log"}
 log_SetLevel{#log_warning}
 log_SetFormat{#log_short}
-If log_Init{"CON:0/9/1000/200/Log/CLOSE"}
+If log_Init{"CON:0/9/1000/200/Log/CLOSE/SCREEN AmiBlitz3"}
   log_Print{"this is a debug message",#log_debug}
   log_Print{"this is an info",#log_information}
   log_Print{"this is a warning",#log_warning}
@@ -428,5 +441,8 @@ If log_Init{"CON:0/9/1000/200/Log/CLOSE"}
   log_Print{message$,#log_error}
   MouseWait
   log_Close{}
+Else
+  NPrint "Could not open log!"
+  NPrint logconfig\destination AND #log_toconsole
 EndIf
 CEND
