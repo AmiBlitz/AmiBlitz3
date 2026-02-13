@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.11.1
-; NumberOfBuilds  = 3624
+; NumberOfBuilds  = 3633
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,11 +30,11 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 6000
-; CursorColumn    = 80
-; LabelSearch     = "TOOLTYPES"
+; CursorLine      = 1457
+; CursorColumn    = 90
+; LabelSearch     = "to_console"
 ; LabelRemark     = 0
-; LabelAll        = 1
+; LabelAll        = 0
 ; LabelCase       = 0
 ; LabelPosition   = 0
 ; 
@@ -666,7 +666,6 @@ ped\pubScreenName = "AmiBlitz3"
 ped\screenTitle = "AmiBlitz3 - PED V\\__VER_MAJOR.\\__VER_MINOR.\\__VER_PATCH"
 
 NEWTYPE.sourceWindow
-  *pedScreen.Screen
   *drawinfo.DrawInfo
   *win.Window
   *rp.RastPort
@@ -806,6 +805,13 @@ NEWTYPE .winprefs
   console_w.w
   console_h.w
   console_on.b
+
+  logwin_x.w
+  logwin_y.w
+  logwin_w.w
+  logwin_h.w
+  logwin_on.b
+
 End NEWTYPE
 Dim wpref.winprefs(3)
 DEFTYPE.winprefs winLayout
@@ -1049,10 +1055,11 @@ End Macro
 .FUNCTIONS
 
 Statement WZ_CloseAllWindows{@killmenus.b}
-  Gosub close_popupwindow
 
   If killmenus Then Gosub kill_menus
 
+  !log_PrintOut{"closing windows"}
+  Gosub close_popupwindow
   Gosub close_instructionbrowser
   Gosub close_definitionbrowser
   Gosub close_sourcebrowser
@@ -1069,10 +1076,22 @@ End Statement
 
 ; Added the menu to the open WZ window
 Statement WZ_AddMenuStrip{wzwinname.s, *menuStrip.Menu}
-  If Addr Window(WZID(wzwinname))<>0
+  If *menuStrip 
+    If Addr Window(WZID(wzwinname)) <> 0
+      *win.Window = PeekL(Addr Window(WZID(wzwinname)))
+      If *win
+        If *win\MenuStrip <> 0 Then ClearMenuStrip_ *win
+        SetMenuStrip_ *win, *menuStrip
+      EndIf
+    EndIf
+  EndIf
+End Statement 
+
+Statement WZ_RemoveMenuStrip{wzwinname.s}
+  If Addr Window(WZID(wzwinname)) <> 0
     winaddr.l = PeekL(Addr Window(WZID(wzwinname)))
-    If *menuStrip AND winaddr
-      SetMenuStrip_ winaddr, *menuStrip
+    If winaddr
+      ClearMenuStrip_ winaddr
     EndIf
   EndIf
 End Statement 
@@ -1083,8 +1102,7 @@ Statement WZ_CloseWindowAndRemoveMenu{wzwinname.s}
   If Addr Window(wzwinid) <> 0
     *win.Window = PeekL(Addr Window(wzwinid))
     If *win
-      ClearMenuStrip_ *win
-      WZCloseWindow wzwinid
+      ClearMenuStrip_ *win : WZCloseWindow wzwinid
     Else
       !log_PrintOut{"WZ_CloseWindowAndRemoveMenu: Window [" + wzwinname + "] ist not open.",#log_warning}
     EndIf
@@ -1234,7 +1252,7 @@ Function PED_PrintStatus{txt$,xpos.w,@ypos.w}
       EndIf
     EndIf
   Else
-    !log_PrintOut{"PrintStatus(): window pointer empty!"}
+    !log_PrintOut{"PrintStatus(): window pointer empty!",#log_warning}
   EndIf
 End Function
 
@@ -1250,7 +1268,7 @@ USEPATH sourceWindow
     RectFill_ \win\RPort, 0,\statusAreaY,\win\GZZWidth,\win\GZZHeight
     RectFill_ \win\RPort, 0,0, \win\GZZWidth,\font\tf_YSize
   Else
-    !log_PrintOut{"illegal area for draw statusara"}
+    !log_PrintOut{"illegal area for draw statusara",#log_error}
   EndIf
 
   ;-- Draw separation lines
@@ -1627,7 +1645,7 @@ End Statement
 Statement PED_CursorOff{}
 SHARED sourceWindow
   If NOT sourceWindow\cursorEnabled
-    !log_PrintOut{"CURSOR: double OFF!"}
+    !log_PrintOut{"CURSOR: double OFF!",#log_warning}
   EndIf
   sourceWindow\cursorEnabled = False
   PED_SwitchCursor{}
@@ -2123,7 +2141,7 @@ SHARED ped
       If *currentSourceLine\nextLine 
         *currentSourceLine = *currentSourceLine\nextLine
       Else
-        !log_PrintOut{"There is no next line at: " + Str$(actualLine)}
+        !log_PrintOut{"There is no next line at: " + Str$(actualLine),#log_warning}
       EndIf
       actualLine - 1
     Until actualLine = 0
@@ -2299,7 +2317,7 @@ Statement Show_Helpfile{libname$, node$, helpdir$}
   ;-- adjusting the window size
   commandlineStr + " w " + Str$(screen_GetWidth{} / 2) + " h " + Str$(screen_GetHeight{} / 2)
 
-  !log_PrintOut{"opening Helpviewer for ["+ libname$ + "/" + node$ + "] ..."}
+  !log_PrintOut{"opening Helpviewer for ["+ libname$ + "/" + node$ + "] ...",#log_information}
   !log_PrintOut{"commandstring <" + commandlineStr + ">"}
 
   PED_ShowMessage{"Opening Helpviewer for "+ libname$ + "/" + node$ + " ..."}
@@ -2308,19 +2326,26 @@ Statement Show_Helpfile{libname$, node$, helpdir$}
   EndIf
 End Statement
 
-Function.b CheckWindow{title$}
-SHARED pedconfig
+Function.l GetWindowByName{wintitle.s}
+SHARED pedconfig, ped
+
+  !log_PrintOut{"GetWindowByName: searching window <" + wintitle + ">"}
+
   found.b = False
-  *thisscreen.Screen = PeekL(Addr Screen(0))
-  *conwin.Window = *thisscreen\FirstWindow
-  While (*conwin <> 0)
-    If Peek.s(*conwin\Title) = pedconfig\console_title
+  *win.Window = ped\screen\FirstWindow
+  While (*win <> 0) AND found = False
+    If PeekS(*win\Title) = wintitle
       found = True
     Else
-      *conwin = PeekL(*conwin)
+      *win = PeekL(*win)
     EndIf
   Wend
-  Function Return found
+  If found
+    !log_PrintOut{"found it!"}  
+    Function Return *win
+  Else
+    Function Return 0
+  EndIf
 End Function
 
 Function.l PED_GetNewtypeByName{newtypename.s}
@@ -3780,7 +3805,7 @@ SHARED ped, pedconfig, sourceWindow
   aslfr_SetPath{1,tmpdir$}
   aslfr_SetFile{1,tmpfile$}
  
-  If aslfr_Request{1,False,False,False,sourceWindow\pedScreen}
+  If aslfr_Request{1,False,False,False,ped\screen}
     tempdir$      = aslfr_GetPath{1}
     tempfile$     = aslfr_GetFile{1}
     tempcomplete$ = dos_AddPart{tempdir$ , tempfile$}
@@ -4436,7 +4461,7 @@ SHARED ped, sourceWindow, pedconfig
   If ped\blockmarkRemovalMode <> 0
     If ped\blockmarkRemovalMode = 2
       Gosub menu_cut
-      If pedconfig\no_display_beep = False Then DisplayBeep_ sourceWindow\pedScreen
+      If pedconfig\no_display_beep = False Then DisplayBeep_ ped\screen
     Else
       ; for blockmarkRemovalMode = 1 only remove blockmark
       PED_DrawBlockmark{}
@@ -4864,6 +4889,8 @@ SHARED ped, readcache
   ;-- check labelIdentifier, update labellist ?
   If PED_CheckLabelRelevance{beginString} Then ped\labelListChanged = True
 
+  !log_PrintOut{"replacing current line with: <" + beginString + ">"}
+
   ;-- replace line with current one
   newline$ = PED_TokenizeText{beginString}
   *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
@@ -4886,6 +4913,7 @@ SHARED ped, readcache
       Else
         pasteString = tmpLine
       EndIf
+      !log_PrintOut{"pasting <" + pasteString + ">"}
       newline$ = PED_TokenizeText{pasteString}
       *newLine.sourceLine = PED_CreateNewSourceLine{newline$}
 
@@ -6145,10 +6173,9 @@ End Function
 
 Statement savewinpref{layoutNum.l}
   SHARED wpref(),winLayout,pedconfig,sourceWindow
+  USEPATH winLayout
 
   used_win.l = Used Window
-  message{!TRANS{"The window settings have been saved.\\nPress appropriate FN-Key (F4-F6) to set window configuration."}}
-  USEPATH winLayout
 
   \lbrowser_on = 0
   \ibrowser_on = 0
@@ -6215,32 +6242,30 @@ Statement savewinpref{layoutNum.l}
   EndIf
 
   ; -- check if console is open and store its position
-  *thisscreen.Screen = PeekL(Addr Screen(0))
-  *conwin.Window = *thisscreen\FirstWindow
-;  message{"error"}
-  security.l = 0
-  If *conwin
-    While *conwin <> 0
-      If Peek.s(*conwin\Title) <> pedconfig\console_title
-        If PeekL(*conwin) Then *conwin = PeekL(*conwin) Else *conwin = 0
-      Else
-        Pop While
-        Goto exit_consearch
-      EndIf
-      ; notbremse fuer while-loop
-      security + 1
-      If security > 30 Then *conwin = 0
-    Wend
-  EndIf
-  exit_consearch:
+  *conwin.Window = GetWindowByName{pedconfig\console_title}
   If *conwin
     \console_x = *conwin\LeftEdge
     \console_y = *conwin\TopEdge
     \console_w = *conwin\Width
     \console_h = *conwin\Height
   EndIf
-  Use Window used_win
+
+  ; -- check if log is open and store its position
+  *logwin.Window = GetWindowByName{"AmiBlitz3 Log"}
+  If *logwin
+    \logwin_x = *logwin\LeftEdge
+    \logwin_y = *logwin\TopEdge
+    \logwin_w = *logwin\Width
+    \logwin_h = *logwin\Height
+  EndIf
+
+  ; -- storing the window dimensions
   CopyMem_ &winLayout,&wpref(layoutNum),SizeOf .winprefs
+
+  ; -- restore the formerly used window
+  Use Window used_win
+
+  message{!TRANS{"The window settings have been stored.\\nPress appropriate FN-Key (F4-F6) to set window configuration."}}      
 End Statement
 
 
@@ -6549,17 +6574,27 @@ SHARED winLayout, wpref(), sourceWindow, ped
     sourceWindow\WinWidth = \source_w
     sourceWindow\WinHeight = \source_h
   Else
-    ped\screen = PeekL(Addr Screen(0))
     sourceWindow\WinLeft = 0
     sourceWindow\WinTop  = ped\screen\WBorTop + ped\screen\Font\ta_YSize + 1
-    sourceWindow\WinWidth= ScreenWidth
-    sourceWindow\WinHeight = ScreenHeight - (ped\screen\WBorTop + ped\screen\Font\ta_YSize + 1)
+    sourceWindow\WinWidth = ped\screen\Width
+    sourceWindow\WinHeight = ped\screen\Height - (ped\screen\WBorTop + ped\screen\Font\ta_YSize + 1)
   EndIf
+
+  ;-- set a default
+  If (\logwin_h = 0) AND (\logwin_w = 0)
+    \logwin_x = 0
+    \logwin_y = 19
+    \logwin_w = 640
+    \logwin_h = 200
+
+  EndIf
+
+
 End Statement
 
 
 Statement PED_DoWindowlayout{layout.b}
-SHARED ped, sourceWindow, winLayout
+SHARED ped, sourceWindow, winLayout, pedconfig
 
   ;-- close alle windows, but don't kill the menu
   WZ_CloseAllWindows{False}
@@ -6579,6 +6614,20 @@ SHARED ped, sourceWindow, winLayout
   If \click_on Then Gosub open_sourcebrowser 
   If \short_on Then Gosub open_shortcuts
   If \type_on Then Gosub open_definitionbrowser
+
+  ;-- reopen the log window 
+  If log_IsConsoleAvailable{}
+    log_Print{"log is available, reopening it on AB3 screen..."}
+
+    If pedconfig\use_pubscreen
+      logwin_init.s= "CON:" 
+      logwin_init  + Str$(winLayout\logwin_x) + "/" + Str$(winLayout\logwin_y) + "/" + Str$(winLayout\logwin_w) + "/" + Str$(winLayout\logwin_h)
+      logwin_init  + "/AmiBlitz3 Log/SCREEN " + ped\pubScreenName
+      If log_Init{logwin_init} = 0
+        log_Init{"CON:0/19/640/200/AmiBlitz3 Log/SCREEN " + ped\pubScreenName}
+      EndIf      
+    EndIf
+  EndIf
 
   ;-- open or resize source window
   If sourceWindow\win <> 0
@@ -6831,7 +6880,8 @@ If ped\AbDiscObject
   tmpStringVar = UCase$(dos_GetToolString{"LOG_MODE","CONSOLE"})
   If tmpStringVar = "FILE" Then log_mode = #log_tofile
   If tmpStringVar = "CONSOLE" Then log_mode = #log_toconsole
-  If tmpStringVar = "BOTH" Then log_mode = #log_toboth
+  If tmpStringVar = "SERIAL" Then log_mode = #log_toserial  
+  If tmpStringVar = "BOTH" Then log_mode = #log_toconsole|#log_tofile
   log_SetDestination{log_mode,"System/PED.log"}
 
   If logging_level < #log_nothing
@@ -7193,55 +7243,6 @@ Else
   !log_PrintOut{"index for includefiles skipped."}
 EndIf
 
-;--
-;-- prefs file for window positions
-If ReadFile (0,pedconfig\winprefsFile)
-  WZ_ShowMessage{!TRANS{"Loading window layouts ..."}}
-  ReadType 0,wpref(0)
-  ReadType 0,wpref(1)
-  ReadType 0,wpref(2)
-  CloseFile 0
-End If
-
-WZ_ShowMessage{!TRANS{"Starting IDE ..."} }
-
-
-; ########################################################################################
-; # create ports
-; ########################################################################################
-; --
-; -- create a msgport for Iconification
-*WBMsgPort.MsgPort = CreateMsgPort_
-
-
-; --
-; -- defaultsettings for instructions browser
-CaseSense Off
-browse_macros.l           = Off
-browse_instructions.l     = On
-browse_includes.l         = Off
-
-
-; --
-; -- init arexx port
-CNIF #USE_AREXX = 1
-  !log_PrintOut{"init arexx-port..."}
-  Gosub arexx_init
-  AddWaitEvent PortSigBit(*ArexxMsgPort.MsgPort),$8000000
-CEND
-
-; --
-; -- load sourcefont
-Gosub open_sourcefonts
-
-; --
-; -- add the source history to the menu
-If pedconfig\remember_saved
-  Gosub load_rememberfile
-Else
-  Gosub update_remembermenu
-EndIf
-
 ; --
 ; -- fill mapping array with libnames from mapping-file
 ; -- and check consistency based on the mapping files and the internal libnums
@@ -7257,11 +7258,49 @@ map_tokens_to_libs{dos_AddPart{pedconfig\systemDir,"token_mapping_libs.txt"}, Fa
 map_tokens_to_libs{dos_AddPart{pedconfig\systemDir,"token_mapping_userlibs.txt"}, False}
 !log_AvailMem{"after doing libmapping"}
 
+; =============================================================================================================
+WZ_ShowMessage{!TRANS{"Starting IDE ..."} }
+; =============================================================================================================
+; --
+; -- create a msgport for Iconification
+*WBMsgPort.MsgPort = CreateMsgPort_
+
+; --
+; -- init arexx port
+CNIF #USE_AREXX = 1
+  !log_PrintOut{"init arexx-port..."}
+  Gosub arexx_init
+  AddWaitEvent PortSigBit(*ArexxMsgPort.MsgPort),$8000000
+CEND
+
+; --
+; -- load sourcefont
+Gosub open_sourcefonts
+
+; --
+; -- prefs file for window positions
+Gosub read_newprefs
+
+; --
+; -- add the source history to the menu
+If pedconfig\remember_saved
+  Gosub load_rememberfile
+Else
+  Gosub update_remembermenu
+EndIf
+
 WZ_HideMessage{}
 
-PED_SetCurrentDir{}
 
 .START_GUI
+PED_SetCurrentDir{}
+
+; -- defaultsettings for instructions browser
+CaseSense Off
+browse_macros.l           = Off
+browse_instructions.l     = On
+browse_includes.l         = Off
+
 Gosub open_gui
 Gosub menu_new
 
@@ -7802,7 +7841,7 @@ Return
          Case "BUTTON_SOURCEDIR"
            aslfr_SetRequesterTitle {0,!TRANS{ "Please select source directory:"},"",""}
            aslfr_SetPath{0,tmpSourceDir,"",""}
-           If aslfr_Request{0,False,False,True,sourceWindow\pedScreen}
+           If aslfr_Request{0,False,False,True,ped\screen}
              tmpSourceDir = aslfr_GetNextFile{}
              WZPrint "SET_SOURCEDIR",&tmpSourceDir
            EndIf
@@ -7814,7 +7853,7 @@ Return
          Case "BUTTON_INCDIR"
            aslfr_SetRequesterTitle {0,!TRANS{"Please select includes directory:"},"",""}
            aslfr_SetPath{0,tmpIncludeDir,"",""}
-           If aslfr_Request{0,False,False,True,sourceWindow\pedScreen}
+           If aslfr_Request{0,False,False,True,ped\screen}
              tmpIncludeDir = aslfr_GetNextFile{}
              WZPrint "SET_INCDIR",&tmpIncludeDir
            EndIf
@@ -7826,7 +7865,7 @@ Return
          Case "BUTTON_HELPDIR"
            aslfr_SetRequesterTitle {0,!TRANS{"Please select help directory:"},"",""}
            aslfr_SetPath{0,tmpHelpDir,"",""}
-           If aslfr_Request{0,False,False,True,sourceWindow\pedScreen}
+           If aslfr_Request{0,False,False,True,ped\screen}
              tmpHelpDir = aslfr_GetNextFile{}
              WZPrint "SET_HELPDIR",&tmpHelpDir
            EndIf
@@ -7838,7 +7877,7 @@ Return
          Case "BUTTON_AUTODOCDIR"
            aslfr_SetRequesterTitle {0,!TRANS{ "Please select AutoDocs directory:"},"",""}
            aslfr_SetPath{0,tmpAutoDocDir,"",""}
-           If aslfr_Request{0,False,False,True,sourceWindow\pedScreen}
+           If aslfr_Request{0,False,False,True,ped\screen}
              tmpAutoDocDir = aslfr_GetNextFile{}
              WZPrint "SET_AUTODOCDIR",&tmpAutoDocDir
            EndIf
@@ -7846,7 +7885,7 @@ Return
          Case "BUTTON_UTILLIBS"
            aslfr_SetRequesterTitle {0,!TRANS{"Please select UtilLibs file:"},"",""}
            aslfr_SetPath{0,dos_PathPart{tmpUtillibFile},dos_FilePart{tmpUtillibFile},"#?"}
-           If aslfr_Request{0,False,False,False,sourceWindow\pedScreen}
+           If aslfr_Request{0,False,False,False,ped\screen}
              tmpUtillibFile = aslfr_GetNextFile{}
              WZPrint "SET_UTILLIBS_PATH",&tmpUtillibFile
            EndIf
@@ -7854,7 +7893,7 @@ Return
          Case "BUTTON_OSLIBS"
            aslfr_SetRequesterTitle {0,!TRANS{"Please select OsLibs file:"},"",""}
            aslfr_SetPath{0,dos_PathPart{tmpOslibFile},dos_FilePart{tmpOslibFile},"#?"}
-           If aslfr_Request{0,False,False,False,sourceWindow\pedScreen}
+           If aslfr_Request{0,False,False,False,ped\screen}
              tmpOslibFile = aslfr_GetNextFile{}
              WZPrint "SET_OSLIBS_PATH",&tmpOslibFile
            EndIf
@@ -7862,7 +7901,7 @@ Return
          Case "BUTTON_CSLIBS"
            aslfr_SetRequesterTitle {0,!TRANS{"Please select CsLibs file:"},"",""}
            aslfr_SetPath{0,dos_PathPart{tmpCslibFile},dos_FilePart{tmpOslibFile},"#?"}
-           If aslfr_Request{0,False,False,False,sourceWindow\pedScreen}
+           If aslfr_Request{0,False,False,False,ped\screen}
              tmpOslibFile = aslfr_GetNextFile{}
              WZPrint "SET_CSLIBS_PATH",&tmpCslibFile
            EndIf
@@ -8554,9 +8593,8 @@ Even
   ; -- check if actual source is unnamed to decide to open new or just open
   If loadnewtab = True
     If ped\ptrCurrentSourceData
-      !log_PrintOut{"Current sourcename [" + Peek.s(&ped\ptrCurrentSourceData\SourceName) + "]"}
       If Peek.s(&ped\ptrCurrentSourceData\SourceName) <> ""
-        !log_PrintOut{"opening a new tab"}
+        !log_PrintOut{"current tab is already used [" + Peek.s(&ped\ptrCurrentSourceData\SourceName) + "], opening a new tab"}
         Gosub menu_new
       EndIf
     Else
@@ -8570,9 +8608,8 @@ Even
   PED_ShowMessage{!TRANS{"Loading file"} + " " + loadsourcefilename + "..."}
 
   If loadsourcefilename.s <> ""
-    !log_PrintOut{"getting extension for ["+loadsourcefilename.s + "]"}
     ex.s = LCase$(dos_GetExt{loadsourcefilename.s})
-    !log_PrintOut{"loading source <" + loadsourcefilename.s + ">, <" + ex + ">"}
+    !log_PrintOut{"loading source <" + loadsourcefilename.s + ">, type <" + ex + ">"}
   Else
     ex.s = "???"
   End If
@@ -8755,7 +8792,7 @@ Return
 
   SetWindowTitles_ sourceWindow\win, &sourceWindow\Title, -1
 
-  Gosub update_debuggertoggle
+  Gosub update_debuggermenu
 Return
 
 
@@ -9611,7 +9648,7 @@ Return
 .menu_insertfilename:
   aslfr_SetRequesterTitle{0,!TRANS{"Select a filename to insert in source"},"",""}
   aslfr_SetPath{0,pedconfig\mainDir,"",""}
-  If aslfr_Request{0,False,False,False,sourceWindow\pedScreen}
+  If aslfr_Request{0,False,False,False,ped\screen}
     tmpStringVar = aslfr_GetNextFile{} : PED_InsertStringToTextBuffer{tmpStringVar}
   EndIf
 Return
@@ -9913,7 +9950,7 @@ Return
        Use Window WZID("WIN_NEWTYPE")
        PED_UpdateDefinitionBrowser{#DEFBROWSER_RESET}
     End If
-    Gosub update_debuggertoggle
+    Gosub update_debuggermenu
     Gosub save_tempprefs
     PED_SetPointerNormal{}
 
@@ -9961,7 +9998,7 @@ Return
     Else
       PokeW Ptr_Use_Debugger_Word,$80
     EndIf
-    Gosub update_debuggertoggle
+    Gosub update_debuggermenu
     Pop Select : Return 
     
   Default
@@ -10019,7 +10056,7 @@ Return
 
     aslfr_SetRequesterTitle{2,"Name of Executable to Create:","Create","Cancel"}
     aslfr_SetPath {2,Peek.s(?comStr_ExePath),Peek.s(?comStr_ExeFile),"", ""}
-    If NOT aslfr_Request{2,False,True,False, sourceWindow\pedScreen}
+    If NOT aslfr_Request{2,False,True,False, ped\screen}
       compile_state = -2
       Return
     EndIf
@@ -10039,7 +10076,7 @@ Return
     residentfile.s = ""
     aslfr_SetRequesterTitle{3,"Name of Resident File to Create","Create","Cancel"}
     aslfr_SetPath {3, dos_AddPart{pedconfig\blitzlibDir,"Residents"}, ".res","#?.res"}
-    If NOT aslfr_Request{3,False,True,False, sourceWindow\pedScreen}
+    If NOT aslfr_Request{3,False,True,False, ped\screen}
       compile_state = -2
       Return
     EndIf
@@ -10716,7 +10753,7 @@ Return
   If NOT OpenWorkBench_
     !log_PrintOut{"Could not open the Workbench...",#log_error}
   EndIf
-  ScreenToFront_ sourceWindow\pedScreen
+  ScreenToFront_ ped\screen
   ActivateWindow_ sourceWindow\win
 Return
 
@@ -10783,24 +10820,18 @@ Return
 RTS
 
 .com_consoleClose:
-;  !basic
-;  If pedconfig\console_wait = True
-;    !log_PrintOut{"console close: waiting for input..."}
-;
-;    contxt.s = "\\1B[1m\\1B[32m"              ; bold text and textcolor (30..37)
-;    contxt + !TRANS{"Program terminated."} + "\\0a"
-;    contxt + !TRANS{"Press <ENTER> to return to the IDE ..."} + "\\0a"
-;    Write_ ped\consoleHandle, &contxt, FLen(contxt)
-;    Flush_ ped\consoleHandle
-;
-;    console_dummy.b = 0
-;    While Read_(ped\consoleHandle, &console_dummy, 1) = 0
-;      Delay_ 2
-;    Wend
-;  EndIf
-;  Close_ ped\consoleHandle : ped\consoleHandle = 0
-;  !log_PrintOut{"console closed"}
-;  !asm
+  !basic
+  
+  ; -- check if console is open and store its position
+  *conwin.Window = GetWindowByName{pedconfig\console_title}
+  If *conwin
+    winLayout\console_x = *conwin\LeftEdge
+    winLayout\console_y = *conwin\TopEdge
+    winLayout\console_w = *conwin\Width
+    winLayout\console_h = *conwin\Height
+  EndIf
+
+  !asm
 RTS
 
 .com_logPrint: ;A1: pointer to string, D0: optional value, d3: sourceline
@@ -11711,9 +11742,6 @@ Return
     Goto exit_PED_closeall
   EndIf
 
-  sourceWindow\pedScreen = PeekL(Addr Screen(0))
-  PokeL ?comPtr_pedScreen,sourceWindow\pedScreen     ; is used to info compiler on with screen to open requesters
-
   If screen_GetModeID{}<>#scr_mode_wb_use
     If pedconfig\use_default_pubscreen
       !log_PrintOut{"settings defaultpubscreen"}
@@ -11727,19 +11755,13 @@ Return
     !log_PrintOut{"It is recommended to use a screen with at least 16 colors.",#log_warning}
   EndIf
 
+  ped\screen = PeekL(Addr Screen(Used Screen))
+  PokeL ?comPtr_pedScreen,ped\screen     ; is used to info compiler on with screen to open requesters
+
   Gosub set_storedcolors
 
   Gosub init_menus
 
-  ;-- reopen the log window 
-  If log_IsAvailable{}
-    If pedconfig\use_pubscreen
-      log_Close{}
-      If log_Init{"CON:0/19/1200/200/AmiBlitz3 Log/SCREEN "+ped\pubScreenName} = 0
-        log_Init{"CON:0/19/640/200/AmiBlitz3 Log/SCREEN "+ped\pubScreenName}
-      EndIf      
-    EndIf
-  EndIf
 
   ;-- open the windows
   If pedconfig\autolayout 
@@ -12001,8 +12023,6 @@ Return
     If arexx_GetMsg{True} Then Gosub arexx_event
   CEND
 
-  If Used Screen < 0 Then WbToScreen 0
-  ped\screen = PeekL(Addr Screen(Used Screen))
   If ped\screen = 0
     Gosub close_gui
     ped\errorCode = #PEDERROR_OPENWINDOW
@@ -12092,7 +12112,7 @@ Return
 
   ;-- we want to close the pub screen, therfore we inform all apps on the screen that it is not public anymore
 
-  If pedconfig\use_pubscreen Then PubScreenStatus_ sourceWindow\pedScreen,#PSNF_PRIVATE
+  If pedconfig\use_pubscreen Then PubScreenStatus_ ped\screen,#PSNF_PRIVATE
 
   CNIF #USE_AREXX = 1
     ;-- inform other programs that they shall close their windows now
@@ -13769,12 +13789,27 @@ Return
   End If
 Return
 
+.read_newprefs
+  If ReadFile (0,pedconfig\winprefsFile)
+    ReadType 0,wpref(0)
+    ReadType 0,wpref(1)
+    ReadType 0,wpref(2)
+    !log_PrintOut{"loaded window layouts from " + pedconfig\winprefsFile}    
+    CloseFile 0
+  Else
+    !log_PrintOut{"could not read the window layout from " + pedconfig\winprefsFile,#log_error}
+  End If
+Return
+
 .write_newprefs
   If WriteFile (0,pedconfig\winprefsFile)
     WriteType 0,wpref(0)
     WriteType 0,wpref(1)
     WriteType 0,wpref(2)
     CloseFile 0
+    !log_PrintOut{"saved " + pedconfig\winprefsFile}
+  Else
+    !log_PrintOut{"could not write to " + pedconfig\winprefsFile,#log_error}
   EndIf
 Return
 
@@ -13875,7 +13910,6 @@ Return
 
   !log_PrintOut{"loading remembered sourcefile"}
   !PED_LoadSource{rememberfiles$(_rememberitem),True,True,True}
-  Gosub analyze_loadedsource
   PED_UpdateStatusArea{#STATUS_REDRAW}
 Return
 
@@ -13887,21 +13921,26 @@ Return
 Return
 
 .kill_menus
-  If PeekL(Addr GTMenuList(0))<>0
+  If ped\menuStrip 
+    !log_PrintOut{"removing menus from windows..."}
+    
     If sourceWindow\win <> 0 Then ClearMenuStrip_ sourceWindow\win
-    If WZ_IsOpen{"WIN_NEWTYPE"}            Then Use Window WZID("WIN_NEWTYPE")            : ClearMenuStrip_ WZWindowAddr
-    If WZ_IsOpen{"WIN_LABELS"}             Then Use Window WZID("WIN_LABELS")             : ClearMenuStrip_ WZWindowAddr
-    If WZ_IsOpen{"WIN_INSTRUCTIONBROWSER"} Then Use Window WZID("WIN_INSTRUCTIONBROWSER") : ClearMenuStrip_ WZWindowAddr
-    If WZ_IsOpen{"WIN_LIBRARYBROWSER"}     Then Use Window WZID("WIN_LIBRARYBROWSER")     : ClearMenuStrip_ WZWindowAddr
-    If WZ_IsOpen{"WIN_SEARCH"}             Then Use Window WZID("WIN_SEARCH")             : ClearMenuStrip_ WZWindowAddr
-    If WZ_IsOpen{"WIN_SHORTCUTS"}          Then Use Window WZID("WIN_SHORTCUTS")          : ClearMenuStrip_ WZWindowAddr
+    WZ_RemoveMenuStrip{"WIN_NEWTYPE"}            
+    WZ_RemoveMenuStrip{"WIN_LABELS"}             
+    WZ_RemoveMenuStrip{"WIN_INSTRUCTIONBROWSER"} 
+    WZ_RemoveMenuStrip{"WIN_LIBRARYBROWSER"}     
+    WZ_RemoveMenuStrip{"WIN_SEARCH"}             
+    WZ_RemoveMenuStrip{"WIN_SHORTCUTS"}          
+    WZ_RemoveMenuStrip{"WIN_HELPDIAG"}
+
+    !log_PrintOut{"freeing menulist..."}
     Free GTMenuList 0 : ped\menuStrip = 0
+    !log_PrintOut{"done"}
   EndIf
 Return
 
 
 .init_menus
-  !log_PrintOut{"remove menus..."}
   Gosub kill_menus
 
   !log_PrintOut{"initiating menus..."}
@@ -13961,6 +14000,7 @@ Return
    If pedconfig\remember_saved
      GTMenuItem  0,0,1,11
      For h = 0 To 5
+       ;!log_PrintOut{"  adding <" + dos_FilePart{rememberfiles$(h)} + ">"}
        GTMenuItem  0,0,1,12+h,dos_FilePart{rememberfiles$(h)} ,Str$(h+1)    ,0,#MENU_LASTSOURCE1 + h
      Next h
    EndIf
@@ -13986,7 +14026,6 @@ Return
    GTMenuItem  0,0,2,16,!TRANS{"Mark Indent"                 },""          ,0,#MENU_MARKINDENT
    GTMenuItem  0,0,2,17,!TRANS{"Insert Filename"             },""          ,0,#MENU_INSERTFILENAME
    GTMenuItem  0,0,2,18,!TRANS{"Open Filename Under Cursor"  },""          ,0,#MENU_OPENFILEUNDERCURSOR
-
 
 
   GTMenuTitle    0,3,   !TRANS{"Navigation"                  }
@@ -14017,7 +14056,6 @@ Return
    GTMenuItem  0,0,4,10
    GTMenuItem  0,0,4,11,!TRANS{"Compiler Settings"           },""          ,0,#MENU_COMPILERSETTINGS
    GTMenuItem  0,1,4,12,!TRANS{"Runtime Debugger"            },""          ,0,#MENU_RUNTIMEDEBUG
-   Gosub update_debuggertoggle
 
   GTMenuTitle    0,5,   !TRANS{"Help"                        }
    GTMenuItem  0,0,5, 0,!TRANS{"What's New?"                 },""          ,0,#MENU_WHATSNEW
@@ -14056,14 +14094,17 @@ Return
   CreateMenuStrip 0
   ped\menuStrip = PeekL(Addr GTMenuList(0))
   If ped\menuStrip
-    If sourceWindow\win <> 0               Then                                             SetMenuStrip_ sourceWindow\win,ped\menuStrip
-    If WZ_IsOpen{"WIN_SHORTCUTS"}          Then Use Window WZID("WIN_SHORTCUTS")          : SetMenuStrip_ WZWindowAddr,ped\menuStrip
-    If WZ_IsOpen{"WIN_SEARCH"}             Then Use Window WZID("WIN_SEARCH")             : SetMenuStrip_ WZWindowAddr,ped\menuStrip
-    If WZ_IsOpen{"WIN_NEWTYPE"}            Then Use Window WZID("WIN_NEWTYPE")            : SetMenuStrip_ WZWindowAddr,ped\menuStrip
-    If WZ_IsOpen{"WIN_LABELS"}             Then Use Window WZID("WIN_LABELS")             : SetMenuStrip_ WZWindowAddr,ped\menuStrip
-    If WZ_IsOpen{"WIN_INSTRUCTIONBROWSER"} Then Use Window WZID("WIN_INSTRUCTIONBROWSER") : SetMenuStrip_ WZWindowAddr,ped\menuStrip
-    If WZ_IsOpen{"WIN_LIBRARYBROWSER"}     Then Use Window WZID("WIN_LIBRARYBROWSER")     : SetMenuStrip_ WZWindowAddr,ped\menuStrip
+    If sourceWindow\win <> 0 Then SetMenuStrip_ sourceWindow\win,ped\menuStrip
+    WZ_AddMenuStrip{"WIN_NEWTYPE",ped\menuStrip}            
+    WZ_AddMenuStrip{"WIN_LABELS",ped\menuStrip}             
+    WZ_AddMenuStrip{"WIN_INSTRUCTIONBROWSER",ped\menuStrip} 
+    WZ_AddMenuStrip{"WIN_LIBRARYBROWSER",ped\menuStrip}     
+    WZ_AddMenuStrip{"WIN_SEARCH",ped\menuStrip}             
+    WZ_AddMenuStrip{"WIN_SHORTCUTS",ped\menuStrip}
+    WZ_AddMenuStrip{"WIN_HELPDIAG",ped\menuStrip}
   EndIf
+
+  Gosub update_debuggermenu
 Return
 
 Even
@@ -14218,7 +14259,7 @@ Even
       Case "PROJECT_LOAD"
         aslfr_SetRequesterTitle {1,!TRANS{"Choose Project"},!TRANS{"Ok"},!TRANS{"Cancel"}}
         aslfr_SetPath  {1,"",project_filename,"#?.a2p",False}
-        If aslfr_Request {1,False,False,False,sourceWindow\pedScreen,True}
+        If aslfr_Request {1,False,False,False,ped\screen,True}
           project_filename = aslfr_GetNextFile{}
         ;If Exists(project_filename)>0
           Gosub project_load
@@ -14251,7 +14292,7 @@ Even
       Case "PROJECT_ADDFILE"
         aslfr_SetRequesterTitle {1,!TRANS{"Add File"},!TRANS{"Ok"},!TRANS{"Cancel"}}
         aslfr_SetPath  {1,ab3_project\drawer,project_filename,"",False}
-        If aslfr_Request {1,False,False,False,sourceWindow\pedScreen,False}
+        If aslfr_Request {1,False,False,False,ped\screen,False}
           actual_file$=aslfr_GetNextFile{}
         ;If Exists(actual_file$) > 0
           ab3_project\sourcecounter + 1
@@ -14440,7 +14481,7 @@ Return
   project_filename = ab3_project\name+".a2p"
   aslfr_SetRequesterTitle {1,!TRANS{"Save Projectfile"},!TRANS{"Ok"},!TRANS{"Cancel"}}
   aslfr_SetPath  {1,ab3_project\drawer,project_filename,"(#?.a2p)",False}
-  If aslfr_Request {1,True,False,False,sourceWindow\pedScreen,True}
+  If aslfr_Request {1,True,False,False,ped\screen,True}
     project_filename = aslfr_GetNextFile{}
     If OpenFile(1,project_filename)
       WriteType 1,ab3_project
@@ -16562,13 +16603,17 @@ Return
   !log_PrintOut{"close compilersettings"}
 Return
 
-.update_debuggertoggle:
-  If PeekW(Ptr_Use_Debugger_Word) = $80
-    GTSetMenuChecked 0,4,12,On
-  Else
-    GTSetMenuChecked 0,4,12,Off
+.update_debuggermenu:
+  ; check if there is a vaild menu available
+  ; check if the debugger config data from compiler is already available (BackupCompilerSettings)
+  If ped\menuStrip AND Ptr_Use_Debugger_Word
+    If PeekW(Ptr_Use_Debugger_Word) = $80
+      GTSetMenuChecked 0,4,12,On
+    Else
+      GTSetMenuChecked 0,4,12,Off
+    EndIf
+    !log_PrintOut{"updated Debuggerstatus: " + Hexw$(PeekW(Ptr_Use_Debugger_Word))}
   EndIf
-  !log_PrintOut{"updated Debugstatus: " + Hexw$(PeekW(Ptr_Use_Debugger_Word))}
 Return
 
 
