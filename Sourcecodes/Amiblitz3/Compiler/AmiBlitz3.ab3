@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.11.2
-; NumberOfBuilds  = 632
+; NumberOfBuilds  = 635
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1034
-; CursorColumn    = 1
+; CursorLine      = 334
+; CursorColumn    = 9
 ; LabelSearch     = "make smallest"
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -211,6 +211,8 @@ Else
   PokeB ?MorphOS,0      ; set it to use CacheClear_U
 EndIf
 
+
+
 SHARED CLIMode.l
 SHARED cli_verbose.l
 CLIMode              = False
@@ -287,8 +289,6 @@ Statement log2PED_HexDump{maddr.l, size.w}
     log2PED{logtxt$}
   Next
 End Statement
-
-
 
 
 .TOOLTYPES
@@ -385,10 +385,11 @@ Else
   EndIf
 EndIf
 
-; -- LOCALIZATION
+; -- check it localization is enabled
 ; -- used by CLIModeSupport, added here as it needs propriatary libraries. 
-; -- LIBS:-assign is added right before
+; -- LIBS:-assign is added right before so that the libraries can be found in the amiblitz-drawer
 XINCLUDE "translation.include.ab3"      
+
 If dos_GetToolState{"DISABLE_LOCALIZATION"}  = -1
   config\localization = False
 Else
@@ -399,6 +400,22 @@ EndIf
 If dos_GetToolState{"LOG_USED_BLITZLIBS"} = -1
   PokeB ?log_blitzlibs,1
 EndIf
+
+; =============================================================================================================
+XINCLUDE "CLIModeSupport.ab3"
+If dos_FromCLI{}
+  CLIMode.l = True
+  error_SetFlags{#error_stdout}
+Else
+  ;TODO: find a suitable way to detect an already running instance of AB3
+  ;If FindTask_("AmiBlitz3")
+  ;  If ask{"AmiBlitz3 seems already to be running.\\nDo you really want to start it twice?","Yes|No"} = 0
+  ;    Goto shutdown_compiler
+  ;  EndIf
+  ;EndIf
+EndIf
+
+
 
 ; ========================== should be moved to common, as PED uses it too!
 #MAX_Blitzlibs             = 256
@@ -475,12 +492,6 @@ map_tokens_to_libs{dos_AddPart{config\path_system,"token_mapping_libs.txt"}, Fal
 map_tokens_to_libs{dos_AddPart{config\path_system,"token_mapping_userlibs.txt"}, False}
 ; ==================================================================
 
-
-XINCLUDE "CLIModeSupport.ab3"
-If dos_FromCLI{}
-  CLIMode.l = True
-  error_SetFlags{#error_stdout}
-End If
 
 ; added here so the init is also available for the climode
 ; for create release exe (minimized exe)
@@ -1155,7 +1166,7 @@ End Function
   Else
     config\ptr_seg_ped = LoadSeg_(config\pedfile)
     If config\ptr_seg_ped = 0
-      error{!TRANS{"Can't load the Editor:"} + " " + config\pedfile + "\\nReasion: " + Str$(IoErr_) + "\\n" + !TRANS{"Program will quit now."} }
+      error{!TRANS{"Can't load the Editor:"} + " " + config\pedfile + "\\nReason: " + Str$(IoErr_) + "\\n" + !TRANS{"Program will quit now."} }
       Goto shutdown_compiler
     EndIf
 
@@ -2251,6 +2262,12 @@ compiler_job: Dc.w 0                                      ; added by thilo: what
           MOVE.l ##MEMF_CLEAR,d1
           MOVE.l d0,d2
           JSR _AllocMem(a6)         ; thilo: not 100% sure about this!
+          TST.l d0 : BNE 'skipnomem
+            !basic
+            error{"No memory left for function optimizer!"}
+            !asm  
+         'skipnomem          
+
           MOVE.l d0,a1
 
           MOVE.l d2,4(a1)
@@ -6253,7 +6270,7 @@ RTS
 RTS
 
 
-getimm:                                                    ;get an immediate value
+get_imm:                                                    ;get an immediate value
   BSR.w asmconst
   MOVEQ.l #$0B,D5
 RTS
@@ -6385,11 +6402,11 @@ get_reg2:
 RTS
 
 
-getan:
+get_an:
   !fget                                                ;bsr.w get1bytemain
   ORI.w #" ",D0
 
-getan2:
+get_an2:
   CMP.w #$61,D0  : BNE.w syntaxerr                     ;'a'
 
 checkValidRegisterNum:
@@ -6442,26 +6459,28 @@ getmovem:
 BRA.w 'done
 
 
-.getea:
+.get_ea:
   ;--
   ;-- evaluate the ea of an asm bit
   ;--
-  MOVEA.l A5,A4                                            
+  MOVEA.l A5,A4                                           ; store current char of source in A4
+
   !fget                                                   ;bsr.w get1bytemain
-  CMP.w #"#",D0 : BEQ.w getimm
+  CMP.w #"#",D0 : BEQ.w get_imm
   CMP.w #"(",D0 : BEQ.w 'ind
   CMP.w #"-",D0 : BNE.w 'more
 
   !fget                                                   ;bsr.w get1bytemain       -(
   CMP.w #"(",D0 : BNE.w 'notccr
-  BSR.w getan
+  BSR.w get_an
   CMP.w #")",D0 : BNE.w syntaxerr
+  
   MOVEQ.l #$04,D5
   !fget                                                    ;bsr.w get1bytemain  
 RTS
 
  'ind
-  BSR.w getan
+  BSR.w get_an
   CMP.w #")",D0 : BNE.w syntaxerr
 
   !fget
@@ -6483,47 +6502,44 @@ RTS
   CMP.w #"0",D0 : BCS.w 'notan
   CMP.w #"7",D0 : BHI.w 'notan
    
-  MOVE.w D0,D4
-  !fget
-  !test_for_commacolon : BEQ.w 'dn
-  CMP.w #"-",D0 : BEQ.w getmovem
-  CMP.w #"/",D0 : BEQ.w getmovem
-   
-  BRA.w 'notan2
-
- 'dn
-  MOVEQ.l #$00,D5
-  SUBI.w #$30,D4
-RTS
+    MOVE.w D0,D4
+    !fget
+    !test_for_commacolon : BEQ.w 'dn
+      CMP.w #"-",D0 : BEQ.w getmovem
+      CMP.w #"/",D0 : BEQ.w getmovem    
+      BRA.w 'notan2
+   'dn
+    MOVEQ.l #$00,D5
+    SUBI.w #$30,D4
+  RTS
 
  'notdn
   CMP.w #"a",D1 : BNE.w 'notan
   CMP.w #"0",D0 : BCS.w 'notan
   CMP.w #"7",D0 : BHI.w 'notan
-  MOVE.w D0,D4
-  !fget
-  !test_for_commacolon : BEQ.w 'an
-  CMP.w #"-",D0 : BEQ.w getmovem2                          ;movem
-  CMP.w #"/",D0 : BEQ.w getmovem2
-  BRA.w 'notan2
 
- 'an
-  ;--
-  ;-- An
-  ;--
-  MOVEQ.l #1,d5
-  SUBI.w #$30,D4
-  ; new >
-  BRA 'l10
-  ADDQ.w #8,d4                             ; ??? looks like dead code ???
-  MOVEQ #0,d5                              ;   "
-  BSET d4,d5                               ;   "
-  MOVE.w d5,d4                             ;   "
-  MOVEQ.l #$0f,D5                          ;   "             ;01
-
- 'l10
-  ; > new
-RTS
+    MOVE.w D0,D4
+    !fget
+    !test_for_commacolon : BEQ.w 'an
+      CMP.w #"-",D0 : BEQ.w getmovem2                          ;movem
+      CMP.w #"/",D0 : BEQ.w getmovem2
+      BRA.w 'notan2
+   'an
+    ;--
+    ;-- An
+    ;--
+    MOVEQ.l #1,d5
+    SUBI.w #$30,D4
+    ; new >
+    BRA 'l10
+    ADDQ.w #8,d4                             ; ??? looks like dead code ???
+    MOVEQ #0,d5                              ;   "
+    BSET d4,d5                               ;   "
+    MOVE.w d5,d4                             ;   "
+    MOVEQ.l #$0f,D5                          ;   "             ;01
+   'l10
+    ; > new
+  RTS
 
  'notan
   ORI.w #" ",D0
@@ -6537,20 +6553,23 @@ RTS
   CMP.w #$73,D1 : BNE.w 'notsx       ;'s'
   CMP.w #$70,D4 : BNE.w 'notsp       ;'p'
    
-  !test_for_commacolon : BNE.w 'notccr
-  ;--
-  ;-- Sp
-  ;--
-  MOVEQ.l #$07,D4
-  MOVEQ.l #$01,D5
-RTS
-
+    !test_for_commacolon : BNE.w 'notccr
+    ;--
+    ;-- Sp
+    ;--
+    MOVEQ.l #$07,D4
+    MOVEQ.l #$01,D5
+    RTS
  'notsp
+
   CMP.w #$72,D4 : BNE.w 'notccr      ;'r'
    
-  !test_for_commacolon : BNE.w 'notccr
-  MOVEQ.l #$0D,D5
-RTS
+    !test_for_commacolon : BNE.w 'notccr
+    ;--
+    ;-- r
+    ;--
+    MOVEQ.l #$0D,D5
+    RTS
 
  'notsx
   ORI.w #" ",D0
@@ -6558,35 +6577,39 @@ RTS
   CMP.w #$63,D4 : BNE.w 'notccr      ;'c'
   CMP.w #$72,D0 : BNE.w 'notccr      ;'r'
    
-  BSR.w get1bytemain : BEQ.w 'ccr    ;??wy not !fget
-   
-  CMP.w #",",D0 : BNE.w 'notccr
+    BSR.w get1bytemain : BEQ.w 'ccr    ;??wy not !fget
+    
+    CMP.w #",",D0 : BNE.w 'notccr
 
- 'ccr
-  ;--
-  ;-- ccr
-  ;--
-  MOVEQ.l #$0C,D5
-RTS
+   'ccr
+    ;--
+    ;-- ccr
+    ;--
+    MOVEQ.l #$0C,D5
+    RTS
 
  'notccr0
   CMP.w #$75,D1 : BNE.w 'notccr      ;'u'
   CMP.w #$73,D4 : BNE.w 'notccr      ;'s'
   CMP.w #$70,D0 : BNE.w 'notccr      ;'p'
-   
-  BSR.w get1bytemain : BEQ.w 'usp    ;??wy not !fget
-  
-  CMP.w #",",D0 : BNE.w 'notccr
+    
+    BSR.w get1bytemain : BEQ.w 'usp    ;??wy not !fget
+    
+    CMP.w #",",D0 : BNE.w 'notccr
 
- 'usp
-  MOVEQ.l #$0E,D5
-RTS
-
+   'usp
+    ;--
+    ;-- usp
+    ;--
+    MOVEQ.l #$0E,D5
+    RTS
+ 
  'notccr
+
   ;
   ;not anything - must be a label or abs address of some kind
   ;
-  MOVEA.l A4,A5
+  MOVEA.l A4,A5                        ; get back source character in A5
   BSR.w asmconst
   
   !test_for_commacolon : BEQ.w 'abs1
@@ -6608,7 +6631,7 @@ RTS
 RTS
 
  'notpcrel
-  BSR.w getan2
+  BSR.w get_an2
   BRA.w getrest
 
  'absx
@@ -6688,26 +6711,22 @@ BRA.w get1bytemain                                         ;??wy not !fget
 
 
 asmconst:                                                  ;store the text of the eval into asmfirst...
-    ;
-    ;text till '(','.'
-    ;
+  ;--
+  ;-- text till '(','.'
+  ;--
   MOVEA.l asmbuff,A0
-  MOVE.w ininclude,D1
-  OR.w inmacro,D1
-  MOVE.w D1,(A0)+                                          ;flag!
-  BNE.w copyconst
+  MOVE.w ininclude,D1 : OR.w inmacro,D1 : MOVE.w D1,(A0)+ : BNE.w copyconst
+
   MOVE.l A5,-(A7)
   BSR.w copyconst
   MOVEA.l asmbuff,A0
   CMP.w #$4,D1 : BLS.w 'leave
-  TST.w lc : BNE.w 'leave
-
-  ADDQ.w #2,A0
-  MOVE.l (A7)+,(A0)+
-  CLR.b (A0)
-  MOVE.w #$0004,asmlen2                                    ;pointer + 0
- RTS
-
+    TST.w lc : BNE.w 'leave
+      ADDQ.w #2,A0
+      MOVE.l (A7)+,(A0)+
+      CLR.b (A0)
+      MOVE.w #$0004,asmlen2                                    ;pointer + 0
+      RTS
  'leave
   NOT.w (A0)
   ADDQ.w #4,A7
@@ -6717,29 +6736,30 @@ RTS
 lc:  Ds.w 1
 
 
-copyconst:
+copyconst: ; copies A5 to A0 until special character occurs
   CLR.w lc
   MOVEQ.l #$00,D1
 
  'loop
-  ADDQ.w #1,D1                                            ;label name
+    ADDQ.w #1,D1                                            ;label name
 
-  !fget : BEQ.w 'done
-  CMP.w #$22,d0 : BNE.s 'loop_l10                         ;'"'
-    NOT.w instringon
- 'loop_l10
+    !fget : BEQ.w 'done
+    CMP.w #$22,d0 : BNE.s 'loop_l10                         ;'"'
+      NOT.w instringon
+   'loop_l10
 
-  CMP.w #":",d0 : BNE.s 'loop_l11
-    TST.w instringon : BEQ 'done
- 'loop_l11
+    CMP.w #":",d0 : BNE.s 'loop_l11
+      TST.w instringon : BEQ 'done
+   'loop_l11
 
-  TST.w D0 : BPL.w 'notmi
-  MOVE.w D0,-(A7)
-  LSR.w #8,D0
-  MOVE.b D0,(A0)+
-  MOVE.w (A7)+,D0
-  MOVE.b D0,(A0)+
-  ADDQ.w #1,D1
+    TST.w D0 : BPL.w 'notmi
+
+    MOVE.w D0,-(A7)
+    LSR.w #8,D0
+    MOVE.b D0,(A0)+
+    MOVE.w (A7)+,D0
+    MOVE.b D0,(A0)+
+    ADDQ.w #1,D1
   BRA.s 'loop
 
  'notmi
@@ -6778,7 +6798,8 @@ copyconst:
 RTS
 
 
-.assemble_it:
+.assemble_it:     ; d0:  token number
+
   ;-------------------------------------------------
   ;-- Patch some instructions to be used by own code
   CMP.l ##TokenID_BSS,d0 : BNE.s 'l12                      ; token was asm instruction TAS  
@@ -6789,6 +6810,7 @@ RTS
     JMP chipseg
  'l13
   ;-------------------------------------------------
+
 
   ADDQ.l #1,destpointer                                    ;even
   BCLR #$0,destpointer+3
@@ -6802,6 +6824,20 @@ RTS
   MOVEA.l $0(A0,D0.W),A0                                   ; begin inline assembler: get the asm instruction from token number
   MOVE.w D0,temp1
   MOVE.l A0,-(A7)
+
+  ;-- tokendata for asm instructions
+  ; 0(A0) : opcode
+  ; 2(A0) : source ea : reg or value
+  ; 4(A0) : source ea : address mode
+  ; 6(A0) : dest  reg : 
+  ; 7(A0)
+  ; 8(A0) : operand size 
+  ; A(A0) : checking routine
+  ; E(A0) : immediate version of opcode if available
+
+
+
+
   ;
   MOVEQ.l #$01,D1         ; 1:no size, 0:byte, 4:word/defaultsize 8:longword
   !fget                                                    ;bsr.w get1bytemain
@@ -6815,17 +6851,18 @@ RTS
     CMP.w #"B",D0 : BEQ.w 'bsize
     CMP.w #"l",D0 : BEQ.w 'lsize    ;long
     CMP.w #"L",D0 : BEQ.w 'lsize
-    CMP.w #"s",d0 : BNE syntaxerr   ;s equals b
-    BRA.w 'bsize                    ; was 'lsize org source
-  
- 'bsize
-  MOVEQ.l #$00,D1
-  MOVE.w $8(A0),D0      ; some opcode mask and allowed operand size from instruction table in D0
-  BRA.w 'tstsize
+    CMP.w #"s",d0 : BEQ.w 'bsize    ;s equals b
+    CMP.w #"S",d0 : BNE syntaxerr
+    BRA.w 'bsize
 
  'dsize                   ; defaultsize
   MOVEQ.l #$04,D1
   BRA.w 'putsize
+
+ 'bsize
+  MOVEQ.l #$00,D1
+  MOVE.w $8(A0),D0      ; some opcode mask and allowed operand size from instruction table in D0
+  BRA.w 'tstsize
 
  'wsize
   MOVEQ.l #$04,D1
@@ -6870,7 +6907,7 @@ RTS
   MOVE.w D1,asmsize                                          ; asmsize = operandsize
   MOVEQ.l #-$01,D3                                           ; set all bits of D3
 
-  BSR.w reget_lastchar : BEQ.w 'done0                                 ; check further parameters of asm instruction
+  BSR.w reget_lastchar : BEQ.w 'done0                        ; check further parameters of asm instruction
     MOVE.l #namebuffer,asmbuff
     ;bsr.w bakup
     ; new >
@@ -6878,9 +6915,9 @@ RTS
     MOVEA.l lastsourcepos,A5
     ;< new
     
-    BSR.w getea                                               ; get source ea
-    MOVE.l D4,D2                                              ;to src
-    MOVE.l D5,D3                                              ; size ??
+    BSR.w get_ea                                             ; get source ea returns size in D5
+    MOVE.l D4,D2                                             ; to src
+    MOVE.l D5,D3                                             ; size ??
 
     MOVE.w asmlen2,asmlen
     MOVEQ.l #-$01,D5
@@ -6888,13 +6925,14 @@ RTS
 
     CMP.w #",",D0 : BNE.w 'done0
       MOVE.l #namebuffer2,asmbuff
-      BSR.w getea                                             ;dest
+      BSR.w get_ea                                           ;dest
  'done0
   ;
   ;-- all stuff fetched!
   ;-- now to assemble it.....
   ;
   MOVEA.l (A7)+,A0              ; pointer to asm token
+
   ;
   ;-- O.K. - Let's assemble it!
   ;
@@ -6914,8 +6952,8 @@ RTS
     BTST #$0,D0  :  BEQ.w 'noa
       CMP.w #$1,D5 :  BNE.w 'noa
         CMP.w #$E,D3 :  BEQ.w 'noia
-          MOVE.w temp1,D0
-          ADDQ.w #4,D0
+          MOVE.w temp1,D0             ; get current token
+          ADDQ.w #4,D0                ; move on to the next one: the I-version is always the next token
           BRA.w 'moveon
   'noa
       BTST #$1,D0  :  BEQ.w 'noia
@@ -6923,8 +6961,8 @@ RTS
       MOVE.w temp1,D0
   'moveon
       ADDQ.w #4,D0
-      MOVEA.l #asmpnts,A0
-      MOVEA.l $0(A0,D0.W),A0
+      MOVEA.l #asmpnts,A0     
+      MOVEA.l $0(A0,D0.W),A0         ; get the I-version of the asm-isntruction
       MOVE.w (A0),D1
  'noia
 
@@ -6932,13 +6970,12 @@ RTS
   MOVE.l #namebuffer2,buff2
 
   ;--
-  ;-- check if a error checking routine is defined in the token
+  ;-- check if an error checking routine is defined in the token
   ;--
   MOVE.l $A(A0),D0 : BEQ.w 'nojsr           
     MOVEA.l D0,A3
     MOVE.w asmsize,D6
-    JSR (A3)                                ; call errorchecking routine
-    BPL.w 'noerr
+    JSR (A3) : BPL.w 'noerr             ; call errorchecking routine
       CMP.w #-$2,D0 : BEQ.w illsizeerr
       BRA.w illeaerr
    'noerr
@@ -6962,10 +6999,14 @@ RTS
 
   MOVE.l buff1,asmbuff
 
+  ;--
+  ;-- is there an immediate version of the opcode?
+  ;--
+  ;-- d1=opcode, d2=srcreg, d3=srcea, d4=destreg, d5=destea
   MOVE.w $E(A0),D0 : BEQ.w 'nothing
                      BMI.w 'nothing
     ; new >
-    CMP.w #$7000,d1 : BNE 'skip                     ; MOVEQ#0,D0
+    CMP.w ##opcode_MOVEQ0D0,d1 : BNE 'skip
       CMP.w #$b,d3  : BNE illeaerr
    'skip
     ; < new
@@ -7558,14 +7599,14 @@ RTS
 Goto loop
 
 
-insasm:                                                    ;ass asmbuff, asmlen, pc, ea to list
+.insasm:                                                    ;ass asmbuff, asmlen, pc, ea to list
   MOVEM.l D0-D2/A0,-(A7)
   MOVE.w $E(A0),-(A7) : BPL.w 'ok
     CLR.w (A7)
  'ok
   MOVE.l A1,-(A7)
-  MOVEQ.l #$10+2,D0
-  ADD.w asmlen,D0
+
+  MOVEQ.l #$10+2,D0 : ADD.w asmlen,D0
   MOVE.w D0,D2
   MOVEA.l _execbase,A6
   MOVE.l mempool2,a0 : JSR _AllocPooled(a6)
@@ -19708,12 +19749,12 @@ BRA.w maxjsr
   MOVE.w ##opcode_BRA,D1
   
   CNIF #longbranch
+  TST.b optimize_integer : BEQ 'l1
     ; make a 32bit branch as $60FF indicates it,
     ; whereas $6000 indicates a 16bit jump
-    TST.b optimize_integer : BEQ 'l1
-      OR.l #$ff,d1  
-      BSR writeword
-   'l1
+    OR.l #$ff,d1  
+    BSR writeword
+ 'l1
   CEND
 
   SWAP D1
@@ -19939,35 +19980,38 @@ BRA.w 'next
   CMP.w #".",D0 : BNE.w 'word              ;definecode 'lb 'lw 'll
   
   JSR get1bytemain
-  CMP.w #$77,D0 : BEQ.w 'word2        ;'w'
-  CMP.w #$62,D0 : BEQ.w 'byte         ;'b'
-  ; new >
-  CMP.w #"s",d0 : BEQ 'single3        ;'s'
-  CMP.w #"d",d0 : BEQ 'double3        ;'d'
-  ; < new
-  CMP.w #$6C,D0 : BNE.w syntaxerr     ;'l'
-            
+  CMP.w #"w",D0 : BEQ.w 'word2
+  CMP.w #"W",D0 : BEQ.w 'word2
+  CMP.w #"b",D0 : BEQ.w 'byte
+  CMP.w #"B",D0 : BEQ.w 'byte  
+  CMP.w #"s",d0 : BEQ.w 'single3
+  CMP.w #"S",d0 : BEQ.w 'single3  
+  CMP.w #"d",d0 : BEQ.w 'double3
+  CMP.w #"D",d0 : BEQ.w 'double3  
+  CMP.w #"l",D0 : BNE.w 'long  
+  CMP.w #"L",D0 : BNE.w syntaxerr
+ 
+ 'long              
   MOVEQ.l #$02,D1
-RTS
- ; new >
+  RTS
+ 
  'single3
   MOVE.b #1,iee
   MOVEQ.l #$3,d1
-RTS
+  RTS
 
  'double3
   MOVE.b #1,iee
   MOVEQ.l #$4,d1
-RTS
- ; < new
+  RTS
 
  'byte
   MOVEQ.l #$00,D1
-RTS
+  RTS
 
  'word2
   MOVEQ.l #$01,D1
-RTS
+  RTS
 
  'word
   MOVEQ.l #$01,D1
@@ -19985,8 +20029,7 @@ JMP bakup
   BSR.w evalconst2
   MOVE.l D3,D1        ;to put in memory
   MOVE.l (A7)+,D3     ;number of times
-  MOVE.w (A7)+,D2
-  BEQ.w 'byte
+  MOVE.w (A7)+,D2 : BEQ.w 'byte
    ;bsr.w do_even
   ; new >
    ;addq.l #1,destpointer                                   ;even
@@ -20006,7 +20049,7 @@ RTS
 RTS
 
  'byte
-   BSR.w writebyte
+  BSR.w writebyte
   SUBQ.l #1,D3 : BNE.w 'byte
 RTS
 
@@ -20047,15 +20090,11 @@ RTS
   BSR.w getsize2
 
   MOVE.l #namebuffer,asmbuff
-  TST.w D1
-   BEQ.w 'byte
-  CMP.w #$1,D1
-   BEQ.w 'word
+  TST.w D1 : BEQ.w 'byte
+  CMP.w #$1,D1 : BEQ.w 'word
   ; new >
-  CMP.w #$2,d1
-   BEQ 'long
-  CMP.w #$3,d1
-   BEQ 'single
+  CMP.w #$2,d1 : BEQ 'long
+  CMP.w #$3,d1 : BEQ 'single
   ; < new
   ;
   ;Long!
@@ -20068,15 +20107,14 @@ RTS
   ; < new
 
  'lloop
-   JSR asmconst
-   BSR.w insasm2
-   BSR.w writelong
+    JSR asmconst
+    BSR.w insasm2
+    BSR.w writelong
    ; new >
-   BSR   writelong
+    BSR   writelong
    ; < new
-  CMP.w #",",D0    ; ','
-   BEQ.w 'lloop
- RTS
+  CMP.w #",",D0 : BEQ.w 'lloop
+  RTS
 
   ; new >
  'long
@@ -20087,16 +20125,15 @@ RTS
   MOVE.b #1,_dcb
 
  'lloopb
-  JSR asmconst
-  CLR.b _dcb
-  BSR.w insasm2
-  BSR writebyte
-  BSR writebyte
-  BSR writebyte                                            ;long
-  BSR writebyte
-  CMP.w #",",D0
-   BEQ.w 'lloopb
- RTS
+    JSR asmconst
+    CLR.b _dcb
+    BSR.w insasm2
+    BSR writebyte
+    BSR writebyte
+    BSR writebyte                                            ;long
+    BSR writebyte
+  CMP.w #",",D0 : BEQ.w 'lloopb
+  RTS
 
  'single
   MOVEQ.l #$0c,D3
@@ -20114,7 +20151,7 @@ RTS
     BSR.w writebyte
     BSR.w writebyte
   CMP.w #",",D0 : BEQ.w 'lloopa
- RTS
+  RTS
   ; < new
 
  'byte  ;Byte!
@@ -21171,6 +21208,8 @@ fillbra:
 
   CNIF #longbranch
   TST.b optimize_integer : BEQ 'l1
+    ; make a 32bit branch as $60FF indicates it,
+    ; whereas $6000 indicates a 16bit jump
     OR.l #$ff,d1
     BSR writeword
  'l1
@@ -21521,46 +21560,46 @@ doif2:
 
   CMP.w ##opcode_JSR,-6(a4) : BEQ 'b6
 
-  CMP.w #$5ec0,-2(a4) : BNE.s 'lb1                         ;>
-    MOVE.w #$6f00,-2(a4)                                   ;ble
-    BRA.s 'br
- 'lb1
+    CMP.w #$5ec0,-2(a4) : BNE.s 'lb1                         ;>
+      MOVE.w #$6f00,-2(a4)                                   ;ble
+      BRA.s 'br
+   'lb1
 
-  CMP.w #$5dc0,-2(a4) : BNE.s 'lb2                         ;<
-    MOVE.w #$6c00,-2(a4)                                   ;bge
-    BRA.s 'br
- 'lb2
-  CMP.w #$57c0,-2(a4) : BNE.s 'lb3                         ;=
-    MOVE.w #$6600,-2(a4)                                   ;bne
-    BRA.s 'br
- 'lb3
- 
-  CMP.w #$56c0,-2(a4) : BNE.s 'lb4                         ;<>
-    MOVE.w #$6700,-2(a4)                                   ;beq
-    BRA.s 'br
- 'lb4
+    CMP.w #$5dc0,-2(a4) : BNE.s 'lb2                         ;<
+      MOVE.w #$6c00,-2(a4)                                   ;bge
+      BRA.s 'br
+   'lb2
+    CMP.w #$57c0,-2(a4) : BNE.s 'lb3                         ;=
+      MOVE.w #$6600,-2(a4)                                   ;bne
+      BRA.s 'br
+   'lb3
+  
+    CMP.w #$56c0,-2(a4) : BNE.s 'lb4                         ;<>
+      MOVE.w #$6700,-2(a4)                                   ;beq
+      BRA.s 'br
+   'lb4
 
-  CMP.w #$5cc0,-2(a4) : BNE.s 'lb5                         ;>=
-    MOVE.w #$6d00,-2(a4)                                   ;blt
-    BRA.s 'br
- 'lb5
+    CMP.w #$5cc0,-2(a4) : BNE.s 'lb5                         ;>=
+      MOVE.w #$6d00,-2(a4)                                   ;blt
+      BRA.s 'br
+   'lb5
 
-  CMP.w #$5fc0,-2(a4) : BNE.s 'b6                          ;<=
-    MOVE.w #$6e00,-2(a4)                                   ;bgt
- 'br
+    CMP.w #$5fc0,-2(a4) : BNE.s 'b6                          ;<=
+      MOVE.w #$6e00,-2(a4)                                   ;bgt
+   'br
 
-  TST.w (a7)+
-  CNIF #longbranch
-  TST.b optimize_integer : BEQ 'l1a
-    OR.b #$ff,-1(a4)                                       ;long branches
+    TST.w (a7)+
+    CNIF #longbranch
+    TST.b optimize_integer : BEQ 'l1a
+      OR.b #$ff,-1(a4)                                       ;long branches
+      BSR writeword
+    'l1a
+    CEND
+
     BSR writeword
-  'l1a
-  CEND
-
-  BSR writeword
-  BRA.s 'br2
-
+    BRA.s 'br2
  'b6
+
   ; < new
   BSR.w writeword
 
@@ -22481,9 +22520,11 @@ doendif2:
     MOVE.w ##opcode_BRA,D1
 
     CNIF #longbranch
-      TST.b optimize_integer : BEQ 'l1
-        OR.l #$ff,d1
-     'l1
+    TST.b optimize_integer : BEQ 'l1
+      ; make a 32bit branch as $60FF indicates it,
+      ; whereas $6000 indicates a 16bit jump
+      OR.l #$ff,d1
+   'l1
     CEND
 
     BSR.w writeword
