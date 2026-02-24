@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.11.3
-; NumberOfBuilds  = 638
+; NumberOfBuilds  = 639
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,11 +30,11 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 27209
-; CursorColumn    = 49
-; LabelSearch     = ""
+; CursorLine      = 4163
+; CursorColumn    = 72
+; LabelSearch     = "noprocerr"
 ; LabelRemark     = 0
-; LabelAll        = 0
+; LabelAll        = 1
 ; LabelCase       = 0
 ; LabelPosition   = 0
 ; 
@@ -1147,7 +1147,7 @@ End Function
   JSR make_AssemblerTable
 
   !basic
-  PokeL ?constpcat, AllocMem_(PeekL(?constmaxpc),#MEMF_CHIP)
+  PokeL ?constpcat, AllocMem_(PeekL(?constmaxpc),#MEMF_PUBLIC)
   If PeekL(?constpcat) = 0 Then Goto shutdown_compiler
   PokeL ?constlibat, PeekL(?constpcat) + PeekL(?constmaxpc)
 
@@ -2155,9 +2155,9 @@ compiler_job: Dc.w 0                                      ; added by thilo: what
 .startcompile:                                            ; O.K. Here we go.....
   !basic
   log2PED{"=================== configuration =======================",#log_debug}
-  log2PED{"runtime debugging : " + Hex$(PeekW(?set_use_debugger)),#log_debug}
-  log2PED{"function optimizer: " + Hex$(PeekW(?set_FuncOptimize)),#log_debug}
-  log2PED{"make smallest code: " + Hex$(PeekW(?set_make_smallestcode)),#log_debug}
+  log2PED{"runtime debugging : " + Hexw$(PeekW(?set_use_debugger)),#log_debug}
+  log2PED{"function optimizer: " + Hexw$(PeekW(?set_FuncOptimize)),#log_debug}
+  log2PED{"make smallest code: " + Hexw$(PeekW(?set_make_smallestcode)),#log_debug}
   log2PED{"verbose mode: " + Str$(cli_verbose),#log_debug}
   log2PED{"=========================================================",#log_debug}
 
@@ -2299,10 +2299,6 @@ compiler_job: Dc.w 0                                      ; added by thilo: what
 
   ;-- optimize for executable
   TST.w set_make_smallestcode : BEQ.b 'nosmall
-    !basic
-    log2PED{"optimizing for smallest code ...",#log_debug}
-    !asm
-
     BSR.w alloxadj : BEQ.w 'anerr
 
     JSR ab3_OpenDebugFile                                      ; added that the .dbg file only contains the data of the next compile pass
@@ -2423,9 +2419,9 @@ RTS
   CLR.b _dcb
   CLR.l nohunkoffset
   CLR.b peekaddrsize
-  CLR.b typecheck
-  CLR.b declare2
-  CLR.b declare
+  CLR.b syntax_typecheck
+  CLR.b syntax_declare2
+  CLR.b syntax_declare
   CLR.l macrolineold                                          ;check
   CLR.l macroline                                          ;check
   CLR.b newvariable
@@ -3382,7 +3378,7 @@ RTS
   ;-- turn debugger on if enabled
   JSR do_runerrson
 
-  ;-- do typecheck
+  ;-- do syntax_typecheck
   !basic
   log2PED{"Doing type checks ...",#log_debug}
   !asm
@@ -3456,41 +3452,45 @@ RTS
   MOVE.l D3,staticdata
   BSR.w calcmaxs
 
+  ;--
+  ;-- misc finish-ups
+  ;--
   TST.l tokeslist : BEQ.b 'skipjsrs
     !regs2stack
     !basic
-    log2PED{"starting to fix JSRs...",#log_debug}
+    log2PED{"Finishing JSRs for used tokens ...",#log_debug}
     !asm
     !stack2regs
 
     MOVE.w gotocode,D1 : JSR writeword
     MOVE.l destpointer,endjmpat
     BSR.w addoff : JSR writelong
+
     BSR.w fixjsrs                                         ;has to be done before finits!
-    ;--
-    ;-- misc finish-ups
-    ;--
     TST.w dontwrite_nomemleft : BNE.b 'skipjsrs
     
     MOVEA.l endjmpat(PC),A4
     MOVE.l destpointer,(A4)
-    ;!regs2stack
-    ;!basic
-    ;log2PED{"done..."}
-    ;!asm
-    ;!stack2regs
  'skipjsrs
 
-  ; new >
+  ;--
+  ;-- check if program ended with "End d0" and presave d0 value!
+  ;-- 
   TST.b returncode : BEQ 'l2
     MOVE.w #$2e80,d1 : JSR writeword                        ; move.l d0,(a7)
  'l2
 
+  ;--
+  ;-- add init and exit routines for all blitzlibs
+  ;--
   !basic
-  log2PED{"adding blitzlib init/fint code ...",#log_debug}
+  log2PED{"Add blitzlib init/fint code ...",#log_debug}
   !asm
   JSR makeLibFInits
 
+  ;--
+  ;-- handle return code for executable
+  ;--
   TST.b returncode : BEQ 'l3
     MOVE.w ##opcode_RTS,d1 : JSR writeword
     BRA 'l1
@@ -4209,8 +4209,8 @@ JMP_duplaberr: JMP duplaberr
     CMPI.l #$1,4(A2) :  BNE.w illconerr
   ; new >
 CNIF #errorconstant=1
-    TST.b declare2 :  BNE errormsg_declaredtwice
-    TST.b declare :  BNE errormsg_declaredtwice
+    TST.b syntax_declare2 :  BNE errormsg_declaredtwice
+    TST.b syntax_declare :  BNE errormsg_declaredtwice
 CEND
   ; < new
  'cn
@@ -4229,11 +4229,10 @@ CEND
 RTS
 
 
-JMP_free_unusedfunctions: JMP free_unusedfunctions
-
+JMP_noprocerr: JMP noprocerr
 handle_statement:                                          ;a procedure! - eg gameover{score.l,player}
   JSR find_procedure : BEQ '_statement                      ; A2 contains address of function data
-    TST.l unusedfunc : BEQ JMP_free_unusedfunctions
+    TST.l unusedfunc : BEQ JMP_noprocerr
 
     JSR gotoendsource
  '_statement
@@ -8035,9 +8034,9 @@ fetchpees3:
   MOVE.l (a7)+,currentfunccall
 
   CNIF #function_typecheck
-    TST.b typecheck   :  BEQ 'notypecheck                 ;typecheck for function call
+    TST.b syntax_typecheck   :  BEQ 'notypecheck                 ;syntax_typecheck for function call
     TST.b notypecheck :  BNE 'notypecheck
-    TST.b blitzparloop : BNE 'isblitzlibcall              ;no typecheck for blitzlibs currently
+    TST.b blitzparloop : BNE 'isblitzlibcall              ;no syntax_typecheck for blitzlibs currently
 
     CMP.l #0,currentfunccall :  BEQ 'isblitzlibcall
 
@@ -8057,12 +8056,12 @@ fetchpees3:
     
     TST.l typetocast :  BEQ 'nocast
       MOVE.l typetocast,a1
-      BRA 'typecheck
+      BRA 'syntax_typecheck
   'nocast
       MOVE.l rightsidetype,a1
       CMP.l #0,a1 :  BEQ 'notype
 
-  'typecheck
+  'syntax_typecheck
     CMP.l #$100,4(a1)  ;BLE 'ok                          ; deactivate if long for Parameter is not allowed
     CMP.l a0,a1 : BEQ 'ok
                                             ; check if type is parent for function call
@@ -8552,9 +8551,9 @@ BRA.w putalp
 
 
 ;------                                                  ;disassembled code begin
-fbase:       Dc.b $20,$2D,$00,$00                           ;MOVE.L  $0000(A5),D0
-pushadd:     Dc.b $D0,$97                                   ;ADD.L (A7),D0
-pushlast:    Dc.b $D0,$80                                   ;ADD.L D0,D0
+fbase:       Dc.w $202D,$0000                            ;MOVE.L  $0000(A5),D0
+pushadd:     Dc.w $D097                                  ;ADD.L (A7),D0
+pushlast:    Dc.w $D080                                  ;ADD.L D0,D0
 ;------                                                  ;disassembled code end
 
 Even
@@ -8777,7 +8776,7 @@ RTS
         MOVE.l A3,-(A7)
         MOVEM.l D2-D3/A2-A3,-(A7)
         MOVE.w 4(A2),D1
-        MOVE.w $6(A2),D2
+        MOVE.w 6(A2),D2
         BSR.w tokecode
         MOVEM.l (A7)+,D2-D3/A2-A3
         ;'loop4
@@ -8994,7 +8993,8 @@ RTS
       CMP.w $4(A3),D4   : BNE.w 'loop2
         CMP.w $6(A3),D5 : BNE.w 'loop2
           BRA.w 'found
- 'notfound
+   'notfound
+
     ;-- None done yet...make one up!
     ;--
     MOVEQ.l #$0C,D0       ; 12 bytes
@@ -11472,12 +11472,12 @@ RTS
   MOVE.w nonew,D1 :  BNE.w nonewerr
   ; new >
   TST.b nowdeclare : BNE 'l2b
-  TST.b declare2   : BEQ 'l1b
+  TST.b syntax_declare2   : BEQ 'l1b
   CMP.b #".",d0    : BEQ 'l2b
   CMP.b #"$",d0    : BEQ 'l2b
     BRA vardeclareerr
  'l1b
-  TST.b declare : BNE vardeclareerr
+  TST.b syntax_declare : BNE vardeclareerr
 
  'l2b
   ; < new
@@ -12372,7 +12372,7 @@ convert_word_to_byte:  ; was wordtobyte
   MOVE.w #$C317,D1     ;#wtobover
   ; new >
   CNIF #assign_fulltypecheck
-    TST.b typecheck : BEQ 'l1
+    TST.b syntax_typecheck : BEQ 'l1
       TST.b notypecheck : BNE 'l1
         TST.l lasttoken : BEQ typeerror
    'l1
@@ -12430,7 +12430,7 @@ convert_long_to_byte:   ; was longtobyte
   MOVE.w #$C316,D1      ; #ltobover
 
   CNIF #assign_fulltypecheck
-    TST.b typecheck : BEQ 'l1
+    TST.b syntax_typecheck : BEQ 'l1
       TST.b peekaddrsize : BNE 'l1
         TST.b notypecheck : BNE 'l1
           TST.l lasttoken : BEQ typeerror
@@ -12443,7 +12443,7 @@ convert_long_to_word:   ; was longtoword
   MOVE.w #$C318,D1      ; #ltowover,
 
   CNIF #assign_fulltypecheck
-    TST.b typecheck : BEQ 'l1
+    TST.b syntax_typecheck : BEQ 'l1
       TST.b peekaddrsize : BNE 'l1
         TST.b notypecheck :  BNE 'l1
           TST.l lasttoken : BEQ typeerror
@@ -12456,7 +12456,7 @@ convert_long_to_quick:  ; was longtoquick
   MOVE.w #$C318,D1      ;#ltowover,
 
   CNIF #assign_fulltypecheck
-    TST.b typecheck : BEQ 'l1
+    TST.b syntax_typecheck : BEQ 'l1
       TST.b notypecheck : BNE 'l1
         TST.l lasttoken : BEQ typeerror
    'l1
@@ -12473,7 +12473,7 @@ convert_quick_to_byte:     ; was quicktobyte
   MOVE.w #$C319,D1         ; #qtobover,
 
   CNIF #assign_fulltypecheck
-    TST.b typecheck : BEQ 'l1
+    TST.b syntax_typecheck : BEQ 'l1
       TST.b notypecheck : BNE 'l1
       TST.l lasttoken : BEQ typeerror
    'l1
@@ -12540,7 +12540,7 @@ RTS
 
 convert_float_to_byte:      ; was floattobyte
   CNIF #assign_fulltypecheck
-    TST.b typecheck : BEQ 'l1
+    TST.b syntax_typecheck : BEQ 'l1
       TST.b notypecheck : BNE 'l1
         TST.l lasttoken : BEQ typeerror
     'l1
@@ -12556,7 +12556,7 @@ BRA.w convert_long_to_byte
 
 convert_float_to_word:    ; was floattoword
   CNIF #assign_fulltypecheck
-    TST.b typecheck : BEQ 'l1
+    TST.b syntax_typecheck : BEQ 'l1
       TST.b notypecheck : BNE 'l1
       TST.l lasttoken : BEQ typeerror
     'l1
@@ -12907,7 +12907,7 @@ BRA.w maineval2
   MOVEQ.l #$00,D1           ;no push
   MOVEQ.l #$00,D3           ;and convert
   MOVE.b notypecheck,-(a7)
-  MOVE.b #1,notypecheck                                    ;typecheck need switch off for array offset calculation code
+  MOVE.b #1,notypecheck                                    ;syntax_typecheck need switch off for array offset calculation code
   JSR maineval2             ;2!* ;was bra
   ; new >
   MOVE.b (a7)+,notypecheck                                 ;now its switch to old state
@@ -16329,7 +16329,7 @@ variable:
    ;BRA error_convert_types
 
  'ls1
-  TST.b typecheck : BEQ varcont
+  TST.b syntax_typecheck : BEQ varcont
   CMP.l #$da01,lasttoken : BEQ 'l1                         ; poke
     CMP.l #$da02,lasttoken : BNE 'l2                       ; peek
  'l1
@@ -16365,7 +16365,7 @@ variable:
   EXG.l D2,D3
   ; new >
   MOVE.l a0,-(a7)
-  TST.b typecheck  :  BEQ 'ok
+  TST.b syntax_typecheck  :  BEQ 'ok
   TST.b notypecheck : BNE 'ok
   MOVE.l leftsidetype,a0
   CMP.l #0,leftsidetype : BEQ 'ok
@@ -16495,7 +16495,7 @@ handle_function:                                           ;do var = function {}
                                                            ;do a local function -
                                                            ;eg a=pixel{x,y}
   BSR.w find_procedure : BEQ 'l1a
-    TST.l unusedfunc : BEQ free_unusedfunctions
+    TST.l unusedfunc : BEQ noprocerr
     JSR gotoendsource
  'l1a
 
@@ -18060,8 +18060,10 @@ RTS
       ;
       MOVE.w freemax(PC),D1    ;move.w #x,-(a7)
       BSR.w writeword
+
       MOVE.w -$4(A1),D1
-      BSR.w writeword          ;x (max)
+      BSR.w writeword          ;fill x (max)
+
       MOVE.l free,D1
       MOVE.w -$6(A1),D1
       BSR.w writelong          ;move.l x(a5),a3
@@ -18073,15 +18075,19 @@ RTS
       MOVE.w D1,-(A7)
       MOVE.l -$A(A1),D1
       BSR.w Amakelibsub
+
       MOVE.w freemax3(PC),D1
       BSR.w writeword          ;lea x(a3),a3
+
       MOVE.w (A7)+,D1
       BSR.w writeword
       MOVE.l freemax2(PC),D1
       BSR.w writelong
+
       MOVE.l (A7)+,D1
       SUB.l destpointer,D1
       BSR.w writeword
+
       MOVE.w freemax4(PC),D1
       BSR.w writeword
    'nomax
@@ -18737,7 +18743,7 @@ RTS
   MOVEM.l (a7)+,a1/a2/d7/d2
 
  'l11                                                      ;peek/poke
-  TST.b typecheck : BEQ 'p1
+  TST.b syntax_typecheck : BEQ 'p1
   MOVE.l lasttoken,d1
   CMP.l #$da01,d1 : BEQ 'lp1                               ;poke
   CMP.l #$da02,d1 : BNE 'p1                                ;peek
@@ -19578,8 +19584,8 @@ RTS
   BSR.w findtype : BNE.w notypeerr
 
   ; new >
-  TST.b declare  : BNE 'l1
-    TST.b declare2 : BEQ 'l2
+  TST.b syntax_declare  : BNE 'l1
+    TST.b syntax_declare2 : BEQ 'l2
  'l1
     MOVE.b #2,nowdeclare
  'l2
@@ -19614,7 +19620,7 @@ maxprep2:   MOVE.l A2,D0
   BSR.w fetchvars
   BSR.w calcvar
 
-  CMP.b #$7,D2 : BNE.w mismatcherr      ; typecheck if not string...
+  CMP.b #$7,D2 : BNE.w mismatcherr      ; syntax_typecheck if not string...
 
   MOVE.w varmode(PC),-(A7)
   CMP.w #"=",D0 : BNE.w syntaxerr
@@ -20398,10 +20404,8 @@ JUMP_vardeclareerr JMP vardeclareerr
   ;
   ;set up SHARED variables.....
   ;
-  MOVE.w proceduremode,D1                               ;doshared
-  ;BEQ.w sharederr
-  ; new >
-  BNE.w 'l1
+  MOVE.w proceduremode,D1 : BNE.w 'l1
+
   MOVE.w D1,-(A7)
   CLR.w proceduremode
 
@@ -20421,68 +20425,42 @@ JUMP_vardeclareerr JMP vardeclareerr
 
   MOVE.l a2,a3
   JSR claptonb       ; jump to a copy of fvaradd 'clapton
-;      BSR.w getparameter2
-;   LEA newtypebase,A2
-;   BSR.w findtype
-;   BNE.w notypeerr
-;   MOVE.l a2,$A(A3)
-;   MOVE.w flagmask,$6(A3)
-;   MOVE.w globalvarpointer,$4(A3)
-;   MOVEQ.l #4,d1
-;   CMPI.l #$100,4(A2)
-;    BCC.w 'l1d
-;   MOVE.w 8(a2),d1
-
-;  'l1d
-;     ADD.w d1,globalvarpointer
-;     CMP.b #".",d0
-;     BNE vardeclareerr
-;     JSR get1bytemain
-;     CMP.b #"l",d0
-;     BNE 'lo
-;   BRA 'ok
-
-;  'lo
-;    CMP.l #"f",d0
-;     BNE onlyfloatint
-
-;  'ok
-;     MOVE.w globalvarpointer,$4(A3)
-;     ADD.w #4,globalvarpointer
 
  'domore
-  MOVE.w (a7)+,d2
-  CMP.b #",",d0
-  BNE 'ret
+    MOVE.w (a7)+,d2
+    CMP.b #",",d0 : BNE 'ret
+      JSR get1bytemain
+      BRA 'again2
+   'ret
+    MOVE.w (A7)+,proceduremode
+    RTS
+  
+   'checkdim
+    CMP.w #2,6(a2) : BEQ 'do
+    CMP.w #$102,6(a2) : BEQ 'do
+      JMP errormsg_declaredtwice                             ;was BRA 'errormsg_declaredtwice_
+   'do
+  
+    LEA varbase,a0
+   'm1
+      MOVE.l (A0),D0 :  BEQ.b 'z1 ; ;find label
+      
+      CMP.l d0,a2 : BEQ 'z1
+        MOVE.l d0,a0
+    BRA 'm1
+   'z1
+  
+    MOVE.l (a2),d1
+    MOVE.l d1,(a0)
+    CLR.l (a2)
+    LEA sharebase,a0
+    MOVE.l (a0),(a2)
+    MOVE.l a2,(a0)
     JSR get1bytemain
-    BRA 'again2
- 'ret
-  MOVE.w (A7)+,proceduremode
-  RTS
-
- 'checkdim
-  CMP.w #2,6(a2) : BEQ 'do
-  CMP.w #$102,6(a2) : BEQ 'do
-    JMP errormsg_declaredtwice                             ;was BRA 'errormsg_declaredtwice_
- 'do
-  LEA varbase,a0
-
- 'm1
-    MOVE.l (A0),D0 :  BEQ.b 'z1 ; ;find label
-    
-    CMP.l d0,a2 : BEQ 'z1
-      MOVE.l d0,a0
-  BRA 'm1
- 'z1
-  MOVE.l (a2),d1
-  MOVE.l d1,(a0)
-  CLR.l (a2)
-  LEA sharebase,a0
-  MOVE.l (a0),(a2)
-  MOVE.l a2,(a0)
-  JSR get1bytemain
-  JSR get1bytemain
+    JSR get1bytemain
   BRA 'domore
+
+
 
  'l1
   MOVE.b #1,nowdeclare
@@ -20491,42 +20469,42 @@ JUMP_vardeclareerr JMP vardeclareerr
   CLR.w proceduremode
 
  'loop2
-  BSR.w getparameter
-  MOVE.w D2,-(A7)
-  ;
-  LEA firstglob,A2
-  BSR.w findvariable2 : BNE.b 'notfound
-   'try2
-      MOVE.b flagmask+1,D1
-      MOVE.b $7(A2),D3
-      EOR.b D3,D1 : BEQ.w dupsherr
-
-      BSR.w findlab
-    BEQ.b 'try2
- 'notfound
-
-  BSR.w add_Label
-  MOVE.w (A7)+,D2
-  MOVE.l A2,-(A7)   ;new glob
-  BSR.w fetchvars
-  MOVEA.l (A7)+,A2
-  MOVEQ.l #$04,D1
-  ADDQ.w #4,A2
-  ADDQ.w #4,A3
-
- 'loop
-    MOVE.w (A3)+,(A2)+
-  DBF D1,'loop
-
-  BTST #$1,flagmask+1 : BEQ.w 'done
+    BSR.w getparameter
+    MOVE.w D2,-(A7)
+    ;
+    LEA firstglob,A2
+    BSR.w findvariable2 : BNE.b 'notfound
+     'try2
+        MOVE.b flagmask+1,D1
+        MOVE.b $7(A2),D3
+        EOR.b D3,D1 : BEQ.w dupsherr
+  
+        BSR.w findlab
+      BEQ.b 'try2
+   'notfound
+  
+    BSR.w add_Label
+    MOVE.w (A7)+,D2
+    MOVE.l A2,-(A7)   ;new glob
+    BSR.w fetchvars
+    MOVEA.l (A7)+,A2
+    MOVEQ.l #$04,D1
+    ADDQ.w #4,A2
+    ADDQ.w #4,A3
+  
+   'loop
+      MOVE.w (A3)+,(A2)+
+    DBF D1,'loop
+  
+    BTST #$1,flagmask+1 : BEQ.w 'done
+      JSR get1bytemain
+      CMP.w #")",D0     : BNE.w JUMP_syntaxerr
+      JSR get1bytemain
+   'done
+  
+    CMP.w #",",D0       : BNE.w 'done2
     JSR get1bytemain
-    CMP.w #")",D0     : BNE.w JUMP_syntaxerr
-    JSR get1bytemain
- 'done
-
-  CMP.w #",",D0       : BNE.w 'done2
-    JSR get1bytemain
-    BRA.w 'loop2
+  BRA.w 'loop2
  'done2
   MOVE.w (A7)+,proceduremode
 RTS
@@ -21963,7 +21941,7 @@ do_function2:                                             ;do_statement jump to 
   ;-- do some checking.....
   ;-- 
   ; new >
-  TST.b declare : BEQ 'l3
+  TST.b syntax_declare : BEQ 'l3
     MOVE.b #1,nowdeclare
  'l3
   ; < new
@@ -22622,11 +22600,13 @@ doend2:
     MOVE.w #$3a,lastchar    ;":"
     BRA 'done
  'l1
+
   CMP.w #"d0",-1(a5) : BNE 'l2
     MOVE.b #1,returncode
     CLR.w lastchar
     BRA 'done
  'l2
+
   CMP.w ##TokenID_Object,d0 : BNE 'loop
     JSR skiprest
     RTS
@@ -23465,7 +23445,7 @@ dolet2:
   MOVE.l a2,leftsidetype
   MOVE.w flagmask,leftsideflagmask
   BTST #$f,d2 : BEQ 'nomultiassign
-    CLR.l leftsidetype                        ;its multiassign to type entries so no typecheck need
+    CLR.l leftsidetype                        ;its multiassign to type entries so no syntax_typecheck need
     CLR.w leftsideflagmask
  'nomultiassign
   ; < new
@@ -23482,18 +23462,18 @@ dolet2:
  'isptr
   TST.l typetocast : BEQ 'nocast
     MOVE.l typetocast,a1
-    BRA 'typecheck
+    BRA 'syntax_typecheck
  'nocast
 
   TST.l rightsidetype : BEQ 'nocheck
     MOVE.l rightsidetype,a1
     CMP.w #1,rightsideflagmask : BEQ 'ok
-    CMP.l #$100,4(a1) : BGE 'typecheck
+    CMP.l #$100,4(a1) : BGE 'syntax_typecheck
     CMP.l #$3,4(a1) : BEQ 'ok                 ;long assign is allow with this codelines
     BRA 'error
 
-   'typecheck
-    TST.b typecheck :  BEQ 'nocheck
+   'syntax_typecheck
+    TST.b syntax_typecheck :  BEQ 'nocheck
       TST.b notypecheck : BNE 'ok
       CMP.l a0,a1 : BEQ 'ok
                                               ; check if type is parent for var assign
@@ -23501,7 +23481,7 @@ dolet2:
       CMP.l $a(a1),a0 : BEQ 'ok               ; check if the bigger type contain in first place same type as the function need
 
     'error
-      JMP   error_convert_types     ;for SYNTAX 4  = typecheck
+      JMP   error_convert_types     ;for SYNTAX 4  = syntax_typecheck
     'ok
  'nocheck
 
@@ -26777,19 +26757,19 @@ JUMP_illeaerr: JMP illeaerr
 
 
 .do_SYNTAX:
-  CLR.b typecheck
-  CLR.b declare
-  CLR.b declare2
+  CLR.b syntax_typecheck
+  CLR.b syntax_declare
+  CLR.b syntax_declare2
 
   SUB.b #$30,d0
   BTST #0,d0 : BEQ 'l1
-    MOVE.b #1,declare
+    MOVE.b #1,syntax_declare
  'l1
   BTST #1,d0 : BEQ 'l2
-    MOVE.b #1,declare2
+    MOVE.b #1,syntax_declare2
  'l2
   BTST #2,d0 : BEQ 'l3
-    MOVE.b #1,typecheck
+    MOVE.b #1,syntax_typecheck
  'l3
   BSR.w JUMP_get1bytemain
 RTS
@@ -27272,30 +27252,33 @@ RTS
       ;-- logout
       log2PED{logmess,#log_information}
 
-      logmess = "First used at "
-      If PeekW(?ininclude) > 0
-        codefile.s = dos_FilePart{incdim(PeekW(?ininclude)-1)}
-        codeline.l = PeekL(?includeline)
-      Else
-        codefile.s = ""
-        codeline.l = PeekL(?linenumat)
-      EndIf
-
-      If codefile <> "" Then logmess + "Inc: " + LSet$(codefile,20) + " | "
-      If codeline <> -1 Then logmess + "Line " + LSet$(Str$(codeline),6)
-
-      If PeekL(?lastsourcepos) <> 0
-        MaxLen detokenline.s = 1024 ; in case of a macro the line could be more than #MAX_Columns !
-        !ComData_GetL{comPtr_PreProcessor,include_preprocessor} : *tn.preprocessor = PeekL(?include_preprocessor)
-        written.l = preproc_DetokenizeLine{*tn, PeekL(?lastsourcepos), &detokenline}
-        If written > 0 
-           PokeB &detokenline + written,0
-           If written > 128 Then Poke.s &detokenline + 128, "..." + Chr$(0)
-           strline.s = Trim$(Peek.s(&detokenline))
-           logmess + "| " + strline
+      If libnum2 <=255 ; only for normal blitzlibs
+        logmess = "First used at "
+        If PeekW(?ininclude) > 0
+          codefile.s = dos_FilePart{incdim(PeekW(?ininclude)-1)}
+          codeline.l = PeekL(?includeline)
+        Else
+          codefile.s = ""
+          codeline.l = PeekL(?linenumat)
         EndIf
-      EndIf
-      log2PED{logmess,#log_debug}
+
+        If codefile <> "" Then logmess + "Inc: " + LSet$(codefile,20) + " | "
+        If codeline <> -1 Then logmess + "Line " + LSet$(Str$(codeline),6)
+
+        If PeekL(?lastsourcepos) <> 0
+          MaxLen detokenline.s = 1024 ; in case of a macro the line could be more than #MAX_Columns !
+          !ComData_GetL{comPtr_PreProcessor,include_preprocessor} : *tn.preprocessor = PeekL(?include_preprocessor)
+          written.l = preproc_DetokenizeLine{*tn, PeekL(?lastsourcepos), &detokenline}
+          If written > 0 
+            PokeB &detokenline + written,0
+            If written > 128 Then Poke.s &detokenline + 128, "..." + Chr$(0)
+            strline.s = Trim$(Peek.s(&detokenline))
+            logmess + "| " + strline
+          EndIf
+        EndIf
+        
+        log2PED{logmess,#log_debug}
+      EndIf      
     EndIf
     !asm
     !stack2regs
@@ -27989,11 +27972,11 @@ doimmediate          Ds.b 1
 notypecheck          Ds.b 1
 vartype              Ds.w 1
 peekaddrsize         Ds.b 1
-declare2             Ds.b 1
 lasttoken            Ds.l 1
+syntax_declare2      Ds.b 1
 newvariable          Ds.w 1
-declare              Ds.b 1
-typecheck            Ds.b 1
+syntax_declare       Ds.b 1
+syntax_typecheck     Ds.b 1
 nowdeclare           Ds.b 1
 dimkeep              Ds.b 1
 a4a5store            Ds.b 1
