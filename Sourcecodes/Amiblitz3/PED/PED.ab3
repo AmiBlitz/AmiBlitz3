@@ -13,7 +13,7 @@
 ; StringBuffer    = 64000
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
-; Version         = 3.11.1
+; Version         = 3.11.3
 ; NumberOfBuilds  = 3633
 ; 
 ; Debugger
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1457
-; CursorColumn    = 90
-; LabelSearch     = "to_console"
+; CursorLine      = 306
+; CursorColumn    = 28
+; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelCase       = 0
@@ -397,7 +397,6 @@ CEND
 
 ; --------------------------------------------------- TYPE DEFINITIONS
 .TYPES
-DEFTYPE.l quicktype
 DEFTYPE.l
 
 Macro removeTokenbits
@@ -1338,7 +1337,7 @@ USEPATH sourceWindow
       ;-- check the name
       modifiedFlag.b = False
       tmpStringVar.s = Peek.s(&*fileEntry\SourceName)
-      If tmpStringVar = "" Then tmpStringVar = "unnamed"
+      If tmpStringVar = "" Then tmpStringVar = "<unnamed>"
       If *fileEntry = ped\currentSourceEntry
         modifiedFlag = ped\ptrCurrentSourceData\SourceChanged
       Else
@@ -2518,7 +2517,7 @@ End Function
 Function.b PED_UpdateDefinitionBrowser{action.b, @defname.s,@openwin.b}
 SHARED *newtypebase, *varbase, *constantbase
 SHARED winLayout, ped, AB3Pen()
-SHARED lev, newtype_found, quicktype, pos$(), postype$()
+SHARED lev, newtype_found, quicktype.b, pos$(), postype$()
 
   !log_PrintOut{"UpdateDefinitionBrowser action [" + Str$(action) + "], string [" + Str$(defname) + "]"}
 
@@ -5942,10 +5941,9 @@ Function.w PED_PreparseTextLine{lineaddr.l}
   ; --
   If pedconfig\correct_functions
     newstrg$ = strg$
-    startAt.w = 0                                               ; added to make a test of the complete line and begin at position 0  tomsmart1
-    Repeat                                                         ; added loop to test the complete line  tomsmart1
+    startAt.w = 0
+    Repeat
       bracketPos.w = Instr(strg$,"{",startAt)
-
       If bracketPos > 1
         startOfName.l = bracketPos
 
@@ -5979,9 +5977,13 @@ Function.w PED_PreparseTextLine{lineaddr.l}
           ;!log_PrintOut{"no better name found for function name ..."}
         EndIf
         startAt = bracketPos + 1
-        If startAt >= FLen(strg$) Then bracketPos = 0
+        If startAt >= FLen(strg$) Then bracketPos = 0      
+      Else
+        ; a statement without any name ??
+        bracketPos = 0
       EndIf
     Until bracketPos = 0
+
     If line_changed
       !log_PrintOut{"replacing function names finished:"}
       !log_PrintOut{"o [" + strg$ + "]"}
@@ -8454,8 +8456,14 @@ Return
 Return
 
 .write_infofile:
+  If PeekW(Ptr_Create_Iconfile_Word.l) = 0
+    !log_PrintOut{"creation of info-file is disabled with this source!"}  
+    Return
+  EndIf
+
   If dos_Exist{ped\sourceFileComplete + ped\extention_info}
-    dos_Delete{ped\sourceFileComplete + ped\extention_info}
+    !log_PrintOut{"there is already an info-file available for <" + ped\sourceFileComplete + ">, skipping creating a new one"}
+    Return
   EndIf
 
   *ni.DiskObject = GetDiskObject_(Null)
@@ -8593,7 +8601,10 @@ Even
   ; -- check if actual source is unnamed to decide to open new or just open
   If loadnewtab = True
     If ped\ptrCurrentSourceData
-      If Peek.s(&ped\ptrCurrentSourceData\SourceName) <> ""
+      If Peek.s(&ped\ptrCurrentSourceData\SourceName) = ""
+          !log_PrintOut{"current tab is not really used, we can us it"}
+          Gosub free_actualsource
+      Else
         !log_PrintOut{"current tab is already used [" + Peek.s(&ped\ptrCurrentSourceData\SourceName) + "], opening a new tab"}
         Gosub menu_new
       EndIf
@@ -8768,7 +8779,7 @@ Return
 .analyze_loadedsource:
   !log_PrintOut{"analyze_loadedsource"}
 
-  sourceWindow\Title = "unnamed"
+  sourceWindow\Title = "<unnamed>"
   If pedconfig\smart_tokenization Then ped\doTokenize = True
 
   ped\currentDir = Peek.s(&ped\ptrCurrentSourceData\SourceDir)
@@ -9957,8 +9968,6 @@ Return
     Pop Select : Return
 
   Case #MENU_COMPILERUN
-    ;TEDSetLabelList {?comPtr_LabelList}
-    ;TEDSetLabelCount{ped\ptrCurrentSourceData\LabelCounter}
     Gosub call_compiler
 
   Case #MENU_RUN
@@ -10198,11 +10207,12 @@ Return
 
     loadsourcefilename.s = templates()\filename
     !log_PrintOut{"selected template: " + loadsourcefilename}
+                   ; filename, checkchanged, checktab, newtab
     !PED_LoadSource{templates()\filename,False,False,True}
 
   Else
     !log_PrintOut{"unknown template, opening a new file instead."}
-    tmpStringVar = !TRANS{"unnamed"}
+    tmpStringVar = !TRANS{"<unnamed>"}
     Gosub menu_loadAsNew
   EndIf
 Return
@@ -11342,6 +11352,8 @@ Return
   If PeekW(?comWord_LabelRemark) Then labelListMode = 3
 
   ;!log_PrintOut{"listLabels: " + Str$(labelListMode) + ", search: " + labelWord1}
+
+  tmpLineCounter.l = 0 : tmpPercentage.b = 0 : tmpPercentageOld.b = 0
   labelBreak.b = False
   While *nextline AND (labelBreak = False)
     tmpStr.s = StripLead$(Peek.s(*nextline + 9),@" ")
@@ -11351,39 +11363,36 @@ Return
 
       Select labelListMode
       Case 2   ; -- labelmode = all "Case"-branches
-        If PeekW(?comWord_LabelCase)
-          checkWord.l = PeekW(&tmpStr) AND $FFFF
-          If checkWord = #TOKEN_Case Then found = True
-        EndIf
+        checkWord.l = PeekW(&tmpStr) AND $FFFF
+        If checkWord = #TOKEN_Case Then found = True
 
       Case 3    ; -- labelmode = all remarks
-        If PeekW(?comWord_LabelRemark)
-          ped\inString = False : ped\inComment = False
-          ped\labelEntryType = $FFFE : found.b = False
-          Repeat
-            checkByte.b = PeekB(&tmpStr) AND $FF
+        ped\inString = False : ped\inComment = False
+        ped\labelEntryType = $FFFE : found.b = False
+        Repeat
+          checkByte.b = PeekB(&tmpStr) AND $FF
 
-            ;-- check if we are in a string or a comment
-            If (NOT ped\inComment) AND (checkByte = $22) Then ped\inString = NOT ped\inString
-            If (NOT ped\inString) AND (checkByte = @";") Then found = True
+          ;-- check if we are in a string or a comment
+          If (NOT ped\inComment) AND (checkByte = $22) Then ped\inString = NOT ped\inString
+          If (NOT ped\inString) AND (checkByte = @";") Then found = True
 
-            tmpStr = UnRight$(tmpStr,1)
-          Until found OR tmpStr = ""
-        EndIf
+          tmpStr = UnRight$(tmpStr,1)
+        Until found OR tmpStr = ""
 
       Default  ; -- labelmode = all or standard: list functions,statements,breakpoint and labels
 
-        If PeekW(?comWord_LabelAll)                ; add all codelines
+        ; add all codelines
+        If labelListMode = 1 
           found = True
         EndIf
 
-        If Instr(tmpStr,"????L") > 0                ; add unknown tokens
+        ; add unknown tokens
+        If Instr(tmpStr,"????L") > 0                
           ped\labelEntryType = $FFFD : found.b = True
-          ;  !log_PrintOut{"unknown token in source: " + labelCaption}
-          ;  !log_HexDump{&tmpStr,32}
+          !log_PrintOut{"unknown token in source line " + Str$(tmpLineCounter + 1), #log_error}
         EndIf
-                                                    ; standard way: only functions, statements, labels, breakpoints
-        ;-- check for some tokens
+
+        ; add functions, statements, labels, breakpoints
         Select Cvi(tmpStr) AND $FFFF
         Case #TOKEN_Stop
           ped\labelEntryType = #TOKEN_Stop : found.b = True
@@ -11444,6 +11453,16 @@ Return
     EndIf
 
     *nextline = *nextline\nextLine
+    tmpLineCounter + 1
+
+    If labelListMode = 1 ;ped\ptrCurrentSourceData\TotalLines > 5000
+      tmpPercentage = (tmpLineCounter * 100) / ped\ptrCurrentSourceData\TotalLines
+      If (tmpPercentage MOD 10 = 0) AND (tmpPercentageOld <> tmpPercentage)
+        tmpPercentageOld = tmpPercentage
+        ;!log_PrintOut{Str$(tmpPercentage)+"%"}
+        PED_ShowMessage{"Updating Source Browser ... (" + Str$(tmpPercentage) + "%)"}  
+      EndIf
+    EndIf
   Wend
 Return
 
@@ -11490,17 +11509,21 @@ Return
       labelCaption.s = "---Breakpoint---" ; space at the beginning to see it as the first entry
       WZTags #WENTRYA_TextPen,2 : labelSorting = 0
     Case #TOKEN_Function
-      WZTags #WENTRYA_TextPen,AB3Pen(#AB3_cfunction)
+      WZTags #WENTRYA_TextPen,#WZRD_SHINEPEN ;AB3Pen(#AB3_cfunction)
     Case #TOKEN_Statement
-      WZTags #WENTRYA_TextPen,AB3Pen(#AB3_cfunction)
+      WZTags #WENTRYA_TextPen,#WZRD_HIGHLIGHTTEXTPEN ;AB3Pen(#AB3_cfunction)
     Case #TOKEN_Macro
-      WZTags #WENTRYA_TextPen,AB3Pen(#AB3_cmacro)
-    Case $FFFE
+      WZTags #WENTRYA_TextPen,#WZRD_SHADOWPEN ;AB3Pen(#AB3_cmacro)
+    Case $FFFE ; remark
       WZTags #WENTRYA_TextPen,AB3Pen(#AB3_cremarkforeground)
-    Case $FFFD
+    Case $FFFD ; unknown token
       WZTags #WENTRYA_TextPen,AB3Pen(#AB3_cclassic)
+    Case $FFFF ; label
+      WZTags #WENTRYA_TextPen,#WZRD_TEXTPEN
+      WZTags #WENTRYA_TextStyle,#FSF_UNDERLINED
     Default
-      WZTags #WENTRYA_TextPen,1
+      WZTags #WENTRYA_TextPen,#WZRD_TEXTPEN
+      WZTags #WENTRYA_TextStyle,#FS_NORMAL
     End Select
     ped\labelEntryType = 0
 
@@ -12733,7 +12756,7 @@ Return
   PED_RedrawSource{}
 Return
 
-.set_tedlibbase:
+.set_tedlibbase: ; this is only for the debugger, I guess.
   TEDSetJumpTable  {?COMDATABASE}
   TEDSetFirstLine  {?comPtr_FirstSourceLine}
   TEDSetCurrentLine{?comPtr_CurrentSourceLine}
