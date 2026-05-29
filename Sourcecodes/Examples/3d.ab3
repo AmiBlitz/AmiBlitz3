@@ -14,13 +14,13 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 395
+; NumberOfBuilds  = 515
 ; 
 ; Debugger
 ; -------------------------------------------------------
 ; CliArgs         = ""
 ; StackSize       = 8192
-; RuntimeDebug    = 0
+; RuntimeDebug    = 1
 ; DebugInfo       = 0
 ; CreateDbgFile   = 0
 ; OverflowCheck   = 0
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 521
-; CursorColumn    = 13
-; LabelSearch     = "numVertices"
+; CursorLine      = 603
+; CursorColumn    = 1
+; LabelSearch     = "drawvertex"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -77,7 +77,13 @@
 ; Max XBSound     = 10
 ; Max Page        = 4
 ; /XTRA
-OPTIMIZE 4: SYNTAX 6
+;--
+;-- based on the video "Its QBasic time"
+;-- by Old Man Yells at Code:
+;-- https://www.youtube.com/watch?v=Ax9j_C1ouSI&t=1348s
+;--
+
+OPTIMIZE 5: SYNTAX 6
 
 #RENDER_DOTS = 0
 #RENDER_WIREFRAME = 1
@@ -91,6 +97,7 @@ OPTIMIZE 4: SYNTAX 6
 NEWTYPE.config
   showNums.b
   showData.b
+  showLight.b
   renderMode.b
   culling.b
   normals.b
@@ -98,15 +105,15 @@ End NEWTYPE
 DEFTYPE.config config
 
 NEWTYPE.Vertex
-  x.q
-  y.q
-  z.q
+  x.f
+  y.f
+  z.f
 End NEWTYPE
 
 NEWTYPE.Vector
-  x.q
-  y.q
-  z.q
+  x.f
+  y.f
+  z.f
 End NEWTYPE
 
 NEWTYPE.Triangle
@@ -114,37 +121,45 @@ NEWTYPE.Triangle
   v2.w   ;Index of Vertex 2
   v3.w   ;Index of Vertex 3
   normal.Vector
-  avgZ.q
+  avgZ.f
 End NEWTYPE
 
-Dim verts.Vertex(200)
-Dim xVerts.Vertex(200)
-Dim cols.w(200)
-xNumVertices.w = 0
+;-- used for drawing
+NEWTYPE.Polygon
+  x0.w : y0.w
+  x1.w : y1.w
+  x2.w : y2.w
+  x3.w : y3.w
+End NEWTYPE
 
-Dim faces.Triangle(500)
-numFaces.w = 0
-Dim xFaces.Triangle(500)
-xNumFaces.w = 0
+DEFTYPE.Vector light,light2
+Dim List verts.Vertex(750)
+Dim List xVerts.Vertex(750)
+Dim List faces.Triangle(1500)
+Dim List xFaces.Triangle(1500)
+SHARED numFaces.w
+SHARED numFacesX.w          ; culled number of faces
+SHARED numVertices.w
 
 BLITZ
 
 ;============================================================================================
 Function.b LoadModel{modelname.s}
-SHARED verts(), numVertices, faces(), numFaces, xVerts()
+SHARED verts(), faces(), xVerts(), xFaces()
 
   DEFTYPE.s rawLine
   DEFTYPE.s prefix
-  DEFTYPE.w spPos
-  DEFTYPE.w vIdx, fIdx
   DEFTYPE.s val1, val2, val3
+  DEFTYPE.b vIndex
 
+  noerrors.b = True
   If ReadFile(0,modelname)
     FileInput 0
 
-    vIdx =  0
-    fIdx = -1
-    While NOT Eof(0)
+    ClearList verts() : dummy.b = AddLast(verts()) ; add dummy vertex, as count starts with 1
+    ClearList xVerts(): dummy.b = AddLast(xVerts())
+    ClearList faces()
+    While NOT Eof(0) OR anyerror.b
       rawLine = Edit$(80)
 
       InitArgParse rawLine
@@ -158,17 +173,31 @@ SHARED verts(), numVertices, faces(), numFaces, xVerts()
         End If
 
         Select prefix
+        Case "i" ; if i is set, the index of vertices should be at 0 instead of 1
+          vIndex = 1
         Case "v"
-          vIdx = vIdx + 1
-          verts(vIdx)\x = Val(val1)
-          verts(vIdx)\y = Val(val2)
-          verts(vIdx)\z = Val(val3)
+          NPrint CountItem(verts()),": ", val1," ",val2," ",val3
+          If AddLast(verts())
+            verts()\x = Val(val1)
+            verts()\y = Val(val2)
+            verts()\z = Val(val3)
+            dummy.b = AddLast(xVerts())
+          Else
+            NPrint "Could not add vertex to list!"
+            noerrors = False
+          EndIf
 
         Case "f"
-          fIdx = fIdx + 1
-          faces(fIdx)\v1 = Val(val1)
-          faces(fIdx)\v2 = Val(val2)
-          faces(fIdx)\v3 = Val(val3)
+          ;-- the numbers of vertices start with 1 in the definitions file!
+          If AddLast(faces())
+            faces()\v1 = Val(val1) + vIndex
+            faces()\v2 = Val(val2) + vIndex
+            faces()\v3 = Val(val3) + vIndex
+            dummy.b = AddLast(xFaces())
+          Else
+            NPrint "Could not add face to list!"
+            noerrors = False
+          EndIf
 
         Case "#"
           ; comment
@@ -180,60 +209,59 @@ SHARED verts(), numVertices, faces(), numFaces, xVerts()
         End Select
       EndIf
     Wend
+    numFaces = CountList(faces())
+    numVertices = CountList(verts())
     CloseFile 0
     DefaultInput
-
-    numVertices = vIdx
-    numFaces = fIdx
-
-    Function Return True
+  Else
+   noerrors = False
   EndIf
+  Function Return noerrors
 End Statement
 
 
 Statement CalcNormals{}
-SHARED faces(), xVerts(), numFaces
+SHARED faces(), xVerts()
 
   DEFTYPE.Triangle f
   DEFTYPE.Vertex v1, v2, v3
-  DEFTYPE.q ax, ay, az
-  DEFTYPE.q bx, by, bz
-  DEFTYPE.q nx, ny, nz
+  DEFTYPE.f ax, ay, az
+  DEFTYPE.f bx, by, bz
+  DEFTYPE.f nx, ny, nz
 
-  For j.w = 0 To numFaces
+  For j.w = 0 To numFaces ;CountList(faces())
     CopyType faces(j), f
     CopyType xVerts(f\v1),v1
     CopyType xVerts(f\v2),v2
     CopyType xVerts(f\v3),v3
 
-    ;Edge vector A V3 - V1
+    ;-- Edge vector A V3 - V1
     ax = v3\x - v1\x
     ay = v3\y - v1\y
     az = v3\z - v1\z
 
-    ;Edge vector B V2 - V1
+    ;-- Edge vector B V2 - V1
     bx = v2\x - v1\x
     by = v2\y - v1\y
     bz = v2\z - v1\z
 
-    ;Calc cross product
+    ;-- Calc cross product
     nx = (ay * bz) - (az * by)
     ny = (az * bx) - (ax * bz)
     nz = (ax * by) - (ay * bx)
 
-    ;Normalize vector
-    _Length.q = Sqr(nx * nx + ny * ny + nz * nz)
+    ;-- Normalize vector
+    _Length.f = Sqr(nx * nx + ny * ny + nz * nz)
 
     If _Length > 0
-      faces(j)\normal\x = nx / _Length
-      faces(j)\normal\y = ny / _Length
-      faces(j)\normal\z = nz / _Length
+      faces(j)\normal\x = 1.0 * nx / _Length
+      faces(j)\normal\y = 1.0 * ny / _Length
+      faces(j)\normal\z = 1.0 * nz / _Length
     End If
   Next
 
 End Statement
 
-;Insert triangles in order
 Statement InsertTriangle{*tri.Triangle, _Length.w}
 SHARED xFaces()
   DEFTYPE.Triangle temp
@@ -259,49 +287,48 @@ End Statement
 
 
 Statement CullFaces{}
-SHARED faces(), numFaces, xFaces(), xNumFaces, xVerts()
-  DEFTYPE.Vertex vtx
-  DEFTYPE.Vector camVtr, normal
-  DEFTYPE.q x, y, z
-  DEFTYPE.Vertex v1, v2, v3
+SHARED faces(), xFaces(), xVerts()
+  DEFTYPE.Vector camVtr
+  DEFTYPE.f x, y, z
 
-  xNumFaces = 0
-  For i.w = 0 To numFaces
-    ;-- The camera vector is the normalised vector from the origin To the first vertex of the triangle
-    CopyType xVerts(faces(i)\v1), vtx
-    x = vtx\x
-    y = vtx\y
-    z = vtx\z
-
-    _Length.q = Sqr(x * x + y * y + z * z)
+  numFacesX = -1
+  For i.w = 0 To numFaces; CountList(faces())
+    USEPATH faces(i)
+    ;-- The camera vector is the normalised vector from the origin to the first vertex of the triangle
+    x = xVerts(\v1)\x
+    y = xVerts(\v1)\y
+    z = xVerts(\v1)\z
+    _Length.f = Sqr(x * x + y * y + z * z)
     camVtr\x = x / _Length
     camVtr\y = y / _Length
     camVtr\z = z / _Length
 
-    CopyType faces(i)\normal,normal
-
-    dotProd.q = (camVtr\x * normal\x) + (camVtr\y * normal\y) + (camVtr\z * normal\z)
+    dotProd.f = (camVtr\x * \normal\x) + (camVtr\y * \normal\y) + (camVtr\z * \normal\z)
 
     If dotProd > 0
-       CopyType xVerts(faces(i)\v1), v1
-       CopyType xVerts(faces(i)\v2), v2
-       CopyType xVerts(faces(i)\v3), v3
-       faces(i)\avgZ = (v1\z + v2\z + v3\z) / 3
-       InsertTriangle{faces(i), xNumFaces}
-       xNumFaces + 1
+       \avgZ = (xVerts(\v1)\z + xVerts(\v2)\z + xVerts(\v3)\z) / 3
+
+       ;-- Insert triangles in order
+       numFacesX + 1
+       InsertTriangle{faces(i), numFacesX}
     End If
   Next
-
+  ShellSort &xFaces(),numFacesX
 End Statement
 
 
-;V1 should be the Point of the triangle
-NEWTYPE.Polygon
-  x0.w : y0.w
-  x1.w : y1.w
-  x2.w : y2.w
-  x3.w : y3.w
-End NEWTYPE
+
+Statement DrawLight{color.w}
+SHARED light
+
+  DEFTYPE.Vertex l
+  l\x = 1.0 * (#hw * light\x) / light\z
+  l\y = 1.0 * (#hh * light\y) / light\z
+  l\z = 1.0 * Abs(light\z)
+
+  Circle #hw + l\x, #hw + l\y, l\z, color
+  Locate 0,18 : Print #hw + l\x, "," , #hh + l\y
+End Statement
 
 Statement DrawVertex{*V.Vertex, color.w, @idx.w}
 
@@ -343,7 +370,7 @@ End Statement
 
 
 Statement RenderFace{*srcTri.Triangle, color.w}
-SHARED xVerts(), config
+SHARED config, xVerts()
 
   DEFTYPE.Vertex v1,v2,v3,v4, temp
 
@@ -351,7 +378,6 @@ SHARED xVerts(), config
   CopyType xVerts(*srcTri\v2),v2
   CopyType xVerts(*srcTri\v3),v3
 
-;Goto skip
   ;-- Sort the verticies by y value
   If v1\y < v2\y    ;Swap v1, v2
     CopyType v2, temp
@@ -370,8 +396,8 @@ SHARED xVerts(), config
     CopyType v1, v2
     CopyType temp, v1
   End If
-
 skip:
+
   Select config\renderMode
   Case #RENDER_WIREFRAME
     DrawTriangle{v1, v2, v3, color, False}
@@ -383,14 +409,13 @@ End Statement
 
 
 Statement DrawObject{}
-SHARED xFaces(), xNumFaces, xVerts(), xNumVertices, config
-
+SHARED config, light, xFaces(), xVerts()
 
   If config\renderMode = #RENDER_DOTS OR config\showNums
-    cstep.q = 16.0 / xNumFaces
-    For i.w = 1 To xNumVertices
+    cstep.f = 16.0 / numVertices
+    For i.w = 1 To numVertices
       If config\showNums
-        DrawVertex{xVerts(i),i * cstep,i}
+        DrawVertex{xVerts(i),i * cstep, i}
       Else
         DrawVertex{xVerts(i),i * cstep,-1}
       EndIf
@@ -399,24 +424,15 @@ SHARED xFaces(), xNumFaces, xVerts(), xNumVertices, config
     If NOT config\showNums Then Statement Return
   EndIf
 
-  DEFTYPE.Vector light, n
-  For i.w = 0 To xNumFaces
+  DEFTYPE.Vector n
+  For i.w = 0 To numFacesX
 
     If config\normals
-      CopyType xFaces(i)\normal, n.Vector
-      ;light\x = .3
-      ;light\y = -.3
-      ;light\z = .91
-      light\x = .577
-      light\y = -.577
-      light\z = .577
-      ;light\x = .7
-      ;light\y = -.7
-      ;light\z = .14
+      CopyType xFaces(i)\normal, n
 
-      DotProduct_.q = (n\x * light\x) + (n\y * light\y) + (n\z * light\z)
-
-      color.b = 1 + DotProduct_ * 15.0
+      DotProduct_.f = (n\x * light\x) + (n\y * light\y) + (n\z * light\z)
+      Locate 0,0 : NPrint DotProduct_
+      color.b = 15 - (DotProduct_ * 15.0)
     Else
       color.b = 15
     EndIf
@@ -433,52 +449,50 @@ End Statement
 
 
 
-; Rotate around the y-axis, angle in radians
-Statement RotateObject{angleX.q, angleY.q, angleZ.q}
-SHARED xVerts(),xNumVertices
+;-- Rotate around the y-axis, angle in radians
+Statement RotateObject{angleX.f, angleY.f, angleZ.f}
+SHARED xVerts()
 
-  For i.w = 1 To xNumVertices
+  For i.w = 1 To numVertices
 
     If angleX <> 0
-      _sinX.q = Sin(angleX) : _cosX.q = Cos(angleX)
+      _sinX.f = Sin(angleX) : _cosX.f = Cos(angleX)
       CopyType xVerts(i), vtx.Vertex
       xVerts(i)\y = vtx\y * _cosX - vtx\z * _sinX
       xVerts(i)\z = vtx\y * _sinX + vtx\z * _cosX
     EndIf
 
     If angleY <> 0
-      _sinY.q = Sin(angleY) : _cosY.q = Cos(angleY)
+      _sinY.f = Sin(angleY) : _cosY.f = Cos(angleY)
       CopyType xVerts(i), vtx.Vertex
       xVerts(i)\x = vtx\z * _sinY + vtx\x * _cosY
       xVerts(i)\z = vtx\z * _cosY - vtx\x * _sinY
     EndIf
 
     If angleZ <> 0
-      _sinZ.q = Sin(angleZ) : _cosZ.q = Cos(angleZ)
+      _sinZ.f = Sin(angleZ) : _cosZ.f = Cos(angleZ)
       CopyType xVerts(i), vtx.Vertex
       xVerts(i)\x = vtx\x * _cosZ - vtx\y * _sinZ
       xVerts(i)\y = vtx\x * _sinZ + vtx\y * _cosZ
     EndIf
 
   Next i
-
 End Statement
 
-Statement TransformObject{tX.q, tY.q, tZ.q}
-SHARED xVerts(),xNumVertices
+Statement TransformObject{tX.f, tY.f, tZ.f}
+SHARED xVerts()
 
-  For i.w = 1 To xNumVertices
+  For i.w = 1 To numVertices
     xVerts(i)\x = xVerts(i)\x + tX
     xVerts(i)\y = xVerts(i)\y + tY
     xVerts(i)\z = xVerts(i)\z + tZ
   Next i
-
 End Statement
 
-Statement ScaleObject{fX.q, fY.q, fZ.q}
-SHARED xVerts(),xNumVertices
+Statement ScaleObject{fX.f, fY.f, fZ.f}
+SHARED xVerts()
 
-  For i.w = 1 To xNumVertices
+  For i.w = 1 To numVertices
     If fX <> 0 Then xVerts(i)\x = xVerts(i)\x * fX
     If fY <> 0 Then xVerts(i)\y = xVerts(i)\y * fY
     If fZ <> 0 Then xVerts(i)\z = xVerts(i)\z * fZ
@@ -486,59 +500,60 @@ SHARED xVerts(),xNumVertices
 End Statement
 
 Statement ApplyPerspective{}
-SHARED xVerts(), xNumVertices
+SHARED xVerts()
 
-  For i.w = 1 To xNumVertices
-    xVerts(i)\x = (160.0 * xVerts(i)\x) / xVerts(i)\z
-    xVerts(i)\y = (160.0 * xVerts(i)\y) / xVerts(i)\z
+  For i.w = 1 To numVertices
+    xVerts(i)\x = 1.0 * (#hw * xVerts(i)\x) / xVerts(i)\z
+    xVerts(i)\y = 1.0 * (#hh * xVerts(i)\y) / xVerts(i)\z
   Next i
-
 End Statement
 
 Statement CopyVerts{}
-SHARED verts(), xVerts(), numVertices, xNumVertices
+SHARED verts(), xVerts()
   For i.w = 1 To numVertices
     CopyType verts(i), xVerts(i)
   Next
-  xNumVertices = numVertices
 End Statement
 
 Statement CopyFaces{}
-SHARED faces(), xFaces(), numFaces, xNumFaces
+SHARED faces(), xFaces()
   For i.w = 0 To numFaces
     CopyType faces(i), xFaces(i)
   Next
-  xNumFaces = numFaces
+  numFacesX = numFaces
 End Statement
 
-Function.q getMaxZSize{}
-SHARED verts(), numVertices
+Function.f getMaxZSize{}
+SHARED verts()
 
-  DEFTYPE.q tempZ
+  DEFTYPE.f tempZ
   For i.w = 1 To numVertices
     If Abs(verts(i)\z) > tempZ Then tempZ = Abs(verts(i)\z)
   Next
   Function Return tempZ
-
 End Statement
 
 
 ; =========================================================================================================
+AMIGA
 objfile.s = "/Data/models/simple.obj"
 objfile.s = "/Data/models/cube.obj"
-objfile.s = "/Data/models/pyramid.obj"
-objfile.s = "/Data/models/octahedron.obj"
-objfile.s = "/Data/models/diamond.obj"
-objfile.s = "/Data/models/sphere.obj"
+;objfile.s = "/Data/models/pyramid.obj"
+;objfile.s = "/Data/models/octahedron.obj"
+;objfile.s = "/Data/models/diamond.obj"
+;objfile.s = "/Data/models/sphere3.obj"
 ;objfile.s = "/Data/models/humanoid_quad.obj"
 ;objfile.s = "/Data/models/humanoid_tri.obj"
 ;objfile.s = "/Data/models/spitf3.obj"
 ;objfile.s = "/Data/models/lamp.obj"
+;objfile.s = "/Data/models/cylinder.obj"
+;objfile.s = "/Data/models/dolphin.obj"
 
 If NOT LoadModel{objfile}
   NPrint "not ok"
   End
 EndIf
+
 
 ;-- Install font as number 1
 #font=1
@@ -551,13 +566,15 @@ EndIf
 
 ;-- init the output and some fancy colors
 BitMap 0,320,256,4
+Gosub getPointer
+BLITZ
 Slice 0,44,4: Show 0
 InitPalette 0,16
 For i.w = 0 To 15
   PalRGB 0,i, i, i, i
 Next
 ShowPalette 0
-
+Pointer 0,0
 ;-- set bitmap 0 as output bitmap for print operations
 BitMapOutput 0
 FNSOutput 0,1
@@ -566,41 +583,58 @@ FNSOutput 0,1
 ; --
 ; -- adjust the transformation to a suitable value
 ; --
-tx.q = 0 : ty.q = 0 : tz.q = getMaxZSize{} * 2.5
+
+  ;light\x = .3
+  ;light\y = -.3
+  ;light\z = .91
+  ;light\x = .577
+  ;light\y = -.577
+  ;light\z = .577
+
+tx.f = 0 : ty.f = 0 : tz.f = getMaxZSize{} * 2.5
 config\renderMode = #RENDER_WIREFRAME
 config\culling = True : config\normals = True
+
+light\x = -.8
+light\y = -.7
+light\z = 1
+
 ; --
 ; -- main loop
 ; --
-BLITZ
 Mouse On : BlitzKeys On : exit.b = False
 Repeat
-  startTime.q = Timer
+  startTime.f = Timer
   lastkey.w = BlitzKey
 
   CopyVerts{}
-
-  RotateObject{angleX.q,angleY.q,angleZ.q}
+  RotateObject{angleX.f,angleY.f,angleZ.f}
   TransformObject{tx,ty,tz}
   ScaleObject{0,0,0}
   If config\normals Then CalcNormals{}
   If config\culling Then CullFaces{} Else CopyFaces{}
   ApplyPerspective{}
 
-  Cls : VWait 2
-  DrawObject{}
 
-  endTime.q = Timer
+  Cls : VWait 1
+  DrawObject{}
+  If config\showLight Then DrawLight{15}
+
+  endTime.f = Timer
+
   Locate 0,0 : Colour 15
   NPrint objfile
   NPrint "Frame time: ", endTime - startTime
-  NPrint "Triangles: ", numFaces + 1,", Vertices: ", numVertices
-  NPrint "Faces culled: ", numFaces - xNumFaces
+  NPrint "Triangles: ", numFaces + 1,", Vertices: ", numVertices + 1
+  NPrint "Faces culled: ", numFaces - numFacesX
   NPrint "transform: ",tx," ",ty," ",tz
-  NPrint "(V) (C) (N) (I) (D) (W) (F) (+) (-)"
+  NPrint "(L) (V) (C) (N) (I) (D) (W) (F) (+) (-)"
+
+  Locate 0,17 : Print light\x, "," ,light\y
 
   If lastkey<>-1 Then olastkey.w = lastkey
   NPrint olastkey
+  VWait 5
 
   Select lastkey
 
@@ -612,23 +646,37 @@ Repeat
   Case 105 : config\showData = -1-config\showData          ; I
   Case  99 : config\culling = -1-config\culling            ; C
   Case 110 : config\normals = -1-config\normals            ; N
+  Case 108 : config\showLight = -1-config\showLight        ; L
 
-  Case 28: ty - 0.25  ; up
-  Case 29: ty + 0.25  ; down
-  Case 31: tx - 0.25  ; left
-  Case 30: tx + 0.25  ; right
-  Case 45: tz + 0.25  ; -
-  Case 43: tz - 0.25  ; +
+  Case 28: ty - 0.5  ; up
+  Case 29: ty + 0.5  ; down
+  Case 31: tx - 0.5  ; left
+  Case 30: tx + 0.5  ; right
+  Case 45: tz + 0.5  ; -
+  Case 43: tz - 0.5  ; +
+
   Case 27 : exit = True
   End Select
 
-  If Joyb(0) <> 0 Then exit = True
+  If Joyb(0) 
+    light\x = (MouseX-#hw) / #hw * 1.0
+    light\y = (MouseY-#hh) / #hh * 1.0
+  EndIf
 
-  angleY = angleY + (Pi / 128.0)
+  angleY + (Pi / 128.0)
   angleX = Pi + 0.05
+
 Until exit = True
 AMIGA
 End
 
-;Incbin our font into the compiled file to save effort later
+.getPointer:
+  Use BitMap 0
+  Line 0,3,7,3,1
+  Line 3,0,3,7,1
+  GetaShape 0,0,0, 7,7
+  GetaSprite 0,0
+Return
+
+;-- Incbin our font into the compiled file to save effort later
 font_dat: IncBin "/data/FNS/fonts/Times15.FNS"
