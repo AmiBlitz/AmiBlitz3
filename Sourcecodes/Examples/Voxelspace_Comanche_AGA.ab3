@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 1184
+; NumberOfBuilds  = 1193
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,7 +30,7 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 282
+; CursorLine      = 90
 ; CursorColumn    = 1
 ; LabelSearch     = "camera\angle"
 ; LabelRemark     = 0
@@ -43,25 +43,24 @@
 ; Max File        = 100
 ; Max GadgetList  = 100
 ; Max Shape       = 200
-; Max Bank        = 1
 ; Max MenuList    = 100
-; Max GTList      = 100
-; Max Palette     = 4
-; Max BitMap      = 10
-; Max Screen      = 5
 ; Max IntuiFont   = 10
 ; Max BlitzFont   = 1
-; Max Window      = 100
+; Max Bank        = 1
+; Max GTList      = 100
 ; Max IconInfo    = 1
 ; Max MUIObject   = 50
 ; Max AsyncReq    = 4
-; Max Req-Lib     = 5
 ; Max GTMenuList  = 100
 ; Max Console     = 5
 ; Max TCPSock     = 5
 ; Max Tape        = 5
 ; Max TagList     = 5
 ; Max Database    = 16
+; Max Window      = 100
+; Max BitMap      = 10
+; Max Screen      = 5
+; Max Palette     = 4
 ; Max Sound       = 10
 ; Max MedModule   = 8
 ; Max Buffer      = 10
@@ -69,7 +68,6 @@
 ; Max Sprite      = 20
 ; Max Module      = 5
 ; Max Slice       = 10
-; Max Page        = 4
 ; Max CopList     = 10
 ; Max PTModule    = 5
 ; Max Anim        = 10
@@ -77,6 +75,7 @@
 ; Max Chunky      = 20
 ; Max Stencil     = 5
 ; Max XBSound     = 10
+; Max Page        = 4
 ; /XTRA
 ; --
 ; -- simple VoxelSpace-Demo conversion
@@ -84,20 +83,18 @@
 ; -- inspired by VoxelSpace by Sebastian Macke
 ; -- github: https://github.com/s-macke/VoxelSpace/blob/master/VoxelSpace.html
 ; --
-OPTIMIZE 7 ; - FPU on strongly advised
+OPTIMIZE 5 ; - FPU on strongly advised
 SYNTAX 6
 
-#display_width   = 224;320 ;640 ;1024
-#display_height  = 160;256 ;480 ; 768
+#display_width   = 320
+#display_height  = 200
 #display_depth   = 8
-#display_bgcolor = $9090E0
 
 NEWTYPE.input
-  forwardbackward.q
-  leftright.q
-  updown.q
-  lookup.q
-  lookdown.q
+  forwardbackward.q ; change position
+  leftright.q       ; change angle
+  updown.q          ; change height
+  tilt.b            ; tilt of view (horizon)
 End NEWTYPE
 
 NEWTYPE.camera
@@ -115,8 +112,6 @@ NEWTYPE.map
   scalefactor.q
   width.w
   height.w
-  widthperiod.w
-  heightperiod.w
 
   scalefx.q
   scalefy.q
@@ -127,19 +122,31 @@ End NEWTYPE
 
 DEFTYPE.b db
 DEFTYPE.input _input
+_input\forwardbackward = 6.0
+
 DEFTYPE.camera camera
 camera\x = 512.0
-camera\y = 800.0
+camera\y = 400.0
 camera\height = 96.0;78.0
 camera\angle = 0.0
 camera\horizon = 100.0
 camera\distance = 800
 
 DEFTYPE.map map
-Dim altitude.b(1024*1024)       ; fix sized array to keep it simple
-Dim color.l(1024*1024)
-Dim hiddeny.l(#display_width)
+map\width      = 1024
+map\height     = 1024
+map\shift      = 10    ; 1024
+map\stepping   = 8  ; reducable horizontal resolution
 
+Dim altitude.b(map\width * map\height)
+Dim color.w(map\width * map\height)
+Dim hiddeny.l(#display_width)
+Dim SinLUp.q(360)
+Dim CosLUp.q(360)
+
+Macro DrawBackground
+  Cls 14
+End Macro
 
 Statement DrawVerticalLine{x.l, ytop.l, ybottom.l, color.l}
   SHARED map
@@ -154,29 +161,11 @@ Statement DrawVerticalLine{x.l, ytop.l, ybottom.l, color.l}
   BLITZ
 End Statement
 
-Macro DrawBackground
-;  QAMIGA
-  Cls 0
-;  BLITZ
-End Macro
-
-Function DoubleBuffer{}
-SHARED db
-    VWait
-    DisplayBitMap 0,db
-    db = 1 - db
-    Use BitMap db
-    BitMapOutput db
-    UnQueue db
-End Function
-
-
-
 Statement Render{}
-  SHARED camera, map, altitude(), color(), hiddeny()
+  SHARED camera, map, altitude(), color(), hiddeny(), SinLUp(), CosLUp()
 
-  sinang.q = Sin(camera\angle)
-  cosang.q = Cos(camera\angle)
+  sinang.q = SinLUp(Abs(camera\angle))
+  cosang.q = CosLUp(Abs(camera\angle))
 
   ;-- reset hidden lines
   For x.l = 0 To #display_width
@@ -202,13 +191,15 @@ Statement Render{}
 
     For x = 0 To #display_width Step map\stepping
 
-      mapoffset.l = ((Int(ply) AND map\heightperiod) LSL map\shift) + (Int(plx) & map\widthperiod)
+      mapoffset.l = ((Int(ply) AND (map\height-1)) LSL map\shift) + (Int(plx) & (map\width-1))
       alt.w = altitude(mapoffset)
       color.l = color(mapoffset)
 
-      heightonscreen.l = (camera\height - alt) * invz + camera\horizon
-      DrawVerticalLine{x, heightonscreen, hiddeny(x), color}
-      If (heightonscreen < hiddeny(x)) Then hiddeny(x) = heightonscreen
+      yonscreen.l = (camera\height - alt) * invz + camera\horizon
+
+       ;- draw the vertical block
+      DrawVerticalLine{x, yonscreen, hiddeny(x), color}
+      If (yonscreen < hiddeny(x)) Then hiddeny(x) = yonscreen
 
       plx + dx
       ply + dy
@@ -220,14 +211,21 @@ Statement Render{}
 
 End Statement
 
+
+
+Function DoubleBuffer{}
+SHARED db
+    VWait
+    DisplayBitMap 0,db
+    db = 1 - db
+    Use BitMap db
+    BitMapOutput db
+    UnQueue db
+End Function
+
 .MAIN
 ; -- MAINPROGRAM ------------------------------------------------------------
 WBStartup
-; --
-; -- alloc bitmaps for doublebuffering
-; --
-BitMap 0,#display_width,#display_height,#display_depth
-BitMap 1,#display_width,#display_height,#display_depth
 
 ; --
 ; --  preload map datas
@@ -236,74 +234,115 @@ NPrint "generating tables..."
 Gosub generate_tables
 
 ; --
+; -- alloc bitmaps for doublebuffering
+; --
+BitMap 0,#display_width,#display_height,#display_depth
+BitMap 1,#display_width,#display_height,#display_depth
+
+
+; --
 ; -- open the display
 ; --
 NPrint "creating display..."
-BLITZ
-;InitCopList 0,$10000 + #display_depth
 InitCopList 0,64,#display_height,$10000 + #display_depth,8,256,0
+
+BLITZ
 CreateDisplay 0
 DisplayPalette 0,0
-DisplayAdjust 0,-2,12,0,((320-#display_width) LSR 1)-16,-((320-#display_width) LSR 1)-16
+Queue 0,15 : Queue 1,15
 
-Queue 0,15
-Queue 1,15
-Mouse On
-BlitzKeys On
+Mouse On : BlitzKeys On
 ; --
 ; -- main loop
 ; --
 oldtime.l = 0 : current.l  = 0 : timediff.q = 0.0 : oangle.q = 0 : db = 0
 Repeat
-  ; -----------------------------------------  draw landscape
+  current.l = Timer
+
+  ; --
+  ; -- switch buffer
+  ; --
   DoubleBuffer{}
+
+  lastkey.w = BlitzKey
+
+  ; --
+  ; -- render background
+  ; --  
   !DrawBackground
+
+  ; --
+  ; -- render landscape
+  ; -- draw landscape  
+  ; --
+  RunErrsOff
   Render{}
+  RunErrsOn
 
-  ; -- draw border
-  For x.w = 0 To #display_width-1
-    Plot x,0,25
-    Plot x,#display_height-1,25
-  Next x
-  For y.w = 0 To #display_height-1
-   Plot 0,y,25
-    Plot #display_width-1,y,25
-  Next y
-
-  ; -----------------------------------------  draw the map
-  ;rot.q = (oangle - camera\angle) / (2*Pi) : Rotate 0, rot
+  ; --
+  ; -- render the map
+  ; -- 
   QBlit db,0,map\posx,map\posy
   posx.w = map\posx + Int(camera\x * map\scalefx * map\scalefactor)
   posy.w = map\posy + Int(camera\y * map\scalefy * map\scalefactor)
+ 
+  ; -- position marker  
   Plot posx,posy,Rnd(16)
 
-  ; ----------------------------------------- update camera
-  oldtime = current
-  current.l = Timer
-  timediff = (current-oldtime) * 0.05
-  If _input\forwardbackward<>0
+  ; --
+  ; -- update text display
+  ; --
+  Colour 25,14
+  Locate 0,0  : Print "1-4: ", map\stepping,"x",map\stepping
+  Locate  0,1 : Print"R,F: Height | Q,E: Nose"
+  Colour 27,14
+  Locate 0,2  : Print "Speed: ", _input\forwardbackward
+  Format "##0"
+  Locate 10,2 : Print "Height:", Str$(camera\height)
+  Locate 22,2 : Print "View:" + Str$(camera\angle * (180/Pi)) + Chr$(176)
+  Format "####.0"
+  Locate 0,3  : Print "x:" + Str$(camera\x) + "  y:" + Str$(camera\y)
+
+  Colour 25,0
+  Format ""
+  Locate 0,24 : Print lastkey
+  Format "##.0" : Locate 32,24 : Print "FPS:", fps.q
+  Format ""
+
+  ; ----------------------------------------- update camera  
+  fps.q = 50 / (current - oldtime)
+  timediff = (current-oldtime) * 0.05 : oldtime = current
+
+  ; speed
+  If _input\forwardbackward <> 0
     camera\x - _input\forwardbackward * Sin(camera\angle) * timediff
     camera\y - _input\forwardbackward * Cos(camera\angle) * timediff
   EndIf
-  If _input\leftright<>0
+
+  ; looking angle
+  If _input\leftright <> 0
     oangle = camera\angle
     camera\angle + _input\leftright * 0.1 * timediff
+
     If Abs(camera\angle) > 2 * Pi Then camera\angle = 0
   EndIf
-  If _input\updown<>0 Then    camera\height + _input\updown * timediff
-  If _input\lookup Then       camera\horizon + 2 * timediff
-  If _input\lookdown Then     camera\horizon - 2 * timediff
 
-  ; -- collision detection
+  ; height
+  If _input\updown Then camera\height + _input\updown * timediff
+
+  ; horizon
+  If _input\tilt Then camera\horizon + _input\tilt * (2 * timediff)
+
+  ; -- collision detection, auto height up
   mapoffset.l = (Int(camera\y) AND (map\width-1)) LSL map\shift + (Int(camera\x) AND (map\height-1))
   If altitude(mapoffset) + 10.0 > camera\height
     camera\height = altitude(mapoffset) + 10.0
   EndIf
 
   ; -- sync with map on screen
-  If camera\x < 0 Then camera\x = map\width-camera\x
-  If camera\x > map\width Then camera\x = 0
-  If camera\y < 0 Then camera\y = map\height-camera\y
+  If camera\x < 0 Then camera\x = map\width
+  If camera\y < 0 Then camera\y = map\height
+  If camera\x > map\width Then camera\x = 0 ;- map\width
   If camera\y > map\height Then camera\y = 0
 
   ; ----------------------------------------- event handler
@@ -314,48 +353,31 @@ Repeat
   If Joyb(0) = 1 Then _input\forwardbackward = 2.0
   If Joyb(0) > 1 Then exit.b = True
 
-  If RawStatus($4d) OR RawStatus($21) Then _input\forwardbackward + -3.0
-  If RawStatus($4c) OR RawStatus($11) Then _input\forwardbackward + 3.0
-  If RawStatus($4e) OR RawStatus($22) Then _input\leftright = -1
-  If RawStatus($4f) OR RawStatus($20) Then _input\leftright = 1
+  If lastkey <> -1
+    ; check W,A,S,D and cursor keys
+    If lastkey = 115 OR lastkey = 29 Then _input\forwardbackward + -3.0
+    If lastkey = 119 OR lastkey = 28 Then _input\forwardbackward + 3.0
+    If lastkey = 100 OR lastkey = 30 Then _input\leftright = -1
+    If lastkey = 97  OR lastkey = 31 Then _input\leftright = 1
 
-  If RawStatus($12) Then _input\lookup = True           ; e
-  If RawStatus($13) Then _input\updown = 2.0            ; r
-  If RawStatus($23) Then _input\updown = -2.0           ; f
-  If RawStatus($10) Then _input\lookdown = True         ; q
+    ; control height
+    If lastkey = 102 Then _input\updown = -2.0           ; f
+    If lastkey = 114 Then _input\updown = 2.0            ; r
 
-  If RawStatus($5e)                                     ; +
-    map\stepping * 2
-    If map\stepping > 8 Then map\stepping  = 8
+    ; nose up / down
+    If lastkey = 101 Then _input\tilt = 1
+    If lastkey = 113 Then _input\tilt = -1
+       
+    ; control details
+    If lastkey = 49 Then map\stepping = 1                ; F1
+    If lastkey = 50 Then map\stepping = 2                ; F2
+    If lastkey = 51 Then map\stepping = 4                ; F3
+    If lastkey = 52 Then map\stepping = 8                ; F3
+
+
+    If lastkey = 27 Then exit = True
   EndIf
-  If RawStatus($4a)                                     ; -
-    map\stepping / 2
-    If map\stepping < 1 Then map\stepping  = 1
-  EndIf
 
-  If RawStatus($45) Then exit = True
-
-  ; -- Key released
-  ;Case $91: _input\forwardbackward = 0      ; up
-  ;Case $A1: _input\forwardbackward = 0      ; down
-  ;Case $A2: _input\leftright = 0            ; right
-  ;Case $A0: _input\leftright = 0            ; left
-  ;Case $92: _input\lookup = False           ; -- e
-  ;Case $93: _input\updown = 0               ; -- r
-  ;Case $A3: _input\updown = 0               ; -- f
-  ;Case $90: _input\lookdown = False         ; -- q
-
-  ; -- update display
-  Colour 15
-  Locate 1,1 : Print "Frames: ", 50/(current-oldtime)
-  Locate 1,2 : Print "Resol.: ", map\stepping,"x",map\stepping
-  ;dbl_QPrint{"x:" + Str$(Int(px)) + " z:" + Str$(Int(pz)) + " Richtung: "+Str$(blickwinkel_grad)+Chr$(176),0,20,2}
-  ;fps.f = dbl_GetFPS{10}
-  ;dbl_QPrint{"FPS: "+Str$(Int(fps)),#display_width-108,0,0}
-  ;dbl_QPrint{"s: " + Str$(_input\forwardbackward),#display_width-108,12}
-  ;dbl_QPrint{"h: " + Str$(camera\horizon),#display_width-108,26}
-  ;dbl_QPrint{"a: " + Str$(camera\angle),#display_width-108,38}
-  ;dbl_QPrint{"key: " + Hex$(RawKey),0,0,0}
 Until exit = True
 BlitzKeys Off
 AMIGA
@@ -371,25 +393,25 @@ End
 
 ;=======================================================================================
 .generate_tables
+  ; lookup tables
+  NPrint "creating lookup tables..."
+  For aaa.q = 0 To 2 * Pi Step 0.1
+    SinLUp(aaa) = Sin(aaa)
+    CosLUp(aaa) = Cos(aaa)
+  Next aaa
+
   ; -- load the map / colormap
   NPrint "loading map data..."
-  BitMap 2,150,150,8 : LoadBitMap 2,"/data/map/C1W_low.iff",0
-  BitMap 3,150,150,8 : LoadBitMap 3,"/data/map/D1_low.iff"
+  BitMap 2,150,150,8 : LoadBitMap 2,"/data/voxel/C1W_low.iff",0
+  BitMap 3,150,150,8 : LoadBitMap 3,"/data/voxel/D1_low.iff"
 
-  map\width = 1024
-  map\height = 300
-  map\widthperiod  = map\width - 1
-  map\heightperiod = map\height - 1
-
-  map\shift = 10    ; 1024
-  map\stepping = 8  ; reduceable horizontal resolution
-
+  map\scalefactor = 0.25
   map\scalefx = 150 / map\width * 1.0
   map\scalefy = 150 / map\height * 1.0
 
   NPrint "reading colormap and heightmap..."
+  RunErrsOff
   w.w = 0 : h.w = 0 : ows.w = -1 : ohs.w = -1
-
   For i.l = 0 To (map\width-1) * (map\height-1)
     h = i LSR map\shift
 
@@ -408,6 +430,7 @@ End
     w + 1 : If w = map\width Then w = 0
     ows = ws : ohs = hs
   Next i
+  RunErrsOn
 
   ; --
   ; -- free temp bitmaps
@@ -420,17 +443,21 @@ End
   ; --
   NPrint "rendering scaled map..."
 
-  map\scalefactor = 0.25
-  Use BitMap 0
-  For x.w = 1 To map\widthperiod
-    For y.w = 1 To map\heightperiod
-      offset.l = y LSL map\shift + x
-      Plot (x * map\scalefx) * map\scalefactor, (y * map\scalefy) * map\scalefactor, color(offset)
+  _shapeWidth.w = map\width * map\scalefx * map\scalefactor
+  _shapeHeight.w = map\height * map\scalefy * map\scalefactor
+  BitMap 0,_shapeWidth, _shapeHeight,#display_depth
+  For x.w = 1 To _shapeWidth
+    For y.w = 1 To _shapeHeight
+
+      tmpx.q = (x / map\scalefx) / map\scalefactor
+      tmpy.q = (y / map\scalefy) / map\scalefactor
+      offset.l =  Int(tmpy) LSL map\shift + Int(tmpx)
+
+      Plot tmpx, tmpy, color(offset)
     Next y
   Next x
-
-  GetaShape 0,0,0,(map\widthperiod * map\scalefx) * map\scalefactor, (map\heightperiod * map\scalefy) * map\scalefactor
-  Cls
+  GetaShape 0,0,0,_shapeWidth-1, _shapeHeight-1
+  Free BitMap 0
   map\posx = #display_width - (1.0 * 150 * map\scalefactor) - 3
   map\posy = 3
 
