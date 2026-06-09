@@ -6,7 +6,7 @@
 ; ExePath         = "Development:AmiBlitz3/BlitzLibs/UserLibs"
 ; ExeFile         = "memlib_new.obj"
 ; CreateIcon      = 0
-; Residents       = "libmacs.res,libjsrs.res,LVO.res,amigalibs.res,libnums.res"
+; Residents       = "libmacs.res,libjsrs.res,libnums.res,amigalibs.res,LVO.res"
 ; 
 ; Compiler
 ; -------------------------------------------------------
@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 61
+; NumberOfBuilds  = 68
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 150
-; CursorColumn    = 13
+; CursorLine      = 546
+; CursorColumn    = 17
 ; LabelSearch     = "errorhandling"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -418,7 +418,7 @@ RTS
 
   SUB.l D0,allocedmemsize
 
-  TST.w use_pooling : BNE freenopooling
+  TST.w use_pooling : BEQ freenopooling
     CNIF #mungwall=1
       MOVE.l a1,a0
       ADD.w #20,a0
@@ -593,10 +593,7 @@ RTS
 
   SUB.l D0,allocedmemsize
 
-  TST.w use_pooling : BNE 'pooling
-    JSR _FreeMem(A6)
-    BRA poolingend
- 'pooling
+  TST.w use_pooling : BEQ nofreepooling
     CNIF #mungwall=1
     MOVE.l a1,a0
     ADD.w #20,a0
@@ -625,6 +622,9 @@ RTS
       MOVE.l mempoolchip,a0
    'l1
     BSR AsmFreePooled
+    BRA poolingend
+  nofreepooling:
+    JSR _FreeMem(A6) 
   poolingend:
 
   TST.l (a2) : BNE.w JL_0_23C
@@ -880,13 +880,22 @@ AsmAllocPooled:
     TST.l   d0
     BEQ     'ap_skip                    ; large alloc, skip
 
-    MOVE.l  a2,a0
-    MOVE.l  d5,d1
-    MOVE.l  !offset{MemoryPool,mp_MemoryFlags}(a3),d2
-    AND.l   #MEMF_CLEAR,d2
-    BSR     alloc_from_puddle
+    MOVE.l  a2,a0                       ; memHeader
+    MOVE.l  d5,d0                       ; memSize
+    JSR _Allocate(a6)
     TST.l   d0
-    BNE     'ap_done_pop
+    BEQ    'ap_skip
+
+    MOVE.l  d0,a5
+    MOVE.l  !offset{MemoryPool,mp_MemoryFlags}(a3),d0
+    AND.l   #MEMF_CLEAR,d0
+    BEQ     'ap_ret_scan
+    MOVE.l  a5,a0
+    MOVE.l  d5,d0
+    BSR     pool_clear
+ 'ap_ret_scan:
+    MOVE.l  a5,d0
+    BRA     'ap_done_pop
 
 'ap_skip:
     MOVE.l  !offset{MinNode,mln_Succ}(a2),a2
@@ -901,10 +910,20 @@ AsmAllocPooled:
     BEQ     'ap_null_pop
 
     MOVE.l  d0,a0
-    MOVE.l  d5,d1
-    MOVE.l  !offset{MemoryPool,mp_MemoryFlags}(a3),d2
-    AND.l   #MEMF_CLEAR,d2
-    BSR     alloc_from_puddle
+    MOVE.l  d5,d0
+    JSR     _Allocate(a6)
+    TST.l   d0
+    BEQ     'ap_null_pop
+
+    MOVE.l  d0,a5
+    MOVE.l  !offset{MemoryPool,mp_MemoryFlags}(a3),d0
+    AND.l   #MEMF_CLEAR,d0
+    BEQ     'ap_ret_new
+    MOVE.l  a5,a0
+    MOVE.l  d5,d0
+    BSR     pool_clear
+'ap_ret_new:
+    MOVE.l  a5,d0
     BRA     'ap_done_pop
 
 ;--- Large allocation ---
@@ -995,15 +1014,10 @@ AsmFreePooled:
     CMP.l   !offset{MemHeader,mh_Upper}(a2),a4
     BHI     'fp_next
 
-    MOVE.l  a4,a0
-    MOVE.l  !offset{MemHeader,mh_First}(a2),!offset{MemChunk,mc_Next}(a0)
-    MOVE.l  d3,!offset{MemChunk,mc_Bytes}(a0)
-    MOVE.l  a0,!offset{MemHeader,mh_First}(a2)
-
-    ADD.l   d3,!offset{MemHeader,mh_Free}(a2)
-
-    MOVE.l  a2,a0
-    BSR     sort_and_coalesce
+    MOVE.l  a2,a0             ;memHeader
+    MOVE.l  a4,a1             ;memoryBlock
+    MOVE.l  d3,d0             ;byteSize
+    JSR     _Deallocate(a6)
     BRA     'fp_done_pop
 
 ;--- Check large allocation ---
@@ -1118,164 +1132,6 @@ new_puddle:
     MOVEM.l (A7)+,d2-d4/a2-a4
     RTS
 
-;==============================================================================
-; Internal: alloc_from_puddle(a0=MemHeader, d1=aligned, d2=clear_flag)
-; returns d0=pointer (0 on failure)
-;==============================================================================
-alloc_from_puddle:
-    MOVEM.l d2-d3/a2-a4,-(A7)
-    MOVE.l  a0,a2                       ; a2 = MemHeader
-    MOVE.l  d1,d3                       ; d3 = aligned
-    ; d2 already = clear flag
-
-    MOVE.l  !offset{MemHeader,mh_First}(a2),a3             ; a3 = current chunk
-    SUB.l   a4,a4                          ; a4 = prev
-
-'afp_loop:
-    CMP.l   #0,a3 
-    BEQ     'afp_not_found
-
-    MOVE.l  !offset{MemChunk,mc_Bytes}(a3),d0
-    CMP.l   d3,d0
-    BLS     'afp_next
-
-    SUB.l   d3,d0                       ; d0 = remaining
-    CMP.l   # SizeOf.MemChunk,d0
-    BLS     'afp_no_split
-
-; Split chunk
-    MOVE.l  a3,a0
-    ADD.l   d3,a0                       ; a0 = split position
-    MOVE.l  !offset{MemChunk,mc_Next}(a3),!offset{MemChunk,mc_Next}(a0)
-    MOVE.l  d0,!offset{MemChunk,mc_Bytes}(a0)
-
-    CMP.l   #0,a4 
-    BEQ     'afp_head_split
-    MOVE.l  a0,!offset{MemChunk,mc_Next}(a4)
-    BRA     'afp_set_size
-
-'afp_head_split:
-    MOVE.l  a0,!offset{MemHeader,mh_First}(a2)
-    BRA     'afp_set_size
-
-; No split - take whole chunk
-'afp_no_split:
-    CMP.l   #0,a4 
-    BEQ     'afp_head_nosplit
-    MOVE.l  !offset{MemChunk,mc_Next}(a3),!offset{MemChunk,mc_Next}(a4)
-    BRA     'afp_set_size
-
-'afp_head_nosplit:
-    MOVE.l  !offset{MemChunk,mc_Next}(a3),!offset{MemHeader,mh_First}(a2)
-
-'afp_set_size:
-    MOVE.l  d3,!offset{MemChunk,mc_Bytes}(a3)
-    SUB.l   d3,!offset{MemHeader,mh_Free}(a2)
-
-    TST.l   d2
-    BEQ     'afp_done
-    MOVE.l  a3,a0
-    MOVE.l  d3,d0
-    BSR     pool_clear
-
-'afp_done:
-    MOVE.l  a3,d0
-    BRA     'afp_exit
-
-'afp_next:
-    MOVE.l  a3,a4
-    MOVE.l  !offset{MemChunk,mc_Next}(a3),a3
-    BRA     'afp_loop
-
-'afp_not_found:
-    CLR.l   d0
-
-'afp_exit:
-    MOVEM.l (A7)+,d2-d3/a2-a4
-    RTS
-
-;==============================================================================
-; Internal: sort_and_coalesce(a0=MemHeader)
-; Sorts free list by address, merges adjacent chunks
-;==============================================================================
-sort_and_coalesce:
-    MOVEM.l d2-d3/a2-a4,-(A7)
-    MOVE.l  a0,a2                       ; a2 = MemHeader
-
-;--- Sort free list by address ---
-    MOVE.l  !offset{MemHeader,mh_First}(a2),a3             ; a3 = source list
-    CLR.l   !offset{MemHeader,mh_First}(a2)               ; clear original
-    SUB.l   a4,a4                       ; a4 = sorted list head (NULL)
-
-'sc_sort:
-    CMP.l   #0,a3 
-    BEQ     'sc_sort_done
-
-    MOVE.l  !offset{MemChunk,mc_Next}(a3),d2              ; d2 = next source chunk
-    MOVE.l  a4,a0                       ; a0 = walker in sorted
-    SUB.l   a1,a1                          ; a1 = prev in sorted
-    CLR.l   d3                          ; d3 = found flag
-
-'sc_find:
-    CMP.l   #0,a0
-    BEQ     'sc_insert
-    CMP.l   a3,a0
-    BLS     'sc_advance
-    MOVEQ   #1,d3                       ; found insertion point
-
-'sc_insert:
-    MOVE.l  a0,!offset{MemChunk,mc_Next}(a3)             ; chunk->next = walker or NULL
-    CMP.l   #0,a1
-    BEQ     'sc_new_head
-    MOVE.l  a3,!offset{MemChunk,mc_Next}(a1)             ; prev->next = chunk
-    BRA     'sc_advance_source
-
-'sc_new_head:
-    MOVE.l  a3,a4                       ; new sorted head
-
-'sc_advance_source:
-    MOVE.l  d2,a3                       ; next source
-    BRA     'sc_sort
-
-'sc_advance:
-    MOVE.l  a0,a1
-    MOVE.l  !offset{MemChunk,mc_Next}(a0),a0
-    BRA     'sc_find
-
-'sc_sort_done:
-    MOVE.l  a4,!offset{MemHeader,mh_First}(a2)            ; store sorted list
-
-;--- Merge adjacent chunks ---
-    MOVE.l  a4,a3                       ; a3 = current chunk
-
-'sc_merge:
-    CMP.l   #0,a3 
-    BEQ     'sc_exit
-
-    MOVE.l  !offset{MemChunk,mc_Next}(a3),d2
-    TST.l   d2
-    BEQ     'sc_exit
-
-    MOVE.l  a3,d0
-    ADD.l   !offset{MemChunk,mc_Bytes}(a3),d0
-    CMP.l   d2,d0
-    BNE     'sc_no_merge
-
-; Adjacent: merge
-    MOVE.l  d2,a0
-    MOVE.l  !offset{MemChunk,mc_Bytes}(a3),d0
-    ADD.l   !offset{MemChunk,mc_Bytes}(a0),d0
-    MOVE.l  d0,!offset{MemChunk,mc_Bytes}(a3)
-    MOVE.l  !offset{MemChunk,mc_Next}(a0),!offset{MemChunk,mc_Next}(a3)
-    BRA     'sc_merge                   ; recheck
-
-'sc_no_merge:
-    MOVE.l  d2,a3
-    BRA     'sc_merge
-
-'sc_exit:
-    MOVEM.l (A7)+,d2-d3/a2-a4
-    RTS
 
 ; ====================================================================================
 outOfMemoryb:
