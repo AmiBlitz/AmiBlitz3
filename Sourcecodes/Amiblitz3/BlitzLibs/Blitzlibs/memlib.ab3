@@ -3,10 +3,10 @@
 ; 
 ; General Info
 ; -------------------------------------------------------
-; ExePath         = "Development:AmiBlitz3/BlitzLibs/Decompiled/baselibs"
+; ExePath         = "Development:AmiBlitz3/BlitzLibs/UserLibs"
 ; ExeFile         = "memlib_new.obj"
 ; CreateIcon      = 0
-; Residents       = "libmacs.res,libjsrs.res,LVO.res"
+; Residents       = "libmacs.res,libjsrs.res,libnums.res,amigalibs.res,LVO.res"
 ; 
 ; Compiler
 ; -------------------------------------------------------
@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 34
+; NumberOfBuilds  = 68
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 64
-; CursorColumn    = 3
+; CursorLine      = 546
+; CursorColumn    = 1
 ; LabelSearch     = "errorhandling"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -43,25 +43,24 @@
 ; Max File        = 5
 ; Max GadgetList  = 5
 ; Max Shape       = 100
-; Max Bank        = 5
 ; Max MenuList    = 5
-; Max GTList      = 5
-; Max Palette     = 4
-; Max BitMap      = 10
-; Max Screen      = 5
 ; Max IntuiFont   = 5
 ; Max BlitzFont   = 4
-; Max Window      = 5
+; Max Bank        = 5
+; Max GTList      = 5
 ; Max IconInfo    = 1
 ; Max MUIObject   = 50
 ; Max AsyncReq    = 4
-; Max Req-Lib     = 5
 ; Max GTMenuList  = 5
 ; Max Console     = 5
 ; Max TCPSock     = 5
 ; Max Tape        = 5
 ; Max TagList     = 5
 ; Max Database    = 16
+; Max Window      = 5
+; Max BitMap      = 10
+; Max Screen      = 5
+; Max Palette     = 4
 ; Max Sound       = 10
 ; Max MedModule   = 8
 ; Max Buffer      = 10
@@ -69,7 +68,6 @@
 ; Max Sprite      = 20
 ; Max Module      = 5
 ; Max Slice       = 10
-; Max Page        = 4
 ; Max CopList     = 10
 ; Max PTModule    = 5
 ; Max Anim        = 10
@@ -77,17 +75,13 @@
 ; Max Chunky      = 20
 ; Max Stencil     = 5
 ; Max XBSound     = 10
+; Max Page        = 4
 ; /XTRA
 MaxIntSgnd    EQU $7FFFFFFF
 _SysBase      EQU $4
-;_Forbid       EQU -$84
-;_Permit       EQU -$8a
-;_AllocMem     EQU -$c6
-;_FreeMem      SET -$d2
-;_AllocPooled  EQU -$2c4
-;_FreePooled   SET -$2ca
-;_CreatePool   EQU -$2b8
-;_DeletePool   EQU -$2be
+
+#pool_puddlesize = 32768  ; puddlesize of the memorypool for each list
+#pool_threshsize = 32768  ; threshsize of the memorypool for each list
 
 #return0  =0
 #mungwall =1  ; wall is 12bytes before and 16 bytes after
@@ -129,7 +123,7 @@ End Macro
 
 ;********************************* Libheader
 ;             libnum  first last  init return finit error
-!syslibheader{#memlib,$c000,$c009,init,1,     finit,errorhandling}
+!syslibheader{#memlib,$c000,$c00d,init,1,     finit,errorhandling}
 
 !nullsub{do_localalloc,0,0}       ; $C000
 !nullsub{do_localfree,0,0}        ; $C001
@@ -138,8 +132,15 @@ End Macro
 !nullsub{do_newmemnode,0,0}       ; $C004
 !nullsub{do_freememnode,0,0}      ; $C005
 !nullsub{codefinit,0,0}           ; $C006
-!nullsub{allocret,0,0}            ; $C007
+!nullsub{allocret,0,0}            ; $C007 ; I don't see any difference between localalloc except Permit/Forbid!!
 !nullsub{do_usedmem,0,0}          ; $C008
+
+!nullsub{AsmCreatePool,0,0}       ; $C009
+!nullsub{AsmDeletePool,0,0}       ; $C00A
+!nullsub{AsmAllocPooled,0,0}      ; $C00B
+!nullsub{AsmFreePooled,0,0}       ; $C00C
+
+
 init: !nullsub{codeinit,0,0}
 finit: !nullsub{codefinit,0,0}
 !libfin
@@ -150,8 +151,10 @@ AL_0_EE:         Ds.w 1
 mempool:         Dc.l 0
 mempoolchip:     Dc.l 0
 kick3_available: Dc.w 0
+use_pooling:     Dc.w -1
 debug:           Dc.w 0
 allocedmemsize:  Dc.l 0
+chipalloc:       Dc.w 0
 
 ;-- OK, here's how our mem linking works:
 ;--
@@ -183,163 +186,69 @@ allocedmemsize:  Dc.l 0
 ;-- first list is always current local one.
 
 ;******************** CODE SECTION ********************
-.allocret:                          ; allocate some memory in the local region!
-  MOVEM.l A0-A1/A6,-(A7)
-
-  BTST #0,D0 : BEQ 'notodd          ; check if memory is odd and add 1 byte
-    ADDQ.l #1,D0
- 'notodd
-
-  CNIF #mungwall=1
-  ADD.l #16+16*2,d0
-  CELSE
-  ADD.l #16,D0
-  CEND
-
-  MOVE.l D0,-(A7)                   ; requested memsize + management data
-  MOVEA.l _SysBase,A6
-                                    ; CRASH ONLY WITH KICK 1.3 !!!
-  ADD.l D0,allocedmemsize      
-                                
-  TST.w kick3_available : BNE 'pooling
-    JSR _AllocMem(A6)
-    BRA 'poolend
- 'pooling
-    BTST #1,d1 : BNE 'chipm
-      MOVE.l mempool,a0
-      JSR _AllocPooled(a6)
- 'poolend
-
-  TST.l D0 : BEQ.w 'l1
-    MOVEA.l D0,A0
-    MOVEA.l memlist(PC),A1
-    ADDQ.l #4,a1
-    !addtail
-    ;  MOVE.l $4(A1),(A0)
-    ;  MOVE.l d0,8(a1)
-    ;  MOVE.l A0,$4(A1)
-    MOVE.l (A7)+,12(A0)             ;size was 4, requested memsize+management data
-
-    CNIF #mungwall=1
-    MOVE.l a0,a1
-    SUB.w #16,a1
-    ADD.l 12(a0),a1        ; add of size
-    ADD.w #16,a0
-    ;MOVE.l #$DEADDEAD,(a0)+
-    MOVE.l 28(a7),(a0)+
-    MOVE.l #$EADDEADA,(a0)+
-    MOVE.l #$ADDEADAD,(a0)+
-    MOVE.l #$DAEAD987,(a0)+
-    MOVE.l #$DEADDEAD,(a1)+
-    MOVE.l #$EADDEADA,(a1)+
-    MOVE.l #$ADDEADAD,(a1)+
-    MOVE.l #$DAEAD987,(a1)+
-    CELSE
-    ADD.w #16,A0
-    CEND
-
-    MOVE.l A0,D0
- 'l1
-  MOVEM.l (A7)+,A0-A1/A6
-  RTS
-
- 'chipm
-  MOVE.l mempoolchip,a0
-  JSR _AllocPooled(a6)
-  TST.l D0 : BEQ.w outOfMemory
-
-  MOVEA.l D0,A0
-  MOVEA.l memlist(PC),A1
-  ADDQ.l #4,a1
-  !addtail
-  ;MOVE.l $4(A1),(A0)
-  ;MOVE.l A0,$4(A1)
-  MOVE.l (A7)+,12(A0)  ;was 4
-  MOVE.l #"ChIp",8(a0)
-
-  CNIF #mungwall=1
-  MOVE.l a0,a1
-  SUB.w #16,a1
-  ADD.l 4(a0),a1
-  ADD.w #16,a0
-  ;MOVE.l #$DEADDEAD,(a0)+
-  MOVE.l 28(a7),(a0)+
-  MOVE.l #$EADDEADA,(a0)+
-  MOVE.l #$ADDEADAD,(a0)+
-  MOVE.l #$DAEAD987,(a0)+
-  MOVE.l #$DEADDEAD,(a1)+
-  MOVE.l #$EADDEADA,(a1)+
-  MOVE.l #$ADDEADAD,(a1)+
-  MOVE.l #$DAEAD987,(a1)+
-  CELSE
-  ADD.w #16,A0
-  CEND
-
-  MOVE.l A0,D0
-  MOVEM.l (A7)+,A0-A1/A6
-RTS
-
 .codeinit:                    ; AJL_0_F0
   CLR.l memlist
   MOVE.l d2,-(a7)             ; the stacksize is passed to the program in D2, at least Simon thought it woulhd be, can eventually be removed
 
-  JSR check_kickstart
+  BSR check_kickstart
 
-  TST.w kick3_available : BEQ 'nopooling
-    MOVEA.l _SysBase,a6
-    MOVE.l #$10000,d0         ;#MEMF_CLEAR
-    MOVE.l #32768,d1          ;alloc pool with 32kb for fastram
-    MOVE.l #32768,d2
-    JSR _CreatePool(a6)
-    MOVE.l d0,mempool
-    TST.l D0 : BEQ.w outOfMemory
-
-    MOVE.l #$10002,d0         ;#MEMF_CLEAR & #MEMF_CHIP
-    MOVE.l #32768,d1          ;alloc pool with 32kb for chipmem
-    MOVE.l #32768,d2
-    JSR _CreatePool(a6)
-    MOVE.l d0,mempoolchip
-    TST.l D0 : BEQ.w outOfMemoryc
-
-    CMP.l #"OuT ",errorhandling : BNE 'l10
-      MOVE.b #1,debug
-   'l10
- 'nopooling
+  TST.w use_pooling : BEQ 'nopooling  
+    BSR initpools
+ 'nopooling      
 
   BSR.w do_newmemnode
+
   MOVE.l #call_localalloc,D0
   MOVE.l (a7)+,d2
   CLR.w AL_0_EE
 RTS
 
-.codefinit:                   ; free all allocated memnodes
-;CNIF #mungwall=0
-  TST.w kick3_available : BNE 'nocleanupnecessary
-    BSR.w do_freememnode
-    BNE.w codefinit
- 'nocleanupnecessary
-;CEND
-
-  ;-- delete allocated memory pools
-  TST.w kick3_available : BEQ 'nopooling
-    MOVE.l a6,-(a7)
-    MOVEA.l _SysBase,A6
-    MOVE.l mempool,a0 : JSR _DeletePool(A6)
-    MOVE.l mempoolchip,a0 : JSR _DeletePool(A6)
-    MOVE.l (a7)+,a6
-    BRA 'finitend
+.codefinit: 
+  TST.w use_pooling : BEQ 'nopooling
+    ;-- free allocated memory pools
+    MOVE.l mempool,a0 : BSR AsmDeletePool
+    MOVE.l mempoolchip,a0 : BSR AsmDeletePool
+    RTS
  'nopooling
- 'finitend
+    ;-- free all allocated memnodes
+;CNIF #mungwall=0
+      BSR.w do_freememnode
+    BNE.w 'nopooling
+;CEND    
 RTS
 
 .check_kickstart:
   MOVEQ.l #0,d0
   MOVEA.l _SysBase,A0
   MOVE.w $14(A0),d0           ; Exec.libVersion
-  CMP.w #39,d0 : BCS 'nokick2
+  CMP.w #39,d0 : BCS 'nokick3
     MOVE #1,kick3_available
- 'nokick2
+ 'nokick3
 RTS
+
+.initpools:
+  MOVEA.l _SysBase,a6
+  ;-- alloc memory pool for best suited mem
+  MOVE.l #$10000,d0                    ;#MEMF_CLEAR
+  MOVE.l ##pool_puddlesize,d1          ;alloc pool with 32kb for fastram
+  MOVE.l ##pool_threshsize,d2
+  BSR AsmCreatePool
+  MOVE.l d0,mempool
+  TST.l D0 : BEQ.w outOfMemory
+
+  ;-- alloc memory pool for chip mem
+  MOVE.l #$10002,d0                    ;#MEMF_CLEAR & #MEMF_CHIP
+  MOVE.l ##pool_puddlesize,d1          ;alloc pool with 32kb for chipmem
+  MOVE.l ##pool_threshsize,d2
+  BSR AsmCreatePool
+  MOVE.l d0,mempoolchip
+  TST.l D0 : BEQ.w outOfMemoryc
+
+  CMP.l #"OuT ",errorhandling : BNE 'l10
+    MOVE.b #1,debug
+  'l10
+RTS
+
 
 call_localalloc:  BRA.w do_localalloc
 call_localfree:   BRA.w do_localfree
@@ -377,6 +286,58 @@ RTS
 RTS
 
 
+.allocret:                          ; allocate some memory in the local region!
+  MOVEM.l A0-A1/A6,-(A7)
+
+  BTST #0,D0 : BEQ 'notodd          ; check if memory is odd and add 1 byte
+    ADDQ.l #1,D0
+ 'notodd
+
+  CNIF #mungwall=1
+  ADD.l #16+16*2,d0
+  CELSE
+  ADD.l #16,D0
+  CEND
+
+  MOVE.l D0,-(A7)                   ; requested memsize + management data
+  MOVEA.l _SysBase,A6
+  JSR _Forbid(a6)
+                                    ; CRASH ONLY WITH KICK 1.3 !!!
+  ADD.l D0,allocedmemsize      
+                                
+  TST.w use_pooling : BEQ 'nopooling
+    MOVE.w #0,chipalloc
+    MOVE.l mempool,a0    
+    BTST #1,d1 : BEQ 'nochipm
+      MOVE.l mempoolchip,a0    
+      MOVE.w #1,chipalloc
+   'nochipm        
+    BSR AsmAllocPooled
+    BRA 'poolend
+ 'nopooling
+    JSR _AllocMem(A6) 
+ 'poolend
+
+  TST.l D0 : BEQ.w 'l1
+    MOVEA.l D0,A0
+    MOVEA.l memlist(PC),A1
+    ADDQ.l #4,a1
+    !addtail
+    ;MOVE.l $4(A1),(A0)
+    ;MOVE.l A0,$4(A1)
+    MOVE.l (A7)+,12(A0)  ;was 4
+
+    CMP.w #1,chipalloc : BEQ 'skipchip
+      MOVE.l #"ChIp",8(a0)
+   'skipchip
+
+    BSR fill_mungwall
+    MOVE.l A0,D0
+ 'l1
+  MOVEM.l (A7)+,A0-A1/A6
+RTS
+
+
 .do_localalloc:                    ;allocate some memory in the local region!    AJL_0_16A
   MOVEM.l A0-A1/A6,-(A7)
 
@@ -396,10 +357,14 @@ RTS
 
   ADD.l D0,allocedmemsize          ; track the allocated memory size
 
-  TST.w kick3_available : BEQ 'nopooling
-    BTST #1,d1 : BNE 'chipm
-      MOVE.l mempool,a0
-      JSR _AllocPooled(a6)
+  TST.w use_pooling : BEQ 'nopooling
+    MOVE.w #0,chipalloc
+    MOVE.l mempool,a0    
+    BTST #1,d1 : BEQ 'nochipm
+      MOVE.l mempoolchip,a0    
+      MOVE.w #1,chipalloc
+   'nochipm              
+    BSR AsmAllocPooled
     BRA 'poolingend
  'nopooling
     JSR _AllocMem(A6)
@@ -416,60 +381,11 @@ RTS
 ;  MOVE.l d0,8(a1)
   MOVE.l (A7)+,12(A0);was 4
 
-  CNIF #mungwall=1
-  MOVE.l a0,a1
-  SUB.w #16,a1
-  ADD.l 12(a0),a1   ;size of mem
-  ADD.w #16,a0
-  ;MOVE.l #$DEADDEAD,(a0)+
-  MOVE.l 28(a7),(a0)+
-  MOVE.l #$EADDEADA,(a0)+
-  MOVE.l #$ADDEADAD,(a0)+
-  MOVE.l #$DAEAD987,(a0)+
-  MOVE.l #$DEADDEAD,(a1)+
-  MOVE.l #$EADDEADA,(a1)+
-  MOVE.l #$ADDEADAD,(a1)+
-  MOVE.l #$DAEAD987,(a1)+
-  CELSE
-  ADD.w #16,A0
-  CEND
+  CMP.w #1,chipalloc : BNE 'skipchip
+    MOVE.l #"ChIp",8(a0)
+ 'skipchip
 
-  JSR _Permit(a6)
-  MOVE.l A0,D0
-  MOVEM.l (A7)+,A0-A1/A6
-  RTS
-
-'chipm
-  MOVE.l mempoolchip,a0
-  JSR _AllocPooled(a6)
-  TST.l D0 : BEQ.w outOfMemory
-
-  MOVEA.l D0,A0
-  MOVEA.l memlist(PC),A1
-  ADDQ.l #4,a1
-  !addtail
-  ;MOVE.l $4(A1),(A0)
-  ;MOVE.l A0,$4(A1)
-  MOVE.l (A7)+,12(A0)   ;was 4
-  MOVE.l #"ChIp",8(a0)
-
-  CNIF #mungwall=1
-  MOVE.l a0,a1
-  SUB.w #16,a1
-  ADD.l 12(a0),a1
-  ADD.w #16,a0
-  ;MOVE.l #$DEADDEAD,(a0)+
-  MOVE.l 28(a7),(a0)+
-  MOVE.l #$EADDEADA,(a0)+
-  MOVE.l #$ADDEADAD,(a0)+
-  MOVE.l #$DAEAD987,(a0)+
-  MOVE.l #$DEADDEAD,(a1)+
-  MOVE.l #$EADDEADA,(a1)+
-  MOVE.l #$ADDEADAD,(a1)+
-  MOVE.l #$DAEAD987,(a1)+
-  CELSE
-  ADD.w #16,A0
-  CEND
+  BSR fill_mungwall
 
   JSR _Permit(a6)
   MOVE.l A0,D0
@@ -495,7 +411,6 @@ RTS
   MOVEA.l _SysBase,A6
   JSR _Forbid(a6)
 
-  JL_0_1B0:
   MOVE.l 4(a1),a0
   CMPA.l (A0),A1 : BNE.w errorFree
 
@@ -509,40 +424,18 @@ RTS
 
   SUB.l D0,allocedmemsize
 
-  TST.w kick3_available : BNE 'pooling
-    JSR _FreeMem(A6)
-    BRA poolend2:
- 'pooling
-    CNIF #mungwall=1
-      MOVE.l a1,a0
-      ADD.w #20,a0
-      ;CMP.l #$DEADDEAD,(a0)+ : BNE munghit1
-      CMP.l #$EADDEADA,(a0)+ : BNE munghit1
-      CMP.l #$ADDEADAD,(a0)+ : BNE munghit1
-      CMP.l #$DAEAD987,(a0)+ : BNE munghit1
+  TST.w use_pooling : BEQ freenopooling
+    BSR check_mungwalllocal
 
-      MOVE.l a0,d1
-      MOVE.l a1,a0
-      SUB.w #16,a0
-      ADD.l d0,a0
-
-      mungr1:
-      CMP.l #$DEADDEAD,(a0)+ : BNE munghit4
-      CMP.l #$EADDEADA,(a0)+ : BNE munghit4
-      CMP.l #$ADDEADAD,(a0)+ : BNE munghit4
-      CMP.l #$DAEAD987,(a0)+ : BNE munghit4
-
-      MOVE.l d1,a0
-      MOVE.l #$abfeefcd,(a0)+
-      MOVE.l #$bcdefefe,(a0)+
-      MOVE.l #$ccdefefe,(a0)+
-      mungr4:
-    CEND
     MOVE.l mempool,a0
     CMP.l #"ChIp",8(a1) : BNE 'l1
       MOVE.l mempoolchip,a0
    'l1:
-    JSR _FreePooled(a6)
+    BSR AsmFreePooled
+
+    BRA poolend2:
+ freenopooling:
+    JSR _FreeMem(A6) 
   poolend2:
 
   exit_localfreeb:
@@ -554,12 +447,95 @@ RTS
 
 errorFree: MOVE.l #errorFreeMem,D0 : TRAP #$0
 
+.check_mungwalllocal:
+  CNIF #mungwall=1
+  MOVE.l a1,a0
+  ADD.w #20,a0
+  ;CMP.l #$DEADDEAD,(a0)+ : BNE munghit1
+  CMP.l #$EADDEADA,(a0)+ : BNE munghit1
+  CMP.l #$ADDEADAD,(a0)+ : BNE munghit1
+  CMP.l #$DAEAD987,(a0)+ : BNE munghit1
+  MOVE.l a0,d1
+  MOVE.l a1,a0
+  SUB.w #16,a0
+  ADD.l d0,a0
+  mungr1:
+  CMP.l #$DEADDEAD,(a0)+ : BNE munghit4
+  CMP.l #$EADDEADA,(a0)+ : BNE munghit4
+  CMP.l #$ADDEADAD,(a0)+ : BNE munghit4
+  CMP.l #$DAEAD987,(a0)+ : BNE munghit4
+  MOVE.l d1,a0
+  MOVE.l #$abfeefcd,(a0)+
+  MOVE.l #$bcdefefe,(a0)+
+  MOVE.l #$ccdefefe,(a0)+
+  mungr4:
+  CEND
+RTS 
+
+.check_mungwall:
+  CNIF #mungwall=1
+  MOVE.l a1,a0
+  ADD.w #20,a0
+  ;CMP.l #$DEADDEAD,(a0)+ : BNE munghit2
+  CMP.l #$EADDEADA,(a0)+ : BNE munghit2
+  CMP.l #$ADDEADAD,(a0)+ : BNE munghit2
+  CMP.l #$DAEAD987,(a0)+ : BNE munghit2
+  
+  MOVE.l a0,d1
+  mungr2:
+  MOVE.l a1,a0
+  SUB.w #16,a0
+  ADD.l d0,a0
+  CMP.l #$DEADDEAD,(a0)+ : BNE munghit3
+  CMP.l #$EADDEADA,(a0)+ : BNE munghit3
+  CMP.l #$ADDEADAD,(a0)+ : BNE munghit3
+  CMP.l #$DAEAD987,(a0)+ : BNE munghit3
+  mungr3:
+  MOVE.l d1,a0
+  MOVE.l #$abcdefcd,(a0)+
+  MOVE.l #$bcdefefe,(a0)+
+  MOVE.l #$ccdefefe,(a0)+
+  CEND
+RTS
+
+.fill_mungwall:
+  CNIF #mungwall=1
+  MOVE.l a0,a1
+  SUB.w #16,a1
+  ADD.l 12(a0),a1        ; add of size
+  ADD.w #16,a0
+  ;MOVE.l #$DEADDEAD,(a0)+
+  MOVE.l 28(a7),(a0)+
+  MOVE.l #$EADDEADA,(a0)+
+  MOVE.l #$ADDEADAD,(a0)+
+  MOVE.l #$DAEAD987,(a0)+
+
+  MOVE.l #$DEADDEAD,(a1)+
+  MOVE.l #$EADDEADA,(a1)+
+  MOVE.l #$ADDEADAD,(a1)+
+  MOVE.l #$DAEAD987,(a1)+
+  CELSE
+  ADD.w #16,A0
+  CEND
+RTS
 
 ;CNIF #poolmem=1
 CNIF #mungwall=1
 .munghit1
   BSR islow
 BRA mungr1
+
+.munghit2:
+  BSR islow
+BRA mungr2
+ 
+.munghit3:
+  BSR islow
+BRA mungr3
+
+.munghit4:
+  BSR islow
+BRA mungr4
 
 .islow:
   MOVEM.l d0-d1/a0-a1,-(a7)
@@ -593,18 +569,6 @@ BRA mungr1
   MOVEM.l (a7)+,d0-d1/a0-a1
 RTS
 
-munghit2:
- BSR islow
- BRA mungr2
- 
-munghit3:
- BSR islow
- BRA mungr3
-
-munghit4:
- BSR islow
- BRA mungr4
-
 CEND
 ;CEND
 
@@ -612,17 +576,14 @@ CEND
 .do_newmemnode:                    ;create a new node (for local stuff)    AJL_0_1EA
   MOVEM.l D0-D1/A0-A1/A6,-(A7)
   MOVEQ.l #20,D0            ; 20bytes
-  MOVEQ.l #$01,D1           ; MEMF_PUBLIC
-  MOVEA.l _SysBase,A6
-
   ADD.l D0,allocedmemsize
+  MOVEQ.l #$01,D1           ; MEMF_PUBLIC
 
-  TST.w kick3_available : BNE 'pooling
-    JSR _AllocMem(A6)
+  TST.w use_pooling : BEQ 'nopooling
+    MOVE.l mempool,a0 : BSR AsmAllocPooled
     BRA 'poolend
- 'pooling
-    MOVE.l mempool,a0
-    JSR _AllocPooled(a6)
+ 'nopooling
+    JSR _AllocMem(A6)    
  'poolend
 
   TST.l D0 : BEQ.w outOfMemoryb
@@ -648,72 +609,49 @@ RTS
   MOVE.l a1,-(a7)
   MOVE.l 4(a1),a2
 
-  JL_0_23C:
-  CMP.l #$0,(a2) : BEQ.w JL_0_254
+  freeloop:
+    CMP.l #$0,(a2) : BEQ.w exit_freeloop
 
-  MOVEA.l A2,A1
-  CMP.l #52,12(a2) : BLE 'nopool
-    CMP.l #"lIsT",36+16(a1) : BNE 'nopool          ;free pool from lists
-      CMP.w #1,6+16(a1) : BNE 'nopool
-        MOVE.l 0+16(a1),a0
-        CMP.l #0,a0 : BEQ 'nopool
-          MOVE.l a1,-(a7)
-          JSR _DeletePool(a6)
-          MOVE.l (a7)+,a1
- 'nopool:
-  MOVE.l 12(A2),D0 ;was 4
-  MOVEA.l (A2),A2
+    MOVEA.l A2,A1
+    CMP.l #52,12(a2) : BLE 'nopool                   ;52 bytes is the size of a memory allocation for a dynamic list: 40+8+4
+      CMP.l #"lIsT",36+16(a1) : BNE 'nopool          ;check if it is really a list
+        CMP.w #1,6+16(a1) : BNE 'nopool              ;check if it is really a dynamic list (flag)
+          MOVE.l 0+16(a1),a0
+          CMP.l #0,a0 : BEQ 'nopool                  ;check if we have a pool header (??)
+            MOVE.l a1,-(a7)
+            BSR AsmDeletePool
+            MOVE.l (a7)+,a1
+   'nopool:
+    MOVE.l 12(A2),D0 ;was 4 (size of memory)
+    MOVEA.l (A2),A2
 
-  SUB.l D0,allocedmemsize
+    SUB.l D0,allocedmemsize
 
-  TST.w kick3_available : BNE 'pooling
-    JSR _FreeMem(A6)
-    BRA poolingend
- 'pooling
-    CNIF #mungwall=1
-    MOVE.l a1,a0
-    ADD.w #20,a0
-    ;CMP.l #$DEADDEAD,(a0)+ : BNE munghit2
-    CMP.l #$EADDEADA,(a0)+ : BNE munghit2
-    CMP.l #$ADDEADAD,(a0)+ : BNE munghit2
-    CMP.l #$DAEAD987,(a0)+ : BNE munghit2
-    
-    MOVE.l a0,d1
-    mungr2:
-    MOVE.l a1,a0
-    SUB.w #16,a0
-    ADD.l d0,a0
-    CMP.l #$DEADDEAD,(a0)+ : BNE munghit3
-    CMP.l #$EADDEADA,(a0)+ : BNE munghit3
-    CMP.l #$ADDEADAD,(a0)+ : BNE munghit3
-    CMP.l #$DAEAD987,(a0)+ : BNE munghit3
-    mungr3:
-    MOVE.l d1,a0
-    MOVE.l #$abcdefcd,(a0)+
-    MOVE.l #$bcdefefe,(a0)+
-    MOVE.l #$ccdefefe,(a0)+
-    CEND
-    MOVE.l mempool,a0
-    CMP.l #"ChIp",8(a1) : BNE 'l1
-      MOVE.l mempoolchip,a0
-   'l1
-    JSR _FreePooled(a6)
-  poolingend:
+    TST.w use_pooling : BEQ nofreepooling
+      BSR check_mungwall
 
-  TST.l (a2) : BNE.w JL_0_23C
+      MOVE.l mempool,a0
+      CMP.l #"ChIp",8(a1) : BNE 'l1
+        MOVE.l mempoolchip,a0
+     'l1
+      BSR AsmFreePooled
+      BRA poolingend
+    nofreepooling:
+      JSR _FreeMem(A6) 
+    poolingend:
+  TST.l (a2) : BNE.w freeloop
 
-  JL_0_254:
+  exit_freeloop:
   MOVE.l (a7)+,a1
   
   MOVEQ.l #20,D0
   SUB.l D0,allocedmemsize
 
-  TST.w kick3_available : BNE 'pooling
-    JSR _FreeMem(A6)            ; (a1:memoryBlock, d0:byteSize)
+  TST.w use_pooling : BEQ 'nopooling
+    MOVE.l mempool,a0 : BSR AsmFreePooled
     BRA 'poolend
- 'pooling
-    MOVE.l mempool,a0
-    JSR _FreePooled(a6)
+ 'nopooling
+    JSR _FreeMem(A6)            ; (a1:memoryBlock, d0:byteSize)
  'poolend
   MOVEQ.l #-$01,D0
 
@@ -724,6 +662,478 @@ RTS
 .do_usedmem:
   MOVE.l allocedmemsize,D0
 RTS
+
+
+; ====================================================================================
+;------------------------------------------------------------------------------
+; Assembly Implementation of AmigaOS V39 Memory Pool API
+;
+; Implements: CreatePool, DeletePool, AllocPooled, FreePooled
+; Uses exec.library: AllocMem, FreeMem, AddTail, Remove, Allocate, DeAllocate
+;
+;------------------------------------------------------------------------------
+Macro offset
+    SizeOf.`1\`2
+End Macro
+
+Macro size
+    SizeOf.`1
+End Macro
+
+
+;------------------------------------------------------------------------------
+; Constants
+;------------------------------------------------------------------------------
+POOL_ALIGNMENT          EQU 8
+IS_LARGE_ALLOCATION     EQU 0
+NT_MEMORY               EQU 10
+MEMF_CLEAR              EQU $10000
+
+;------------------------------------------------------------------------------
+; Structures used by pooling routines
+;------------------------------------------------------------------------------
+
+NEWTYPE.MemoryPool
+  mp_PuddleMinList.MinList
+  mp_MemoryFlags.l
+  mp_PuddleSize.l
+  mp_PuddleSizeThreshold.l
+End NEWTYPE
+
+NEWTYPE.LargeAllocation
+  la_MinNode.MinNode
+  la_Signature.l
+End NEWTYPE
+
+
+;-- just for Info the exec strcuts used here
+;; MinList
+;mlh_Head:               rs.l 1
+;mlh_Tail:               rs.l 1
+;mlh_TailPred:           rs.l 1
+;
+;; MinNode
+;mln_Succ:               rs.l 1
+;mln_Pred:               rs.l 1
+;
+;; Node
+;ln_Succ:                rs.l 1
+;ln_Pred:                rs.l 1
+;ln_Type:                rs.b 1
+;ln_Pri:                 rs.b 1
+;                        rs.b 2
+;ln_Name:                rs.l 1
+;
+;; MemHeader
+;mh_Node:                rs.b 16
+;mh_Attributes:          rs.w 1
+;                        rs.w 1
+;mh_First:               rs.l 1
+;mh_Lower:               rs.l 1
+;mh_Upper:               rs.l 1
+;mh_Free:                rs.l 1
+;
+;; MemChunk
+;mc_Next:                rs.l 1
+;mc_Bytes:               rs.l 1
+;
+
+;==============================================================================
+; APTR CreatePool(ULONG memFlags, ULONG puddleSize, ULONG threshSize)
+; d0=memFlags  d1=puddleSize  d2=threshSize
+; returns d0=pool (0 on failure)
+;==============================================================================
+AsmCreatePool:
+    MOVEA.l _SysBase,A6
+
+    TST kick3_available : BEQ 'owncreatepool
+      JSR _CreatePool(a6)      
+      RTS
+   'owncreatepool
+
+    MOVEM.l d2-d3/a2-a3,-(A7)
+    MOVE.l  d0,d3                       ; d3 = memFlags
+    MOVE.l  d2,-(A7)                    ; save threshSize
+    MOVE.l  d1,d2                       ; d2 = puddleSize
+
+    MOVE.l  # SizeOf.MemoryPool,d0
+    MOVE.l  d3,d1
+    JSR     _AllocMem(a6)
+    TST.l   d0
+    BEQ     'cp_fail
+    MOVE.l  d0,a0                       ; a0 = pool
+
+    LEA     !offset{MemoryPool,mp_PuddleMinList}(a0),a1
+    LEA     !offset{MinList,mlh_Tail}(a1),a3
+    MOVE.l  a3,!offset{MinList,mlh_Head}(a1)
+    CLR.l   !offset{MinList,mlh_Tail}(a1)
+    MOVE.l  a1,!offset{MinList,mlh_TailPred}(a1)
+
+    MOVE.l  d3,!offset{MemoryPool,mp_MemoryFlags}(a0)
+    MOVE.l  d2,!offset{MemoryPool,mp_PuddleSize}(a0)
+    MOVE.l  (A7),!offset{MemoryPool,mp_PuddleSizeThreshold}(a0)
+
+    MOVE.l  a0,d0
+    ADDQ.l  #4,A7
+    BRA     'cp_done
+
+   'cp_fail:
+    ADDQ.l  #4,A7
+    CLR.l   d0
+
+   'cp_done:
+    MOVEM.l (A7)+,d2-d3/a2-a3
+    RTS
+
+;==============================================================================
+; void DeletePool(APTR poolHeader)
+; a0=poolHeader
+;==============================================================================
+AsmDeletePool:
+    CMP.l   #0,a0 : BEQ 'dp_done
+
+    MOVEA.l _SysBase,A6
+
+    TST kick3_available : BEQ 'owndeletepool
+      JSR _DeletePool(a6)      
+      RTS
+   'owndeletepool
+
+    MOVEM.l d2/a2-a3,-(A7)
+    MOVE.l  a0,a3                       ; a3 = pool
+
+    LEA     !offset{MemoryPool,mp_PuddleMinList}(a3),a0
+    MOVE.l  !offset{MinList,mlh_Head}(a0),a2             ; a2 = first node
+
+'dp_loop:
+    MOVE.l  !offset{MinNode,mln_Succ}(a2),d0
+    TST.l   d0
+    BEQ     'dp_free_pool
+
+    MOVE.l  !offset{MinNode,mln_Succ}(a2),a0             ; a0 = next node
+    MOVE.l  a0,-(A7)                    ; save next
+
+    MOVE.l  !offset{LargeAllocation,la_Signature}(a2),d0
+    TST.l   d0
+    BNE     'dp_free_puddle
+
+    ;free large allocation
+    LEA     SizeOf.LargeAllocation(a2),a0
+    MOVE.l  (a0),d0                     ; stored total size
+    MOVE.l  a2,a1                       ; a0 = current node
+    JSR     _FreeMem(a6)
+    MOVE.l  (A7)+,a2                    ; a2 = next node
+    BRA     'dp_loop
+
+'dp_free_puddle:
+    ;free puddle: size = mh_Upper - mh
+    MOVE.l !offset{MemHeader,mh_Upper}(a2),d0
+    SUB.l  a2,d0
+    MOVE.l a2,a1
+    JSR    _FreeMem(a6)
+    MOVE.l (a7)+,a2
+    BRA   'dp_loop
+    
+'dp_free_pool:
+    MOVE.l  a3,a1
+    MOVE.l  # SizeOf.MemoryPool,d0
+    JSR     _FreeMem(a6)
+
+    MOVEM.l (A7)+,d2/a2-a3
+
+'dp_done:
+    RTS
+
+;==============================================================================
+; APTR AllocPooled(APTR poolHeader, ULONG memSize)
+; a0=poolHeader  d0=memSize
+; returns d0=pointer (0 on failure)
+;==============================================================================
+AsmAllocPooled:
+    CMP.l   #0,a0 : BEQ 'ap_null
+    TST.l   d0    : BEQ 'ap_null
+
+    MOVEA.l _SysBase,A6
+
+    TST kick3_available : BEQ 'ownallocpool
+      JSR _AllocPooled(a6)      
+      RTS
+   'ownallocpool
+
+    MOVEM.l d2-d5/a2-a5,-(A7)
+    MOVE.l  a0,a3                       ; a3 = pool
+    MOVE.l  d0,d4                       ; d4 = memSize
+
+    BSR     align_up
+    MOVE.l  d0,d5                       ; d5 = aligned
+
+    MOVE.l  !offset{MemoryPool,mp_PuddleSizeThreshold}(a3),d0
+    CMP.l   d0,d4                       ; check requested size with threshold
+    BHI     'ap_large
+
+;--- Small allocation: scan existing puddles ---
+    LEA     !offset{MemoryPool,mp_PuddleMinList}(a3),a4
+    MOVE.l  !offset{MinList,mlh_Head}(a4),a2
+
+'ap_scan:
+    MOVE.l  !offset{MinNode,mln_Succ}(a2),d0
+    TST.l   d0
+    BEQ     'ap_new_puddle
+
+    MOVE.l  !offset{LargeAllocation,la_Signature}(a2),d0
+    TST.l   d0
+    BEQ     'ap_skip                    ; large alloc, skip
+
+    MOVE.l  a2,a0                       ; memHeader
+    MOVE.l  d5,d0                       ; memSize
+    JSR _Allocate(a6)
+    TST.l   d0
+    BEQ    'ap_skip
+
+    MOVE.l  d0,a5
+    MOVE.l  !offset{MemoryPool,mp_MemoryFlags}(a3),d0
+    AND.l   #MEMF_CLEAR,d0
+    BEQ     'ap_ret_scan
+    MOVE.l  a5,a0
+    MOVE.l  d5,d0
+    BSR     pool_clear
+ 'ap_ret_scan:
+    MOVE.l  a5,d0
+    BRA     'ap_done_pop
+
+'ap_skip:
+    MOVE.l  !offset{MinNode,mln_Succ}(a2),a2
+    BRA     'ap_scan
+
+;--- No space: create new puddle ---
+'ap_new_puddle:
+    MOVE.l  a3,a0                                  ; poolHeader
+    MOVE.l  d5,d1                                  ; aligned memSize
+    BSR     new_puddle
+    TST.l   d0
+    BEQ     'ap_null_pop
+
+    MOVE.l  d0,a0
+    MOVE.l  d5,d0
+    JSR     _Allocate(a6)
+    TST.l   d0
+    BEQ     'ap_null_pop
+
+    MOVE.l  d0,a5
+    MOVE.l  !offset{MemoryPool,mp_MemoryFlags}(a3),d0
+    AND.l   #MEMF_CLEAR,d0
+    BEQ     'ap_ret_new
+    MOVE.l  a5,a0
+    MOVE.l  d5,d0
+    BSR     pool_clear
+'ap_ret_new:
+    MOVE.l  a5,d0
+    BRA     'ap_done_pop
+
+;--- Large allocation ---
+'ap_large:
+    MOVE.l  d5,d0
+    ADD.l   # SizeOf.LargeAllocation+4,d0
+    MOVE.l  !offset{MemoryPool,mp_MemoryFlags}(a3),d1
+    JSR     _AllocMem(a6)
+    TST.l   d0
+    BEQ     'ap_null_pop
+    MOVE.l  d0,a2                       ; a2 = large allocation block
+
+    CLR.l   !offset{LargeAllocation,la_Signature}(a2)            ; signature = IS_LARGE_ALLOCATION
+
+    LEA     SizeOf.LargeAllocation(a2),a0            ; a0 = &storedSize
+    MOVE.l  d5,d1
+    ADD.l   # SizeOf.LargeAllocation+4,d1
+    MOVE.l  d1,(a0)                     ; store total allocation size
+
+    LEA     4(a0),a5                    ; a5 = user data pointer (save)
+
+    MOVE.l  a2,a1                       ; a1 = node
+    LEA     !offset{MemoryPool,mp_PuddleMinList}(a3),a0     ; a0 = list
+    JSR     _AddTail(a6)
+
+    MOVE.l  !offset{MemoryPool,mp_MemoryFlags}(a3),d0
+    AND.l   #MEMF_CLEAR,d0
+    BEQ     'ap_large_done
+
+    MOVE.l  a5,a0
+    MOVE.l  d5,d0
+    BSR     pool_clear
+
+'ap_large_done:
+    MOVE.l  a5,d0
+    BRA     'ap_done_pop
+
+'ap_null_pop:
+    CLR.l   d0
+
+'ap_done_pop:
+    MOVEM.l (A7)+,d2-d5/a2-a5
+    RTS
+
+'ap_null:
+    CLR.l   d0
+    RTS
+
+;==============================================================================
+; void FreePooled(APTR poolHeader, APTR memory, ULONG memSize)
+; a0=poolHeader  a1=memory  d0=memSize
+;==============================================================================
+AsmFreePooled:
+    CMP.l   #0,a0 : BEQ 'fp_done
+    CMP.l   #0,a1 : BEQ 'fp_done
+
+    MOVEA.l _SysBase,A6
+
+    TST kick3_available : BEQ 'ownfreepooled
+      JSR _FreePooled(a6)      
+      RTS
+   'ownfreepooled
+
+    MOVEM.l d2-d3/a2-a5,-(A7)
+    MOVE.l  a0,a3                       ; a3 = pool
+    MOVE.l  a1,a4                       ; a4 = memory
+    MOVE.l  d0,d2                       ; d2 = memSize
+    BSR     align_up
+    MOVE.l  d0,d3                       ; d3 = aligned
+
+    LEA     !offset{MemoryPool,mp_PuddleMinList}(a3),a0
+    MOVE.l  !offset{MinList,mlh_Head}(a0),a2             ; a2 = current node
+
+'fp_loop:
+    MOVE.l  !offset{MinNode,mln_Succ}(a2),d0
+    TST.l   d0
+    BEQ     'fp_done_pop
+
+    MOVE.l  !offset{LargeAllocation,la_Signature}(a2),d0
+    TST.l   d0
+    BEQ     'fp_check_large
+
+;--- Check puddle ---
+    CMP.l   !offset{MemHeader,mh_Lower}(a2),a4
+    BLS     'fp_next
+    CMP.l   !offset{MemHeader,mh_Upper}(a2),a4
+    BHI     'fp_next
+
+    MOVE.l  a2,a0             ;memHeader
+    MOVE.l  a4,a1             ;memoryBlock
+    MOVE.l  d3,d0             ;byteSize
+    JSR     _Deallocate(a6)
+    BRA     'fp_done_pop
+
+;--- Check large allocation ---
+'fp_check_large:
+    LEA     SizeOf.LargeAllocation(a2),a0            ; a0 = &storedSize
+    LEA     4(a0),a5                                 ; a5 = data pointer
+    CMP.l   a4,a5
+    BNE     'fp_next
+
+    MOVE.l (a0),-(a7)                                ; save stored size
+    MOVE.l  a2,a0
+    JSR     _Remove(a6)
+
+    MOVE.l  a2,a1
+    MOVE.l  (a7)+,d0                                 ; d0 = stored size
+    JSR     _FreeMem(a6)
+    BRA     'fp_done_pop
+
+'fp_next:
+    MOVE.l  !offset{MinNode,mln_Succ}(a2),a2
+    BRA     'fp_loop
+
+'fp_done_pop:
+    MOVEM.l (A7)+,d2-d3/a2-a5
+
+'fp_done:
+    RTS
+
+;==============================================================================
+; Internal: align_up(d0=size) -> d0=aligned
+;==============================================================================
+align_up:
+    ADD.l   #POOL_ALIGNMENT-1,d0
+    AND.l   #-POOL_ALIGNMENT,d0
+    RTS
+
+;==============================================================================
+; Internal: pool_clear(a0=addr, d0=count)  - zero-fills memory
+;==============================================================================
+pool_clear:
+    MOVEM.l d0/a0,-(A7)
+    TST.l   d0
+    BEQ     'pc_done
+
+'pc_loop:
+    CLR.b   (a0)+
+    SUBQ.l  #1,d0
+    BNE     'pc_loop
+
+'pc_done:
+    MOVEM.l (A7)+,d0/a0
+    RTS
+
+;==============================================================================
+; Internal: new_puddle(a0=pool, d1=minSize) -> d0=MemHeader (0 on failure)
+;==============================================================================
+new_puddle:
+    MOVEA.l _SysBase,A6
+    MOVEM.l d2-d4/a2-a4,-(A7)
+    MOVE.l  a0,a2                       ; a2 = pool
+    MOVE.l  d1,d3                       ; d3 = minSize
+
+    MOVE.l  !offset{MemoryPool,mp_PuddleSize}(a2),d2        ; d2 = default puddle size
+    CMP.l   d3,d2
+    BHI     'np_use_default
+
+    MOVE.l  d3,d0
+    BSR     align_up
+    MOVE.l  d0,d2
+
+'np_use_default:
+    MOVE.l  d2,d4                       ; d4 = managed size
+    ADD.l   # SizeOf.MemHeader,d2           ; d2 = total size
+
+    MOVE.l  !offset{MemoryPool,mp_MemoryFlags}(a2),d1
+    MOVE.l  d2,d0
+    JSR     _AllocMem(a6)
+    TST.l   d0
+    BEQ     'np_fail
+    MOVE.l  d0,a3                       ; a3 = MemHeader
+
+    CLR.l   !offset{Node,ln_Succ}(a3)
+    CLR.l   !offset{Node,ln_Pred}(a3)
+    MOVE.b  #NT_MEMORY,!offset{Node,ln_Type}(a3)
+    CLR.b   !offset{Node,ln_Pri}(a3)
+    CLR.l   !offset{Node,ln_Name}(a3)
+
+    MOVE.w  !offset{MemoryPool,mp_MemoryFlags}(a2),!offset{MemHeader,mh_Attributes}(a3)
+    LEA     SizeOf.MemHeader(a3),a4
+    MOVE.l  a4,!offset{MemHeader,mh_Lower(a3)
+    MOVE.l  a3,d0
+    ADD.l   d2,d0
+    MOVE.l  d0,!offset{MemHeader,mh_Upper}(a3)
+    MOVE.l  d4,!offset{MemHeader,mh_Free}(a3)
+
+    MOVE.l  a4,a0
+    CLR.l   !offset{MemChunk,mc_Next}(a0)
+    MOVE.l  d4,!offset{MemChunk,mc_Bytes}(a0)
+    MOVE.l  a0,!offset{MemHeader,mh_First}(a3)
+
+    MOVE.l  a3,a1                       ; a1 = node
+    LEA     !offset{MemoryPool,mp_PuddleMinList}(a2),a0     ; a0 = list
+    JSR     _AddTail(a6)
+
+    MOVE.l  a3,d0
+    BRA     'np_done
+
+'np_fail:
+    CLR.l   d0
+
+'np_done:
+    MOVEM.l (A7)+,d2-d4/a2-a4
+    RTS
+
 
 ; ====================================================================================
 outOfMemoryb:

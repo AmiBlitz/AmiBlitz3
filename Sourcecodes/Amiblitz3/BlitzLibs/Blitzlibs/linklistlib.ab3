@@ -6,7 +6,7 @@
 ; ExePath         = "Blitz3:BlitzLibs/UserLibs"
 ; ExeFile         = "linklistlib_new.obj"
 ; CreateIcon      = 0
-; Residents       = "libmacs.res,libjsrs.res,LVO.res"
+; Residents       = "libmacs.res,libjsrs.res,LVO.res,libnums.res"
 ; 
 ; Compiler
 ; -------------------------------------------------------
@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 28
+; NumberOfBuilds  = 32
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 763
-; CursorColumn    = 8
+; CursorLine      = 738
+; CursorColumn    = 10
 ; LabelSearch     = "do_clearl"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -109,8 +109,9 @@ End Macro
 ;36.l (-04.l) : "lIsT"     an identifier to detect wrong use of pointers
 ;40.l (-00.l) : Begin of list data
 
-#incnum = 6   ; number of entries to increase the memory pool
-
+#incnum = 6                 ; number of entries to increase the memory pool
+#pool_puddlesize = 2000     ; puddlesize of the memorypool for each list
+#pool_threshsize = 2000     ; threshsize of the memorypool for each list
 ;20/8/93
 ;added SortList command to sort lists on the first long in item
 ;really pleased with this one (see isometric demo)
@@ -264,10 +265,10 @@ End Macro
 !afunction{#long}
 !args{#long}
 !libs
-!subs{do_NextListItem,0,0}
+!subs{do_NextPtrItem,0,0}
 !args{#long,#varptr}
 !libs
-!subs{do_NextListItem2,0,0}
+!subs{do_NextPtrItem2,0,0}
 !name{"NextPtrItem","(*listpointer[,*curr.typ])"}
 
 !afunction{#long}
@@ -291,13 +292,13 @@ End Macro
 !afunction{#long}
 !args{#long}
 !libs
-!subs{do_GetListItem,0,0}
+!subs{do_GetPtrItem,0,0}
 !name{"GetPtrItem","(*listpointer)"}
 
 !afunction{#long}
 !args{#long}
 !libs
-!subs{do_CountListPointer,0,0}
+!subs{do_CountPtrList,0,0}
 !name{"CountPtrList","(*listpointer)"}
 
 !astatement
@@ -340,7 +341,10 @@ End Macro
 !args{#long}
 !libs
 !subs{do_FreePtrList,0,0}
-!name{"FreePtrList"," *listpointer"}
+!name{"FreePtrList"," *listpointer"}        ;$4023
+
+!nullsub{createlist,0,0}                    ;$4024 should be used by arraylib
+!nullsub{freelist,0,0}                      ;$4025 
 
 init: !nullsub{finit,0,0}
 
@@ -353,45 +357,37 @@ init: !nullsub{finit,0,0}
   MOVE.l d0,a1
   !checklist{a1}
 
-  MOVE.l a6,-(a7)
-  MOVE.l -40(a1),a0              ; poolHeader
-  CMP.l #0,a0 : BEQ 'nopool
-    MOVE.l a1,-(a7)
-    CLR.l -40(a1)
-    MOVE.l _execbase,a6
-    JSR _DeletePool(a6)          ;DeletePool(a0:poolHeader)
-    MOVE.l (a7)+,a1
- 'nopool:
-  MOVE.l (a7)+,a6
-
-  MOVEQ #40,d0
-  SUB d0,a1
-  ADD.l sizestore,d0
-  ALibJsr #localfree            ; free old
+  MOVE.l sizestore,d1
+  BSR freelist
 RTS
 
 
 .do_AddPtrFirst:         ; add an item at the beginning of the list.
   MOVE.l d0,a0
   !checklist{a0}
+
   !_disable
   MOVE.l -16(a0),a1     ; next of head of free
-  MOVE.l (a1),d0
-  BNE 'l1               ; if no memory left get now one
-    TST.w -34(a0)
-    BEQ 'done
-      BSR increase
-      MOVE.l -16(a0),a1
-      MOVE.l (a1),d0
+  MOVE.l (a1),d0 : BNE 'l1               ; if no memory left get now one
+    TST.w -34(a0) : BEQ 'done
+    BSR increase
+    MOVE.l -16(a0),a1
+    MOVE.l (a1),d0
  'l1:
+
   MOVE.l a1,-32(a0)     ; now current
+
   MOVE.l a3,-(a7)
   BSR unlinkitem
+
   LEA -28(a0),a2        ; head of used items
   BSR linkitem
-  MOVE.l (a7)+,a3:
+
+  MOVE.l (a7)+,a3
+
   MOVE.l a1,d0
   ADDQ.l #8,d0
+
  'done:
   !_enable
 RTS
@@ -400,6 +396,7 @@ RTS
 .do_PrevPtrItem:         ; if no current, do last item.
   MOVE.l d0,a0
   !checklist{a0}
+
   !_disable
   MOVE.l -32(a0),d0 : BEQ do_LastPtrItem2
 
@@ -460,7 +457,7 @@ RTS
   !checklist{a0}
 BRA do_SortList
 
-.do_CountListPointer:
+.do_CountPtrList:
   MOVE.l d0,a0
   !checklist{a0}
 
@@ -479,14 +476,14 @@ BRA do_SortList
   !_enable
 RTS
 
-
-.do_GetListItem:
+.do_GetPtrItem:
   MOVE.l d0,a0
   !checklist{a0}
 
   MOVE.l -32(a0),d0
   ADDQ.l #8,d0
 RTS
+
 
 .do_KillPtrItem:          ; must be a current item to kill!
                           ; set current to previous of me after killing it
@@ -543,9 +540,10 @@ RTS
   !_enable
 RTS
 
-.do_NextListItem:
+.do_NextPtrItem:
   MOVE.l d0,a0
   !checklist{a0}
+
   !_disable
   MOVE.l -32(a0),d0 : BEQ do_FirstPtrItem2
 
@@ -559,7 +557,7 @@ RTS
   !_enable
 RTS
 
-.do_NextListItem2:
+.do_NextPtrItem2:
   MOVE.l d0,a0               ;d1 may not trash
   !checklist{a0}
   !_disable
@@ -579,10 +577,10 @@ RTS
 
 .do_FirstPtrItem2b:
   MOVE.l -28(a0),a1            ;a1=head of used items
-  MOVE.l (a1),d0
-  BNE 'skip
+  MOVE.l (a1),d0 : BNE 'skip
     MOVE.l d0,a1
  'skip:
+
   MOVE.l a1,-32(a0):
   !_enable
   TST.l d0 : BEQ 'knob
@@ -599,11 +597,9 @@ RTS
   !checklist{a0}
   !_disable
   MOVE.l -16(a0),a1  ;next of free
-  MOVE.l (a1),d0
-  BNE 'l1           ; if no memory left get now one
+  MOVE.l (a1),d0 : BNE 'l1           ; if no memory left get now one
 
-  TST.w -34(a0)     ; check it is a linked list
-  BEQ 'done
+  TST.w -34(a0) : BEQ 'done          ; check it is a linked list
     BSR increase
     MOVE.l -16(a0),a1
     MOVE.l (a1),d0
@@ -636,19 +632,18 @@ RTS
   ; ----------- Create new Pool
   MOVEM.l a6/d2,-(a7)
   MOVE.l #$10001,d0
-  MOVE.l #2000,d1                 ; $7D0
-  MOVE.l #2000,d2
-  MOVEA.l _execbase,a6
-  JSR _CreatePool(a6)             ; d0 = CreatePool(d0:MemFlags, d1=puddleSize, d2=threshSize)
+  MOVE.l ##pool_puddlesize,d1               ; $7D0
+  MOVE.l ##pool_threshsize,d2
+  ;MOVE.l _execbase,a6 : JSR _CreatePool(a6)                   
+  ALibJsr $C009                    ; create pool
 
-  TST.l d0
-  BEQ 'out
+  TST.l d0 : BEQ 'out
 
   MOVE.l d0,a2                    ; poolheader
 
+  MOVE.l #$10001,d1
   MOVEQ #40,d0
   ADD.l sizestore,d0
-  MOVE.l #$10001,d1
   ALibJsr #localalloc             ; localalloc (d0:byteSize; d1:requirements)
 
   MOVEM.l (a7)+,a6/d2
@@ -656,36 +651,34 @@ RTS
 
   MOVE.l d0,a0
   MOVE.l a2,0(a0)                 ; write poolheader
+
   SWAP d4
   CLR.w d4
   SWAP d4
   MOVE.w d4,4(a0)                 ; write size
-  MOVE.l d0,a2
-  MOVE.l addstore,a1
-  LEA 40(a2),a0
-  MOVE.l a0,(a1)
-  MOVE.l a0,a1
-  ADD.l sizestore,a1
-  ;
 
+  MOVE.l d0,a2
+  LEA 40(a2),a0
+  MOVE.l addstore,a1  
+  MOVE.l a0,(a1)
+
+  ;
   ;Empty out the IN-USE list, FREE list, and set ID
   ;
-  LEA 4+8(a2),a3
-  MOVE.l a3,12+8(a2)
-  ADDQ #4,a3
-  MOVE.l a3,4+8(a2)
-  LEA 16+8(a2),a3
-  MOVE.l a3,24+8(a2)
-  ADDQ #4,a3
-  MOVE.l a3,16+8(a2)
+  MOVE.l a0,a1
+  ADD.l sizestore,a1
+
+  LEA 4+8(a2),a3 : MOVE.l a3,12+8(a2) : ADDQ #4,a3 : MOVE.l a3,4+8(a2)
+  LEA 16+8(a2),a3: MOVE.l a3,24+8(a2) : ADDQ #4,a3 : MOVE.l a3,16+8(a2)
   MOVE.l #"lIsT",28+8(a2)
-  ;
-  ;OK, link all things together.....
-  ;
+  
+  ;--
+  ;-- Create the entries for all list elements
+  ;--
   LEA 20+8(a2),a2:;tail node
-  ;
+  
   MOVEQ #0,d1
- 'loop:;insert a0 node before a2 node
+ 'loop:                 ;insert a0 node before a2 node
 
     MOVE.l 4(a2),a3:;   old last of tail
     ;
@@ -696,17 +689,15 @@ RTS
     MOVE.l a0,(a3):;    new next of old last
     ADDQ.l #1,d1
     ADD.l d4,a0
-  CMP.l a1,a0
-  BCS 'loop
+  CMP.l a1,a0 : BCS 'loop
 
-  CMP.l #1,d1
-  BNE 'l1
+  CMP.l #1,d1 : BNE 'l1
     MOVE.w #1,-$16(a2)  ; -22
  'l1
   RTS
 
  'out:
-  TRAP #0
+  BSR err7
   MOVEM.l (a7)+,a6/d2
 RTS
 
@@ -717,18 +708,8 @@ currsp:           Dc.l 0
 sizestore:        Dc.l 0
 addstore:         Dc.l 0
 is32bitCPU:       Dc.w 0
-kick3_available:  Dc.w 0
 reverseOrder:     Dc.w 0
 freelistmem:      Dc.w 0
-
-.check_kickstart:
-  MOVEQ.l #0,d0
-  MOVEA.l _execbase,A0
-  MOVE.w $14(A0),d0           ; Exec.libVersion
-  CMP.w #39,d0 : BCS 'nokick3
-      MOVE #1,kick3_available
- 'nokick3
-RTS
 
 
 .check_32bit_cpu:            ; returns true if 32bit cpu
@@ -744,7 +725,6 @@ RTS
 
 .finit:
   BSR check_32bit_cpu
-  BSR check_kickstart
 
   CLR.l currstack
   CLR.l currsp
@@ -798,6 +778,7 @@ RTS
   MOVE.l d0,a0              ; list pointer
 
   TST freelistmem : BEQ 'loop
+    TST.w -34(a0) : BEQ err6  
     BSR recreatepool
     BRA 'done2
  'loop:
@@ -814,41 +795,146 @@ RTS
   !_enable
 RTS 
 
+; ==================================================================================
+; internal function to be used by arrayslib
+; ==================================================================================
+.freelist:
+  ;--
+  ;-- free memory for whole pool and create a new one
+  ;-- inputs pointer to list structure in D0, size list in D1
+  ;--
+  MOVEM.l a0-a1/a5-a6,-(a7)
+
+  MOVEA.l d0,a1
+
+  MOVE.l -40(a1),a0                       ; get poolheader Address
+  CMP.l #0,a0 : BEQ 'nopool
+    MOVEM.l d1/a1,-(a7)
+    CLR.l -40(a1)  
+    ALibJsr $C00A                         ; delete pool
+    MOVEM.l (a7)+,d1/a1
+ 'nopool:          
+
+  MOVEQ #40,d0                            ; free list structure
+  SUB.l d0,a1                             ; get address of list memory
+  ADD.l d1,d0                             ; calc memory size 40 + list data
+  ALibJsr #localfree                      ; free it
+
+  MOVEM.l (a7)+,a0-a1/a5-a6
+RTS
+
+.createlist: ; inputs: d3:size of requested listentries
+             ;         d4:size of elementtype (given by compiler)
+
+  MOVEM.l d2-d4,-(a7)
+  MOVE.l #$10001,d0                        ; #MEMF_CLEAR & #MEMF_PUBLIC
+  MOVE.l #2000,d1                        ; alloc at least 2000 bytes
+  MOVE.l #2000,d2
+  ;MOVE.l _execbase,a6 : JSR _CreatePool(a6)                   
+  ALibJsr $C009                            ; create pool
+  MOVEM.l (a7)+,d2-d4
+  
+  TST.l d0 : BEQ err7
+  
+  MOVE.l d0,a2                            ; poolheader to A2
+
+  ;-- allocate memory for the linklist meta data
+  MOVE.l #$10001,d1                       ; #MEMF_CLEAR & #MEMF_PUBLIC
+  MOVEQ #40,d0                            ; 40 bytes is for the meta data...
+  ADD.l d3,d0                             ; OLDSTYLE: alloc memory for number of entries if no pool is available
+  ALibJsr #localalloc
+  MOVE.l d0,a0                            ; allocated memory addr in a0
+
+  ;-- fill the list meta data .....
+  MOVE.l a2,0(a0)                         ; write poolheader in list structure
+
+  SWAP d4
+  CLR.w d4
+  SWAP d4
+  MOVE.w d4,4(a0)                         ; write size of type into list structure
+
+  MOVE.l d0,a2
+  LEA 40(a2),a0
+  MOVE.l a0,-(a7)                         ; store pointer to data in order to return it later
+
+  ;--
+  ;-- Empty out the IN-USE list, FREE list, and set ID
+  ;--
+  MOVE.l a0,a1                            ; get the beginning and the end of the memory area
+  ADD.l d3,a1                             ; add size of requested entries
+                                          ; this is for the reparation of all links for each element
+
+  LEA  4 + 8(a2),a3 : MOVE.l a3,12 + 8(a2) : ADDQ #4,a3 : MOVE.l a3, 4 + 8(a2)
+  LEA 16 + 8(a2),a3 : MOVE.l a3,24 + 8(a2) : ADDQ #4,a3 : MOVE.l a3,16 + 8(a2)
+  MOVE.l #"lIsT",28 + 8(a2)                 ; $6c497354
+
+  ;--
+  ;-- Create the entries for all list elements
+  ;--
+  LEA 20 + 8(a2),a2                       ; tail node
+
+  MOVEQ #0,d1
+ 'loop:                                   ; insert a0 node before a2 node
+    ;
+    MOVE.l 4(a2),a3                       ; old last of tail
+    ;
+    MOVE.l a2,(a0)                        ; new next of me
+    MOVE.l a3,4(a0)                       ; new last of me
+    ;
+    MOVE.l a0,4(a2)                       ; new last of tail
+    MOVE.l a0,(a3)                        ; new next of old last
+    ADDQ.l #1,d1
+    ADD.l d4,a0
+  CMP.l a1,a0 : BCS 'loop
+
+  ;-- if 0 elements are requested, use the dynamic pooling!
+  CMP.l #1,d1 : BNE 'l1
+    MOVE.w #1,-22(a2)                     ; -$16(a2)
+ 'l1
+
+  MOVE.l (a7)+,a0                         ; store pointer to data 
+RTS
+
 .recreatepool:
   ;--
   ;-- free memory for whole pool and create a new one
   ;--
-  TST.w -34(a0) : BEQ err6
+  MOVEA.l d0,a1                           ; get list pointer
+  MOVE.l -40(a1),a0                       ; get poolHeader
 
-  MOVEA.l d0,a1                        ; store list pointer
-
-  MOVE.l -40(a1),a0                   ; get poolHeader
-  CMP.l #0,a0 : BEQ 'nopool
-    MOVEM.l a6/a1,-(a7)
-    CLR.l -16(a1)                     ; clear pointer to free items list
-    CLR.l -28(a1)                     ; clear pointer to used items list
-    CLR.l -40(a1)                     ; clear pooladdress
-    MOVEA.l _execbase,a6
-    JSR _DeletePool(a6)               ; remove pool and all allocated entries; DeletePool(a0:poolHeader)
+  CMP.l #0,a0 : BEQ 'nopool               ; if not poolheader is available skip all 
+    MOVE.l a1,-(a7)                       ; store pointer to list
+    CLR.l -16(a1)                         ; clear pointer to free items list
+    CLR.l -28(a1)                         ; clear pointer to used items list
+    CLR.l -40(a1)                         ; clear pooladdress
+    ;MOVE.l _execbase,a6 : JSR _DeletePool(a6)
+    ALibJsr $C00A                         ; delete pool
 
     ;-- create a new pool
     MOVE.l #$10001,d0                     ; #MEMF_CLEAR & #MEMF_PUBLIC
-    MOVE.l #2000,d1                       ; alloc at least 2000 bytes
-    MOVE.l #2000,d2
-    JSR _CreatePool(a6)                   ; create pool for "increase"-routine in linklistlib
-    MOVEM.l (a7)+,a6/a1
+    MOVE.l ##pool_puddlesize,d1           ; alloc at least 2000 bytes
+    MOVE.l ##pool_threshsize,d2
+    ;MOVE.l _execbase,a6 : JSR _CreatePool(a6)                   
+    ALibJsr $C009                         ; get new pool
+
+    MOVE.l (a7)+,a1                       ; store pointer to list
+
     MOVE.l d0,-40(a1)                     ; write new poolheader to list structure
 
     MOVEA.l a1, a2
     SUB.l #40,a2
     LEA 40(a2),a0
+
     ;--
     ;-- Empty out the IN-USE list, FREE list, and set ID
     ;--
     LEA  4 + 8(a2),a3 : MOVE.l a3,12 + 8(a2) : ADDQ #4,a3 : MOVE.l a3, 4 + 8(a2)
     LEA 16 + 8(a2),a3 : MOVE.l a3,24 + 8(a2) : ADDQ #4,a3 : MOVE.l a3,16 + 8(a2)
+    MOVE.l #"lIsT",28 + 8(a2)                 ; $6c497354
 
-    ;-- recreate the entries for list elements
+    ;--
+    ;-- Create the entries for all list elements
+    ;--
     LEA 20 + 8(a2),a2
 
     MOVE.l 4(a2),a3                       ; old last of tail
@@ -1011,8 +1097,6 @@ RTS
   !_enable
   MOVEM.l a0-a2/a6/d2,-(a7)
 
-  TST.w kick3_available : BEQ noinc ; can we use that code at all?
-
   MOVE.l a0,a2                    ; list pointer
   MOVE.l -40(a2),a0               ; get poolHeader, is 0 if no kick2.0
   
@@ -1031,8 +1115,8 @@ RTS
  '32bitend
 
   MOVE.l d0,d2                    ; requested memsize in d0 & d2
-  MOVEA.l _execbase,a6
-  JSR _AllocPooled(a6)            ; d0 = AllocPooled(a0=poolHeader,d0=memSize)
+  ;MOVEA.l _execbase,a6 : JSR _AllocPooled(a6)            ; d0 = AllocPooled(a0=poolHeader,d0=memSize)
+  ALibJsr $C00B
 
   TST.l d0 : BEQ noinc
     !_disable
@@ -1087,6 +1171,7 @@ RTS
 .do_AddFirst:                  ; add an item at the beginning of the list.
   !_disable
   MOVE.l d0,a0
+
   MOVE.l -16(a0),a1            ; head node of free
   MOVE.l (a1),d0 : BNE 'l1     ; if no free entry left, get now one
     TST.w -34(a0) : BEQ 'done  ; check it is a linked list
@@ -1137,13 +1222,12 @@ RTS
 .do_NextItem:
   !_disable
   MOVE.l d0,a0
-  MOVE.l -32(a0),d0
-  BEQ do_FirstItem2             ; if no current, do first item.
+
+  MOVE.l -32(a0),d0 : BEQ do_FirstItem2             ; if no current, do first item.
 
   MOVE.l d0,a1
   MOVE.l (a1),a1                ; get next of current
-  MOVE.l (a1),d0
-  BEQ 'done
+  MOVE.l (a1),d0 : BEQ 'done
     MOVE.l a1,-32(a0)
     MOVEQ #-1,d0
  'done:
@@ -1152,13 +1236,11 @@ RTS
 
 .do_NextItemFast:
   MOVE.l d0,a0
-  MOVE.l -32(a0),d0
-  BEQ do_FirstItemfast  ; if no current, do first item.
+  MOVE.l -32(a0),d0 : BEQ do_FirstItemfast  ; if no current, do first item.
 
   MOVE.l d0,a1
   MOVE.l (a1),a1        ; get next of current
-  MOVE.l (a1),d0
-  BEQ 'done
+  MOVE.l (a1),d0 : BEQ 'done
     MOVE.l a1,-32(a0)
     MOVEQ #-1,d0
  'done:
@@ -1166,13 +1248,11 @@ RTS
 
 .do_FirstItemfast:
   MOVE.l -28(a0),a1 ;a1=head of used items
-  MOVE.l (a1),d0
-  BNE 'skip
+  MOVE.l (a1),d0 : BNE 'skip
     MOVE.l d0,a1
  'skip:
   MOVE.l a1,-32(a0)
-  TST.l d0
-  BEQ 'knob:
+  TST.l d0 : BEQ 'knob:
     MOVEQ #-1,d0
  'knob
 RTS
@@ -1190,16 +1270,14 @@ RTS
 RTS
 
 
-.do_PrevItem ; if no current, do last item.
+.do_PrevItem                         ; if no current, do last item.
   !_disable
   MOVE.l d0,a0
-  MOVE.l -32(a0),d0
-  BEQ do_LastItem2
+  MOVE.l -32(a0),d0 : BEQ do_LastItem2
 
   MOVE.l d0,a1
-  MOVE.l 4(a1),a1:;previous of current
-  MOVE.l 4(a1),d0
-  BEQ 'done
+  MOVE.l 4(a1),a1                    ; previous of current
+  MOVE.l 4(a1),d0 : BEQ 'done
     MOVE.l a1,-32(a0)
     MOVEQ #-1,d0
  'done:
@@ -1331,6 +1409,7 @@ err3: MOVE.l #mess3,d0 : TRAP #0
 err4: MOVE.l #mess4,d0 : TRAP #0
 err5: MOVE.l #mess5,d0 : TRAP #0
 err6: MOVE.l #mess6,d0 : TRAP #0
+err7: MOVE.l #mess7,d0 : TRAP #0
 
 errors:
 mess1: Dc.b "Array or pointer is not a List",0,0
@@ -1339,6 +1418,7 @@ mess3: Dc.b "Current Stack overflow",0,0
 mess4: Dc.b "Current Stack Empty",0
 mess5: Dc.b "Wrong Array on Stack",0,0
 mess6: Dc.b "Not a dynamic list",0,0
+mess7: Dc.b "Could not alloc mempool for linked list",0
 Even
 
 .popchk:
