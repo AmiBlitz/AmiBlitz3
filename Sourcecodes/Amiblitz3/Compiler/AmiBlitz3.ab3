@@ -14,7 +14,7 @@
 ; MakeSmallest    = 0
 ; FuncOptimize    = 0
 ; Version         = 3.13.0
-; NumberOfBuilds  = 677
+; NumberOfBuilds  = 680
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1222
-; CursorColumn    = 1
+; CursorLine      = 27109
+; CursorColumn    = 44
 ; LabelSearch     = "ab_com"
 ; LabelRemark     = 0
 ; LabelAll        = 1
@@ -984,7 +984,7 @@ Macro fget
   MOVE.w d0,lastchar
 End Macro
 
-Function.s Get_Libinfo{addr_libdata.l}
+Function.s Get_FirstTokenName{addr_libdata.l}
   ;-- diese Funktion holt aus der nativen lib im Speicher den ersten Tokennamen
   If addr_libdata = 0
     error{"INTERNAL: \\__THIS_FUNCTION: Invalid pointer!"}
@@ -24833,8 +24833,8 @@ temp2:                Ds.l 1
 namebuffer:           Ds.b 128                             ;namebuff ds.b 128 org source
 namebuffer2:          Ds.b 128
                       Ds.b 8 
-;-- buffer fuer uselibs
-optstuff:             Ds.b 64                              ;temp opt make buffer
+;-- buffer for loading userlibs
+optstuff:             Ds.b 64                              ;temp buffer for loading userlib data 
 Even
 
 
@@ -27145,48 +27145,56 @@ RTS
 
   ulfh.l = Open_(&userlib_filename$,#MODE_OLDFILE)
   If ulfh
-    ;-- read header data
-    Read_ ulfh,?optstuff,$20                               ; read first 32 bytes
-    
-    ;-- calculate datachunk size and allocate memory for it
+    ;-- read header data which is the hunks
+    ;-- 00..03  3F3 HUNK_HEADER
+    ;-- 04..07  resident strings (always 0)    
+    ;-- 08..11  table size (number of hunks)
+    ;-- 12..15  first hunk
+    ;-- 16..19  last hunk
+    ;-- 20..23  list of hunk sizes
+    ;-- 24..27  3E9 HUNK_CODE
+    ;-- 28..31  number of long words of code
+    ;-- 32....  library code
+    ;-- ......  additional HUNK_RELOC32 block
+    ;-- ......  3F2 HUNK_END
+    Read_ ulfh,?optstuff,32 
+    ;-- calculate code hunk size and allocate memory for it
     datachunk_size.l = PeekL(?optstuff + 28) LSL 2
     datachunk_ptr.l  = AllocPooled_ (PeekL(?mempool), datachunk_size)    
-
     ;-- read datachunk from library
     Read_ ulfh,datachunk_ptr, datachunk_size
-    ;log2PED_HexDump{datachunk_ptr,32}
 
-    ;-- add blitzlib to internal blitzlib list    
-    PokeL tmp_userlibspointer, datachunk_ptr                     ; add address to linked list
-    tmp_userlibspointer = datachunk_ptr                           ; set list to current entry
+    ;-- write length of library code into lib structure
+    PokeL datachunk_ptr + 6, datachunk_size                    ; write size of library into structure
+    PokeL datachunk_ptr + 32, 0
 
-    PokeL datachunk_ptr +  $6, datachunk_size                    ; write size of library into structure
-    PokeL datachunk_ptr + $20, 0
-
-    If Read_(ulfh,?optstuff,$0C) = $0C                            ; read additional 12 bytes
+    ;-- check for additional HUNK_RELOC32
+    If Read_(ulfh,?optstuff,12) = 12                            ; read additional 12 bytes
       udata.l = PeekL(?optstuff + 4)                             ; length of reloc info (lsl2)
-      PokeL datachunk_ptr + $20, udata
+      PokeL datachunk_ptr + 32, udata
       udata = udata LSL 2
       tmp_mem2.l = AllocPooled_ (PeekL(?mempool), udata)
-      PokeL datachunk_ptr + $24, tmp_mem2
       Read_ ulfh, tmp_mem2, udata
+      
+      PokeL datachunk_ptr + 36, tmp_mem2
     EndIf
     Close_ ulfh
 
     ;-- check if library with that libnumber is already in librarylist
     ;-- if so replace it with the loaded one
-    userlibnum.w = PeekW(datachunk_ptr + 4)
-    firsttoken.s = Get_Libinfo{datachunk_ptr + 4}
+    userlibnum.l = PeekW(datachunk_ptr + 4) AND $FF
+    firsttoken.s = Get_FirstTokenName{datachunk_ptr + 4}
 
     tmpfound.b = False
-    libnum.w = 0
+    libcounter.w = 0
+    libnum.l = 0
     ptrPrevLib.l = 0
     ptrNextLib.l = PeekL(?libpointer)
     While (ptrNextLib <> 0) AND (tmpfound = False)
-      libnum = PeekW(ptrNextLib + 4)
-
-
-      ;log2PED{"lib #" + Str$(PeekW(ptrPrevLib + 4)) + " -> next #" + Str$(PeekW(ptrNextLib + 4)), #log_debug}
+      libcounter + 1
+      libnum = PeekW(ptrNextLib + 4) AND $FFFF
+   
+      ;log2PED{Str$(libcounter) + ". lib in list #" + Str$(libnum) + ", checking for " + Str$(userlibnum)}
 
       If userlibnum = libnum
         tmpfound = True
@@ -27198,6 +27206,7 @@ RTS
 
     If tmpfound
       log2PED{".. library with #" + Str$(userlibnum AND $FFFF) + " already in library list, will replace the existing one", #log_debug}
+      log2PED{"   (address in memory: $" + Hex$(ptrPrevLib) + "," + Hex$(ptrNextLib) + ")"}
       log2PED{".. old prev lib #" + Str$(PeekW(ptrPrevLib + 4) AND $FFFF), #log_debug}
       log2PED{".. old next lib #" + Str$(PeekW(PeekL(ptrNextLib) + 4) AND $FFFF), #log_debug}
       ;-- HACK: remove the old lib out of list, by removing the entry from linked list
@@ -27207,11 +27216,15 @@ RTS
       ;-- write name and first token to tokenmapping file to make PED identify the lib with its number
       If tokmapfid <> -1
         log2PED{".. adding library #" + Str$(userlibnum) + " with first token <" + firsttoken + "> to token mapping file", #log_debug}
-        currentlib$ = LSet$(Peek.s(&fib\fib_FileName),30) + ";" 
-        currentlib$ + LSet$(firsttoken,30)
+        currentlib$ = LSet$(Peek.s(&fib\fib_FileName),31) + ";" 
+        currentlib$ + firsttoken
         file_WriteLine{tokmapfid, currentlib$}
       EndIf
     EndIf
+
+    ;-- add blitzlib to internal blitzlib list
+    PokeL tmp_userlibspointer, datachunk_ptr                     ; add address to linked list
+    tmp_userlibspointer = datachunk_ptr                           ; set list to current entry
 
     ; just for debugging: list several libnuns of library list   
     ;    tmpfound.b = False
