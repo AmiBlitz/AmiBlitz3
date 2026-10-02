@@ -14,7 +14,7 @@
 ; MakeSmallest    = 0
 ; FuncOptimize    = 0
 ; Version         = 3.13.0
-; NumberOfBuilds  = 681
+; NumberOfBuilds  = 689
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,8 +30,8 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 27100
-; CursorColumn    = 1
+; CursorLine      = 10356
+; CursorColumn    = 54
 ; LabelSearch     = "get_firsttoken"
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -983,6 +983,36 @@ Macro fget
  'laba2`@
   MOVE.w d0,lastchar
 End Macro
+
+Statement AB3_CreateIcon{iconfilename.s}
+  If dos_Exist{iconfilename + ".info"}
+    dos_Delete{iconfilename + ".info"}
+  EndIf
+
+  *ni.DiskObject = GetDiskObject_(Null)
+  If *ni
+    log2PED{"Writing info-file for [" + iconfilename + "]"}
+
+    ;-- create the Image structure with embedded gfx data
+    iImg.Image\LeftEdge = 0,0, 46,23,2, ?iconImageData,3,0,Null
+
+  ;-- fill the diskobject-structure
+    *ni\do_Magic       =  #WB_DISKMAGIC
+    *ni\do_Version     =  #WB_DISKVERSION
+    *ni\do_Gadget\NextGadget = Null, 25,17,46,24,#GFLG_GADGHBOX|#GFLG_GADGIMAGE, #GACT_IMMEDIATE|#GACT_RELVERIFY, #GTYP_BOOLGADGET,iImg,0,0,0,0,0,0
+    
+    *ni\do_Type        = #WBTOOL
+    *ni\do_CurrentX    = #NO_ICON_POSITION ; 18
+    *ni\do_CurrentY    = #NO_ICON_POSITION ; 14
+
+    If PutDiskObject_(iconfilename, *ni) = False
+      log2PED{"Could not write DiskObject, error " + Str$(IoErr_)}
+    EndIf
+    FreeDiskObject_(*ni)
+  Else
+    log2PED{"Could not init Diskobject structure"}
+  EndIf
+End Statement
 
 Function.s Get_FirstTokenName{addr_libdata.l}
   ;-- this function extracts from the library code the first token
@@ -5711,7 +5741,7 @@ RTS
 ;      !asm
 ;      BSR.w free_allHunkOffsets
 ;      !basic
-;      Write_ fh,?tsthead,$20          ; write header
+;      Write_ fh,?hunkHeader,$20          ; write header
 ;
 ;      ; ...
 ;    Else
@@ -5760,10 +5790,11 @@ RTS
   ;
   BSR.w free_allHunkOffsets
   ;
-  MOVE.l D7,D1             ;write hunk header
-  MOVE.l #tsthead,D2        
-  MOVEQ.l #32,D3
   MOVEA.l _dosbase,A6
+  ;
+  MOVE.l D7,D1             ;write hunk header
+  MOVE.l #hunkHeader,D2        
+  MOVEQ.l #32,D3
   JSR _Write(A6)
   ;
   MOVEQ.l #$00,D6           ;offset from start of file!                               ;offset from start of file!
@@ -5778,44 +5809,40 @@ RTS
   SUB.l D6,D3 : BEQ.w 'noalign
     MOVE.l #writelist,D2      ; was #hello,
     MOVE.l D7,D1
-    MOVEA.l _dosbase,A6
     JSR _Write(A6)
  'noalign
 
-  ;.. write RELOC32 data hunk
-  MOVE.l hunkoffsetcounter,tstsize3 : BEQ.w 'skip2a
-    MOVE.l D7,D1
-    MOVE.l #tstend,D2
-    MOVEQ.l #$0C,D3
-    MOVEA.l _dosbase,A6
+  ;.. write RELOC32 data hunk in resident file
+  MOVE.l hunkoffsetcounter,hunkR32Entries : BEQ.w 'skip2a
+    MOVE.l D7,D1                                        ; D7: filhandle
+    MOVE.l #hunkReloc32,D2
+    MOVEQ.l #12,D3
     JSR _Write(A6)
     ;
-    ;and offsets.....
+    ;and all the offsets.....
     ;
     MOVEA.l hunkoffsetbase,A2
    'oloop
-    CMPA.w #$0,A2 : BEQ.w 'skip2
+      CMPA.w #$0,A2 : BEQ.w 'skip2
+
       LEA 4(A2),A1
       MOVE.l D7,D1
       MOVE.l A1,D2
-      MOVEQ.l #$04,D3
-      MOVEA.l _dosbase,A6
+      MOVEQ.l #4,D3
       JSR _Write(A6)
       MOVEA.l (A2),A2
     BRA.w 'oloop
    'skip2
 
-    MOVE.l D7,D1
+    MOVE.l D7,D1          ; write zero as end of hunk offset list
     MOVE.l #zero,D2
-    MOVEQ.l #$04,D3
-    MOVEA.l _dosbase,A6
+    MOVEQ.l #4,D3
     JSR _Write(A6)
  'skip2a
 
   MOVE.l D7,D1
-  MOVE.l #tstdone,D2      ; HUNK_END
+  MOVE.l #hunkEnd,D2      ; write HUNK_END
   MOVEQ.l #$04,D3
-  MOVEA.l _dosbase,A6
   JSR _Write(A6)
 
   MOVE.l (A7)+,D0
@@ -9778,11 +9805,9 @@ RTS
 
 
 datastart:                                                 ;set up a2 (d3.l) and d4 (d4.w)
-  MOVE.w numtoa2,D1
-   BSR.w writeword
+  MOVE.w numtoa2,D1 : BSR.w writeword
    BSR.w addoff
-  MOVE.l D3,D1
-   BSR.w writelong
+  MOVE.l D3,D1 : BSR.w writelong
   SUBQ.w #1,D4
   MOVE.w D4,endarray+2
   MOVE.l endarray,D1
@@ -9803,12 +9828,6 @@ BRA.w writelong
 JMP error_create_exe
 
 .save_binaryfile:
-  !regs2stack
-  !basic
-  log2PED{"Writing to file " + Peek.s(PeekL(?ptr_newexefilename)),#log_information}
-  !asm
-  !stack2regs
-
   ;--
   ;-- make all abs refs pcat relative
   ;-- 
@@ -9871,14 +9890,11 @@ JMP error_create_exe
     MOVE.l chipstart,d7
     MOVE.l bssstart,d6
     ; < new
-    MOVEA.l hunkoffsetbase,A2
     MOVEA.l destbufferstart,A1
-    MOVE.l A1,D2
-    ADD.l noinits,D2
-    ; new >
-    CLR.l hunkoffsetnum
-    ; < new
+    MOVE.l A1,D2 : ADD.l noinits,D2
 
+    CLR.l hunkoffsetnum
+    MOVEA.l hunkoffsetbase,A2
    'loop0
       CMPA.w #$0,A2 : BEQ.w 'fixdone
 
@@ -9931,6 +9947,12 @@ JMP error_create_exe
   ; --
   ; -- open new file and write binary data to it
   ; --
+  !regs2stack
+  !basic
+  log2PED{"Writing to file " + Peek.s(PeekL(?ptr_newexefilename)),#log_information}
+  !asm
+  !stack2regs
+
   MOVEA.l _dosbase,A6 
 
   MOVE.l ptr_newexefilename,D1
@@ -9949,13 +9971,12 @@ JMP error_create_exe
       SUB.l bsssize,d0
       SUB.l chipsize,d0
  'l61
-  ADDQ.l #3,D0
-  LSR.l #2,D0
+  ADDQ.l #3,D0 : LSR.l #2,D0
   MOVE.l D0,tstsize1 ; size of hunk0
   MOVE.l D0,tstsize2 ; size of code hunk, that is hunk0
 
   MOVE.l D7,D1
-  MOVE.l #tsthead,D2                                      ;hunkbegin
+  MOVE.l #hunkHeader,D2                                      ;hunkbegin
   MOVEQ.l #32,D3
   
   ;-- calc hunk sizes for bss and chip hunks
@@ -9965,11 +9986,11 @@ JMP error_create_exe
     MOVE.l #2,chipnum
     MOVEQ.l #40,D3
     MOVE.l bsssize,d2 : ADDQ.l #3,d2 : ASR.l #2,d2
-    MOVE.l d2,hunkend+8
+    MOVE.l d2,hunkEndBss+8
     MOVE.l d2,bsssize3
     
     MOVE.l chipsize,d2 : ADDQ.l #3,d2 : ASR.l #2,d2
-    MOVE.l d2,hunkend2+8
+    MOVE.l d2,hunkEndData+8
     MOVE.l d2,chipsize2 : ADD.l #$40000000,chipsize2    
 
     MOVE.l D0,tstsize1c
@@ -9977,11 +9998,12 @@ JMP error_create_exe
     MOVE.l #hunkbegin2,d2
     BRA 'l100b
  'lb1
+
   CMP.l #-1,bssstart : BEQ 'l10b         ; we have only bss
     MOVE.l #1,bssnum
     MOVEQ.l #36,D3
     MOVE.l bsssize,d2 : ADDQ.l #3,d2 : ASR.l #2,d2
-    MOVE.l d2,hunkend+8
+    MOVE.l d2,hunkEndBss+8
     MOVE.l d2,bsssize2
 
     MOVE.l D0,tstsize1b
@@ -9990,19 +10012,22 @@ JMP error_create_exe
  'l10b
   CMP.l #-1,chipstart : BEQ 'l100b       ; we have only chip
     MOVE.l #1,chipnum
-    MOVEQ.l #$24,D3
+    MOVEQ.l #36,D3
     MOVE.l chipsize,d2 : ADDQ.l #3,d2 : ASR.l #2,d2
-    MOVE.l d2,hunkend2+8
+    MOVE.l d2,hunkEndData+8
     MOVE.l d2,bsssize2 : ADD.l #$40000000,bsssize2
 
     MOVE.l D0,tstsize1b
     MOVE.l D0,tstsize2b
     MOVE.l #hunkbegin,d2
  'l100b
-
   ;-- write the hunkheader
   BSR.w mywrite ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
 
+
+  ;--
+  ;-- write code hunk
+  ;--
   MOVE.l destbufferstart,D2 : ADD.l noinits,D2
   MOVE.l objlen,D3 : SUB.l #moremem,d3 : SUB.l noinits,D3
   ; new >
@@ -10035,174 +10060,227 @@ JMP error_create_exe
   MOVE.l D7,D1
   BSR.w mywrite      ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
 
-  ;-- do we have other hunks to write ?
-  MOVE.l hunkoffsetcounter,tstsize3 : BEQ.w 'skip
+  ;--
+  ;-- do we have other hunks to write (RELOC32, BSS, DATA)
+  ;--
+  MOVE.l hunkoffsetcounter,hunkR32Entries : BEQ.w 'skip
+    MOVE.l D7,D1       
+    MOVE.l #hunkReloc32,D2  ; write HUNK_RELOC32
+    MOVEQ.l #4,D3
+    BSR.w mywrite      ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
 
-  MOVE.l D7,D1       ; write HUNK_END
-  MOVE.l #tstend,D2
-  MOVEQ.l #$04,D3    ; was #12
-  BSR.w mywrite      ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
+    ; new >
+    ;-- alloc temporary memory for building the relocation table
+    MOVEA.l _execbase,A6
+    MOVE.l hunkoffsetcounter,d0 : ASL.l #2,d0 : ADD.l #12,d0
+    JSR _AllocMem(a6)
+    MOVEA.l _dosbase,A6
+    TST.l d0 : BEQ 'nomemhunk
+      ;-- build the table
+      MOVE.l noinits,D4
+      MOVE.l d5,-(a7)
+      MOVE.l d0,d5          ;memory address of temp arry for table
+      MOVE.l d0,a1
 
-  ; new >
-  MOVEA.l _execbase,A6
-  MOVE.l hunkoffsetcounter,d0 : ASL.l #2,d0 : ADD.l #12,d0
-  JSR _AllocMem(a6)
-  TST.l d0 : BEQ 'nomem
+      MOVE.b #0,newhunk
+      MOVEA.l hunkoffsetbase,A2
+     'oloopb                      ; copy of 'oloop
+        CMPA.w #$0,A2 : BEQ.w 'savehunk
 
-  MOVE.l noinits,D4
-  MOVE.l d5,-(a7)
-  MOVE.l d0,d5
-  MOVE.l d0,a1
+        MOVE.l destbufferstart,D2 : ADD.l noinits,D2
+        MOVE.l 4(A2),d1
+        BTST #31,d1 : BEQ 'lh1
+          MOVE.b #1,newhunk
+          BRA 'lh3
+       'lh1
+        BTST #30,d1 : BEQ 'lh2
+          MOVE.b #1,newhunk
+          BRA 'lh3
+       'lh2
+          ADD.l d1,d2
+          CMP.l chipend,d2 : BLT 'l102c
+            SUB.l chipsize,d1
+       'l102c
+          CMP.l bssend,d2 :  BLT 'l101c
+            SUB.l bsssize,d1
+         'l101c
+          MOVE.l d1,(a1)
+          SUB.l D4,(A1)+  ;fix-up the offet by start address of hunk
+       'lh3
+        MOVEA.l (A2),A2
+      BRA.w 'oloopb
+     'savehunk
 
-  MOVEA.l hunkoffsetbase,A2
-  MOVE.b #0,newhunk
- 'oloopb                      ; copy of 'oloop
-    CMPA.w #$0,A2 : BEQ.w 'savehunk
+      !regs2stack
+      !basic
+      log2PED{"Writing " + Str$(Peek.l(?hunkoffsetnum)) + " offsets to RELOC32 hunk ...",#log_information}
+      !asm
+      !stack2regs
+      ;-- write the relocation table
+      ;-- as AmigaOS 36+ has a bug in the exe loader that prevents it from loading more of 
+      ;-- 65536 offsets, we have to split them into multiple hunks...
+      MOVE.l hunkoffsetnum,hunkoffsetwrite : BEQ 'ln1c
+        MOVE.l d5,-(a7)
+       'writeagain
+          CMP.l #65535,hunkoffsetwrite : BCS 'writeit
+            MOVE.l #65535,hunkoffsetwrite
+         'writeit
+          MOVE.l hunkoffsetwrite,hunkR32Entries 
+          MOVE.l D7,D1
+          MOVE.l #hunkReloc32+4,d2 ; number of offsets in this table
+          MOVEQ #8,d3              ; write segment number the offset relay to (always segment 0)
+          JSR _Write(A6)
 
-    MOVE.l destbufferstart,D2
-    ADD.l noinits,D2
-    MOVE.l  4(A2),d1
-    BTST #31,d1 : BEQ 'lh1
-      MOVE.b #1,newhunk
-      BRA 'lh3
-   'lh1
-    BTST #30,d1 : BEQ 'lh2
-      MOVE.b #1,newhunk
-      BRA 'lh3
-   'lh2
-      ADD.l d1,d2
-      CMP.l chipend,d2 : BLT 'l102c
-        SUB.l chipsize,d1
-   'l102c
-      CMP.l bssend,d2 :  BLT 'l101c
-        SUB.l bsssize,d1
-     'l101c
-      MOVE.l d1,(a1)
-      SUB.l D4,(A1)+
-   'lh3
-      MOVEA.l (A2),A2
-  BRA.w 'oloopb
- 'savehunk
+          MOVE.l d7,d1
+          MOVE.l hunkoffsetwrite,d3 : ASL.l #2,d3
+          MOVE.l d5,D2
+          ADD.l d3,d5
+          JSR _Write(a6)
 
-  MOVE.l D7,D1
-  MOVEA.l _dosbase,A6
-  MOVE.l hunkoffsetnum,tstsize3 : BEQ 'ln1c
-    MOVE.l #tstend+4,d2
-    MOVEQ #8,d3
-    JSR _Write(A6)
-    MOVE.l d7,d1
-    MOVE.l hunkoffsetnum,d3
-    ASL.l #2,d3
-    MOVE.l d5,D2
-    JSR _Write(a6)
- 'ln1c
-  TST.b newhunk :  BEQ 'l10c
-  MOVEA.l hunkoffsetbase,A2
-  MOVE.l d5,a0
-  ADDQ #8,a0
-  MOVE.l bssnum,-4(a0)
-  MOVEQ #0,d6
+          MOVE.l hunkoffsetwrite,d3 : SUB.l d3,hunkoffsetnum
+          !regs2stack
+          !basic
+          If Peek.l(?hunkoffsetnum) > 0
+            log2PED{"... " + Str$(Peek.l(?hunkoffsetwrite)) + " offsets written, " + Str$(Peek.l(?hunkoffsetnum)) + " left"}
+          EndIf
+          !asm
+          !stack2regs
 
- 'lh2c
-    CMPA.w #$0,A2 : BEQ.w 'lh3c
-    
-    MOVE.l destbufferstart,D2
-    ADD.l noinits,D2
-    MOVE.l  4(A2),d1
-    BTST #30,d1 :  BEQ 'lh1c
-      BCLR #30,d1
-      MOVE.l d1,(a0)
-      SUB.l D4,(A0)+
-      ADDQ.l #1,d6
-   'lh1c
-    MOVE.l (a2),a2
-  BRA 'lh2c
- 'lh3c
-  TST.l d6 :  BEQ 'lh10c
-    MOVE.l d5,a0
-    MOVE.l d6,(a0)
-    MOVE.l d7,d1
-    MOVE.l d5,d2
-    MOVE.l d6,d3
-    ASL.l #2,d3
-    ADDQ.l #8,d3
-    BSR.w mywrite   ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
- 'lh10c
-
-  MOVEA.l hunkoffsetbase,A2
-  MOVE.l d5,a0
-  ADDQ #8,a0
-  MOVE.l chipnum,-4(a0)
-  MOVEQ #0,d6
- 'lh20c
-  CMPA.w #$0,A2 : BEQ.w 'lh30c
-
-    MOVE.l destbufferstart,D2
-    ADD.l noinits,D2
-    MOVE.l  4(A2),d1
-    BTST #31,d1 : BEQ 'lh11c
-      BCLR #31,d1
-      MOVE.l d1,(a0)
-      SUB.l D4,(A0)+
-      ADDQ.l #1,d6
-  'lh11c
-    MOVE.l (a2),a2
-  BRA 'lh20c
- 'lh30c
-  TST.l d6 : BEQ 'l10c
-    MOVE.l d5,a0
-    MOVE.l d6,(a0)
-    MOVE.l d7,d1
-    MOVE.l d5,d2
-    MOVE.l d6,d3 : ASL.l #2,d3 : ADDQ.l #8,d3
-    BSR.w mywrite    ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
- 'l10c
-
-  MOVEA.l _execbase,A6
-  MOVE.l hunkoffsetcounter,d0 : ASL.l #2,d0 : ADD.l #12,d0
-  MOVE.l d5,a1
-  JSR _FreeMem(a6)
-
-  MOVEA.l _dosbase,A6
-  MOVE.l (a7)+,d5
-  BRA 'skip2
-
- 'nomem
-    ; < new
-    MOVEA.l hunkoffsetbase,A2
-    MOVE.l noinits,D4
-
-   'loop
-      CMPA.w #$0,A2 : BEQ.w 'skip2          ;write hunkoffsets
+          MOVE.l hunkoffsetnum,hunkoffsetwrite
+        TST.l hunkoffsetnum : BNE 'writeagain
+        MOVE.l (a7)+,d5
+     'ln1c
       
-      LEA 4(A2),A1
-      SUB.l D4,(A1)
-      MOVE.l D7,D1
-      MOVE.l A1,D2
-      MOVEQ.l #$04,D3
-      BSR.w mywrite    ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
-      ;
-      ADD.l D4,4(A2)
-      MOVEA.l (A2),A2
-    BRA.w 'loop
- 'skip2
+      TST.b newhunk :  BEQ 'l10c
+        !regs2stack
+        !basic
+        log2PED{"Writing additional relocation hunks for BSS or DATA ..."}
+        !asm
+        !stack2regs
 
-  CLR.l tstsize3
-  MOVE.l D7,D1
-  MOVE.l #tstsize3,D2
-  MOVEQ.l #$04,D3
-  BSR.w mywrite     ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
+        ;-- 
+        MOVE.l d5,a0 : ADDQ #8,a0
+        MOVE.l bssnum,-4(a0)
+        MOVEQ #0,d6
 
- 'skip
+        MOVEA.l hunkoffsetbase,A2
+       'lh2c
+          CMPA.w #$0,A2 : BEQ.w 'lh3c
+          
+          MOVE.l destbufferstart,D2 : ADD.l noinits,D2
+          MOVE.l 4(A2),d1
+          BTST #30,d1 :  BEQ 'lh1c
+            BCLR #30,d1
+            MOVE.l d1,(a0)
+            SUB.l D4,(A0)+
+            ADDQ.l #1,d6
+         'lh1c
+          MOVE.l (a2),a2
+        BRA 'lh2c
+       'lh3c
+
+        TST.l d6 :  BEQ 'lh10c
+          MOVE.l d5,a0
+          MOVE.l d6,(a0)
+          MOVE.l d7,d1
+          MOVE.l d5,d2
+          MOVE.l d6,d3 : ASL.l #2,d3 : ADDQ.l #8,d3
+          BSR.w mywrite   ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
+          !regs2stack
+          !basic
+          PutReg D6,tempd6.l
+          log2PED{"... " + Str$(tempd6) + " offsets written for BSS"}
+          !asm
+          !stack2regs
+       'lh10c
+
+        MOVE.l d5,a0 : ADDQ #8,a0
+        MOVE.l chipnum,-4(a0)
+        MOVEQ #0,d6
+        MOVEA.l hunkoffsetbase,A2
+       'lh20c
+          CMPA.w #$0,A2 : BEQ.w 'lh30c
+
+          MOVE.l destbufferstart,D2 : ADD.l noinits,D2
+          MOVE.l 4(A2),d1
+          BTST #31,d1 : BEQ 'lh11c
+            BCLR #31,d1
+            MOVE.l d1,(a0)
+            SUB.l D4,(A0)+
+            ADDQ.l #1,d6
+          'lh11c
+          MOVE.l (a2),a2
+        BRA 'lh20c
+       'lh30c
+
+        TST.l d6 : BEQ 'l10c
+          MOVE.l d5,a0
+          MOVE.l d6,(a0)
+          MOVE.l d7,d1
+          MOVE.l d5,d2
+          MOVE.l d6,d3 : ASL.l #2,d3 : ADDQ.l #8,d3
+          BSR.w mywrite    ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
+          !regs2stack
+          !basic
+          PutReg D6,tempd6
+          log2PED{"... " + Str$(tempd6) + " offsets written for DATA"}
+          !asm
+          !stack2regs
+     'l10c
+
+      ;-- free memory for temporary relocation table
+      MOVEA.l _execbase,A6
+      MOVE.l hunkoffsetcounter,d0 : ASL.l #2,d0 : ADD.l #12,d0
+      MOVE.l d5,a1
+      JSR _FreeMem(a6)
+      MOVEA.l _dosbase,A6
+
+      MOVE.l (a7)+,d5
+      BRA 'skip2
+   'nomemhunk
+      !regs2stack
+      !basic
+      log2PED{"Not enough memory for processing, writing all offset hunks straight away..."}
+      !asm
+      !stack2regs
+
+      MOVEA.l hunkoffsetbase,A2
+      MOVE.l noinits,D4
+      'loop
+        CMPA.w #$0,A2 : BEQ.w 'skip2          ;write hunkoffsets
+        
+        LEA 4(A2),A1
+        SUB.l D4,(A1) ; fix-up the hunk by correcting the start address
+        MOVE.l D7,D1
+        MOVE.l A1,D2
+        MOVEQ.l #4,D3
+        BSR.w mywrite    ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
+        ;
+        ADD.l D4,4(A2)
+        MOVEA.l (A2),A2
+      BRA.w 'loop
+   'skip2
+
+    CLR.l hunkR32Entries
+    MOVE.l D7,D1
+    MOVE.l #hunkR32Entries,D2
+    MOVEQ.l #4,D3
+    BSR.w mywrite     ; write zero as end of data
+ 'skip ; end of writing reloc32 hunks
+
   TST.w set_link_debuginfo : BEQ.w 'nodebug
-    ;
-    MOVE.l #sysdebug,D2                                      ;debughunks
-    MOVEQ.l #$04,D3
+    !regs2stack
+    !basic
+    log2PED{"Writing hunk with debug information..."}
+    !asm
+    !stack2regs
+
+    MOVE.l #hunkDebug,D2                                      ;debughunks
+    MOVEQ.l #4,D3
     MOVE.l D7,D1
     BSR.w mywrite   ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
     ;
     MOVEA.l labelbase,A2
-
    'deloop
       CMPA.w #$0,A2    : BEQ.w 'dedone
 
@@ -10298,31 +10376,41 @@ JMP error_create_exe
       MOVEA.l (A2),A2
       BRA.w 'deloop
   'dedone
-  
-    MOVE.l #zero,D2
-    MOVEQ.l #$04,D3
     MOVE.l D7,D1
+    MOVE.l #zero,D2
+    MOVEQ.l #04,D3
     BSR.w mywrite      ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
-
  'nodebug
+
   MOVE.l D7,D1
-  MOVE.l #tstdone,D2                                      ;hunkend
-  MOVEQ.l #$04,D3
+  MOVE.l #hunkEnd,D2
+  MOVEQ.l #4,D3
 
   ;-- optionally write bss-hunk
   CMPI.l #-1,bssstart : BEQ 'l10e
     MOVEQ #16,d3
-    MOVE.l #hunkend,d2
+    MOVE.l #hunkEndBss,d2
     CMPI.l #-1,chipstart : BEQ 'l10e
       MOVE.l d7,d1
       MOVEQ #12,d3
       BSR.w mywrite    ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
+      !regs2stack
+      !basic
+      log2PED{"Writing BSS hunk (" + Str$(Peek.l(?hunkEndBss+8)) + "bytes)..."}
+      !asm
+      !stack2regs
  'l10e
 
   ;-- optionally write chipdata-hunk
   CMPI.l #-1,chipstart : BEQ 'l11e
+    !regs2stack
+    !basic
+    log2PED{"Writing Data hunk (" + Str$(Peek.l(?chipsize)) + "bytes)..."}
+    !asm
+    !stack2regs
+
     MOVEQ #12,d3
-    MOVE.l #hunkend2,d2
+    MOVE.l #hunkEndData,d2
     MOVE.l d7,d1
     BSR.w mywrite      ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
 
@@ -10331,60 +10419,28 @@ JMP error_create_exe
     MOVE.l chipsize,d3
     BSR.w mywrite      ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
 
-    MOVEQ #4,d3
-    MOVE.l #hunkend,d2
     MOVE.l d7,d1
- 'l11e
+    MOVE.l #hunkEndBss,d2
+    MOVEQ #4,d3
+  'l11e
 
   BSR.w mywrite        ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
 
   MOVE.l D7,D1
-  MOVEA.l _dosbase,A6
   JSR _Close(A6)
 
-  
-  ;
+  !basic
+  log2PED{"Writing of executable done."}
+
   ; --
   ; -- create the optional icon for the executable
-  ;create_icon:
-  TST.w set_create_iconfile : BEQ.w 'done
-    ;
-    ;OK, create an icon for the object code!
-    ;
-    !basic
-    iconfilename.s = Peek.s(PeekL(?ptr_newexefilename))
-    If dos_Exist{iconfilename + ".info"}
-      dos_Delete{iconfilename + ".info"}
-    EndIf
+  ; --
+  If Peek.w(?set_create_iconfile) <> 0
+    AB3_CreateIcon{Peek.s(PeekL(?ptr_newexefilename))}
+  EndIf
 
-    *ni.DiskObject = GetDiskObject_(Null)
-    If *ni
-      log2PED{"writing info-file for [" + iconfilename + "]"}
-
-      ;-- create the Image structure with embedded gfx data
-      iImg.Image\LeftEdge = 0,0, 46,23,2, ?iconImageData,3,0,Null
-
-    ;-- fill the diskobject-structure
-      *ni\do_Magic       =  #WB_DISKMAGIC
-      *ni\do_Version     =  #WB_DISKVERSION
-      *ni\do_Gadget\NextGadget = Null, 25,17,46,24,#GFLG_GADGHBOX|#GFLG_GADGIMAGE, #GACT_IMMEDIATE|#GACT_RELVERIFY, #GTYP_BOOLGADGET,iImg,0,0,0,0,0,0
-      
-      *ni\do_Type        = #WBTOOL
-      *ni\do_CurrentX    = #NO_ICON_POSITION ; 18
-      *ni\do_CurrentY    = #NO_ICON_POSITION ; 14
-
-      If PutDiskObject_(iconfilename, *ni) = False
-        log2PED{"Could not write DiskObject, error " + Str$(IoErr_)}
-      EndIf
-      FreeDiskObject_(*ni)
-    Else
-      log2PED{"Could not init Diskobject structure"}
-    EndIf
-    !asm
-
-    MOVEA.l ptr_newexefilename,A0
-    CLR.b (A0)
- 'done
+  Poke.l ?ptr_newexefilename,0 ; empty filename    
+  !asm
 
   ; new >
   ; --
@@ -10399,53 +10455,52 @@ JMP error_create_exe
   MOVE.l bssstart,d6
   MOVEA.l hunkoffsetbase,A2
   MOVEA.l destbufferstart,A1
-  MOVE.l A1,D2
-  ADD.l noinits,D2
+  MOVE.l A1,D2 : ADD.l noinits,D2
   CLR.l hunkoffsetnum
 
  'loop0b                ; copy save_binaryfile 'loop0
-  CMPA.w #$0,A2 : BEQ.w 'fixdoneb
-  MOVE.l 4(A2),D0
-  LEA $0(a1,d0.l),a0
-  MOVE.l (a0),d1
-  TST.l d1            :  BMI.w 'lm1f
-  MOVE.b #0,newhunk
-  CMP.l #-1,chipstart :  BEQ 'l10f
-  CMP.l chipstart,d1  :  BLT 'l10f
-  MOVE.b #1,newhunk
-  CMP.l chipend,d1    :  BGE 'l110f
-  ADD.l d7,(a0)
-  ADD.l #$80000000,4(a2)
-  BRA 'nowayb
+    CMPA.w #$0,A2 : BEQ.w 'fixdoneb
 
- 'l110f
-  ADD.l d5,0(a0)
+    MOVE.l 4(A2),D0
+    LEA $0(a1,d0.l),a0
+    MOVE.l (a0),d1
+    TST.l d1            :  BMI.w 'lm1f
+    MOVE.b #0,newhunk
+    CMP.l #-1,chipstart :  BEQ 'l10f
+    CMP.l chipstart,d1  :  BLT 'l10f
+    MOVE.b #1,newhunk
+    CMP.l chipend,d1    :  BGE 'l110f
+    ADD.l d7,(a0)
+    ADD.l #$80000000,4(a2)
+    BRA 'nowayb
 
- 'l10f
-  CMP.l #-1,bssstart :  BEQ 'l11f
-  CMP.l bssstart,d1  :  BLT 'l11f
-  CMP.l bssend,d1    :  BGE 'l111f
-  TST.b newhunk      :  BEQ 'ln1f
-  ADD.l d5,(a0)
+   'l110f
+    ADD.l d5,0(a0)
 
- 'ln1f
-  ADD.l d6,(a0)
-  ADD.l #$40000000,4(a2)
-  BRA 'nowayb
+   'l10f
+    CMP.l #-1,bssstart :  BEQ 'l11f
+    CMP.l bssstart,d1  :  BLT 'l11f
+    CMP.l bssend,d1    :  BGE 'l111f
+    TST.b newhunk      :  BEQ 'ln1f
+    ADD.l d5,(a0)
 
- 'l111f
-  ADD.l d3,0(a0)
+   'ln1f
+    ADD.l d6,(a0)
+    ADD.l #$40000000,4(a2)
+    BRA 'nowayb
 
- 'l11f
-  ADD.l D2,(A0)                                            ;only normal code offsets restore
+   'l111f
+    ADD.l d3,0(a0)
 
- 'lm1f
-  ADDQ.l #1,hunkoffsetnum
+   'l11f
+    ADD.l D2,(A0)                                            ;only normal code offsets restore
 
- 'nowayb
-  MOVEA.l (A2),A2
+   'lm1f
+    ADDQ.l #1,hunkoffsetnum
+
+   'nowayb
+    MOVEA.l (A2),A2
   BRA.w 'loop0b
-
  'fixdoneb                        ; end of copy
   ; < new
   MOVEM.l (a7)+,d2-d7/a2-a6
@@ -16285,8 +16340,7 @@ makelit:
     BSR.w writelong
     CMP.w #3,mode : BEQ 'l30
       ADDQ.w #4,a2offset
-      MOVE.w #$4878,D1
-      BSR.w writeword
+      MOVE.w #$4878,D1 : BSR.w writeword
       MOVE.l d2,d1
       BSR writeword
    'l30
@@ -16298,13 +16352,10 @@ makelit:
   MOVE.w regnum,D1
   LSL.w #8,D1
   LSL.w #1,D1
-  ORI.w #$2f3c,d1
-  BSR writeword
+  ORI.w #$2f3c,d1 : BSR writeword
    ADDQ.w #4,a2offset
-  MOVE.l d2,d1
-  BSR writelong
-  MOVE.w #$2f3c,d1
-  BSR writeword
+  MOVE.l d2,d1 : BSR writelong
+  MOVE.w #$2f3c,d1 : BSR writeword
   BSR.w addoff
   MOVE.l litdata1,D1
   BSR.w writelong
@@ -16320,8 +16371,7 @@ qmark:
   MOVE.w regnum,D1
   LSL.w #8,D1
   LSL.w #1,D1
-  ORI.w #$203C,D1
-  BSR.w writeword        ;create move.l #loc,dn
+  ORI.w #$203C,D1 : BSR.w writeword        ;create move.l #loc,dn
   BSR.w addoff
   MOVE.l 8(A2),D1
   BSR.w writelong
@@ -21736,35 +21786,30 @@ labcnt:   Ds.w 1
 
 
 .do_Ongo:                                                  ;On expression Goto/Gosub Label[Label...]
-    ;
-    ;Get expression as a word.
-    ;
-  MOVEQ.l #$02,D2
-   BSR.w bakeval
+  ;
+  ;Get expression as a word.
+  ;
+  MOVEQ.l #$02,D2 : BSR.w bakeval
   ;
   LEA ongotocode(PC),A0
   LEA ongotocodef(PC),A1
   MOVE.w #gc1skip-ongotocode,D1      ; is #$001A
 
-  CMP.w ##TokenID_Goto,D0                   ; was #$8005
-  BEQ.w 'isok
+  CMP.w ##TokenID_Goto,D0 : BEQ.w 'isok
 
-  CMP.w ##TokenID_Gosub,D0                   ; was #$8006
-  BNE.w JUMP_syntaxerr
+    CMP.w ##TokenID_Gosub,D0 : BNE.w JUMP_syntaxerr
 
-  LEA ongosubcode(PC),A0
-  LEA ongosubcodef(PC),A1
-  MOVE.w #gc2skip-ongosubcode,D1     ; is #$001A
-  ;
-  TST.b debugmode
-   BEQ.b 'isok
-  ;
-   JSR insert_stackchk
-  LEA ongcode(PC),A0
-  LEA ongcodef(PC),A1
-  MOVE.w #gc3skip-ongcode,D1         ; is #$001E
+    LEA ongosubcode(PC),A0
+    LEA ongosubcodef(PC),A1
+    MOVE.w #gc2skip-ongosubcode,D1     ; is #$001A
 
+    TST.b debugmode : BEQ.b 'isok
+      JSR insert_stackchk
+      LEA ongcode(PC),A0
+      LEA ongcodef(PC),A1
+      MOVE.w #gc3skip-ongcode,D1         ; is #$001E
  'isok
+
   MOVE.w D1,-(A7)
   MOVE.l destpointer,-(A7)                                 ;for when we know number of labels!
    BSR.w pokecode
@@ -21772,32 +21817,28 @@ labcnt:   Ds.w 1
   ;
   ;now, make a labels list!
   ;
-
  'loop
-   JSR get1bytemain
-  SUBQ.l #2,destpointer                                    ;for makealab!
-   BSR.w makealab2
-  ADDQ.l #2,destpointer
-   JSR addoff
-  MOVE.l 8(A2),D1
-   BSR.w writelong
-  ADDQ.w #1,labcnt
-   JSR reget_lastchar
-  CMP.w #",",D0 ; ','
-   BEQ.w 'loop
+    JSR get1bytemain
+
+   SUBQ.l #2,destpointer                                    ;for makealab!
+    BSR.w makealab2
+   ADDQ.l #2,destpointer
+
+    JSR addoff
+   MOVE.l 8(A2),D1 : BSR.w writelong
+   ADDQ.w #1,labcnt
+    JSR reget_lastchar
+  CMP.w #",",D0 : BEQ.w 'loop
   ;
   MOVEA.l (A7)+,A0
   MOVE.w (A7)+,D2
-  MOVE.w dontwrite_nomemleft,D1
-   BNE.w 'done
-  ;
-  MOVE.w labcnt(PC),D1
-  MOVE.w D1,$A(A0)       ;for cmp#
-  ADD.w D1,D1
-  ADD.w D1,D1
-  ADDQ.w #2,D1
-  MOVE.w D1,$2(A0,D2.W)  ;for bra!
-
+  MOVE.w dontwrite_nomemleft,D1 : BNE.w 'done
+    MOVE.w labcnt(PC),D1
+    MOVE.w D1,$A(A0)       ;for cmp#
+    ADD.w D1,D1
+    ADD.w D1,D1
+    ADDQ.w #2,D1
+    MOVE.w D1,$2(A0,D2.W)  ;for bra!
  'done
 RTS
 
@@ -21856,17 +21897,15 @@ do_function_return:      ; was funcret
   ; < new
   MOVEA.l currentfunction,A0
   ; new >
-    CMP.l #0,a0
-    BNE 'l1
+  CMP.l #0,a0 : BNE 'l1
     JMP errorasmexit
-
  'l1
   MOVEQ.l #$00,D2
   ; < new
   MOVE.b $5(A0),D2      ;type returning!
   BSR.w eval            ;put return val in d0.
   ; new >
- CNIF #function_support_returntype
+  CNIF #function_support_returntype
   MOVEA.l currentfunction,A0
   MOVE.l funcstruct_returntype(a0),a0
   CMP.l #0,a0 : BEQ 'isstatement
@@ -21893,7 +21932,7 @@ do_function_return:      ; was funcret
  'isvar
  'ok
  'isstatement
- CEND
+  CEND
   MOVEM.l (a7)+,a0/a1/d1
   ; < new
   ;
@@ -21915,8 +21954,7 @@ error_convert_types2 JMP error_convert_types
 ;
 ;'no
   ; < new
-  TST.b debugmode
-  BEQ.w normret
+  TST.b debugmode : BEQ.w normret
     MOVE.w #$C305,D1 : BRA.w Atokejsr                       ; (runerrslib, #chkret)    
   normret:
   ;a normal return
@@ -21934,9 +21972,8 @@ prolineat:   Ds.l 1
 
 
 .do_statement:                   ; was dostate  org  source
-   ; new >
    TST.w proceduremode :  BGT JUMP_sreterr
-   ; < new
+ 
    CMP.w ##TokenID_Return,D0 : BEQ.w stateret     ;was #$8007 Token "Return"   
 
    MOVEQ.l #-$01,D1  ;statement flag
@@ -25759,7 +25796,6 @@ JMP bracket
 
 JUMP_errorbracketmiss JMP errorbracketmiss
 
-
 Function.l ab3_GetIncludeLock{filename.s}
   incLock.l  = Lock_(&filename,#ACCESS_READ)   ; try bla.blub
   ex.s       = dos_GetExt{filename}
@@ -26187,6 +26223,7 @@ _return         RTS
 chartab2        Ds.l 256
 codeend         Dc.l 0
 hunkoffsetnum   Dc.l 0
+hunkoffsetwrite Dc.l 0
 chipsize        Dc.l 0
 bsssize         Dc.l 0
 bssstart        Dc.l -1
@@ -26203,18 +26240,20 @@ lastinstructionaddr Dc.l 0
 
 ;--------- hunk headers for executable file
 ; HUNKS:  CODE, RELOC32 
-tsthead:        Dc.l $000003F3   ; HUNK_HEADER
-                Dc.l $00000000   ; num of resident libraries, shall be zero
-                Dc.l $00000001   ; number of segments in binary
-                Dc.l $00000000   ; first segment to load
-                Dc.l $00000000   ; last segment to load (inclusive)
-tstsize1:       Dc.l $00000100   ; size of segment 0
-                Dc.l $000003E9   ; HUNK_CODE, A hunk describing a segment of code and constant data
-tstsize2:       Dc.l $00000100   ; size of code hunk in longwords 
-tstend:         Dc.l $000003EC   ; HUNK_RELOC32, A hunk containing relocation information
-tstsize3:       Dc.l $00000000   ; number of offsets in this table
+hunkHeader:     Dc.l $000003F3   ; 00 HUNK_HEADER
+                Dc.l $00000000   ; 04 num of resident libraries, shall be zero
+                Dc.l $00000001   ; 08 number of segments in binary
+                Dc.l $00000000   ; 12 first segment to load
+                Dc.l $00000000   ; 16 last segment to load (inclusive)
+tstsize1:       Dc.l $00000100   ; 20 size of segment 0
+                Dc.l $000003E9   ; 24 HUNK_CODE, A hunk describing a segment of code and constant data
+tstsize2:       Dc.l $00000100   ; 28 size of code hunk in longwords 
+
+hunkReloc32:    Dc.l $000003EC   ; HUNK_RELOC32, A hunk containing relocation information
+hunkR32Entries: Dc.l $00000000   ; number of offsets in this table
                 Dc.l $00000000   ; segment number the relocs are used on (0)
-tstdone:        Dc.l $000003F2   ; HUNK_END, terminate a segment
+hunkEnd:        Dc.l $000003F2   ; HUNK_END, terminate a segment
+;--------- end of standard hunk header for executable file
 
 ; HUNKS:  CODE, BSS
 hunkbegin       Dc.l $000003F3  ; HUNK_HEADER
@@ -26238,18 +26277,20 @@ bsssize3        Dc.l $00000001  ; size of hunk 1
 chipsize2       Dc.l $00000001  ; size of hunk 2
                 Dc.l $000003e9  ; HUNK_CODE
 tstsize2c       Dc.l $00000000
+hunkEndBss:     Dc.l $000003f2  ; HUNK_END 
 
-hunkend         Dc.l $000003f2  ; HUNK_END 
                 Dc.l $000003eb  ; HUNK_BSS
                 Dc.l $00000000
                 Dc.l $000003f2  ; HUNK_END 
 
-hunkend2        Dc.l $000003f2  ; HUNK_END 
+hunkEndData:    Dc.l $000003f2  ; HUNK_END 
                 Dc.l $000003ea  ; HUNK_DATA
                 Dc.l $00000000
                 Dc.l $000003f2  ; HUNK_END 
-;--------- end of hunk header for executable file
-sysdebug:       Dc.l $000003F0  ; HUNK_DEBUG
+;--------- end of hunk header for executable file with BSS,Chip or DATA sections
+
+hunkDebug:       Dc.l $000003F0  ; HUNK_DEBUG
+
 
 ;-- data for debug information to link to executable
 strcpy          Dc.b "strcpy",0
