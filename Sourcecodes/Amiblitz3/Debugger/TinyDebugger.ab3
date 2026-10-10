@@ -1,0 +1,790 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "Blitz3:Debug"
+; ExeFile         = "TinyDebugger"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 10240
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 40
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 80000
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 266
+; CursorColumn    = 21
+; LabelSearch     = "gadH"
+; LabelRemark     = 0
+; LabelAll        = 1
+; LabelCase       = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max File        = 5
+; Max GadgetList  = 5
+; Max Shape       = 100
+; Max MenuList    = 5
+; Max IntuiFont   = 5
+; Max BlitzFont   = 4
+; Max Bank        = 5
+; Max GTList      = 20
+; Max IconInfo    = 1
+; Max MUIObject   = 50
+; Max AsyncReq    = 4
+; Max GTMenuList  = 5
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max Tape        = 5
+; Max TagList     = 5
+; Max Database    = 16
+; Max BitMap      = 10
+; Max Screen      = 5
+; Max Palette     = 4
+; Max Window      = 20
+; Max Sound       = 10
+; Max MedModule   = 8
+; Max Buffer      = 10
+; Max Queue       = 10
+; Max Sprite      = 20
+; Max Module      = 5
+; Max Slice       = 10
+; Max CopList     = 10
+; Max PTModule    = 5
+; Max Anim        = 10
+; Max NChunky     = 50
+; Max Chunky      = 20
+; Max Stencil     = 5
+; Max XBSound     = 10
+; Max Page        = 4
+; /XTRA
+
+
+;OK, here's the source code to the Blitz2 default debugger.
+;
+;The debugger system works like this...
+;
+;When Blitz2 is first run, the program 'Blitz2:dbug/defaultdbug'
+;is LoadSeg 'ed into memory. When a program is run from within
+;Blitz2, the debug prog get's started up via 'CreateProc'. The
+;new compiler menu option 'Load Debug Module' allows a different
+;debugger to be used instead of 'defaultdbug'.
+;
+;Note that the debug prog (eg: this prog) and the main prog (the
+;program actually being debugged) run as separate tasks.
+
+;***************************************************************;
+
+;The debug program is supplied the following routines by the main
+;prog. The debug prog is supplied a look up table of the functions
+;via the task control block USERDATA pointer. Have a look at the
+;!d_call{} macro and d_sethandler{}, d_detoke{} procedures in the
+;code to see how I call them. Note that most of these will NOT have
+;any effect until the next program statement is executed.
+
+;SETHANDLER - call this when the debugger has done all it's setup
+;stuff (eg: opening windows etc), and is ready to be used and
+;abused. SETHANDLER requires A0 to be pointing to a table of
+;debug routines (see below) - checkout the 'htable' table in
+;the program code...
+
+;DETOKE - this allows you to detokenise a line of program source.
+;On input, A0 = tokenised text and A1 = buffer to place detokenised
+;text into.
+
+;FINDOFFSET - given A0 = tokenised source line and D0=statement
+;offset, this function will return D0 = detokenised statement
+;offset.
+
+;EVAL - Evaluates the null terminated string in A0. The answer
+;eventually gets returned via 'EVALHANDLER' (see below).
+
+;EXEC - Executes the null terminated string in A0. Any errors in
+;execution get reported through 'EVALHANDLER' (see below).
+
+;QUIT - call this to end program execution - but don't actually do
+;anything (eg: 'END'!) until the main prog calls your 'CLEANUP'
+;routine (see below).
+
+;SKIP - call this to cause the next program statement to be
+;'skipped' or ignored
+
+;****************************************************************;
+
+;The debug program needs to supply the following routines to
+;the main prog. Note that these routines will be called by another
+;task (not the debug task), and therefore should only perform
+;very simple operations (eg: setting flags, or 'Signal' ing the
+;debug task).
+
+;STATEHANDLER - called before the execution of every line of
+;program code, except for stuff in supervisor mode (ie: interupts).
+;This routine is only allowed to play with A0 and A1 (to keep things
+;fast). On entry, A0 contains a pointer to an 'info' block:
+;
+; NEWTYPE.statehandlerinfo
+;   DREGS[8]    ;contents of data registers D0...D7
+;   AREGS[8]    ;contents of address registers A0...A7
+;   *PC.pcinfo  ;program counter
+;   CC.w        ;condition codes
+; END NEWTYPE
+;
+NEWTYPE.src
+   *NEXT.src   ;pointer to next line
+   *PREV.src   ;pointer to previous line
+   CHARS.b     ;how many characters in line
+   CHRS[0]     ;actual tokenised source code
+End NEWTYPE
+;
+;The *PC entry points to another 'info' block:
+;
+NEWTYPE.pcinfo
+  *sourceLine.src   ;pointer to start of source code line
+  lineOffset.w      ;pointer to offset in source line of current statement.
+  skipOffset.w      ;offset to next statement (so we can skip this one if we want!)
+End NEWTYPE
+DEFTYPE.pcinfo *pcInfo
+;
+;
+;The actual program code starts 8 bytes after PC...
+;On exit, your statehandler return should return with the Z flag
+;set if it's OK to run the statement. If the Z flag is clear, then
+;the statement will not be executed, and your 'WAITHANDLER' routine
+;will eventually be called (see below).
+
+;SUPERHANDLER - called when a runtime error occurs in supervisor
+;mode. A0 points to a null terminated string describing the error.
+
+;USERHANDLER - called when a runtime error occurs in user
+;mode. A0 points to a null terminated string describing the error.
+
+;WAITHANDLER - called whenever a program statement is NOT executed.
+;The main purpose of this function is to allow for a 'Step' function.
+
+;EVALHANDLER - called with either the result of an EVAL call (see
+;above), or when errors occur during either an EVAL or an EXEC.
+
+;CLEANUP - called when the debug program is required to finish.
+;This may be triggered by an 'End' statement in the main prog,
+;or a call to 'QUIT' (see above). As this is called by the main prog
+;task, and not the debug task, this routine should really only
+;inform the debug task to end.
+
+;******************************************************************;
+
+;Note that in this version, I've used a 'checkflag/VWait' type
+;approach to intertask communication. This is due purely to laziness
+;on my part (been too busy writing a game...) and would be much more
+;elegant if replaced by an exec 'Signal' or (gasp!) 'PutMsg' type
+;system...
+
+;******************************************************************;
+
+OPTIMIZE 4; : SYNTAX
+
+#test=0
+
+DEFTYPE.l
+#bufflen=4096 : #buffand = #bufflen - 1
+
+Macro d_call
+  MOVE.l d_table,a2 
+  MOVE.l `1 LSL 2(a2),a2 
+  JSR (a2)
+End Macro
+
+Statement d_sethandler{}
+  LEA htable(pc),a0 : !d_call{2}
+End Statement
+
+Function$ d_detoke{sa}
+  SHARED d_d$
+  GetReg a0,sa:GetReg a1,&d_d$
+  !d_call{3}
+  Function Return d_d$
+End Function
+
+Statement d_eval{t$}
+  SHARED d_ev$
+  d_ev$=t$:GetReg a0,&d_ev$:!d_call{4}
+End Statement
+
+Statement d_exec{t$}
+  SHARED d_ex$
+  d_ex$=t$:GetReg a0,&d_ex$:!d_call{5}
+End Statement
+
+Statement d_quit{}
+  !d_call{6}
+End Statement
+
+Statement d_skip{}
+  !d_call{8}
+End Statement
+
+Macro d_basic
+  MOVE.l d_a5(pc),a5
+End Macro
+
+Function.l getStartCode{ad.l}
+SHARED startCode.l
+
+  ; if there are includes in the source, we need a indicator that points to the entry point of the source
+  ; the compiler adds "DuckAmiB" at this point
+  ;
+  If startCode = 0                 
+    GetReg D0,ad : MOVE.l d0,a0
+    MOVE.l #"DuCk",d1
+    MOVE.l #"AmiB",d2
+    MOVE.l #10 000 000,d0
+
+    _adloop:
+      ADDQ.l #1,a0
+      CMP.l (a0),d1 : BEQ _adloop1
+        SUBQ.l #1,d0 : BNE _adloop
+        BRA _adloop3
+      _adloop1:
+      CMP.l 4(a0),d2
+    BNE _adloop
+
+    MOVE.l a0,d0 : PutReg D0,startCode
+    startCode = Peek.l(startCode + 8)
+    
+    _adloop3:
+  EndIf
+
+  Function Return startCode
+End Function
+
+
+Function.l getad{ad.l}
+  If ad
+    peekad.l = Peek.l(ad)
+    If peekad AND $80000000   ; address is an offset !
+      peekad = peekad AND $7fffffff
+      peekad = peekad + getStartCode{ad}
+    EndIf
+    Function Return peekad
+  Else
+    Function Return 0
+  EndIf 
+End Function
+
+Function.l getad2{ad.l}
+  peekad.l = Peek.l(ad)
+  If peekad AND $80000000   ; address is an offset
+    peekad = peekad AND $7fffffff
+    peekad = peekad + getStartCode{ad}
+    Function Return peekad
+  Else
+    Function Return ad
+  EndIf
+End Function
+
+
+NEWTYPE.d_event  ;a debug event!
+    ;
+t.w ;type...0=supervisor error
+    ;       1=user error
+    ;       2=eval result
+    ;       3=trace this line...
+    ;       4=end
+    ;
+i.w ;buffer put val!
+s$  ;string
+    ;
+End NEWTYPE
+
+Dim List d_e.d_event(10)
+
+.add_event
+Statement add_event{t,s$}
+SHARED d_e()
+  Forbid_
+  If AddLast(d_e())
+    d_e()\t=t
+    MOVE bufferput(pc),d0:SUBQ #4,d0:AND #buffand,d0:PutReg d0,d_e()\i
+    d_e()\s=s$
+  EndIf
+  Permit_
+End Statement
+
+; ==============================================================================================================
+.BEGIN:
+  MOVE.l a5,d_a5
+  MOVE.l 4,a0 : MOVE.l 276(a0),a0 : MOVE.l 88(a0), d_table ; get userdata from task
+
+  If Peek.l(?d_table) = 0
+    EZRequest "No UserData received, will quit"
+    End
+  EndIf
+
+  MaxLen d_d$ = 256 : MaxLen d_ev$ = 256 : MaxLen d_ex$ = 256
+  Poke.l ?d_dadd,&d_d$
+  statego.w = 0 : dstatus.w = 0 : prtcode.w = 0 : Poke.l ?statego_,&statego
+
+  buffmem = AllocMem(#bufflen, #MEMF_PUBLIC|#MEMF_CLEAR) 
+  Poke.l ?buffmem_,buffmem
+  CLR bufferput
+  ;
+  Goto mainstart
+End
+
+d_dadd:   Dc.l 0
+d_table:  Dc.l 0 ; function table to call functions in debuglib
+d_table2: Dc.l 0
+d_a5:     Dc.l 0
+statego_: Dc.l 0
+buffmem_: Dc.l 0
+bufferput:Dc 0
+
+htable  ;handler table
+Dc.l d_statehandler,d_superhandler,d_userhandler
+Dc.l d_waithandler,d_evalhandler,d_cleanup
+
+d_statehandler
+  MOVE.l buffmem_(pc),a1 : ADD bufferput(pc),a1 : MOVE.l 64(a0),(a1)
+  ADDQ #4,bufferput : ANDI #buffand,bufferput
+  MOVE.l statego_(pc),a1
+  TST (a1)
+RTS
+
+d_superhandler
+  !d_basic : PutReg a0,sa
+  Gosub stopit : add_event{0,Peek$(sa)}
+RTS
+
+d_userhandler
+  !d_basic : PutReg a0,sa
+  Gosub stopit : add_event{1,Peek$(sa)}
+RTS
+
+d_waithandler
+  !d_basic
+  If prtcode    ;print code out?
+    prtbusy = -1
+    add_event{3,""} ;print me out!
+    While prtbusy : Delay_ 1 : Wend  ;wait till printed!
+  EndIf
+  If dstatus=2  ;stopped?
+    While stepcnt=0 AND dstatus=2:VWait:Wend:stepcnt-1
+  EndIf
+RTS
+
+d_evalhandler
+  !d_basic : PutReg a0,sa
+  add_event{2,Peek$(sa)}
+RTS
+
+d_cleanup
+  !d_basic:add_event{4,""}
+RTS
+
+;*****************************************************************
+Statement log_Print{mes.s}
+  WriteSerialString 0,mes + Chr$(10) + Chr$(13)
+End Statement
+
+.mainstart
+  If OpenSerial("serial.device",0,9600,0)
+    log_Print{"#########  Debugging active..."}
+  EndIf
+  Gosub open_GUI
+
+CNIF #test=0
+  d_sethandler{}
+CEND
+
+Repeat
+  Gosub getevent
+
+  Select ev
+  Case #IDCMP_NEWSIZE
+    Gosub do_windownewsize
+
+  Case #IDCMP_REFRESHWINDOW
+    Gosub do_windowrefresh
+
+  Case #IDCMP_GADGETUP
+    Select GadgetHit
+    Case 1  ;stop
+      If dstatus <> 2 Then !d_call{1}
+
+    Case 2  ;step
+      stepcnt + 1
+
+    Case 3  ;skip
+      If dstatus = 2 Then !d_call{8} : stepcnt + 1
+
+    Case 4  ;trace
+      Forbid_
+      dstatus = 1 : statego = -1
+      Permit_
+
+    Case 5  ;run
+      If dstatus
+        cil = 0
+        inBackBuffer = 0
+        Gosub do_windowrefresh
+        ali = 0
+        lt$ = ""
+        Forbid_
+        prtcode = 0 : dstatus = 0 : statego = 0
+        Permit_
+      EndIf
+
+    Case 6  ;<<
+      If dstatus = 2 Then Gosub backward
+
+    Case 7  ;>>
+      If dstatus = 2 AND inBackBuffer <> 0 Then Gosub forward
+
+    Case 8  ;execute
+      SetString 1,1,ex$
+      t$ = "Execute..." : Gosub getascii : ex$ = t$
+      d_exec{ex$} : stepcnt + 1
+
+    Case 9  ;evaluate
+      SetString 1,1,ev$
+      t$ = "Evaluate..." : Gosub getascii : ev$ = t$
+      d_eval{ev$} : stepcnt + 1
+
+    End Select
+
+  Case #IDCMP_CLOSEWINDOW
+    CNIF #test=1
+      End
+    CELSE
+      d_quit{} : stepcnt + 1
+    CEND
+
+  Case #IDCMP_RAWKEY
+    i$ = Inkey$
+    Select Asc(i$)
+    Case 27 ;ESC
+      CNIF #test=1
+        End
+      CELSE
+        d_quit{} : stepcnt + 1
+      CEND
+    Case 28
+      Gosub checkw
+      If ali
+        If Peek.l(currentLine + 4)
+          currentLine = Peek.l(currentLine + 4) : Gosub printSource
+        EndIf
+      EndIf
+    Case 29
+      Gosub checkw
+      If ali
+        If Peek.l(currentLine)
+          currentLine = Peek.l(currentLine) : Gosub printSource
+        EndIf
+      EndIf
+    End Select
+  End Select
+Forever
+
+.backoff
+  If inBackBuffer
+    inBackBuffer = 0 : *pcInfo = Peek.l(buffmem + currentBufferIndex)
+    mc = -1 : Gosub updateSource
+  EndIf
+Return
+
+.backward
+  log_Print{"backward"}
+
+  If inBackBuffer = 0 Then backBufferIndex = currentBufferIndex
+
+  backBufferIndex - 4 AND #buffand
+  *pcInfo = Peek.l(buffmem + backBufferIndex)
+  If *pcInfo = 0
+    backBufferIndex + 4 AND #buffand
+    t$ = "At end of buffer" : Goto showStatusText
+  Else
+    inBackBuffer = -1 
+    mc=-1 : Gosub updateSource
+  EndIf
+Return
+
+.forward
+  log_Print{"forward"}
+
+  If inBackBuffer = 0
+    t$ = "Current source position reached!" : Gosub showStatusText
+  Else
+    backBufferIndex + 4 AND #buffand
+    If (backBufferIndex + 4 AND #buffand) = Peek.w(?bufferput) Then inBackBuffer = 0
+    *pcInfo = Peek.l(buffmem + backBufferIndex) 
+    mc=-1 : Gosub updateSource
+  EndIf
+Return
+
+.checkw
+  If innerH < innerFontHeight * 2
+    winH = innerY + innerFontHeight * 4
+    Gosub open_Window
+  EndIf
+Return
+
+.updateSource
+  ;
+  ;*pcInfo=info
+  ;
+  ;mc=-1 to make current
+  ;cil=current ins. line, cio=current offset
+  ;
+  Gosub checkw
+
+  currentLine = getad{*pcInfo}
+  lineOffset = *pcInfo\lineOffset - 9
+  If mc Then cil = currentLine : cio = lineOffset: mc = 0
+  ;
+  Gosub printSource
+  ;
+  ali = *pcInfo
+Return
+
+.printSource:
+  WBox innerX, innerY, innerX + innerW, innerY + innerH - 1,0
+
+  ; print all lines from the middle to bottom
+  y = middleRow * innerFontHeight
+  i2 = currentLine
+  While i2 AND (y <= sourceH - innerFontHeight)
+    Gosub printSourceLine
+    y + innerFontHeight
+    i2 = Peek.l(i2)
+  Wend
+
+  ; print all lines from the middle to top
+  y = middleRow * innerFontHeight - innerFontHeight 
+  i2 = Peek.l(currentLine + 4)
+  log_Print{Hex$(i2)+ " " + Str$(y)}
+  While i2 AND (y >= 0)
+    Gosub printSourceLine 
+    y - innerFontHeight 
+    i2 = Peek.l(i2 + 4)
+  Wend
+
+  log_Print{"ready"}
+Return
+
+.printSourceLine ;i2 at y
+  ;
+  GetReg a0,i2 + 9
+  MOVE.l d_dadd(pc),a1 : !d_call{3} : SUB.l d_dadd(pc),a1 : SUBQ #1,a1
+  MOVE.l d_dadd(pc),a0 : MOVE.l a1,-(a0)
+  ;d_d$ = DetokenizeLine(i2, False)
+  ;
+  If i2 = cil 
+    GetReg a0,i2 + 9
+    GetReg d0,cio : !d_call{7} : PutReg d0,cio2
+    d_d$ = Left$(d_d$, cio2) + " " + Mid$(d_d$, cio2+1)
+  EndIf
+  ;
+  log_Print{d_d$}
+  maxChars = TextFit(d_d$,sourceW)
+  WLocate 0, sourceY + y : WColour 1,0 : Print Left$(d_d$, maxChars)
+  
+  If i2 = cil
+    WLocate cio2 * 8,sourceY + y : WColour 3,0
+    If inBackBuffer
+      Print ">"
+    Else
+      WJam 3 : Print " " : WJam 1
+    EndIf
+  EndIf
+  ;
+Return
+
+.showStatusText
+  statusY.w = WTopOff + gadH / 2 + 1
+  WBox innerX, statusY, innerX + innerW, statusY + innerFontHeight + 1,3
+
+  maxChars = TextFit(t$, innerW)
+  WColour 2,3 : WLocate 2, gadH / 2 + 1 : Print Left$(t$, maxChars)
+  WLine innerX, statusY + innerFontHeight + 2, innerX + innerW, statusY + innerFontHeight + 2,1
+  
+  lt$ = t$
+
+  log_Print{"INFO: " + t$}
+Return
+
+.open_GUI:
+  FindScreen 0
+  *scr.Screen = Peek.l(Addr Screen(0))
+  *scrfont.TextAttr = *scr\Font
+  If *scrfont <> 0
+     ; In AmigaDOS we trust :
+    guifont_size.w = (*scrfont.TextAttr\ta_YSize)
+    guifont_name$ = Peek.s(*scrfont.TextAttr\ta_Name)
+    LoadFont 0,guifont_name$,guifont_size
+    Use IntuiFont 0
+  EndIf
+
+  ;-- get the size of the resize gadget to calculate the height of the windowbottom
+  DEFTYPE.l windowRightBorderWidth,windowBottomHeight
+  DEFTYPE.Image  *img     ; An image which represents the size gadget
+  *drawinfo.l = GetScreenDrawInfo_(*scr)
+  If *drawinfo
+    If (*scr\Flags & #SCREENHIRES) Then sis.l = #SYSISIZE_HIRES Else sis = #SYSISIZE_MEDRES
+    *img = NewObjectA_(0,"sysiclass",VarArgs(#SYSIA_DrawInfo,*drawinfo,#SYSIA_Which,#SIZEIMAGE, #SYSIA_Size,sis))
+    If *img 
+      GetAttr_ #IA_Width,*img ,&windowRightBorderWidth
+      GetAttr_ #IA_Height,*img,&windowBottomHeight
+      DisposeObject_ *img
+    EndIf
+    FreeScreenDrawInfo_ *scr,*drawinfo
+  EndIf
+  windowBottomHeight = 10
+  windowBarHeight.w = *scr\WBorTop + *scr\Font\ta_YSize + 1
+
+  Gosub init_Gads
+
+  winX = 0
+  winY = *scr\BarHeight
+  winW = *scr\WBorLeft + *scr\WBorRight + gadX
+  winH = windowBarHeight + gadH + windowBottomHeight
+  SizeLimits winW,winH,-1,-1
+  lt$ = "*** Debugging is active ***"
+  Gosub open_Window
+Return
+
+
+.init_Gads
+  ;-- get a temporary rastport to evaluate the width of button texts
+  InitRastPort_ testrp.RastPort
+  *tfont.TextFont = Peek.l(Addr IntuiFont(0) + 8)
+  SetFont_ testrp, *tfont
+
+  Borders 2,2 : BorderPens 2,1
+  gadNum = 1 : gadX = 0 : gadY = windowBarHeight : gadH = *scr\Font\ta_YSize + 4
+  Repeat
+    Read t$
+    If t$ <> ""
+      gadFlags = 0 : If gadNum = 10 Then gadFlags = 1
+      TextGadget 0, *scr\WBorLeft + gadX, gadY, gadFlags, gadNum, t$
+      gadW.w = TextLength_(testrp, t$, Len(t$)) + 4
+      gadX + gadW
+      gadNum + 1
+    EndIf
+  Until t$ = ""
+  gadH = gadH * 2
+
+  Borders On
+  StringGadget 1,8,12,8,1,256,-16
+Return
+
+Data$ "Stop","Step","Skip","Trace","Run","<<",">>","Execute","Eval"
+Data$ ""
+
+.open_Window:
+  winFlags.l = #WFLG_SIZEGADGET | #WFLG_DRAGBAR | #WFLG_DEPTHGADGET | #WFLG_CLOSEGADGET | #WFLG_SIZEBBOTTOM
+  Window 0,winX,winY,winW,winH,winFlags,"AmiBlitz 3 Tiny Debugger",1,0,0
+  Use IntuiFont 0
+
+.do_windownewsize
+  innerX = WLeftOff
+  innerY = WTopOff + gadH
+  innerW = InnerWidth - 1
+  innerH = InnerHeight - 1 - gadH
+
+  sourceX = 0
+  sourceY = gadH
+  sourceW = InnerWidth
+  sourceH = InnerHeight - gadH 
+  
+  innerFontHeight = WinFontHeight
+  maxRows = sourceH / innerFontHeight
+  middleRow = maxRows / 2
+  If maxRows & 1 = 0 Then middleRow - 1
+;Return
+
+.do_windowrefresh
+  If ali Then *pcInfo = ali : Gosub updateSource
+  If lt$ Then t$ = lt$
+  Gosub showStatusText
+Return
+
+.getascii
+  x = WindowX
+  y = WindowY + WindowHeight / 2 - 12
+  w = WindowWidth
+  h = 23
+  ResetString 1,1
+  Window 1,x,y,w,h,#WFLG_ACTIVATE,t$,1,0,1
+  ActivateString 1,1
+  ;
+  Repeat
+    ev2.l = WaitEvent
+  Until ev2 = #IDCMP_GADGETUP AND EventWindow = 1
+  ;
+  Free Window 1
+  Use Window 0
+  t$ = StringText$(1,1)
+Return
+
+.stopit:
+  prtcode = -1
+  stepcnt = 0
+  dstatus = 2
+  statego = -1
+Return
+
+.getevent:
+  Repeat
+    While FirstItem(d_e())
+      Select d_e()\t
+      Case 0  ;supervisor mode error!
+        t$ = "(*) " + d_e()\s : Gosub showStatusText 
+        Gosub gotAnError
+
+      Case 1  ;user mode error!
+        t$ = d_e()\s : Gosub showStatusText
+        Gosub gotAnError
+
+      Case 2  ;eval/exec result!
+        t$ = d_e()\s : Gosub showStatusText
+
+      Case 3  ;dump code baby!
+        currentBufferIndex = d_e()\i 
+        *pcInfo = Peek.l(buffmem + currentBufferIndex)
+        inBackBuffer = 0 
+        mc = -1 : Gosub updateSource : prtbusy = 0
+
+      Case 4  ;outa-here
+        FreeMem buffmem,#bufflen : End
+
+      End Select
+      MaxLen d_e()\s = 0 : KillItem d_e()
+    Wend
+    ev = Event : If ev = 0 Then Delay_ 1
+  Until ev
+Return
+
+.gotAnError:
+  DisplayBeep_ 0
+  ScreenToFront_ s0
+  Activate 0
+Return
