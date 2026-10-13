@@ -14,7 +14,7 @@
 ; MakeSmallest    = 0
 ; FuncOptimize    = 0
 ; Version         = 3.13.0
-; NumberOfBuilds  = 689
+; NumberOfBuilds  = 692
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 10035
-; CursorColumn    = 1
-; LabelSearch     = "get_firsttoken"
+; CursorLine      = 2030
+; CursorColumn    = 7
+; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelCase       = 0
@@ -60,7 +60,6 @@
 ; Max BitMap      = 10
 ; Max Screen      = 5
 ; Max Palette     = 4
-; Max Window      = 25
 ; Max Sound       = 10
 ; Max MedModule   = 8
 ; Max Buffer      = 10
@@ -76,6 +75,7 @@
 ; Max Stencil     = 5
 ; Max XBSound     = 10
 ; Max Page        = 4
+; Max Window      = 25
 ; /XTRA
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
@@ -347,15 +347,8 @@ If config\blitz3assign <> ""
     EndIf
   EndIf
 
-  If dos_GetToolState{"DEBUGGER"} =-1 
-    config\default_debugger = dos_AddPart{config\blitz3assign + "Debug/",dos_GetToolString{"DEBUGGER",""}}
-  Else
-    config\default_debugger = dos_AddPart{config\blitz3assign,"Debug/DefaultDBug"}
-  EndIf
-
-  If dos_GetToolState{"INCLUDEDIR"} =-1 Then config\path_includes = dos_GetToolString{"INCLUDEDIR",dos_AddPart{config\blitz3assign , "Sourcecodes/Includes"}}
-
-  config\path_includes  = dos_AddPart{config\blitz3assign, "Sourcecodes/Includes"}
+  config\default_debugger = dos_AddPart{config\blitz3assign + "Debug/",dos_GetToolString{"DEBUGGER","Debug/DebugHandler"}}
+  config\path_includes  = dos_GetToolString{"INCLUDEDIR",dos_AddPart{config\blitz3assign , "Sourcecodes/Includes"}}
   config\path_system    = dos_AddPart{config\blitz3assign, "System"}
   config\path_residents = dos_AddPart{config\blitz3assign, "BlitzLibs/Residents"}
   config\path_blitzlibs = dos_AddPart{config\blitz3assign, "BlitzLibs"}
@@ -1997,46 +1990,34 @@ RTS
   If PeekL(?stacksize) < #MIN_STACKSIZE
     log2PED{"WARNING: The stacksize is too low: " + Str$(PeekL(?stacksize)) + " should be at least " + Str$(#MIN_STACKSIZE),#log_warning}
   EndIf
-  
+
+  ;-- Setting up the taglist for   
+  InitTagList 0,16 : Use TagList 0
+  AddTags #NP_Entry, ?processStart
+  AddTags #NP_Name, &processName
+  AddTags #NP_StackSize, PeekL(?stacksize)
+  AddTags #NP_HomeDir, environment\lock_ExePath
+  AddTags #NP_CurrentDir, environment\lock_ExePath
+
   If environment\consoleFileHandle
-    If config\console_wait
-      processTags.l = Tags(#NP_Entry,?processStart,@@
-                           #NP_Name,&processName,@@
-                           #NP_StackSize,PeekL(?stacksize),@@
-                           #NP_HomeDir,environment\lock_ExePath,@@
-                           #NP_CurrentDir, environment\lock_ExePath,@@
-                           #NP_Arguments,?str_cliarguments,@@
-                           #NP_Input,environment\consoleFileHandle, #NP_CloseInput,False,@@ 
-                           #NP_Output,environment\consoleFileHandle, #NP_CloseOutput,False,@@ 
-                           #TAG_END,0)
-    Else
-      processTags.l = Tags(#NP_Entry,?processStart,@@
-                           #NP_Name,&processName,@@
-                           #NP_StackSize,PeekL(?stacksize),@@
-                           #NP_HomeDir,environment\lock_ExePath,@@
-                           #NP_CurrentDir, environment\lock_ExePath,@@
-                           #NP_Arguments,?str_cliarguments,@@                           
-                           #NP_Input,environment\consoleFileHandle, #NP_CloseInput,False,@@ 
-                           #NP_Output,environment\consoleFileHandle, #NP_CloseOutput,False,@@ 
-                           #TAG_END,0)
-    EndIf
+     AddTags #NP_Arguments, ?str_cliarguments                           
+     AddTags #NP_Input, environment\consoleFileHandle, #NP_CloseInput, False
+     AddTags #NP_Output, environment\consoleFileHandle, #NP_CloseOutput,False
   Else
-    processTags.l = Tags(#NP_Entry,?processStart,@@
-                         #NP_Name,&processName,@@
-                         #NP_StackSize,PeekL(?stacksize),@@
-                         #NP_HomeDir,environment\lock_ExePath,@@                         
-                         #NP_CurrentDir, environment\lock_ExePath,@@
-                         #NP_Input,environment\myProcess\pr_CIS, #NP_CloseInput,False,@@ 
-                         #NP_Output,environment\myProcess\pr_COS, #NP_CloseOutput,False,@@ 
-                         #TAG_END,0)  
+    AddTags #NP_Input, environment\myProcess\pr_CIS, #NP_CloseInput, False
+    AddTags #NP_Output, environment\myProcess\pr_COS, #NP_CloseOutput, False
   EndIf
 
   If CLIMode 
     NPrint "================================================================"
   EndIf
 
-  *panicProcess.Process = CreateNewProc_(processTags)
+  *panicProcess.Process = CreateNewProc_(TagList(0))
   If *panicProcess
+    log2PED{"writing tokenbase to tasks userdata: " + Hex$(?tokens)}
+    *panicProcess\pr_Task\tc_UserData = ?tokens
+    Signal_ *panicProcess\pr_Task, #SIGBREAKF_CTRL_F
+
     ; -- set the running flag for IDE
     !asm
     !ComData_SetB{comByte_RunningFlag,#1}
@@ -2047,6 +2028,7 @@ RTS
       tmpstack.l  = *panicProcess\pr_Task\tc_SPUpper - *panicProcess\pr_Task\tc_SPLower
       log2PED{"*** Stacksize: " + Str$(tmpstack) + " bytes",#log_debug}
       log2PED{"*** Address of MsgPort: $" + Hex$(*panicProcess\pr_MsgPort),#log_debug}
+      log2PED{"*** UserData: $" + Hex$(*panicProcess\pr_Task\tc_UserData),#log_debug}
       log2PED{"*** program is running, waiting to stop...",#log_debug}
     End If
 
@@ -2083,7 +2065,7 @@ RTS
       CLR.l d0 : !ComData_GetB{comByte_RunningFlag,D0} : PutReg D0,running.l
       If running
         Forbid_
-        *panicProcess.Process = FindTask_("AmiBlitz3 Program Process")
+        *panicProcess.Process = FindTask_(processName)
         If *panicProcess 
           tmpTCState = *panicProcess\pr_Task\tc_State 
           Permit_
@@ -2220,7 +2202,18 @@ stopit:     Ds.w 1
   MOVE.l #"bLtZ",D7               ; hack for wbstartuplib: simulate stared from cli
   MOVEA.l destbufferstart,A1
 
+
+  ;BSR.w calculate_VBR            ; this is the old way to provide the tokentable to the debuglib
+  ;MOVEA.l vbr,A0                 ; by using the trapvector table.
+  ;MOVE.l $84(a0),lasttrap1       ; store the old entry
+  ;MOVE.l #tokens,$84(A0)         ; set pointer to the token table
+  ;MOVE.l newtype_string,$88(A0)  ; ... activate for 68k low level trap
+  ;MOVE.l #directTrap15,$BC(A0)   ; trap 15 for expression calculation
+
   JSR (A1)                        ; execute compiled code (Run the thing!)
+
+  ;MOVEA.l vbr,A0                 ; restore the old vbr
+  ;MOVE.l lasttrap1,$84(a0)       ; restore the old trap1 vector
 
   CLR.l firstglob
   CLR.l firstlocal
@@ -27629,18 +27622,6 @@ menu_items:Dc.l menu_compile_run                                ;menuadds oreg s
            Dc.l menu_dummyfunc
            Dc.l menu_createreleaseexe                           ; changed to make it possible to access the routine from PED tomsmart1
            Dc.l menu_dummyfunc
-Even4
-
-
-edstruct:                  Dc.l tokens                     ;data for ted
-;                          Dc.l compilermenu_entries
-                           Dc.l 0
-
-                           Dc.l read_xtrafile              ;load .xtra routine
-                           Dc.l write_xtrafile             ;save .xtra routine
-                           Dc.l call_menuentry             ;Menu Routine
-                           Ds.l 1                          ;cleanup (?)
-                           Dc.b ":",34,".;"
 Even4
 
 ;--                                                                                 ;disassembled code begin
