@@ -13,8 +13,8 @@
 ; StringBuffer    = 10240
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
-; Version         = 3.13.0
-; NumberOfBuilds  = 303
+; Version         = 3.14.0
+; NumberOfBuilds  = 306
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,7 +30,7 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 5431
+; CursorLine      = 3341
 ; CursorColumn    = 1
 ; LabelSearch     = "drawmem"
 ; LabelRemark     = 0
@@ -189,6 +189,8 @@ XINCLUDE "logging.include.ab3"
 #_arrayfind             = 8
 #_structaddress         = 9
 #_mouseable_eval        = 10
+#_variablerelocate      = 11
+
 ; EXECute types:
 #_viewblitz             = 50
 #_newtypewindow         = 51
@@ -372,7 +374,7 @@ DEFTYPE.w bp,evalrequestex,num_mouseables,mouseables_off
 DEFTYPE.w old_active_win,active_win,n
 DEFTYPE.w signal
 DEFTYPE.l disasm_ad,typepointer,maxobject,ad,si,areg,old_ad,ad1,ad2
-DEFTYPE.l ev,evq,evw,mem,dreg
+DEFTYPE.l ev,evq,evw,dreg
 DEFTYPE.l array1,array2,stepnumber,breakpoint_adr
 DEFTYPE.l mouseables,exetask,signalset
 DEFTYPE.l *ComData_Pointer
@@ -606,7 +608,54 @@ Macro log2PED_HexDump
    Next
 End Macro
 
-
+Function.l RED_GetVariableAddress{mem.l}
+SHARED MyBufferAddress, exetask
+  ad.l = Peek.l(MyBufferAddress)
+  If (ad)
+    ad2.l = Peek.l(ad+52)  ; get Value of Register A5
+    If (ad2)
+    ; replaced the search in the basic variable store with a Basic routine
+    ;  ad = D_FindStringPtr(ad2,mem)
+      ad2_offset.l = $8000 +2   ; set the size to search
+      ad = -1 ; for the case we don't find the string pointer
+      Repeat
+        ad2_offset - 2 ;
+        If Peek.l(ad2 - ad2_offset) = mem  ; test if the pointers match
+          ad = ad2 - ad2_offset ; yes get address
+          ad2_offset = 0 ; for end until
+        EndIf
+      Until ad2_offset = 0  ; test if we reach the end
+    Else
+      ad = -1
+    EndIf
+  EndIf
+  If ad = -1
+  ; replaced the unsave search on the stack with one that respected the Stack size and limts
+  ;  ad = Peek.l(MyBufferAddress)
+  ;  If (ad)
+  ;    ad2 = Peek.l(ad+60) ; get Value of Register A7
+  ;    If (ad2)
+  ;      ad = D_FindStringPtr(ad2+$8000,mem) ; search in stack
+  ;    Else
+  ;     ad = -1
+  ;    EndIf
+    *progtask.Task = exetask        ; get the task pointer of the program to debug
+    If (*progtask)
+      ad2_offset.l = *progtask\tc_SPUpper -3 ; get the upper Stack address and -3 for peek.l to prevent hits
+      ad = -1 ; for the case we don't find the string pointer
+      Repeat
+        ad2_offset -1
+        If Peek.l(ad2_offset) = mem  ; test if the pointers match
+          ad = ad2_offset ; yes get address
+          ad2_offset = *progtask\tc_SPLower ; for end until
+        EndIf
+      Until ad2_offset = *progtask\tc_SPLower ; test if we reach the lower Stack address
+    Else
+      ad = -1
+    EndIf
+  EndIf
+  Function Return ad
+End Function
 
 
 ; =========================================================================================================================
@@ -850,7 +899,7 @@ SHARED *tokenbase,exetask,signal,signalset,vbr_temp.l
   LEA htable(pc),a0 : !debuglib_Call{2}
   MOVE.l a0,mybuffer
   MOVE.l a1,progmode
-  ;PutReg a2,*tokenbase                         ; tokenbase will not be send by debuglib anymore
+  PutReg a2,*tokenbase
   PutReg a3,exetask                             ; blitz program process
   PutReg d0,signal
   signalset = (0 BitSet signal)
@@ -1160,7 +1209,7 @@ Function.b NewWindow{winNumber.w}
  SHARED wininfo(),winstatus(),end_init
  SHARED old_active_win,active_win
 
-  log2PED{"NewWindow " + Str$(winNumber)}
+  ;log2PED{"NewWindow " + Str$(winNumber)}
 
   winstatus(winNumber) = 0
 
@@ -1229,11 +1278,11 @@ Function.b NewWindow{winNumber.w}
   If maxHeight > 0 Then AddTags #WA_MaxHeight, maxHeight
   
   If wininfo(winNumber)\gadlist <> -1
-    log2PED{"attaching gadgetlist to window number " + Str$(winNumber)}
+    ;log2PED{"attaching gadgetlist to window number " + Str$(winNumber)}
     AddTags #WA_Gadgets, Peek.l(Addr GadgetList(wininfo(winNumber)\gadlist))
   EndIf
 
-  log2PED{"opening window: " + Str$(x)+ ", " + Str$(y)+ ", " + Str$(w) + ", " + Str$(h)+ ", " + wininfo(winNumber)\title}
+  ;log2PED{"opening window: " + Str$(x)+ ", " + Str$(y)+ ", " + Str$(w) + ", " + Str$(h)+ ", " + wininfo(winNumber)\title}
   If WindowTags(winNumber, winFlags, wininfo(winNumber)\title, TagList(1))
     GTSetMenu 0 : WindowFont 0
 
@@ -2271,7 +2320,7 @@ SHARED redData, *tokenbase
     If *pc
       ; trim source line to remove leading spaces !
       shift.b = 0
-      !log2PED_HexDump{getad{*pc} + *pc\lineOffset,16}
+      ;!log2PED_HexDump{getad{*pc} + *pc\lineOffset,16}
       Repeat
         tokeb.b = Peek.b(getad{*pc} + *pc\lineOffset + shift)
         If tokeb = $20 Then shift + 1
@@ -2279,7 +2328,7 @@ SHARED redData, *tokenbase
       toke.w = Peek.w(getad{*pc} + *pc\lineOffset + shift)
       toke = (toke BitClr $F) AND $FFFF  ; toke AND $7fff
 
-      log2PED{"searching token help for token " + Hexw$(toke) + "..."}
+      ;log2PED{"searching token help for token " + Hexw$(toke) + "..."}
       found.b = False
       *token.tokendata = *tokenbase
       While *token AND (NOT found)
@@ -2291,10 +2340,10 @@ SHARED redData, *tokenbase
         *token = *token\next_token
       Wend
     Else
-      log2PED{"showsyntaxhelp: no *pc"}
+      log2PED{"showsyntaxhelp: no *pc",#log_warning}
     EndIf
 
-    log2PED{"syntaxprint: [" + syntax_$ + "]"}
+    ;log2PED{"syntaxprint: [" + syntax_$ + "]"}
     RED_PrintText{redData\syntaxTextY, syntax_$}
   EndIf
 End Statement
@@ -2356,7 +2405,7 @@ USEPATH sourceWindow
       WLine \boxLeft-1, \boxTop, \boxLeft-1, \boxTop + \boxHeight,2
       WLine \boxLeft-2, \boxTop, \boxLeft-2, \boxTop + \boxHeight,1
 
-      log2PED{"current line number: " + Str$(lineNumber) + ", total lines: " + Str$(totalLines)}
+      ;log2PED{"current line number: " + Str$(lineNumber) + ", total lines: " + Str$(totalLines)}
     EndIf
 
     ;-- clear source text area
@@ -2618,7 +2667,8 @@ End Statement
           !ComData_GetL{comPtr_DirectBuffer,A0} : MOVE.l #direktbuffer,(a0)
 
           ; set token base pointer
-          !ComData_GetL{comPtr_TokenBase,D0} : *tokenbase = PutRegD0
+          ; not necessary anymore, as d_sethandler gets the tokenbase again
+          ;!ComData_GetL{comPtr_TokenBase,D0} : *tokenbase = PutRegD0
 
           ; added to set the right size of the buffer because the compiler allocated the buffer  tomsmart1 2016 02 06
           !ComData_GetL{comPtr_DestBufferStart,A0} : MOVE.l a0,programstart : ProgramStart.l = Peek.l(?programstart)
@@ -2634,10 +2684,18 @@ End Statement
           AddProcessPtr "F",&debug_pathspec$
 
           If debug_pathspec$ = redData\lastSourceName
-            error{"Same procedure as every year!"}
+            log2PED{"we are debugging the same source again: " + debug_pathspec$}
+
+            ;-- gleiche Source: Liste behalten, Adressen ungültig machen
+            ResetList varinfo()
+            While NextItem(varinfo())
+              varinfo()\address = 0
+            Wend
+            If FirstItem(varinfo()) Then relocIdx.b = 1 : relocBusy.b = 0
           Else
             redData\lastSourceName = debug_pathspec$
             ClearList varinfo()            
+            relocIdx = 0
           EndIf
           
         Else ; comdata version id
@@ -2652,12 +2710,19 @@ End Statement
   Else ; ted_OpenLib
     error{"No ted.library available!"}
   EndIf
+
+  ;-- establish connection to debuglib
   CNIF #test = 0
     d_sethandler{&redData\procStatus}
   CEND
 
   MyBufferAddress = ?mybuffer
   FillMem ?breakpoint,5 * 8
+  
+  CNIF #test = 0
+  ;-- get the new addresses of all variables in the trace list
+  ;Gosub RelocateVariables
+  CEND
 
   log2PED{"synchronized data structures with PED ..."}
 
@@ -2681,7 +2746,7 @@ End Statement
   Gosub open_GUI : Activate #_winControl
   log2PED{"gui opened ..."}
 
-  SetupLESDebug *tokenbase,redData\tokenize
+  SetupLESDebug *tokenbase, redData\tokenize
   log2PED{"Tokenbase at: " + Hex$(*tokenbase)}
 
   RedrawMem{}
@@ -2723,7 +2788,7 @@ End Statement
         If redMessage\_WindowID = #_winCustom  Then Gosub handle_CustomGadgets
 
       Case #IDCMP_GADGETHELP
-        Gosub handle_gadgethelp
+        ;Gosub handle_gadgethelp
 
       Case #IDCMP_MENUHELP
         Gosub handle_menuhelp
@@ -3335,6 +3400,86 @@ Return
   EndIf
 Return
 
+;-- after Debugger-restart: re-get adresses of all vars in varlist
+.RelocateVariables:
+  RED_ShowStatusText{"Relocating variables in tracelist..."}
+
+  ResetList varinfo()
+  While NextItem(varinfo())
+    varinfo()\address = 0
+    d_eval{"&" + varinfo()\name, #SIGNAL}
+
+    ;-- wait for result (max. ca. 1 sec)
+    relocOk.b      = False
+    relocTimeout.w = 75
+    Repeat
+      relocNext.b = FirstItem(d_e())
+      While relocNext AND relocOk = False
+        If d_e()\t = #DEVENT_EVALRESULT
+          relocRes$ = d_e()\s
+          relocOk   = True
+          MaxLen d_e()\s = 0 : KillItem d_e()
+        Else
+          ; ignore all other events
+          relocNext = NextItem(d_e())
+        EndIf
+      Wend
+      If relocOk = False Then Delay_ 1 : relocTimeout - 1
+    Until relocOk OR relocTimeout <= 0
+
+    If relocOk
+      varinfo()\address = Vallong(relocRes$)
+      If varinfo()\address <> 0 AND varinfo()\typ = #_string
+        varinfo()\address = RED_GetVariableAddress{varinfo()\address}
+      EndIf
+      If varinfo()\address = -1 
+        KillItem varinfo() 
+        log2PED{"variable " + varinfo()\name + " not found!",#log_warning}
+      Else
+        log2PED{"relocated " + varinfo()\name + " -> $" + Hex$(varinfo()\address)}
+      EndIf
+    Else
+      log2PED{"relocate timeout at " + varinfo()\name}
+      ; cancel as the rest would break as well
+      LastItem varinfo()      
+    EndIf
+  Wend
+  RED_ShowStatusText{""}  
+Return
+
+;-- setzt den Listenzeiger auf Eintrag Nr. relocIdx, relocFound = True/False
+.SelectRelocItem:
+  ResetList varinfo()
+  relocI.w = 0 : relocFound.b = False
+  Repeat
+    If NextItem(varinfo())
+      relocI + 1
+      If relocI = relocIdx Then relocFound = True
+    Else
+      relocI = -1
+    EndIf
+  Until relocFound OR relocI < 0
+Return
+
+;-- schickt die Adressanfrage für die nächste Variable
+.RelocateNextVariable:
+  If relocIdx > 0 AND relocBusy = 0 AND evalrequest = 0
+    If dstatus = #STOPPED AND exetask <> 0
+      Gosub SelectRelocItem
+      If relocFound
+        relocBusy   = -1
+        evalrequest = #_variablerelocate
+        d_eval{"&" + varinfo()\name, #SIGNAL}
+      Else
+        relocIdx = 0                          ; alle durch
+        If winstatus(#_winVariables)
+          RedrawVarWindow{}
+          UpdateVarWindow{}
+        EndIf
+      EndIf
+    EndIf
+  EndIf
+Return
 
 ;n$ = string which should be something like: d0=<val>
 .ParseRegs:
@@ -3368,7 +3513,7 @@ Return
 
 
 .handle_MouseButtons:
-  log2PED{"Mousebutton " + Hexw$(redMessage\_Code) + ", qualifier " + Hexw$(redMessage\_Qualifier)}
+  ;log2PED{"handle Mousebuttons: " + Hexw$(redMessage\_Code) + ", qualifier " + Hexw$(redMessage\_Qualifier)}
 
   If NOT WindowIsOpen(redMessage\_WindowID) Then Return
 
@@ -4533,7 +4678,7 @@ Return
 
 
 .handle_RefreshWindow:
-  log2PED{"handle Refreshwindows"}
+  ;log2PED{"handle Refreshwindows"}
 
   If redMessage\_WindowID >= #_winObject0 AND redMessage\_WindowID <= #_winObject9
     FindStructureWin{redMessage\_WindowID}
@@ -4619,7 +4764,7 @@ Return
 
     If gadName <> ""
       gadW.w = TextLength_(testrp, gadName, FLen(gadName)) + (4 + 2)  ; 4+2 = border left and right
-      log2PED{gadName + ": " + Str$(gadW)}
+      ;log2PED{gadName + ": " + Str$(gadW)}
       
       gadFlags.l = #PLACETEXT_IN
       If gadName = "GS" OR gadName = "PS" OR gadName = "BC" Then gadFlags + $100|$2000 ; toggle mode and make it pressed
@@ -4878,7 +5023,7 @@ Return
 
   ;-- loading standard windows
   num = Peek.w(ad) : ad + 2
-  log2PED{"data for " + Str$(num) + " windows available."}
+  ;log2PED{"data for " + Str$(num) + " windows available."}
 
   For h = 0 To num - 1
     winstatus(h) = Peek.w(ad) : ad + 2
@@ -5347,6 +5492,8 @@ Return
     Poke.l ?varhandler,0
     Gosub _CheckTrace
   EndIf
+
+   Gosub RelocateNextVariable
 Return
 
 
@@ -5401,15 +5548,27 @@ Return
         error{"Variable not found!" + "\\0a\\0a" + t$}
       Else
         If varinfo()\typ = #_string
-          mem = varinfo()\address : Gosub FindString
-          varinfo()\address = ad
-          If ad = -1 Then KillItem varinfo() : error{"String not found!"}
+          varinfo()\address = RED_GetVariableAddress{varinfo()\address}
+          If varinfo()\address = -1 Then KillItem varinfo() : error{"String not found!"}
         EndIf
         If winstatus(#_winVariables)
           RedrawVarWindow{}
           UpdateVarWindow{}
         EndIf
       EndIf
+      t$ = ""
+    
+    Case #_variablerelocate
+      Gosub SelectRelocItem
+      If relocFound
+        varinfo()\address = Vallong(d_e()\s)
+        If varinfo()\address <> 0 AND varinfo()\typ = #_string
+          varinfo()\address = RED_GetVariableAddress{varinfo()\address}
+          If varinfo()\address = -1 Then varinfo()\address = 0
+        EndIf
+        ; 0 = (until now) not found, keeping entry
+      EndIf
+      relocIdx + 1 : relocBusy = 0
       t$ = ""
 
     Case #_disasmaddress
@@ -5522,9 +5681,8 @@ Return
   varinfo()\form    = nf-1
   a = 1
   If varinfo()\typ = #_string
-    mem = varinfo()\address : Gosub FindString
-    varinfo()\address = ad
-    If ad = -1 Then KillItem varinfo() : a = 0
+    varinfo()\address = RED_GetVariableAddress{varinfo()\address}
+    If varinfo()\address = -1 Then KillItem varinfo() : a = 0
   EndIf
 Return
 
@@ -5702,54 +5860,6 @@ meminfo:
   xad    = 0 ; count number of 4 bit groups from address ad
   flag   = -1
   If editflag Then wxad = wxad ASR 1
-Return
-
-
-FindString:       ; added more checks to avoid Nullpointer access  tomsmart1 2016 02 05
-  ad = Peek.l(MyBufferAddress)
-  If (ad)
-    ad2 = Peek.l(ad+52)  ; get Value of Register A5
-    If (ad2)
-    ; replaced the search in the basic variable store with a Basic routine
-    ;  ad = D_FindStringPtr(ad2,mem)
-      ad2_offset.l = $8000 +2   ; set the size to search
-      ad = -1 ; for the case we don't find the string pointer
-      Repeat
-        ad2_offset - 2 ;
-        If Peek.l(ad2 - ad2_offset) = mem  ; test if the pointers match
-          ad = ad2 - ad2_offset ; yes get address
-          ad2_offset = 0 ; for end until
-        EndIf
-      Until ad2_offset = 0  ; test if we reach the end
-    Else
-      ad = -1
-    EndIf
-  EndIf
-  If ad = -1
-  ; replaced the unsave search on the stack with one that respected the Stack size and limts
-  ;  ad = Peek.l(MyBufferAddress)
-  ;  If (ad)
-  ;    ad2 = Peek.l(ad+60) ; get Value of Register A7
-  ;    If (ad2)
-  ;      ad = D_FindStringPtr(ad2+$8000,mem) ; search in stack
-  ;    Else
-  ;     ad = -1
-  ;    EndIf
-    *progtask.Task = exetask        ; get the task pointer of the program to debug
-    If (*progtask)               ; test if we have a vaild pointer
-      ad2_offset.l = *progtask\tc_SPUpper -3 ; get the upper Stack address and -3 for peek.l to prevent hits
-      ad = -1 ; for the case we don't find the string pointer
-      Repeat
-        ad2_offset -1
-        If Peek.l(ad2_offset) = mem  ; test if the pointers match
-          ad = ad2_offset ; yes get address
-          ad2_offset = *progtask\tc_SPLower ; for end until
-        EndIf
-      Until ad2_offset = *progtask\tc_SPLower ; test if we reach the lower Stack address
-    Else
-      ad = -1
-    EndIf
-  EndIf
 Return
 
 
