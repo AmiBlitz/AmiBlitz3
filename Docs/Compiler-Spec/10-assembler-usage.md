@@ -127,3 +127,122 @@ Geprüft wurde heuristisch auf zwei Fehlermuster:
 * Plugin-Programme (`!initasm`/`!asm`/`!basic`) setzen ein Register- und
   Stack-Layout voraus, das sich in C nicht nachbilden lässt; sie betreffen
   praktisch nur Compiler und PED selbst und brauchen das 68k-Backend.
+  Einzelheiten in 10.6.
+
+## 10.6 Der Wechsel zwischen Assembler- und Basic-Modus
+
+### 10.6.1 Es gibt keinen „Modus“ im Compiler
+
+`!initasm`, `!basic`, `!asm` und `!exitasm` sind gewöhnliche Macros aus
+`BlitzLibs/Residents/blitzbasic/usefullasmmacs.ab3` (in `all.res`). Der
+Compiler kennt keinen Asm- oder Basic-Modus. Er übersetzt die Macros wie
+jeden anderen Assembler-Code und die Basic-Anweisungen dazwischen wie immer.
+**[C]**
+
+„Modus“ ist ein **Laufzeitzustand**: welcher Registersatz gerade gültig ist –
+der des Assembler-Programms oder der, den Basic-Code erwartet (a5 = globale
+Variablen, a4 = lokale Variablen). Welcher Zustand an einer Stelle gilt, hängt
+vom **Kontrollfluss** ab und lässt sich aus dem Quelltext im Allgemeinen nicht
+ablesen. Beispiele aus dem Compiler-Quelltext:
+
+```
+.menu_run:                          ; Basic-Abschnitt in einer Asm-Routine
+  !basic
+  If PeekW(?anyerrs) <> 0
+    log2PED{"…"}
+    Pop If
+    !asm                            ; früher Rücksprung: nur in diesem Zweig
+    RTS                             ; wird in den Asm-Zustand gewechselt
+  EndIf
+  check_fpu_mode.b = …              ; hier gilt weiterhin Basic
+```
+
+```
+.ab3_WriteDebugFile:
+  TST.w word_WriteDebugFileNow : BEQ 'skipdebugfile
+    !basic                          ; wird übersprungen, wenn das Flag 0 ist
+    If dbg_fid>=0 … End If
+    !asm
+ 'skipdebugfile                     ; beide Wege kommen im Asm-Zustand an
+RTS
+```
+
+Die Analyse in 10.2 behandelt `!asm` gefolgt von `RTS`/`JMP`/`BRA` deshalb
+als frühen Rücksprung; trotzdem ist die Zuordnung bei Compiler und PED nur
+näherungsweise richtig.
+
+### 10.6.2 Was die Macros tun  **[C]** `usefullasmmacs.ab3`
+
+| Macro | Wirkung |
+|---|---|
+| `!initasm` | Steht am Programmanfang eines Plugins. Merkt sich a5 (Basis der globalen Variablen) in `basicvars`, einem `Dc.l` **mitten im Code**; holt die Register zurück, die der Startcode beim Aufruf gesichert hat (`MOVEM.l (a7)+,d0-d7/a0-a6 : LEA 12(a7),a7`), damit das Plugin die Register seines Aufrufers sieht. |
+| `!basic` | Sichert d1–d7/a0–a6 des Assembler-Teils in einen Bereich am **unteren Ende des Task-Stacks** (`tc_SPLower + #__distance_from_top_of_stack`, = +64), lädt a4 aus diesem Bereich und a5 aus `basicvars`. d0 wird nicht gesichert. |
+| `!asm` | Schreibt das aktuelle a4 in den Bereich zurück und lädt d1–d7/a0–a6 des Assembler-Teils. |
+| `!exitasm` | Gegenstück zu `!initasm` vor dem Programmende. |
+
+Layout des Sicherungsbereichs (relativ zu `tc_SPLower + 64`):
+
+| Offset | Inhalt |
+|---|---|
+| +4 | a4 des Basic-Teils (lokale Variablen) |
+| +8 … +$3F | d1–d7, a0–a6 des Assembler-Teils (a0 bei +$24) |
+
+Folgen dieser Konstruktion:
+
+* **Nicht verschachtelbar:** Es gibt genau einen Sicherungsbereich pro Task;
+  ein zweites `!basic` vor dem passenden `!asm` überschreibt die gesicherten
+  Register.
+* **Nicht interruptfest** (so auch der Kommentar im Macro) und nicht für
+  mehrere Tasks mit gemeinsamem Stack geeignet.
+* **Stack-Reserve:** Die untersten 128 Byte des Task-Stacks dürfen nicht
+  anderweitig benutzt werden; ein tiefer Stack überschreibt sonst die
+  gesicherten Register (ohne Fehlermeldung).
+* **Daten im Code:** `basicvars`, `localvars` und `asmregisters` liegen im
+  Codebereich und werden zur Laufzeit beschrieben.
+* **Gemischte Rücksprünge:** Assembler-Routinen werden teils mit dem
+  Basic-Befehl `Return` verlassen (10.4, `Clear_Residents_table`), und
+  Basic-Labels werden aus Assembler mit `JSR`/`BSR` angesprungen
+  (`JSR Clear_Residents_table`, `BSR.w get1bytemain`).
+
+### 10.6.3 Anforderungen an einen Nachbau
+
+1. **Die Macros unverändert übersetzen können.** Da sie nur Assembler-Code
+   sind, braucht der neue Compiler keine eigene Logik für den Moduswechsel –
+   aber er muss alles unterstützen, was die Macros benutzen: Daten (`Dc`) im
+   Codebereich, beschreibbaren Code, Labels im Code als Datenadressen, die
+   Konstante `#__distance_from_top_of_stack`, die Startsequenz, deren
+   gesicherte Register `!initasm` vom Stack holt (Aufbau und die zusätzlichen
+   12 Byte müssen identisch bleiben).
+2. **Keine Annahmen über Register an Asm-Grenzen.** Weil der Compiler nicht
+   wissen kann, welcher Registersatz gilt, muss er jede Assembler-Anweisung
+   (und damit jede Expansion von `!asm`/`!basic`) als **vollständige
+   Optimierungsgrenze** behandeln:
+   * Davor müssen alle Basic-Variablen im Speicher stehen (Asm liest sie über
+     a5/a4), danach müssen sie neu geladen werden (Asm darf sie verändert
+     haben).
+   * Alle Register gelten danach als verändert; nur a5 und a4 haben im
+     Basic-Fluss wieder die erwarteten Werte (Regel aus der BPG: a4–a6
+     wiederherstellen). Direkt nach `!basic` gilt das nur, weil das Macro a5/a4
+     selbst lädt.
+   Für ein optimierendes Backend (gcc) ist das die wichtigste Einschränkung:
+   Variablen einer Funktion, die Inline-Asm enthält, können nicht über
+   Asm-Anweisungen hinweg in Registern gehalten werden. Wie weit der alte
+   Compiler Werte über Anweisungsgrenzen in Registern hält, ist nicht
+   untersucht **[?]**; bekannt ist nur `RegLoad`/`RegSave` für FPU-Register,
+   das der Programmierer ausdrücklich anfordert.
+3. **Labels gemeinsam halten.** Basic- und Assembler-Labels bilden einen
+   gemeinsamen Namensraum; Sprünge und Aufrufe gehen in beide Richtungen
+   (`JSR` auf Basic-Label, `Gosub` auf Assembler-Routine, `Return` als
+   Rücksprung aus einer per `JSR` aufgerufenen Routine). Ein Backend, das
+   Basic-Prozeduren in C-Funktionen und Assembler in separate Dateien trennt,
+   muss diese Labels als exportierte Symbole mit identischer Aufrufkonvention
+   (Rücksprung per `RTS`, keine Rahmen-/Stackänderung) bereitstellen.
+4. **Stack-Layout erhalten.** Der Sicherungsbereich am unteren Stack-Ende
+   und die vom Startcode gesicherten Register setzen ein bestimmtes
+   Stack-Layout voraus. Code, den ein C-Compiler erzeugt, darf das nicht
+   verändern (z. B. keine eigene Stack-Prüfung oder -Erweiterung, die den
+   Bereich am unteren Ende benutzt).
+5. **Praktische Konsequenz:** Plugin-Programme sind kaum sinnvoll über ein
+   C-Backend abzubilden. Für sie – praktisch Compiler und PED selbst – ist das
+   eigene 68k-Backend nötig. Ein C-Backend sollte Quellen mit `!initasm`
+   erkennen und zurückweisen bzw. an das 68k-Backend verweisen.
