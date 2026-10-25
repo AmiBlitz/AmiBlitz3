@@ -333,6 +333,50 @@ Folgen dieser Konstruktion:
      C-Funktion ist kein aufrufbarer Einsprungpunkt, auch nicht mit
      abgeschaltetem Prolog. Solche Quellen gehören zum 68k-Backend (siehe 5).
    Mit dieser Aufteilung muss ein C-Backend Prolog/Epilog **nicht**
-   abschalten. (gcc bietet `__attribute__((naked))` nur für einige
-   Zielarchitekturen; ob m68k dazugehört, ist nicht geprüft **[?]**. Bei vbcc
-   ist keine entsprechende Möglichkeit bekannt.)
+   abschalten. Das ist auch gut so: gcc 16.2 für m68k ignoriert
+   `__attribute__((naked))` („'naked' attribute directive ignored“) **[V]**,
+   bei vbcc ist keine entsprechende Möglichkeit bekannt.
+
+## 10.7 Machbarkeitstest: Asm-Block in einem gcc-Backend
+
+Test der Regeln aus 10.6.3 mit `m68k-amigaos-gcc` 16.2.1 (AmigaPorts,
+`-mcrt=nix20`), vasm und Amiberry. Quelltext: `verification/spike/`
+(`spike.c`, `thunk.s`, `build.sh`); Ergebnisse:
+`verification/results/round9-spike/`.
+
+`spike.c` erzeugt von Hand, was ein C-Backend für einen AmiBlitz-Asm-Block
+ausgeben würde:
+
+* Die globalen Basic-Variablen liegen in einer Struktur; der Block erhält
+  ihre Adresse als Eingabe in a0 und lädt daraus a5.
+* Der Block sichert die von gcc benutzten Register selbst
+  (`MOVEM.l d2-d7/a2-a6`) und deklariert `"memory"`, d0, d1, a1 und `cc` als
+  verändert.
+* Darin: ein „wilder“ Schreibzugriff (`MOVE.l #5,0(a5)`), ein Brücken-Befehl
+  `GetReg d4,a*10+b` als Aufruf einer C-Hilfsfunktion zwischen
+  `MOVEM`-Sicherungen, ein Wert in d3, der den Brücken-Befehl überleben muss,
+  und ein Zugriff über einen berechneten Zeiger mit Schleife.
+* Außerdem ein mit vasm (`-Fhunk`) übersetzter Thunk, den C mit
+  Registerparametern aufruft (`long f(long x __asm("d0"), long y __asm("d1"))`).
+
+Ergebnis **[V]**, mit `-O0` (gcc benutzt a5 als Frame-Pointer) und `-O2`
+identisch:
+
+```
+a=5 (5) sum=131 (131) wild=3,2,1,0 (3,2,1,0) cached=3 (3)
+thunk=42 (42)
+```
+
+Beobachtungen:
+
+* gcc übernimmt den Block unverändert (Motorola-Syntax, Kommentarzeichen `|`)
+  und liest die Variablen danach wegen `"memory"` neu aus dem Speicher.
+* Werte, die der Block nicht erreichen kann, darf gcc weiter in Registern
+  halten bzw. als Konstante einsetzen (`cached`).
+* Eingabe-Register (hier a0) gelten für gcc nach dem Block als unverändert;
+  verändert ein Block ein Eingabe-Register, muss das Backend es als Aus- und
+  Eingabe (`"+a"`) deklarieren.
+* vasm-Objekte im Hunk-Format werden vom gcc-Linker direkt eingebunden;
+  Registerparameter funktionieren ohne Wrapper.
+* `__attribute__((naked))` wird ignoriert (siehe 10.6.3, Punkt 6).
+

@@ -16,7 +16,7 @@ results/done                  Ende-Markierung
 ```
 
 Die Ergebnisse der bisherigen Läufe liegen in `results/round1/` bis
-`results/round3/` (CLI) sowie `results/round4-ide/` und `results/round5-ide/` (IDE).
+`results/round3/` (CLI) sowie `results/round4-ide/` und `results/round5-ide/` (IDE); der gcc-Machbarkeitstest steht in `results/round9-spike/` (siehe [10.7](10-assembler-usage.md#107-machbarkeitstest-asm-block-in-einem-gcc-backend)).
 
 ## 7.1 Testumgebung
 
