@@ -25,8 +25,10 @@ Bibliotheken aus `BlitzLibs/*Libs`). Ist ein Name mehrfach vorhanden, gilt der
 **erste** in Ladereihenfolge. **[C]** `preproc_QueryTokens`. Das Ergebnis wird
 als `System/TokenList.hashmap` zwischengespeichert.
 
-Für einen Nachbau ist die Token-Tabelle ein **externer Eingabeparameter**. Die
-Tabelle des Originals kann mit
+Für einen Nachbau ist die Token-Tabelle ein **externer Eingabeparameter**. Für
+die BlitzLibs lässt sie sich direkt aus den BigLib-Dateien erzeugen
+([09-blitzlibs.md](09-blitzlibs.md)); die vollständige Tabelle des Originals
+kann mit
 
 ```
 AmiBlitz3 -dump token RAM:tokens.txt

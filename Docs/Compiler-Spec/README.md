@@ -18,6 +18,7 @@ sind **nicht** Gegenstand dieses Dokuments.
 | [06-macros.md](06-macros.md) | Macro-Definition, -Aufruf, Parameter, Expansionsalgorithmus |
 | [07-verification.md](07-verification.md) | Offene Punkte, Testplan für die Verifikation mit Amiberry |
 | [08-doc-differences.md](08-doc-differences.md) | Abweichungen zwischen Dokumentation und Compiler (mögliche Bugs) |
+| [09-blitzlibs.md](09-blitzlibs.md) | BlitzLib-Format: BigLib-Dateien, Header, Token-Einträge, Aufrufkonvention, Einbinden |
 | [grammar/lexical.abnf](grammar/lexical.abnf) | Maschinenlesbare Grammatik (ABNF, RFC 5234 / RFC 7405) |
 | [grammar/charclasses.csv](grammar/charclasses.csv) | Zeichenklassen-Tabellen des Tokenizers und des Compilers |
 | [verification/](verification/) | Probe-Programme, Skriptgenerator, Ergebnisse der Amiberry-Läufe |
