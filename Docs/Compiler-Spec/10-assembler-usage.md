@@ -380,3 +380,106 @@ Beobachtungen:
   Registerparameter funktionieren ohne Wrapper.
 * `__attribute__((naked))` wird ignoriert (siehe 10.6.3, Punkt 6).
 
+## 10.8 Registerinhalte über Basic-Anweisungen hinweg
+
+Frage: Verlässt sich Assembler-Code darauf, dass Registerinhalte eine
+dazwischenliegende Basic-Anweisung überleben – z. B. Register laden, eine
+Basic-Variable bearbeiten, dann mit den Registern weiterrechnen? Dann wäre
+die Block-Grenze aus 10.6.3 (Block endet an jeder Basic-Anweisung) für diesen
+Code falsch.
+
+### 10.8.1 Was der alte Compiler garantiert (empirisch)
+
+Probes `r10_cache.ab3`, `r10_regs.ab3`, Ergebnisse in
+`results/round10-regs/` **[V]**:
+
+* **Kein Zwischenspeichern von Variablen in Registern:** Schreibt Assembler
+  eine Variable direkt (`MOVE.l #7,va@(a5)`), sieht die nächste
+  Basic-Anweisung den neuen Wert – in derselben Zeile, in Prozeduren und in
+  Schleifen.
+* **Registerverbrauch von Basic-Anweisungen** (Register mit Muster geladen,
+  Anweisung ausgeführt, Register per `PutReg` geprüft):
+
+  | Anweisung | verändert | unverändert |
+  |---|---|---|
+  | `c = va*vb+3`, `c = va/vb`, `If va>1 Then c=1` | d0, d1 | d2–d7, a0–a4, a6 |
+  | `f.f = va*1.5` (Float) | d0, d1, a6 | d2–d7, a0–a4 |
+  | `c = fn{va}` (Funktionsaufruf) | d0, d1, a0 | d2–d7, a1–a4, a6 |
+  | `s$ = s$+"x"` (String) | d0, a0–a3, a6 | d1–d7, a4 |
+  | `NPrint "z"` (Lib-Aufruf) | d0, d7 (Low-Word), a0, a2, a3, a6 | d1–d6, a1, a4 |
+
+  **d2–d6 und a4 haben jede getestete Anweisung überlebt.** Das ist keine
+  dokumentierte Zusage, sondern eine Folge der Codeerzeugung (Ausdrücke
+  werden ab d0 ausgewertet, Variablen über a5/a4 adressiert).
+* Lokale Variablen lassen sich in Assembler **nicht** per `name@(a4)`
+  ansprechen („Constant not found“); `@` sucht nur globale Variablen.
+
+### 10.8.2 Vorkommen in den Quellen
+
+Werkzeug: `verification/tools/asm_crossreg.py` (lineare Datenflussanalyse:
+Register in Assembler geschrieben → Basic-Anweisung oder Macro-Aufruf →
+Register in Assembler gelesen, ohne neu gesetzt zu werden). Über Includes,
+Beispiele, Compiler, PED, Debugger und Resident-Quellen: **101 Kandidaten**
+in 20 Dateien. Von Hand ausgewertet:
+
+**Harmlos (rund 84):**
+
+* Die Basic-Anweisung ist in Wahrheit ein Assembler-Macro (`!fget`,
+  `!ComData_…`, `!_PT_RescueRegs`, `!hashalgo`, `!SBEQ`, `!regs2stack` …)
+  oder das Paar `!basic … !asm`, das die Register absichtlich sichert und
+  wiederherstellt.
+* Werkzeug-Artefakte: Labels mit `` `@ `` in Macros, per Macro-Parameter
+  eingesetzte Befehle (`` `2.l d3,d0 ``), `ted.library.ab3` (für einen
+  anderen Assembler geschrieben, `CALLSYS` ist dort ein Macro).
+* `SysJsr`: ein Aufruf auf Assembler-Ebene, dessen Ergebnis in d0 gewollt
+  ist.
+* a6 wird nur gelesen, um es auf den Stack zu sichern
+  (`ahi_library.include.ab3`).
+
+**Echte Abhängigkeiten vom alten Compiler (5 Dateien, 17 Fälle):**
+
+| Muster | Stellen | Beispiel |
+|---|---|---|
+| **Ergebnis der Basic-Anweisung in d0** wird vom folgenden Assembler benutzt | Compiler `.linemessage` (Z. 25931), `usefullasmmacs.ab3` (Z. 651), `winuaeDLL.include.ab3` (Z. 90) | `i = ask{…}` → `MOVE.l d0,result`; `FindScreen (0)` → `MOVE.l d0,-(a7)`; `PushD0 x` → `MOVE.l d0,d1` |
+| **Register überlebt eine Basic-Anweisung** | `longlong.include.ab3` (Z. 184, 257), `libraries/ahi.ab3` (11 Macros) | d3 über `x\lo = PutRegD0`; a6 (Library-Basis) über bis zu vier `PushD0`-Anweisungen |
+| **Stack über Basic-Anweisungen hinweg verändert** | `usefullasmmacs.ab3`, `libraries/ahi.ab3`, `winuaeDLL.include.ab3` | `CLR.l -(a7)` bzw. `PushD0 …` (legt Werte auf den Stack), danach Basic-Anweisungen, danach liest/entfernt Assembler die Werte |
+
+Alle diese Stellen liegen in Macros bzw. Includes, die Library-Aufrufe
+vorbereiten; in den Beispielprogrammen kommt das Muster nicht vor.
+
+Ein Fall ist auch im alten Compiler nur zufällig richtig: `ahi.ab3` hält die
+Library-Basis in a6 über `PushD0 <ausdruck>`. Ist der Ausdruck ein String
+oder eine Fließkommazahl, verändert seine Auswertung a6 (Tabelle oben), und
+der folgende `JSR …(a6)` springt ins Leere.
+
+### 10.8.3 Folgen für einen Nachbau
+
+1. **Die Block-Grenze aus 10.6.3 bleibt richtig** für den Normalfall: In
+   84 von 101 Kandidaten und in allen Beispielprogrammen endet die Abhängigkeit
+   von Registerinhalten an der Basic-Anweisung.
+2. **Gemischte Regionen** müssen erkannt werden. Eine Region aus
+   Assembler – Basic – Assembler, in der
+   * ein Register (außer a4/a5/a7) über die Basic-Anweisung hinweg gelesen
+     wird,
+   * d0 direkt nach einer Basic-Anweisung gelesen wird, oder
+   * a7 vor der Basic-Anweisung verändert und danach wieder benutzt wird,
+
+   lässt sich nicht als getrennte Blöcke mit C-Code dazwischen übersetzen.
+   Die Analyse aus `asm_crossreg.py` kann das statisch erkennen (Grenzen: keine
+   Verfolgung von `JSR`/`BSR`, Macros werden nicht expandiert – in einem
+   Compiler stehen sie dagegen expandiert zur Verfügung).
+3. **Übersetzung gemischter Regionen:** Die Basic-Anweisungen darin müssen
+   nach den Regeln des alten Compilers erzeugt werden – Ergebnis in d0, nur
+   die in 10.8.1 genannten Register verändert, Variablen über a5/a4 statt über
+   den Stack adressiert. Praktisch heißt das: Die ganze Region, sicherer die
+   ganze Prozedur, wird vom eigenen 68k-Backend erzeugt und als
+   Assembler-Block bzw. -Funktion eingebunden; gcc sieht sie nur als Ganzes.
+   Alternativ kann der Compiler solche Regionen mit einer Warnung ablehnen;
+   bei 5 betroffenen Dateien wäre das vertretbar, wenn diese
+   Includes angepasst werden.
+4. **Implizite Zusagen des alten Compilers** (d0 = letztes Ergebnis, d2–d6
+   und a4 bleiben erhalten, kein Zwischenspeichern von Variablen) sind
+   nirgends dokumentiert. Ein Nachbau sollte sie entweder als Teil der
+   Sprache festschreiben (nur im 68k-Backend erfüllbar) oder ausdrücklich
+   ausschließen und die betroffenen Includes korrigieren.
+
