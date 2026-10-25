@@ -1,0 +1,190 @@
+; =============================================================================
+; AmiBlitz3 - Lexical grammar, macros and conditional compilation
+; Notation: ABNF (RFC 5234) with case-sensitive strings %s"..." (RFC 7405).
+; Plain "..." strings are case-INsensitive (used only where the compiler
+; really compares case-insensitively, e.g. escape names, hex digits).
+;
+; Scope / limits of this grammar
+;  * Byte level, ISO-8859-1. Line ends are already normalised: LF and NUL end
+;    a line, CR and other control characters are removed outside strings and
+;    comments, TAB is replaced by SP (see 03-tokenizer.md).
+;  * Keyword recognition is NOT context free: whether a name becomes a keyword
+;    token depends on the token table (external input) and on the tokenizer
+;    state "accept" (03-tokenizer.md 3.4). Rules named kw-* stand for
+;    "a keyword token produced by the tokenizer for this name".
+;  * SP is insignificant almost everywhere (04-lexical.md 4.1.1); the rules
+;    below show the canonical form and mark the places where SP matters.
+;  * Quirks of the original are documented in the prose, not encoded here.
+; =============================================================================
+
+; -----------------------------------------------------------------------------
+; 1. File and lines (02-source-files.md)
+; -----------------------------------------------------------------------------
+source-file     = [xtra-header] *line [last-line]
+xtra-header     = xtra-begin *xtra-line xtra-end
+xtra-begin      = *SP ";" *SP %s"XTRA" *SP EOL
+xtra-line       = *SP ";" *non-eol EOL
+xtra-end        = *SP ";" *SP "/xtra" *non-eol EOL     ; "/XTRA", "/xtra", "/Xtra"
+line            = logical-line EOL
+last-line       = logical-line                         ; file without final LF
+EOL             = %x0A / %x00
+
+non-eol         = %x01-09 / %x0B-FF
+
+; -----------------------------------------------------------------------------
+; 2. Statements and comments (04-lexical.md 4.2, 4.3)
+; -----------------------------------------------------------------------------
+logical-line    = [statement *(stmt-sep statement)] [comment]
+stmt-sep        = ":" / kw-Else                         ; Else also ends a statement
+statement       = *stmt-item
+stmt-item       = SP / string / token-text / macro-call / other-char
+other-char      = %x01-09 / %x0B-21 / %x23-3A / %x3C-FF  ; not NUL LF " ;
+token-text      = name                                  ; incl. keyword names
+
+comment         = ";" *comment-char [code-in-comment]
+comment-char    = %x01-09 / %x0B-FF                     ; up to end of line ...
+code-in-comment = ":@" logical-line                     ; ... or up to ":@"
+                                                        ; (keywords after ":@" are
+                                                        ;  NOT tokenized, see 4.3)
+
+; -----------------------------------------------------------------------------
+; 3. Names (04-lexical.md 4.7)
+; -----------------------------------------------------------------------------
+name            = 1*name-char
+name-char       = %x03-1F / %x21-23 / %x27 / %x30-39 / %x3F-5A
+                / %x5F-7A / %x7E
+                ; everything except the name delimiters:
+                ;   NUL $01 $02 SP $24 $25 $26 $28-2F $3A-3E
+                ;   $5B-5E (incl. \) $7B-7D $7F $80-FF
+                ; Note: ", #, @, !, ?, `, ', ~ are name characters!
+ident           = ALPHA *name-char                      ; variable / label start
+asm-ident       = (ALPHA / "_") *name-char
+
+type-suffix     = "." name / "$"
+variable        = ["*"] ident [type-suffix]
+const-ref       = "#" name                              ; #name
+auto-const      = "#@" name                             ; #@name (auto increment)
+const-defined   = "@" "#" name                          ; only in CNIF
+label-def       = "." name / name ":" / name            ; last form: new syntax
+local-label     = "'" name
+label-addr      = "?" name
+var-addr        = "&" variable
+field           = "\" name                              ; also USEPATH (4.9)
+path2-field     = "\\" name                             ; second USEPATH
+
+; -----------------------------------------------------------------------------
+; 4. Literals (04-lexical.md 4.5, 4.6)
+; -----------------------------------------------------------------------------
+number          = dec-number / frac-number / hex-number / bin-number
+dec-number      = 1*DIGIT ["." *DIGIT] [exponent]
+frac-number     = "." 1*DIGIT [exponent]
+exponent        = "e" ["+" / "-"] 1*2DIGIT              ; value <= 18, "e"/"E"
+hex-number      = "$" 1*8HEXDIG                         ; HEXDIG: 0-9 a-f A-F
+bin-number      = "%" 1*32BIT
+; SP between the digits of a number is skipped by the original compiler.
+
+char-literal    = "@" DQUOTE 1*4str-char DQUOTE          ; new syntax only
+
+string          = DQUOTE *str-item [DQUOTE]              ; missing closing quote
+                                                        ; (end of line) is an
+                                                        ; error later
+str-item        = escape / str-char
+str-char        = %x01-09 / %x0B-21 / %x23-FF
+; escapes are recognised in new syntax mode only; otherwise str-char only
+escape          = BSL BSL escape-body
+BSL             = %x5C
+escape-body     = BSL BSL                                ; -> "\\" (rule 6)
+                / "__DATE__" / "__DATE_GER__"
+                / "__VER_MAJOR" / "__VER_MINOR" / "__VER_PATCH" / "__VER_BUILD"
+                / "__THIS_FUNCTION" / "__THIS_INCLUDE" / "__THIS_POINTER"
+                / "__CODELINE"
+                / "R" 2DIGIT str-char                    ; UCase(char) x count
+                                                         ; (decimal), then char
+                                                         ; itself once more
+                / "N"                                    ; LF
+                / 2HEXDIG                                ; byte value
+; (names are matched by fixed-length prefixes, see 04-lexical.md 4.5.2)
+
+; -----------------------------------------------------------------------------
+; 5. Line continuation (04-lexical.md 4.11) - only at specific places
+; -----------------------------------------------------------------------------
+line-join       = "@@" *non-eol EOL *blank-or-comment-line
+blank-or-comment-line = *SP [comment] EOL
+
+; -----------------------------------------------------------------------------
+; 6. Conditional compilation (05-conditional.md)
+;    recognised anywhere in the character stream, not only at line start
+; -----------------------------------------------------------------------------
+cnif            = kw-CNIF *SP ["@"] const-expr *SP     ; followed by ":" or EOL
+csif            = kw-CSIF *SP plain-string *SP cmp-op *SP plain-string *SP
+                                                         ; followed by ":" or EOL
+celse           = kw-CELSE
+cend            = kw-CEND
+cmp-op          = "<>" / "><" / "<=" / "=<" / ">=" / "=>" / "<" / "=" / ">"
+plain-string    = DQUOTE *str-char DQUOTE                ; no escapes
+const-expr      = 1*other-char                           ; constant expression,
+                                                         ; defined by the parser
+
+; -----------------------------------------------------------------------------
+; 7. Macros (06-macros.md)
+; -----------------------------------------------------------------------------
+macro-def       = kw-Macro 1*SP macro-name *SP [":"] *SP [head-comment]
+                  macro-body
+                  kw-End *SP kw-Macro
+macro-name      = 1*name-char                            ; must not be a keyword
+head-comment    = comment
+macro-body      = *body-item                             ; lines joined by ":"
+body-item       = param-ref / nested-macro-def / string / token-text
+                / other-char / SP / EOL
+nested-macro-def = macro-def
+
+param-ref       = "`" ( param-digit / param-letter / "0" / "@"
+                      / "{" const-expr "}" )
+param-digit     = %x31-39                                ; `1 .. `9
+param-letter    = %x41-59 / %x61-79                      ; `a..`y / `A..`Y = 10..34
+                                                         ; `z/`Z: "Illegal constant"
+
+macro-call      = "!" *SP macro-name [macro-args]
+macro-args      = *SP "{" [arg-list] ["}"]              ; classic mode: SP after
+                                                         ; "{" is skipped; new
+                                                         ; syntax: SP belongs to
+                                                         ; the first argument          ; list also ends before
+                                                         ; ":" ";" or EOL
+                / 1*SP bare-arg-list                     ; new syntax, body
+                                                         ; must contain "`"
+arg-list        = arg *("," arg)
+bare-arg-list   = bare-first *("," arg)
+bare-first      = (name-char / "$" / "-" / "," / string) *arg-item
+arg             = *arg-item
+arg-item        = arg-char / "(" *nested-item ")" / "{" *nested-item "}" / string
+nested-item     = arg-item / ","
+arg-char        = %x01-09 / %x0B-21 / %x23-27 / %x2A-2B / %x2D-39
+                / %x3C-7A / %x7C / %x7E-FF
+                ; anything except NUL LF " ( ) , : ; { }
+; "@@" inside arg-list ends the current argument and continues the list on
+; the next physical line (see 06-macros.md 6.3.3).
+
+; -----------------------------------------------------------------------------
+; 8. Keyword tokens used above (resolved through the token table)
+; -----------------------------------------------------------------------------
+kw-Macro        = %s"Macro"                              ; $800D
+kw-End          = %s"End"                                ; $8002
+kw-If           = %s"If"                                 ; $800B
+kw-Then         = %s"Then"                               ; $8021
+kw-Else         = %s"Else"                               ; $8022
+kw-CNIF         = %s"CNIF"                               ; $801C
+kw-CSIF         = %s"CSIF"                               ; $801D
+kw-CELSE        = %s"CELSE"                              ; $801E
+kw-CEND         = %s"CEND"                               ; $801F
+kw-INCLUDE      = %s"INCLUDE"                            ; $8012
+kw-XINCLUDE     = %s"XINCLUDE"                           ; $8013
+
+; -----------------------------------------------------------------------------
+; Core rules (RFC 5234 Appendix B, repeated for completeness)
+; -----------------------------------------------------------------------------
+ALPHA           = %x41-5A / %x61-7A
+DIGIT           = %x30-39
+HEXDIG          = DIGIT / "A" / "B" / "C" / "D" / "E" / "F"
+BIT             = "0" / "1"
+DQUOTE          = %x22
+SP              = %x20
