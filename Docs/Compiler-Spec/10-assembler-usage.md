@@ -408,9 +408,24 @@ Probes `r10_cache.ab3`, `r10_regs.ab3`, Ergebnisse in
   | `s$ = s$+"x"` (String) | d0, a0–a3, a6 | d1–d7, a4 |
   | `NPrint "z"` (Lib-Aufruf) | d0, d7 (Low-Word), a0, a2, a3, a6 | d1–d6, a1, a4 |
 
-  **d2–d6 und a4 haben jede getestete Anweisung überlebt.** Das ist keine
-  dokumentierte Zusage, sondern eine Folge der Codeerzeugung (Ausdrücke
-  werden ab d0 ausgewertet, Variablen über a5/a4 adressiert).
+  Bei diesen einfachen Anweisungen blieben d2–d6 und a4 erhalten. Das ist
+  **Zufall**, wie die Gegenprobe mit komplexeren Anweisungen zeigt
+  (`r11_regs_complex.ab3`, `results/round11-regs-complex/`) **[V]**:
+
+  | Anweisung | verändert |
+  |---|---|
+  | `c = ((va*vb+3)*(va-vb)+(va+vb)*(vb-va))/(va+1)` | d0, d1, **d2, d3** |
+  | `c = fn{fn{va}+fn{vb}}+fn{va*vb}` | d0, d1, a0 |
+  | `c = gn{va+1}` (Funktion mit komplexem Rumpf) | d0, d1, **d2, d3**, a0 |
+  | `s$ = Left$(s$+Str$(va*vb),3)+Right$(Str$(vb),1)` | d0, d1, a0–a3, a6 |
+  | `If (va>1 AND vb<5) OR (va*vb=18 AND va-vb<>0) Then c=1` | d0, d1, **d2, d3** |
+
+  Der Codegenerator belegt für Zwischenergebnisse der Reihe nach d0, d1, d2 …
+  – je tiefer der Ausdruck, desto mehr Register. Aufgerufene Basic-Funktionen
+  und Lib-Routinen sichern ihre Register nicht für den Aufrufer. Welche
+  Register eine Anweisung verändert, hängt also nur davon ab, was der
+  erzeugte bzw. aufgerufene Code zufällig benutzt. **Erhalten bleiben
+  garantiert nur a5 (globale Variablen), a4 (lokale Variablen) und a7.**
 * Lokale Variablen lassen sich in Assembler **nicht** per `name@(a4)`
   ansprechen („Constant not found“); `@` sucht nur globale Variablen.
 
@@ -477,9 +492,35 @@ der folgende `JSR …(a6)` springt ins Leere.
    Alternativ kann der Compiler solche Regionen mit einer Warnung ablehnen;
    bei 5 betroffenen Dateien wäre das vertretbar, wenn diese
    Includes angepasst werden.
-4. **Implizite Zusagen des alten Compilers** (d0 = letztes Ergebnis, d2–d6
-   und a4 bleiben erhalten, kein Zwischenspeichern von Variablen) sind
-   nirgends dokumentiert. Ein Nachbau sollte sie entweder als Teil der
-   Sprache festschreiben (nur im 68k-Backend erfüllbar) oder ausdrücklich
-   ausschließen und die betroffenen Includes korrigieren.
+4. **Erhaltene Register sind keine Zusage.** Weil schon der alte Compiler
+   d2/d3 je nach Ausdruck verändert (10.8.1), ist Code, der sich auf
+   Registerinhalte über eine Basic-Anweisung hinweg verlässt, auch im alten
+   Compiler fehlerhaft und funktioniert nur zufällig (`longlong.include.ab3`:
+   d3 über eine einfache Zuweisung; `ahi.ab3`: a6 über `PushD0`). Ein Nachbau
+   muss das **nicht** unterstützen; die betroffenen Includes sind zu
+   korrigieren (I-47, I-48).
+5. **d0 als Ergebnisregister – Vorschlag für das ABI.** Die übrigen echten
+   Fälle lesen in d0 das Ergebnis eines **Funktionsaufrufs** aus der
+   unmittelbar vorangehenden Basic-Anweisung: `i = ask{…}`, `FindScreen (0)`,
+   `__stackstore.l = PutRegD0` (liefert d0 selbst), `PushD0 x` (legt x in d0
+   und auf den Stack). Das passt zur bestehenden Konvention für Prozeduren
+   (Funktionsergebnis in d0, BPG). Vorgeschlagene Regel:
+
+   > Endet die letzte Basic-Anweisung vor einem Assembler-Block mit einem
+   > Funktionsaufruf (Basic-Funktion oder Lib-Funktion, auch wenn das Ergebnis
+   > zugewiesen wird), dann enthält d0 beim Eintritt in den Block dessen
+   > Ergebnis. Alle anderen Register außer a4, a5, a7 sind undefiniert.
+
+   Das ist in jedem Backend billig zu erfüllen: Das C-Backend hält das
+   Ergebnis des letzten Aufrufs in einer temporären Variablen und übergibt
+   sie dem folgenden Block als Eingabe in d0
+   (`register long r __asm("d0") = tmp;`); das 68k-Backend bekommt es ohnehin
+   so. Ob die Regel gilt, sollte im Sprachstandard festgelegt werden.
+6. **Stack über Basic-Anweisungen hinweg** (`CLR.l -(a7)`, `PushD0`, danach
+   Basic-Anweisungen, danach wieder Assembler) bleibt der einzige Fall, den
+   das C-Backend nicht abbilden kann: gcc adressiert lokale Variablen
+   relativ zum Stackpointer. Betroffen sind `usefullasmmacs.ab3`, `ahi.ab3`
+   und `winuaeDLL.include.ab3`. Hier gilt Punkt 3 (68k-Backend) oder die
+   Macros werden so umgeschrieben, dass der Stack innerhalb eines Blocks
+   ausgeglichen ist.
 
