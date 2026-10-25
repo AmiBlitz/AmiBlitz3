@@ -549,7 +549,7 @@ ist damit auch I-47: `ahi.ab3` mit einem Float-Argument verliert a6.
 enthält d0 den zugewiesenen Wert (auch bei Array-Elementen und
 NEWTYPE-Feldern), nach `PushD0 x` den Wert x, nach einem Funktionsaufruf
 dessen Ergebnis. Das stützt die ABI-Regel aus 10.8.3, Punkt 5, und erlaubt
-eine etwas allgemeinere Fassung:
+eine etwas allgemeinere Fassung (übernommen in [12-abi.md §12.3](12-abi.md#123-assembler-blöcke)):
 
 > Beim Eintritt in einen Assembler-Block enthält d0 den Wert, den die
 > unmittelbar vorangehende Basic-Anweisung zuletzt berechnet hat: den
