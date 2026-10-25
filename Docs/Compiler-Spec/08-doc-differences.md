@@ -33,17 +33,17 @@ Einordnung:
 | [A7](#a7-unbekannte-und-leere-escape-sequenzen) | Unbekannte/leere Escapes | Bug | V-ESC-5/7 |
 | [A8](#a8--im-kommentar) | `:@` im Kommentar | Bug + Doku | V-CMT-1–5 |
 | [A9](#a9-macro-aufruf-mit-leeren-klammern) | `!m{}` ohne Parameter | Bug + Doku | V-MAC-CALL-7, D-AB3G-5 |
-| [A10](#a10-satzzeichen-nach--im-macro-rumpf) | Satzzeichen nach `` ` `` | Bug | V-MAC-pc, D-BPG-3b |
+| [A10](#a10-satzzeichen-nach-dem-backquote-im-macro-rumpf) | Satzzeichen nach `` ` `` | Bug | V-MAC-pc, D-BPG-3b |
 | [A11](#a11-weitere-kleinere-fehler) | Weitere kleinere Fehler | Bug | div. |
 | [B1](#b1-schreibweise-der-keywords) | Schreibweise der Keywords | Doku | D-AB3G-1, D-BPG-8 |
-| [B2](#b2-werte-von-__include-und-) | `#__include`, `@#name` | Unklar | V-INC-1, V-CNIF-3 |
-| [B3](#b3-macro-parameter-a-z-und-0) | Macro-Parameter `` `a ``–`` `z ``, `` `0 `` | Doku | V-MAC-let, V-MAC-cnt |
+| [B2](#b2-werte-von-__include-und-name) | `#__include`, `@#name` | Unklar | V-INC-1, V-CNIF-3 |
+| [B3](#b3-macro-parameter-a-bis-z-und-0) | Macro-Parameter `` `a ``–`` `z ``, `` `0 `` | Doku | V-MAC-let, V-MAC-cnt |
 | [B4](#b4-namen-von-variablen-und-labels) | Regeln für Namen | Doku | V-NAME-3, V-TILDE-1, D-BPG-7 |
 | [B5](#b5-escape-sequenzen) | Escape-Sequenzen (Datum, `\\n`) | Doku | V-ESC-dt/n |
 | [B6](#b6-macros-ohne-) | Macros ohne `{}` | Doku | V-MAC-cnt |
 | [B7](#b7-arexx-port) | ARexx-Port | Doku | Runde 4/5 |
 | [B8](#b8-version-aus-allres) | `!version` aus `all.res` | Doku | V-RES-1/2 |
-| [C](#c-nicht-dokumentiertes-verhalten) | Nicht dokumentiertes Verhalten | – | – |
+| [C](#84-nicht-dokumentiertes-verhalten-c) | Nicht dokumentiertes Verhalten | – | – |
 
 Die Beispiele aus der BPG zu Macros (`mymacro`, `distance`, `dolist`,
 `project`, `Vadd` mit zwei Parametern), zu Exponenten (`3e8`) und zu Namen mit
@@ -171,7 +171,7 @@ führendem `_` funktionieren wie beschrieben (D-BPG-1/2/3/4/5/7/9).
   werden im New-Syntax-Modus keine Parameter – auch keine leeren Klammern –
   gelesen.
 
-### A10 Satzzeichen nach `` ` `` im Macro-Rumpf
+### A10 Satzzeichen nach dem Backquote im Macro-Rumpf
 
 * **Doku:** BPG „The `0 Parameter“:
   `CERR "Illegal number of `!Vadd` Parameters"`.
@@ -222,7 +222,7 @@ beim Laden einer Datei geschieht das nicht.
 * **Einordnung:** Unklar. AmiBlitz verwendet sonst −1 für „wahr“; der Code
   setzt aber ausdrücklich 1. Entweder Doku oder Code anpassen.
 
-### B3 Macro-Parameter `` `a ``–`` `z `` und `` `0 ``
+### B3 Macro-Parameter a bis z und 0
 
 * **Doku:** BPG: Parameter `` `1 ``–`` `9 ``, dann `` `a ``–`` `z ``;
   `` `0 `` „returns the number of parameters“.

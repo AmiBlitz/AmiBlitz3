@@ -28,9 +28,9 @@ Werte der Escapes `\\__VER_*` (siehe [04-lexical.md §4.5.2](04-lexical.md#452-e
 
 Es gibt zwei unterschiedliche Erkennungsalgorithmen:
 
-### 2.2.1 Hauptquelltext (`ParseAB3Header`)  **[C]**
+### 2.2.1 Hauptquelltext (`ParseAB3Header`)
 
-```
+**[C]** ```
 offset := 0
 für jede Zeile L der Datei (bis /XTRA gefunden oder Dateiende):
     key := alle Zeichen aus L vor dem ersten "=", die in [A-Za-z_/-] liegen
@@ -44,9 +44,9 @@ Schlüssel heraus). **Quirk:** Fehlt die Zeile `/XTRA`, so wird die gesamte
 Datei als Header gelesen (Zeilen mit `=` können Einstellungen verändern), und
 der Text wird ab Offset 0 kompiliert.
 
-### 2.2.2 Include-Dateien (`SkipXtraHeader`)  **[C]**
+### 2.2.2 Include-Dateien (`SkipXtraHeader`)
 
-```
+**[C]** ```
 pos := 0; zeileHatKommentar := falsch
 solange pos < Länge:
     c := byte[pos]

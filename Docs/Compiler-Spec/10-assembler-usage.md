@@ -171,7 +171,9 @@ Die Analyse in 10.2 behandelt `!asm` gefolgt von `RTS`/`JMP`/`BRA` deshalb
 als frühen Rücksprung; trotzdem ist die Zuordnung bei Compiler und PED nur
 näherungsweise richtig.
 
-### 10.6.2 Was die Macros tun  **[C]** `usefullasmmacs.ab3`
+### 10.6.2 Was die Macros tun
+
+**[C]** `usefullasmmacs.ab3`
 
 | Macro | Wirkung |
 |---|---|
@@ -213,23 +215,96 @@ Folgen dieser Konstruktion:
    Konstante `#__distance_from_top_of_stack`, die Startsequenz, deren
    gesicherte Register `!initasm` vom Stack holt (Aufbau und die zusätzlichen
    12 Byte müssen identisch bleiben).
-2. **Keine Annahmen über Register an Asm-Grenzen.** Weil der Compiler nicht
-   wissen kann, welcher Registersatz gilt, muss er jede Assembler-Anweisung
-   (und damit jede Expansion von `!asm`/`!basic`) als **vollständige
-   Optimierungsgrenze** behandeln:
-   * Davor müssen alle Basic-Variablen im Speicher stehen (Asm liest sie über
-     a5/a4), danach müssen sie neu geladen werden (Asm darf sie verändert
-     haben).
-   * Alle Register gelten danach als verändert; nur a5 und a4 haben im
-     Basic-Fluss wieder die erwarteten Werte (Regel aus der BPG: a4–a6
-     wiederherstellen). Direkt nach `!basic` gilt das nur, weil das Macro a5/a4
-     selbst lädt.
-   Für ein optimierendes Backend (gcc) ist das die wichtigste Einschränkung:
-   Variablen einer Funktion, die Inline-Asm enthält, können nicht über
-   Asm-Anweisungen hinweg in Registern gehalten werden. Wie weit der alte
-   Compiler Werte über Anweisungsgrenzen in Registern hält, ist nicht
-   untersucht **[?]**; bekannt ist nur `RegLoad`/`RegSave` für FPU-Register,
-   das der Programmierer ausdrücklich anfordert.
+2. **Assembler-Blöcke als Optimierungsgrenze.** Weil der Compiler nicht
+   wissen kann, welcher Registersatz gilt und welche Variablen ein
+   Assembler-Abschnitt liest oder schreibt, muss er Assembler als
+   Optimierungsgrenze behandeln. Es genügt, das **pro Block** zu tun, nicht pro
+   Anweisung:
+   * **Asm-Block** = maximale Folge von Assembler-Anweisungen (einschließlich
+     expandierter Macros wie `!asm`/`!basic` und der Brücken-Befehle
+     `GetReg`/`PutReg`/`GetD0`/`PutD0`), zwischen denen keine Basic-Anweisung
+     steht. Ein Block darf über mehrere Zeilen gehen.
+   * Ein Block **endet** außerdem an jedem Label, das von außerhalb des
+     Blocks angesprungen werden kann. Lokale Asm-Labels (`'loop`), die nur
+     innerhalb des Blocks Ziel von Sprüngen sind, beenden ihn nicht; globale
+     Labels (`.name`, `name:`) und Labels, die aus Basic (`Goto`/`Gosub`) oder
+     aus anderen Blöcken angesprungen werden, schon. Ohne vollständige
+     Referenzanalyse gilt: jedes globale Label beendet den Block.
+   * **Vor** einem Block müssen alle Basic-Variablen, die Asm erreichen kann,
+     im Speicher stehen; **danach** gelten sie als verändert und werden neu
+     geladen. „Erreichbar“ sind globale Variablen, alle Variablen, deren
+     Adresse genommen wurde (`&var`, `?label`, Übergabe als Zeiger), und alle
+     lokalen Variablen der Prozedur (Asm adressiert sie über a4 mit
+     beliebigem Offset). Lokale Variablen einer Prozedur **ohne** Asm-Block
+     sind davon nicht betroffen.
+   * Alle Register außer a4, a5, a7 gelten nach dem Block als verändert (Regel
+     aus der BPG: a4–a6 müssen wiederhergestellt werden; a6 wird in der Praxis
+     trotzdem oft verändert, siehe 10.3).
+   * Innerhalb eines Blocks optimiert der Compiler nichts – der Assembler-Code
+     wird unverändert übernommen.
+
+   **Beliebige Zugriffe auf Basic-Variablen.** Die Grenze pro Block reicht
+   auch dann, wenn der Assembler-Code „wild“ auf Variablen zugreift – über
+   `var@(a5)`, beliebige Offsets zu a4, berechnete Zeiger oder Adressen, die
+   vorher per `&var` geholt wurden. Innerhalb des Blocks läuft kein
+   Basic-Code des Compilers; beim Eintritt stehen alle erreichbaren
+   Variablen im Speicher, und nach dem Austritt lädt der Compiler sie neu.
+   Was der Assembler-Code dazwischen mit dem Speicher macht, spielt für den
+   Compiler keine Rolle. Reiner Assembler-Code muss deshalb **nicht** in
+   mehrere Blöcke aufgeteilt werden.
+
+   **Brücken-Befehle im Block.** `GetReg`/`PutReg` (und `GetD0`/`PutD0` …)
+   sind die einzige Stelle, an der *innerhalb* eines Blocks Code des
+   Compilers läuft. Der alte Compiler übersetzt sie **registertransparent**
+   **[C]** (`do_GetReg`, `do_PutReg`, Z. 6485/6524):
+   * `GetReg dN,ausdruck`: alle Register außer dN sichern
+     (`MOVEM.l …,-(a7)`), Ausdruck auswerten, Ergebnis nach dN, Register
+     wiederherstellen.
+   * `PutReg dN,var`: d0–a6 sichern, Inhalt von dN in die Variable im
+     **Speicher** schreiben, d0–a6 wiederherstellen.
+
+   Ein Nachbau muss genau das einhalten: Der Ausdruck in `GetReg` liest
+   Variablen aus dem Speicher (der Assembler-Code davor kann sie verändert
+   haben), `PutReg` schreibt sofort in den Speicher (der Assembler-Code
+   danach kann sie lesen), und beide verändern kein Register außer dem
+   Ziel. Mit diesen Regeln bleibt der Block **ein** Block.
+
+   **Aufteilen wäre in einem C-Backend sogar falsch:** Zwischen zwei
+   getrennten `asm`-Anweisungen darf der C-Compiler Register frei benutzen.
+   Ein Wert, den der Assembler-Code vor einem `GetReg` in d3 ablegt und danach
+   weiterverwendet, ginge verloren. Der Block muss deshalb einschließlich der
+   Brücken-Befehle als **eine** Einheit ausgegeben werden. Umsetzung:
+   * Einfache Fälle (Variable, Konstante, `&var`) übersetzt der Compiler
+     direkt in Assembler-Text (`MOVE.l var@(a5),d3`).
+   * Komplexe Ausdrücke werden zu einer vom Compiler erzeugten Hilfsfunktion
+     in C, die die Variablen über die Zeiger auf die Variablenblöcke liest;
+     im Assembler-Text steht dann
+     `MOVEM.l <Register>,-(a7) : JSR __ab3_getreg_n : MOVE.l d0,dN : MOVEM.l (a7)+,<Register>`.
+     Das funktioniert mit gcc und vbcc gleichermaßen, weil die Hilfsfunktion
+     eine gewöhnliche C-Funktion ist.
+   * Damit der Assembler-Code die Variablen findet, lädt der Block-Prolog a5
+     (globale Variablen) und gegebenenfalls a4 (lokale Variablen) aus den
+     Zeigern, die das C-Backend übergibt, und stellt die Register des
+     C-Compilers am Blockende wieder her (gcc verwendet a5 als
+     Frame-Pointer).
+
+   In einem C-Backend entspricht ein Block genau einem
+   `asm volatile ("…" ::: "memory", <Register>)` bei gcc bzw. einem Aufruf
+   einer externen Assembler-Funktion bei vbcc; der Compiler erzeugt dann die
+   Speicher-Synchronisation selbst. Variablen, die Asm über a4/a5 adressiert,
+   liegen dafür in einem Variablenblock mit festem Layout (globale relativ zu
+   a5, lokale relativ zu a4).
+
+   **Nicht abbildbar** ist Code, der Registerinhalte **über Basic-Anweisungen
+   hinweg** weiterverwendet, z. B. `benchgfxbus.ab3` (a4 wird in einem Block
+   geladen und in einem späteren Block nach einer Basic-Anweisung benutzt).
+   Ob das im alten Compiler funktioniert, hängt davon ab, dass die
+   Basic-Anweisung dazwischen das Register zufällig nicht benutzt; ein
+   Nachbau muss das nicht unterstützen (siehe [11-issues.md](11-issues.md)).
+
+   Wie weit der alte Compiler Werte über Anweisungsgrenzen in Registern hält,
+   ist nicht untersucht **[?]**; bekannt ist nur `RegLoad`/`RegSave` für
+   FPU-Register, das der Programmierer ausdrücklich anfordert.
 3. **Labels gemeinsam halten.** Basic- und Assembler-Labels bilden einen
    gemeinsamen Namensraum; Sprünge und Aufrufe gehen in beide Richtungen
    (`JSR` auf Basic-Label, `Gosub` auf Assembler-Routine, `Return` als
@@ -246,3 +321,18 @@ Folgen dieser Konstruktion:
    C-Backend abzubilden. Für sie – praktisch Compiler und PED selbst – ist das
    eigene 68k-Backend nötig. Ein C-Backend sollte Quellen mit `!initasm`
    erkennen und zurückweisen bzw. an das 68k-Backend verweisen.
+6. **Funktionsprolog/-epilog eines C-Backends.** Ein C-Compiler erzeugt für
+   jede Funktion Prolog und Epilog (Register sichern, ggf. `LINK`/`UNLK`).
+   Abschalten muss man das nur, wenn Code ohne diesen Rahmen angesprungen
+   werden soll. Das betrifft:
+   * Statements/Functions, deren Rumpf vollständig Assembler ist (`AsmExit`):
+     Sie werden als Funktion in einer Assembler-Datei erzeugt – kein
+     C-Prolog nötig.
+   * Basic-Labels, die aus Assembler per `JSR`/`BSR` angesprungen werden, und
+     `Gosub` auf Assembler-Routinen: Ein Basic-Label im Inneren einer
+     C-Funktion ist kein aufrufbarer Einsprungpunkt, auch nicht mit
+     abgeschaltetem Prolog. Solche Quellen gehören zum 68k-Backend (siehe 5).
+   Mit dieser Aufteilung muss ein C-Backend Prolog/Epilog **nicht**
+   abschalten. (gcc bietet `__attribute__((naked))` nur für einige
+   Zielarchitekturen; ob m68k dazugehört, ist nicht geprüft **[?]**. Bei vbcc
+   ist keine entsprechende Möglichkeit bekannt.)

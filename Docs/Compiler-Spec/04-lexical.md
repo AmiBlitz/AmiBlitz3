@@ -7,7 +7,9 @@ beschreibt die Einheiten so, dass ein Nachbau sie in einem eigenständigen Lexer
 erzeugen kann. Die ABNF-Regeln stehen in
 [grammar/lexical.abnf](grammar/lexical.abnf).
 
-## 4.1 Zeichen-Fetch  **[C]** `getchar`, `get1byte_`, `get1bytemain` (Z. 10565 ff.)
+## 4.1 Zeichen-Fetch
+
+**[C]** `getchar`, `get1byte_`, `get1bytemain` (Z. 10565 ff.)
 
 `getchar` liefert das nächste „Zeichen“ als 16-Bit-Wert:
 
@@ -110,7 +112,9 @@ Zieltyp ab (Byte: 1, Word: 2, Long: 4). **[C]** Z. 15149 ff.; **[D]**
 „Casting strings to longs“; **[V]** V-CHR-1/2 (`@"ILBM"` → `494C424D`,
 `@"AB"` → `4142`). Ohne New-Syntax-Modus: Syntaxfehler.
 
-### 4.5.2 Escape-Sequenzen  **[C]** `litstring` + `check_newconstants` (Z. 26915)
+### 4.5.2 Escape-Sequenzen
+
+**[C]** `litstring` + `check_newconstants` (Z. 26915)
 
 Nur im New-Syntax-Modus (**[V]** V-ESC-cls: ohne `OPTIMIZE 4` bleibt `"\\41"`
 unverändert `\\41`). Eine Escape-Sequenz beginnt mit **zwei** Backslashes
@@ -181,7 +185,9 @@ Regeln im Detail:
 8. Escapes werden auch in `Dc.b "…"` ausgewertet (`version_string_dc`,
    nur `__VER_*`). **[C]**, nicht getestet.
 
-## 4.6 Zahlliterale  **[C]** Z. 15100–15420, 17255–17460
+## 4.6 Zahlliterale
+
+**[C]** Z. 15100–15420, 17255–17460
 
 ```
 zahl        = dezimal / bruch / hex / binaer
@@ -264,7 +270,9 @@ Details: Parser.
 | `$…` / `%…` | Hex-/Binärliteral |
 | `+` am Anweisungsbeginn | Typprüfung für diese Anweisung aus **[C]** Z. 4186 |
 
-## 4.9 USEPATH-Ersetzung  **[C]** `getparameter` (Z. 12885), `do_USEPATH` (Z. 26581)
+## 4.9 USEPATH-Ersetzung
+
+**[C]** `getparameter` (Z. 12885), `do_USEPATH` (Z. 26581)
 
 `USEPATH text` speichert *text* (bis Anweisungsende, Leerzeichen entfernt,
 keine Tokens erlaubt). Steht danach am Beginn eines Variablennamens ein `\`,
