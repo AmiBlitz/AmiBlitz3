@@ -17,6 +17,7 @@ sind **nicht** Gegenstand dieses Dokuments.
 | [05-conditional.md](05-conditional.md) | Bedingte Kompilierung (`CNIF`, `CSIF`, `CELSE`, `CEND`) |
 | [06-macros.md](06-macros.md) | Macro-Definition, -Aufruf, Parameter, Expansionsalgorithmus |
 | [07-verification.md](07-verification.md) | Offene Punkte, Testplan für die Verifikation mit Amiberry |
+| [08-doc-differences.md](08-doc-differences.md) | Abweichungen zwischen Dokumentation und Compiler (mögliche Bugs) |
 | [grammar/lexical.abnf](grammar/lexical.abnf) | Maschinenlesbare Grammatik (ABNF, RFC 5234 / RFC 7405) |
 | [grammar/charclasses.csv](grammar/charclasses.csv) | Zeichenklassen-Tabellen des Tokenizers und des Compilers |
 | [verification/](verification/) | Probe-Programme, Skriptgenerator, Ergebnisse der Amiberry-Läufe |

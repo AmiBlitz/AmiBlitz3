@@ -177,6 +177,29 @@ Legende: ✔ = Vorhersage aus der Codeanalyse bestätigt, ✘ = Vorhersage falsc
 | V-RES-2 | r7_version | `!version{"SpecProbe 1.2 (25.10.2026)"}` → `$VER:`-String im Executable, `Version` liest ihn | ✔ |
 | V-RES-3 | `tools/res_macros.py` | Extraktion aus `all.res`: 244 Macros, Namen identisch mit `-dump macro`; 4 unbekannte Token-Wörter (alte Lib-Nummern) | ✔ |
 
+### Runde 8: Beispiele aus der Dokumentation
+
+Wörtlich übernommene Beispiele aus `BlitzProgrammers.guide` (BPG) und
+`Amiblitz3.guide` (AB3G); Auswertung in [08-doc-differences.md](08-doc-differences.md).
+
+| ID | Probe (`probes/docs/`) | Ergebnis | |
+|---|---|---|---|
+| D-BPG-1 | bpg_mymacro | wie beschrieben (`a=2`) | ✔ |
+| D-BPG-2 | bpg_distance | `36.05551` | ✔ |
+| D-BPG-3 | bpg_vadd_ok | `!Vadd{a,b}` → `a=3` | ✔ |
+| D-BPG-3b | bpg_vadd_err | CERR-Text zu „Illegal number of 01Vadd01Parameters“ verstümmelt, Folgefehler | ✘ |
+| D-BPG-4 | bpg_dolist | rekursives Macro, 9 Werte | ✔ |
+| D-BPG-5 | bpg_project | `317`, `250` | ✔ |
+| D-BPG-6 | bpg_cmake | `var~`1~` → „Garbage at the end of line“ | ✘ |
+| D-BPG-7 | bpg_names | Name mit führendem `_` | ✔ |
+| D-BPG-8 | bpg_usepath_case | `UsePath` (statt `USEPATH`) → Fehler | ✘ |
+| D-BPG-9 | bpg_exp | `3e8` → `3E+8` | ✔ |
+| D-AB3G-1 | ab3g_macros_verbatim | `MACRO`/`End MACRO` → nicht erkannt, 5 Fehler | ✘ |
+| D-AB3G-2 | ab3g_macros_case | mit `Macro`: „Syntax error!“ (Rumpf endet auf `:`) | ✘ |
+| D-AB3G-3 | ab3g_esc_r09 | `\\R09a` → `AAAAAAAAAa` | ✘ |
+| D-AB3G-4 | ab3g_debug_const | `#__debug` = 0 (ohne Debugger) | ✔ |
+| D-AB3G-5 | ab3g_optional_noparam | `!hello{}` → „Syntax error! → {}“ | ✘ |
+
 ## 7.3 Offene Punkte
 
 * Abbildung alter Token-Wörter (`replacedat`, von den Bibliotheken registriert) – wird für Resident-Dateien gebraucht; ein Export fehlt noch (z. B. als zusätzliche `-dump`-Option).

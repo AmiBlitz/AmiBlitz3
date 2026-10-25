@@ -40,9 +40,10 @@ def main(argv):
         " >SPEC:results/tokens.log",
     ]
     for n in names:
+        base = n.rsplit("/", 1)[-1]         # probes may live in subdirectories
         src = f"SPEC:probes/{n}.ab3"
-        exe = f"RAM:{n}"
-        res = f"SPEC:results/{n}"
+        exe = f"RAM:{base}"
+        res = f"SPEC:results/{base}"
         out += [
             f"Echo \"{n}\" >>SPEC:results/progress.txt",
             f"AmiBlitz3 -s {src} -e {exe} >{res}.compile.txt",
