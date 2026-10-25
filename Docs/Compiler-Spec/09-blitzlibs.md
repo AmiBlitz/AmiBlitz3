@@ -217,6 +217,31 @@ setzt die echte Adresse ein (`handlejsrs`, `fixjsrs`, `tokecode`). Die
 Einsprünge der System-Libs sind in `libjsrs.ab3` als Konstanten aufgeführt
 (z. B. `#localalloc = $C000`).
 
+### 9.3.2 Inline-Code und Routinen ohne Code
+
+**[C]** `doajsr2` (Z. 18727 ff.), `environlib.ab3`. Bevor der Compiler eine
+Routine per `JSR` aufruft, prüft er ihre ersten Bytes:
+
+| Beginn der Routine | Bedeutung |
+|---|---|
+| `$A0 $00` *länge.w* | Die folgenden *länge* Bytes werden **inline** an die Aufrufstelle kopiert, kein `JSR`. |
+| `$A0 $01` *offset.l* | Im Blitz-Modus wird stattdessen die Routine bei *offset* verwendet; im Amiga-Modus wird der Präfix übersprungen. Präfixe lassen sich verketten. |
+| sonst | normaler Aufruf per `JSR` |
+
+Ist der Code-Offset in `!subs` 0, wird **kein** Code erzeugt; der Befehl
+besteht dann nur aus der Auswertung seiner Argumente in die Register.
+
+Beispiele aus `environlib.ab3` (Lib 188):
+
+| Befehl | `!subs` | Wirkung |
+|---|---|---|
+| `GetD0 a[,b[,c]]`, `GetRegD0 …` | 0 | Argumente nach d0–d2 auswerten, sonst nichts |
+| `x = PutD0`, `x = PutRegD0` | 0 | „Funktion“ ohne Code: liefert den aktuellen Inhalt von d0 |
+| `PushD0 x` | `do_pushD0` | x nach d0 auswerten, dann inline `MOVE.l d0,-(a7)` (`Dc.w $A000,2`) |
+
+Ein Nachbau muss beide Mechanismen nachbilden; für das C-Backend werden
+Inline-Routinen in den Thunk bzw. den Assembler-Block kopiert.
+
 ## 9.4 Einbinden in ein Programm
 
 Wird ein Befehl einer Lib benutzt, bindet der Compiler die **ganze Lib** ein

@@ -524,3 +524,35 @@ der folgende `JSR …(a6)` springt ins Leere.
    Macros werden so umgeschrieben, dass der Stack innerhalb eines Blocks
    ausgeglichen ist.
 
+### 10.8.4 Gegenprüfung: Compiler oder dünne Wrapper?
+
+Die echten Fundstellen benutzen die Brücken-Befehle aus Lib 188. Diese sind
+selbst so dünn wie möglich (9.3.2): `GetRegD0`/`PutRegD0` erzeugen keinen
+Code, `PushD0` nur ein inline eingefügtes `MOVE.l d0,-(a7)`. Ob Register eine
+solche Anweisung überleben, hängt also **nicht** an den Befehlen, sondern am
+Code, den der Compiler drumherum erzeugt – Auswertung des Arguments und
+Adressberechnung des Zuweisungsziels. Probe `r12_bridges.ab3`, Ergebnisse
+`results/round12-bridges/` **[V]**:
+
+| Muster (Fundstelle) | einfacher Operand | komplexer Operand |
+|---|---|---|
+| `x\lo = PutRegD0` (`longlong.include.ab3`, d3) | kein Register verändert | `arr(va*2+vb)\lo`: d2; `arr(fn{va}+Len(s$))\lo`: d2, a0 |
+| `PushD0 x` (`ahi.ab3`, a6) | kein Register verändert | Arithmetik: d2; String: a0; **Float: a6** |
+
+Ergebnis: Die Annahme beruht auf dem **Verhalten des Compilers** bei
+einfachen Operanden. In den vorhandenen Quellen sind die Operanden einfach
+(Macro-Parameter, meist Variablen oder NEWTYPE-Felder), deshalb funktioniert
+es; mit komplexeren Operanden würde derselbe Code fehlschlagen. Bestätigt
+ist damit auch I-47: `ahi.ab3` mit einem Float-Argument verliert a6.
+
+**d0** dagegen verhielt sich in allen Fällen gleich: Nach einer Zuweisung
+enthält d0 den zugewiesenen Wert (auch bei Array-Elementen und
+NEWTYPE-Feldern), nach `PushD0 x` den Wert x, nach einem Funktionsaufruf
+dessen Ergebnis. Das stützt die ABI-Regel aus 10.8.3, Punkt 5, und erlaubt
+eine etwas allgemeinere Fassung:
+
+> Beim Eintritt in einen Assembler-Block enthält d0 den Wert, den die
+> unmittelbar vorangehende Basic-Anweisung zuletzt berechnet hat: den
+> zugewiesenen Wert einer Zuweisung, das Argument von `PushD0`, das Ergebnis
+> eines Funktionsaufrufs.
+
