@@ -19,6 +19,7 @@ sind **nicht** Gegenstand dieses Dokuments.
 | [07-verification.md](07-verification.md) | Offene Punkte, Testplan für die Verifikation mit Amiberry |
 | [08-doc-differences.md](08-doc-differences.md) | Abweichungen zwischen Dokumentation und Compiler (mögliche Bugs) |
 | [09-blitzlibs.md](09-blitzlibs.md) | BlitzLib-Format: BigLib-Dateien, Header, Token-Einträge, Aufrufkonvention, Einbinden |
+| [10-assembler-usage.md](10-assembler-usage.md) | Wie die vorhandenen Quellen Inline-Assembler nutzen (Statistik, Muster, Auffälligkeiten) |
 | [grammar/lexical.abnf](grammar/lexical.abnf) | Maschinenlesbare Grammatik (ABNF, RFC 5234 / RFC 7405) |
 | [grammar/charclasses.csv](grammar/charclasses.csv) | Zeichenklassen-Tabellen des Tokenizers und des Compilers |
 | [verification/](verification/) | Probe-Programme, Skriptgenerator, Ergebnisse der Amiberry-Läufe |
