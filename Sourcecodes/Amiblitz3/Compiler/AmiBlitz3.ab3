@@ -60,6 +60,7 @@
 ; Max BitMap      = 10
 ; Max Screen      = 5
 ; Max Palette     = 4
+; Max Window      = 25
 ; Max Sound       = 10
 ; Max MedModule   = 8
 ; Max Buffer      = 10
@@ -75,7 +76,6 @@
 ; Max Stencil     = 5
 ; Max XBSound     = 10
 ; Max Page        = 4
-; Max Window      = 25
 ; /XTRA
 ;///////////////////////////////////////////////////////////////////////////////
 ;/                                                                             /
@@ -2383,6 +2383,7 @@ compiler_job: Dc.w 0                                      ; added by thilo: what
  
 
   TST.w set_FuncOptimize : BEQ 'out
+    JSR propagate_calls                                    ; mark everything reachable from the main program
     LEA firstproc,a0
     CLR.l savefuncspace
     MOVE.l (a0),d0
@@ -4427,7 +4428,7 @@ handle_statement:                                          ;a procedure! - eg ga
   MOVE.l a2,currentfunccall
 
   MOVE.b #1,funccall
-  MOVE.b #1,isfunc(a2)
+  JSR mark_funccall                                         ; was: MOVE.b #1,isfunc(a2)
 
   MOVE.l 14(A2),-(A7)                                       ; pc of proc.
   MOVEQ.l #$00,D0
@@ -7183,6 +7184,13 @@ RTS
    'n1to8
     CMP.w #$2,D0 :  BNE.w 'notbcc
       CMP.w #$8,D3 :  BNE.w illeaerr
+      TST.b optimize_jumps : BEQ 'fullBcc
+        TST.w asmsize : BNE.w 'bccword       ; no Suffix/.w/.l -> react as before
+          MOVEQ.l #$0E,D3                    ; new Fixup-Mode: Short Branch
+          BSR.w insasm                       ; store destination, A1 = Opcode+2
+          BRA.w 'putit                       ; write only Opcode , no Ext-Word
+       'bccword
+     'fullBcc
       MOVEQ.l #$09,D3
       BRA.w 'nothing
    'notbcc
@@ -7478,6 +7486,15 @@ JMP handle_compileerror
     SUB.l A1,D3                                              ;branchbyte
     BRA.w 'isbyte
  'imm
+
+  CMP.w #$E,D1 : BNE.w 'notbccs                              ;bcc destination
+    SUB.l A1,D3                                 ; destination - (Opcode+2) = displacement
+    BSR.w chkbyte                               ; -128..127, otherwise "illegal displacement"
+    TST.b D3 : BEQ.w illdiserr                  ; $00 means for 68k   "16-Bit-Distanz folgt"
+    CMP.b #$FF,D3 : BEQ.w illdiserr             ; $FF means for 68020 "32-Bit-Distanz folgt"
+    MOVE.b D3,-1(A1)                            ; unteres Byte des Opcodes
+    BRA.w 'next
+ 'notbccs
 
   CMP.w #$11,d1 : BLE 'imm_org
     MOVE.l a3,-(a7)
@@ -10753,7 +10770,7 @@ RTS
 
 
 gs:  Ds.b 26                                         ; ds.b 26  org source
-     Dc.b $F6,$E4,$FC,$D6,$C4,$DC                    ; "ï¿½", "ï¿½", "ï¿½", "ï¿½", "ï¿½", "ï¿½"
+     Dc.b $F6,$E4,$FC,$D6,$C4,$DC                    ; "", "", "", "", "", ""
 
 Even
 
@@ -11448,6 +11465,7 @@ RTS
   CLR.l firstglob                                          ;fix 2*aclearallvar called
   CLR.l firstlocal
   CLR.l sharebase
+  CLR.l callgraph                                          ; edge nodes live in mempool2, which is recreated below
   MOVEA.l _execbase,A6
   TST.l mempool2 : BEQ 'done_l10
     MOVE.l mempool2,a0
@@ -14021,6 +14039,52 @@ BRA.w dogecmp
 
 
 
+;-----------------------------------------------------------------------------
+;-- verify_immload / verify_immload_r0
+;--
+;-- The integer peephole optimizer (OPTIMIZE 1) folds a constant load
+;-- ("MOVE.w #imm,Dn" or "MOVE.l #imm,Dn") into the following operation by
+;-- patching the already written opcode. Up to now it only checked the byte
+;-- distance between imm_addr and destpointer. A "MOVE.w #imm" (4 bytes)
+;-- followed by any 2-byte instruction also gives a distance of 6, so an
+;-- unrelated instruction was patched (see GitHub issue #126).
+;--
+;-- These routines check that imm_addr really points to the expected constant
+;-- load before the optimizer patches it.
+;--
+;-- In : a0   = destpointer - imm_addr (4 = MOVE.w #imm, 6 = MOVE.l #imm)
+;--      verify_immload    expects the constant in D(regnum+1)
+;--      verify_immload_r0 expects the constant in D(regnum)
+;-- Out: Z flag set (BEQ) if the instruction matches, cleared (BNE) if not.
+;--      All registers are preserved.
+;-----------------------------------------------------------------------------
+verify_immload:
+  MOVEM.l d1/a1,-(a7)
+  MOVE.w regnum,d1
+  ADDQ.w #1,d1                                             ; right operand register
+  BRA.s verify_immload_common
+
+verify_immload_r0:
+  MOVEM.l d1/a1,-(a7)
+  MOVE.w regnum,d1                                         ; result register
+
+verify_immload_common:
+  CMP.w imm_reg,d1 : BNE 'out                              ; constant went to another register
+  LSL.w #8,d1
+  LSL.w #1,d1                                              ; register number into bits 9-11
+  CMP.w #6,a0 : BEQ 'long
+    OR.w #$303C,d1                                         ; MOVE.w #imm,Dn
+    BRA.s 'cmp
+ 'long
+    OR.w #$203C,d1                                         ; MOVE.l #imm,Dn
+ 'cmp
+  MOVEA.l imm_addr,a1
+  CMP.w (a1),d1                                            ; sets Z if the opcode matches
+ 'out
+  MOVEM.l (a7)+,d1/a1                                      ; MOVEM does not change the flags
+RTS
+
+
 cmpit:
   TST.b optimize_integer : BEQ 'org                        ;compare
 
@@ -14031,13 +14095,17 @@ cmpit:
   MOVE.l destpointer,a0
   SUB.l imm_addr,a0
   CMP.l #6,a0 : BNE 'l11
-    MOVE.l imm_addr,a0
-    CMP.w #$223c,imm_addr : BNE 'org
-      ADD.w #$8e80,-6(a4)
+    ; The old check "CMP.w #$223c,imm_addr" compared the high word of the
+    ; address instead of the opcode, so this case never matched. It stays
+    ; disabled to keep the generated code unchanged. To enable it, replace
+    ; the BRA by: JSR verify_immload : BNE 'org
+    BRA 'org
+      ADD.w #$8e80,-6(a4)                                  ; MOVE.l #imm,Dn+1 -> CMP.l #imm,Dn
       CLR.l imm_addr
       RTS
  'l11
   CMP.l #4,a0 : BNE 'l10
+    JSR verify_immload : BNE 'org                          ; not our constant load -> no folding
     CMP.b #2,d3 : BNE 'l11b
       ADD.w #$7e40,-4(a4)
       RTS
@@ -14179,7 +14247,8 @@ doplus2:
    CLR.l load_var_addr
    SUB.l imm_addr,a0
    CMP.w #6,a0 : BEQ 'li10
-   CMP.w #4,a0 : BNE.s 'li1
+   CMP.w #4,a0 : BNE 'li1                                  ; word branch: the block below grew
+   JSR verify_immload : BNE 'l10                           ; not our constant load -> no folding
    CLR.l imm_addr
    ADD.w #$a040-$200,-4(a4)
  RTS
@@ -14201,6 +14270,7 @@ doplus2:
  BRA 'l10
 
  'li10
+   JSR verify_immload : BNE 'l10                           ; not our constant load -> no folding
    CLR.l imm_addr
    TST.l -4(a4) : BNE 'doit                             ;skip If ADD.l #0,dx
      SUBQ.l #6,destpointer
@@ -14224,6 +14294,8 @@ doplus2:
     ADD.w #$a040-$200,-4(a4)
     RTS
  'l10:
+  CLR.l imm_addr                                         ; this operation consumes the loaded operand,
+  CLR.l load_var_addr                                     ; so later peepholes must not refer to it
   MOVE.w regnum,D3
   MOVE.w a1,d1
   OR.w D3,D1
@@ -14244,7 +14316,8 @@ doplus2:
    CLR.l load_var_addr
    SUB.l imm_addr,a0
    CMP.w #6,a0 : BEQ 'sub1_li10
-   CMP.w #4,a0 : BNE.s 'sub1_li1
+   CMP.w #4,a0 : BNE 'sub1_li1                             ; word branch: the block below grew
+   JSR verify_immload : BNE 'sub1_l10                      ; not our constant load -> no folding
    CLR.l imm_addr
    ADD.w #$6040-$200,-4(a4)
  RTS
@@ -14266,6 +14339,7 @@ doplus2:
  BRA 'sub1_l10
 
  'sub1_li10
+   JSR verify_immload : BNE 'sub1_l10                      ; not our constant load -> no folding
    CLR.l imm_addr
    ADD.w #$7080-$200,-6(a4)
  RTS
@@ -14286,6 +14360,8 @@ doplus2:
  RTS
 
  'sub1_l10                                       ;??looks like same code as 'l10:
+  CLR.l imm_addr                                          ; this operation consumes the loaded operand,
+  CLR.l load_var_addr                                     ; so later peepholes must not refer to it
   MOVE.w regnum,D3
   MOVE.w a1,d1
   OR.w D3,D1
@@ -14421,6 +14497,7 @@ do_times_long:
   MOVE.l destpointer,a0
   SUB.l imm_addr,a0
   CMP.w #6,a0 : BNE 'li1
+  JSR verify_immload : BNE 'li1                           ; not our constant load -> no folding
   MOVEQ.l #2,d1
   MOVEQ #1,d3
 
@@ -16103,7 +16180,7 @@ makesbase:
     ;
     ;S base has been got, was it for this Eval?
     ;
-  MOVE.w sbgot(PC),D1
+  MOVE.w sbgot,D1   ; absolute: target may be out of 16-bit range
    BNE.w 'skip2
     ;
     ;No, push it on da stack!
@@ -16635,7 +16712,7 @@ handle_function:                                           ;do var = function {}
   MOVE.b $5(A2),D1
   MOVE.b d1,retmode : BMI.w illprocerr
 
-  MOVE.b #1,isfunc(a2)
+  JSR mark_funccall                                         ; was: MOVE.b #1,isfunc(a2)
   MOVE.w D1,-(A7)
   MOVEQ.l #$00,D1
   MOVE.b 4(A2),D1
@@ -19734,7 +19811,7 @@ maxprep2:   MOVE.l A2,D0
 
   CMP.b #$7,D2 : BNE.w mismatcherr      ; syntax_typecheck if not string...
 
-  MOVE.w varmode(PC),-(A7)
+  MOVE.w varmode,-(A7)   ; absolute: target may be out of 16-bit range
   CMP.w #"=",D0 : BNE.w syntaxerr
   
 
@@ -21978,6 +22055,80 @@ BRA.w do_function2
 
 JUMP_sreterr JMP sreterr
 
+;-----------------------------------------------------------------------------
+;-- mark_funccall
+;--
+;-- Called for every call of a function or statement (a2 = callee entry).
+;--
+;-- Before, every call set isfunc(callee) = 1, even if it was made from a
+;-- function that is never used itself. Functions only called by unused
+;-- functions (and unused recursive functions) were therefore never removed
+;-- by FuncOptimize, or only one level per extra compile pass.
+;--
+;-- Now:
+;--   - a call from the main program marks the callee as used (root)
+;--   - a call from inside a function is stored as an edge caller -> callee;
+;--     propagate_calls marks the callees after the pass
+;--   - a function calling itself needs no edge
+;--
+;-- All registers are preserved.
+;-----------------------------------------------------------------------------
+mark_funccall:
+  TST.b infunctioncode : BNE 'edge
+    MOVE.b #1,isfunc(a2)                                   ; called from the main program
+    RTS
+ 'edge
+  CMP.l currentfunction,a2 : BEQ 'done                     ; recursion: no edge needed
+  MOVEM.l d0-d1/a0-a1/a6,-(a7)
+  MOVEA.l _execbase,a6
+  MOVE.l mempool2,a0
+  MOVEQ #12,d0
+  JSR _AllocPooled(a6)
+  TST.l d0 : BNE 'gotmem
+    MOVE.b #1,isfunc(a2)                                   ; no memory: be safe and keep the function
+    BRA 'out
+ 'gotmem
+  MOVEA.l d0,a1
+  MOVE.l callgraph,(a1)                                    ; next
+  MOVE.l currentfunction,4(a1)                             ; caller
+  MOVE.l a2,8(a1)                                          ; callee
+  MOVE.l a1,callgraph
+ 'out
+  MOVEM.l (a7)+,d0-d1/a0-a1/a6
+ 'done
+RTS
+
+
+;-----------------------------------------------------------------------------
+;-- propagate_calls
+;--
+;-- Runs after a compile pass, before the list of unused functions is built.
+;-- Marks every function that can be reached from the main program via the
+;-- recorded call edges. Repeats until nothing changes, so call chains of any
+;-- depth and recursive cycles are resolved in one go.
+;-----------------------------------------------------------------------------
+propagate_calls:
+  MOVEM.l d0-d1/a0-a1,-(a7)
+ 'again
+  MOVEQ #0,d1                                              ; "something changed" flag
+  MOVE.l callgraph,d0
+ 'loop
+  BEQ 'check
+    MOVEA.l d0,a0
+    MOVEA.l 4(a0),a1                                       ; caller
+    TST.b isfunc(a1) : BEQ 'next                           ; caller (not yet) reachable
+    MOVEA.l 8(a0),a1                                       ; callee
+    TST.b isfunc(a1) : BNE 'next                           ; already marked
+      MOVE.b #1,isfunc(a1)
+      MOVEQ #1,d1
+   'next
+    MOVE.l (a0),d0
+  BRA 'loop
+ 'check
+  TST.w d1 : BNE 'again
+  MOVEM.l (a7)+,d0-d1/a0-a1
+RTS
+
 
 checkused
   CLR.b skipfunc
@@ -22730,10 +22881,10 @@ RTS
     MOVEA.l currentfunction,A0
     CMP.l #0,a0 : BEQ 'nof
     CMP.b #5,$5(a0) : BNE 'nof
-    MOVE.l #$f23c5000,d1 : BSR writelong           ;fmove.w #-1,fpx
-    MOVE.w #0,d1 : BSR writeword
+    MOVE.l #$f23c5000,d1 : JSR writelong           ;fmove.w #-1,fpx  ; absolute: target may be out of 16-bit range
+    MOVE.w #0,d1 : JSR writeword   ; absolute: target may be out of 16-bit range
  'nof
-    MOVE.w #$7000,D1 : BSR.w writeword             ;end function moveq #0,d0
+    MOVE.w #$7000,D1 : JSR writeword             ;end function moveq #0,d0  ; absolute: target may be out of 16-bit range
     
     MOVEA.l currentfunction,A0
     CMP.l #0,a0 : BEQ 'state
@@ -22743,7 +22894,7 @@ RTS
     MOVE.l d1,isfunc+1(a0)
  
     CMPI.b #$7,$5(A0) : BNE.w 'state
-    MOVE.w putstlen,D1 : BSR.w writeword
+    MOVE.w putstlen,D1 : JSR writeword   ; absolute: target may be out of 16-bit range
     BRA.w 'state
 
  'notfunc
@@ -23153,7 +23304,7 @@ fortemp:     Ds.w 1
   ;new stuff!
   ;
   MOVE.l A5,letstart
-  BSR.w getparameter
+  JSR getparameter   ; absolute: target may be out of 16-bit range
   MOVE.w D2,fortemp
   ;
   JSR findfor : BEQ.w JUMP_error_dublicate_for
@@ -23221,7 +23372,7 @@ fortemp:     Ds.w 1
  'weit
   CMP.w ##TokenID_Step,D0 : BNE.w 'defstep
       ;
-      BSR.w eval           ;get step
+      JSR eval           ;get step  ; absolute: target may be out of 16-bit range
       ; new >
       TST.b optimize_fpu : BEQ 'pushstep
         CMP.b #5,d2 : BNE 'pushstep
@@ -23943,6 +24094,7 @@ RTS
     MOVE.l destpointer,a0
     SUB.l imm_addr,a0
     CMP.l #4,a0 : BNE 'l10c
+    JSR verify_immload_r0 : BNE 'l10c                     ; not our constant load -> no folding
       CLR.l imm_addr
       MOVE.l destpointer,a4
       OR.w #$107c,d1
@@ -23975,6 +24127,7 @@ RTS
   MOVE.l destpointer,a0
   SUB.l imm_addr,a0
   CMP.l #4,a0 : BNE 'l10d
+  JSR verify_immload_r0 : BNE 'l10d                       ; not our constant load -> no folding
     CLR.l imm_addr
     MOVE.l destpointer,a4
     OR.w #$7c,d1
@@ -24013,6 +24166,7 @@ RTS
     MOVE.l destpointer,a0
     SUB.l imm_addr,a0
     CMP.l #6,a0 : BNE 'l10e
+    JSR verify_immload_r0 : BNE 'l10e                     ; not our constant load -> no folding
       CLR.l imm_addr
       MOVE.l destpointer,a4
       OR.w #$7c,d1
@@ -26848,7 +27002,7 @@ Even
   BTST #2,d0 : BEQ 'l3
     MOVE.b #1,optimize_newsyntax
  'l3
-  BTST #4,d0 : BEQ 'l4
+  BTST #3,d0 : BEQ 'l4
     MOVE.b #1,optimize_jumps
  'l4
 
@@ -28119,6 +28273,7 @@ inctab               Ds.l 40
 includeline          Ds.l 1
 objectcount          Ds.w 1
 savefuncspace        Ds.l 1
+callgraph            Ds.l 1                              ; list of call edges {next, caller, callee} (in mempool2)
 ;lasttrap1            Ds.l 1
 currentfunccall      Ds.l 1
 skipfunc             Ds.b 1
