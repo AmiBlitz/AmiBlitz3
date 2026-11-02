@@ -1,0 +1,94 @@
+; -----------------------------------------------------------------------------
+; Regression tests for two compiler changes:
+;
+; 1. OPTIMIZE 1 peephole optimizer (GitHub issue #126)
+;    "2 + ((n/4) AND 3)" inside a function returned always 2.
+;    Run this program: it must print "OPTIMIZE test: 0 errors".
+;
+; 2. FuncOptimize with call graph
+;    Functions that are only called by unused functions (and unused recursive
+;    functions) must be removed as well.
+;    Create an executable with FuncOptimize enabled twice:
+;      - with #WITH_DEAD_CODE = 0
+;      - with #WITH_DEAD_CODE = 1
+;    Both executables must have the same size.
+; -----------------------------------------------------------------------------
+OPTIMIZE 5                         ; 1 = 68020 integer optimizer, 4 = new syntax
+SYNTAX 2
+
+#WITH_DEAD_CODE = 1
+
+; --- test 1: constant on the left side of an operation ----------------------
+
+Function.w LeftConstantAdd{inputValue.w}
+  Function Return 2 + ((inputValue/4) AND 3)
+End Function
+
+Function.w RightConstantAdd{inputValue.w}
+  Function Return ((inputValue/4) AND 3) + 2
+End Function
+
+Function.w LeftConstantSub{inputValue.w}
+  Function Return 10 - ((inputValue/4) AND 3)
+End Function
+
+Function.l LeftConstantAddLong{inputValue.l}
+  Function Return 2 + ((inputValue/4) AND 3)
+End Function
+
+; --- test 2: dead code that only FuncOptimize with call graph can remove ----
+
+CNIF #WITH_DEAD_CODE = 1
+
+Function.l DeadLevel3{x.l}
+  Function Return x * 3 + 7
+End Function
+
+Function.l DeadLevel2{x.l}
+  Function Return DeadLevel3{x} + DeadLevel3{x + 1}
+End Function
+
+Function.l DeadLevel1{x.l}               ; never called -> whole chain is dead
+  Function Return DeadLevel2{x} - 1
+End Function
+
+Function.l DeadRecursive{x.l}            ; never called, but calls itself
+  If x <= 1 Then Function Return 1
+  Function Return x * DeadRecursive{x - 1}
+End Function
+
+CEND
+
+; --- main program -----------------------------------------------------------
+
+errors.l = 0
+For n.w = -40 To 40
+  ; reference value computed step by step, so no expression folding is involved
+  t.w = n / 4
+  t = t AND 3
+
+  ref.w = t + 2
+  If LeftConstantAdd{n} <> ref
+    NPrint "ADD (left constant) wrong for n = ", n
+    errors + 1
+  EndIf
+  If RightConstantAdd{n} <> ref
+    NPrint "ADD (right constant) wrong for n = ", n
+    errors + 1
+  EndIf
+
+  ref = 10 - t
+  If LeftConstantSub{n} <> ref
+    NPrint "SUB (left constant) wrong for n = ", n
+    errors + 1
+  EndIf
+
+  ref = t + 2
+  If LeftConstantAddLong{n} <> ref
+    NPrint "ADD long (left constant) wrong for n = ", n
+    errors + 1
+  EndIf
+Next
+
+NPrint "OPTIMIZE test: ", errors, " errors"
+End
