@@ -10075,211 +10075,19 @@ JMP error_create_exe
   BSR.w mywrite      ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
 
   ;--
-  ;-- do we have other hunks to write (RELOC32, BSS, DATA)
+  ;-- write the RELOC32 block of the code hunk: the longs patched inside the code hunk,
+  ;-- one table for each hunk they refer to (code, BSS, chip data)
   ;--
-  MOVE.l hunkoffsetcounter,hunkR32Entries : BEQ.w 'skip
-    MOVE.l D7,D1       
-    MOVE.l #hunkReloc32,D2  ; write HUNK_RELOC32
-    MOVEQ.l #4,D3
-    BSR.w mywrite      ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
-
-    ; new >
-    ;-- alloc temporary memory for building the relocation table
-    MOVEA.l _execbase,A6
-    MOVE.l hunkoffsetcounter,d0 : ASL.l #2,d0 : ADD.l #12,d0
-    JSR _AllocMem(a6)
-    MOVEA.l _dosbase,A6
-    TST.l d0 : BEQ 'nomemhunk
-      ;-- build the table
-      MOVE.l noinits,D4
-      MOVE.l d5,-(a7)
-      MOVE.l d0,d5          ;memory address of temp arry for table
-      MOVE.l d0,a1
-
-      MOVE.b #0,newhunk
-      MOVEA.l hunkoffsetbase,A2
-     'oloopb                      ; copy of 'oloop
-        CMPA.w #$0,A2 : BEQ.w 'savehunk
-
-        MOVE.l destbufferstart,D2 : ADD.l noinits,D2
-        MOVE.l 4(A2),d1
-        BTST #31,d1 : BEQ 'lh1
-          MOVE.b #1,newhunk
-          BRA 'lh3
-       'lh1
-        BTST #30,d1 : BEQ 'lh2
-          MOVE.b #1,newhunk
-          BRA 'lh3
-       'lh2
-          ADD.l d1,d2
-          CMP.l chipend,d2 : BLT 'l102c
-            SUB.l chipsize,d1
-       'l102c
-          CMP.l bssend,d2 :  BLT 'l101c
-            SUB.l bsssize,d1
-         'l101c
-          MOVE.l d1,(a1)
-          SUB.l D4,(A1)+  ;fix-up the offet by start address of hunk
-       'lh3
-        MOVEA.l (A2),A2
-      BRA.w 'oloopb
-     'savehunk
-
-      !regs2stack
-      !basic
-      log2PED{"Writing " + Str$(Peek.l(?hunkoffsetnum)) + " offsets to RELOC32 hunk ...",#log_information}
-      !asm
-      !stack2regs
-      ;-- write the relocation table
-      ;-- as AmigaOS 36+ has a bug in the exe loader that prevents it from loading more of 
-      ;-- 65536 offsets, we have to split them into multiple hunks...
-      MOVE.l hunkoffsetnum,hunkoffsetwrite : BEQ 'ln1c
-        MOVE.l d5,-(a7)
-       'writeagain
-          CMP.l #65535,hunkoffsetwrite : BCS 'writeit
-            MOVE.l #65535,hunkoffsetwrite
-         'writeit
-          MOVE.l hunkoffsetwrite,hunkR32Entries 
-          MOVE.l D7,D1
-          MOVE.l #hunkReloc32+4,d2 ; number of offsets in this table
-          MOVEQ #8,d3              ; write segment number the offset relay to (always segment 0)
-          JSR _Write(A6)
-
-          MOVE.l d7,d1
-          MOVE.l hunkoffsetwrite,d3 : ASL.l #2,d3
-          MOVE.l d5,D2
-          ADD.l d3,d5
-          JSR _Write(a6)
-
-          MOVE.l hunkoffsetwrite,d3 : SUB.l d3,hunkoffsetnum
-          !regs2stack
-          !basic
-          If Peek.l(?hunkoffsetnum) > 0
-            log2PED{"... " + Str$(Peek.l(?hunkoffsetwrite)) + " offsets written, " + Str$(Peek.l(?hunkoffsetnum)) + " left"}
-          EndIf
-          !asm
-          !stack2regs
-
-          MOVE.l hunkoffsetnum,hunkoffsetwrite
-        TST.l hunkoffsetnum : BNE 'writeagain
-        MOVE.l (a7)+,d5
-     'ln1c
-      
-      TST.b newhunk :  BEQ 'l10c
-        !regs2stack
-        !basic
-        log2PED{"Writing additional relocation hunks for BSS or DATA ..."}
-        !asm
-        !stack2regs
-
-        ;-- 
-        MOVE.l d5,a0 : ADDQ #8,a0
-        MOVE.l bssnum,-4(a0)
-        MOVEQ #0,d6
-
-        MOVEA.l hunkoffsetbase,A2
-       'lh2c
-          CMPA.w #$0,A2 : BEQ.w 'lh3c
-          
-          MOVE.l destbufferstart,D2 : ADD.l noinits,D2
-          MOVE.l 4(A2),d1
-          BTST #30,d1 :  BEQ 'lh1c
-            BCLR #30,d1
-            MOVE.l d1,(a0)
-            SUB.l D4,(A0)+
-            ADDQ.l #1,d6
-         'lh1c
-          MOVE.l (a2),a2
-        BRA 'lh2c
-       'lh3c
-
-        TST.l d6 :  BEQ 'lh10c
-          MOVE.l d5,a0
-          MOVE.l d6,(a0)
-          MOVE.l d7,d1
-          MOVE.l d5,d2
-          MOVE.l d6,d3 : ASL.l #2,d3 : ADDQ.l #8,d3
-          BSR.w mywrite   ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
-          !regs2stack
-          !basic
-          PutReg D6,tempd6.l
-          log2PED{"... " + Str$(tempd6) + " offsets written for BSS"}
-          !asm
-          !stack2regs
-       'lh10c
-
-        MOVE.l d5,a0 : ADDQ #8,a0
-        MOVE.l chipnum,-4(a0)
-        MOVEQ #0,d6
-        MOVEA.l hunkoffsetbase,A2
-       'lh20c
-          CMPA.w #$0,A2 : BEQ.w 'lh30c
-
-          MOVE.l destbufferstart,D2 : ADD.l noinits,D2
-          MOVE.l 4(A2),d1
-          BTST #31,d1 : BEQ 'lh11c
-            BCLR #31,d1
-            MOVE.l d1,(a0)
-            SUB.l D4,(A0)+
-            ADDQ.l #1,d6
-          'lh11c
-          MOVE.l (a2),a2
-        BRA 'lh20c
-       'lh30c
-
-        TST.l d6 : BEQ 'l10c
-          MOVE.l d5,a0
-          MOVE.l d6,(a0)
-          MOVE.l d7,d1
-          MOVE.l d5,d2
-          MOVE.l d6,d3 : ASL.l #2,d3 : ADDQ.l #8,d3
-          BSR.w mywrite    ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
-          !regs2stack
-          !basic
-          PutReg D6,tempd6
-          log2PED{"... " + Str$(tempd6) + " offsets written for DATA"}
-          !asm
-          !stack2regs
-     'l10c
-
-      ;-- free memory for temporary relocation table
-      MOVEA.l _execbase,A6
-      MOVE.l hunkoffsetcounter,d0 : ASL.l #2,d0 : ADD.l #12,d0
-      MOVE.l d5,a1
-      JSR _FreeMem(a6)
-      MOVEA.l _dosbase,A6
-
-      MOVE.l (a7)+,d5
-      BRA 'skip2
-   'nomemhunk
-      !regs2stack
-      !basic
-      log2PED{"Not enough memory for processing, writing all offset hunks straight away..."}
-      !asm
-      !stack2regs
-
-      MOVEA.l hunkoffsetbase,A2
-      MOVE.l noinits,D4
-      'loop
-        CMPA.w #$0,A2 : BEQ.w 'skip2          ;write hunkoffsets
-        
-        LEA 4(A2),A1
-        SUB.l D4,(A1) ; fix-up the hunk by correcting the start address
-        MOVE.l D7,D1
-        MOVE.l A1,D2
-        MOVEQ.l #4,D3
-        BSR.w mywrite    ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
-        ;
-        ADD.l D4,4(A2)
-        MOVEA.l (A2),A2
-      BRA.w 'loop
-   'skip2
-
-    CLR.l hunkR32Entries
-    MOVE.l D7,D1
-    MOVE.l #hunkR32Entries,D2
-    MOVEQ.l #4,D3
-    BSR.w mywrite     ; write zero as end of data
+  TST.l hunkoffsetcounter : BEQ.w 'skip
+    MOVEM.l d4-d6,-(a7)
+    MOVEQ #0,d6
+    BSR.w write_reloc_tables
+    MOVEM.l (a7)+,d4-d6
+    !regs2stack
+    !basic
+    log2PED{"Writing " + Str$(Peek.l(?reloc_written)) + " offsets to RELOC32 hunk ...",#log_information}
+    !asm
+    !stack2regs
  'skip ; end of writing reloc32 hunks
 
   TST.w set_link_debuginfo : BEQ.w 'nodebug
@@ -10433,6 +10241,20 @@ JMP error_create_exe
     MOVE.l chipsize,d3
     BSR.w mywrite      ; input: D1: file, D2: buffer, D3: length, output: D0: written bytes
 
+    ;-- the RELOC32 block of the chip data hunk: the longs patched inside it (e.g. Dc.l label)
+    TST.l hunkoffsetcounter : BEQ 'l12e
+      MOVEM.l d4-d6,-(a7)
+      MOVEQ #1,d6
+      BSR.w write_reloc_tables
+      MOVEM.l (a7)+,d4-d6
+      TST.l d0 : BEQ 'l12e
+        !regs2stack
+        !basic
+        log2PED{"... " + Str$(Peek.l(?reloc_written)) + " offsets written for DATA"}
+        !asm
+        !stack2regs
+   'l12e
+
     MOVE.l d7,d1
     MOVE.l #hunkEndBss,d2
     MOVEQ #4,d3
@@ -10520,6 +10342,160 @@ JMP error_create_exe
   MOVEM.l (a7)+,d2-d7/a2-a6
 
  'rts
+RTS
+
+
+.reloc_entry:
+  ;--
+  ;-- classify the relocation entry A2 (an offset of the list hunkoffsetbase,
+  ;-- after save_binaryfile has fixed up the longs)
+  ;-- output: D0: offset of the patched long inside its hunk
+  ;--         D1: the hunk the patched long is in: 0 code, 1 chip data, -1 BSS (cannot be: it has no data)
+  ;--         D2: the hunk the long refers to: 0 code, 1 BSS, 2 chip data
+  MOVE.l 4(A2),D0
+  MOVEQ #0,D2
+  BCLR #31,D0 : BEQ 'l1
+    MOVEQ #2,D2
+ 'l1
+  BCLR #30,D0 : BEQ 'l2
+    MOVEQ #1,D2
+ 'l2
+  MOVE.l D0,D1 : ADD.l destbufferstart,D1        ; address of the patched long
+  CMP.l #-1,chipstart : BEQ 'l3
+  CMP.l chipstart,D1  : BCS 'l3
+  CMP.l chipend,D1    : BCC 'l3
+    SUB.l chipstart,D1                           ; inside the chip data
+    MOVE.l D1,D0
+    MOVEQ #1,D1
+    RTS
+ 'l3
+  CMP.l #-1,bssstart : BEQ 'l4
+  CMP.l bssstart,D1  : BCS 'l4
+  CMP.l bssend,D1    : BCC 'l4
+    MOVEQ #-1,D1                                 ; inside the BSS section
+    RTS
+ 'l4
+  ;-- inside the code: the BSS and chip sections are not part of the code hunk
+  CMP.l #-1,chipstart : BEQ 'l5
+  CMP.l chipend,D1    : BCS 'l5
+    SUB.l chipsize,D0
+ 'l5
+  CMP.l #-1,bssstart : BEQ 'l6
+  CMP.l bssend,D1    : BCS 'l6
+    SUB.l bsssize,D0
+ 'l6
+  SUB.l noinits,D0
+  MOVEQ #0,D1
+RTS
+
+
+.write_reloc_tables:
+  ;--
+  ;-- write the RELOC32 block of one hunk: the offsets of the longs patched inside
+  ;-- the hunk D6 (0 code, 1 chip data), one table for each hunk they refer to, each
+  ;-- split into tables of 65535 offsets at most (the loader of AmigaOS 36+ cannot
+  ;-- load more). Nothing is written if the hunk has no relocations.
+  ;-- input: D6: the hunk, D7: file
+  ;-- output: D0 and reloc_written: number of offsets written
+  MOVEM.l D2-D6/A2-A3,-(A7)
+  CLR.l reloc_written
+
+  ;-- temporary memory for the offsets of one table, else they are written one by one
+  MOVEA.l _execbase,A6
+  MOVE.l hunkoffsetcounter,D0 : ASL.l #2,D0 : ADDQ.l #4,D0
+  MOVE.l D0,reloc_bufsize
+  MOVEQ #0,D1                                    ; MEMF_ANY
+  JSR _AllocMem(A6)
+  MOVE.l D0,D5
+  MOVEA.l _dosbase,A6
+
+  MOVEQ #0,D4                                    ; the hunk referred to: 0 code, 1 BSS, 2 chip data
+ 'nexttarget
+    ;-- count the offsets of this table
+    CLR.l reloc_left
+    MOVEA.l hunkoffsetbase,A2
+   'count
+      CMPA.w #0,A2 : BEQ 'counted
+      BSR.w reloc_entry
+      CMP.l D6,D1 : BNE 'cnext
+      CMP.l D4,D2 : BNE 'cnext
+        ADDQ.l #1,reloc_left
+     'cnext
+      MOVEA.l (A2),A2
+    BRA 'count
+   'counted
+    TST.l reloc_left : BEQ.w 'donetarget
+
+    TST.l reloc_written : BNE 'started
+      MOVE.l D7,D1 : MOVE.l #hunkReloc32,D2 : MOVEQ #4,D3   ; HUNK_RELOC32
+      BSR.w mywrite
+   'started
+    MOVE.l reloc_left,D0 : ADD.l D0,reloc_written
+
+    ;-- the number of the hunk referred to
+    MOVEQ #0,D0
+    CMP.l #1,D4 : BNE 'tn1
+      MOVE.l bssnum,D0
+   'tn1
+    CMP.l #2,D4 : BNE 'tn2
+      MOVE.l chipnum,D0
+   'tn2
+    MOVE.l D0,reloc_table+4
+
+    MOVEA.l hunkoffsetbase,A2
+   'nexttable
+      ;-- one table: number of offsets, hunk referred to, offsets
+      MOVE.l reloc_left,D0
+      CMP.l #65535,D0 : BLS 'tsize
+        MOVE.l #65535,D0
+     'tsize
+      MOVE.l D0,reloc_table
+      MOVE.l D0,reloc_chunk
+      SUB.l D0,reloc_left
+      MOVE.l D7,D1 : MOVE.l #reloc_table,D2 : MOVEQ #8,D3
+      BSR.w mywrite
+      MOVEA.l D5,A3
+     'fill
+        TST.l reloc_chunk : BEQ 'filled
+       'find                                     ; the next offset of this table
+          BSR.w reloc_entry
+          MOVEA.l (A2),A2
+          CMP.l D6,D1 : BNE 'find
+          CMP.l D4,D2 : BNE 'find
+        SUBQ.l #1,reloc_chunk
+        TST.l D5 : BEQ 'single
+          MOVE.l D0,(A3)+
+          BRA 'fill
+       'single
+          MOVE.l D0,reloc_one
+          MOVE.l D7,D1 : MOVE.l #reloc_one,D2 : MOVEQ #4,D3
+          BSR.w mywrite
+        BRA 'fill
+     'filled
+      TST.l D5 : BEQ 'written
+        MOVE.l D7,D1 : MOVE.l D5,D2 : MOVE.l A3,D3 : SUB.l D5,D3
+        BSR.w mywrite
+     'written
+    TST.l reloc_left : BNE 'nexttable
+   'donetarget
+    ADDQ.l #1,D4
+  CMP.l #3,D4 : BCS.w 'nexttarget
+
+  ;-- end of the RELOC32 block
+  TST.l reloc_written : BEQ 'nothing
+    MOVE.l D7,D1 : MOVE.l #reloc_zero,D2 : MOVEQ #4,D3
+    BSR.w mywrite
+ 'nothing
+
+  TST.l D5 : BEQ 'nobuf
+    MOVEA.l _execbase,A6
+    MOVEA.l D5,A1
+    MOVE.l reloc_bufsize,D0
+    JSR _FreeMem(A6)
+    MOVEA.l _dosbase,A6
+ 'nobuf
+  MOVEM.l (A7)+,D2-D6/A2-A3
+  MOVE.l reloc_written,D0
 RTS
 
 
@@ -26375,6 +26351,13 @@ chartab2        Ds.l 256
 codeend         Dc.l 0
 hunkoffsetnum   Dc.l 0
 hunkoffsetwrite Dc.l 0
+reloc_written   Dc.l 0           ; write_reloc_tables: offsets written
+reloc_left      Dc.l 0           ; write_reloc_tables: offsets of the current hunk referred to, not written yet
+reloc_chunk     Dc.l 0           ; write_reloc_tables: offsets of the current table, not written yet
+reloc_bufsize   Dc.l 0           ; write_reloc_tables: size of the temporary memory
+reloc_one       Dc.l 0           ; write_reloc_tables: one offset, without temporary memory
+reloc_zero      Dc.l 0           ; write_reloc_tables: end of a RELOC32 block
+reloc_table     Dc.l 0,0         ; write_reloc_tables: number of offsets, hunk referred to
 chipsize        Dc.l 0
 bsssize         Dc.l 0
 bssstart        Dc.l -1
