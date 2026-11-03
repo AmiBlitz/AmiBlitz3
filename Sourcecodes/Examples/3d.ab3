@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 515
+; NumberOfBuilds  = 522
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 603
+; CursorLine      = 473
 ; CursorColumn    = 1
-; LabelSearch     = "drawvertex"
+; LabelSearch     = "#FRAMEWAIT"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -57,10 +57,10 @@
 ; Max Tape        = 5
 ; Max TagList     = 5
 ; Max Database    = 16
-; Max Window      = 100
 ; Max BitMap      = 10
 ; Max Screen      = 5
 ; Max Palette     = 4
+; Max Window      = 100
 ; Max Sound       = 10
 ; Max MedModule   = 8
 ; Max Buffer      = 10
@@ -89,6 +89,8 @@ OPTIMIZE 5: SYNTAX 6
 #RENDER_WIREFRAME = 1
 #RENDER_FILLED = 2
 
+#MODELSIZE = 10       ; added this parameter to adjust the size of a model
+#FRAMEWAIT = 0        ; VWait after every frame (5 = max. 10 frames per second), set to 0 to measure the real speed
 #SWIDTH = 320
 #SHEIGHT = 256
 #hw = #SWIDTH / 2
@@ -105,15 +107,15 @@ End NEWTYPE
 DEFTYPE.config config
 
 NEWTYPE.Vertex
-  x.f
-  y.f
-  z.f
+  x.q
+  y.q
+  z.q
 End NEWTYPE
 
 NEWTYPE.Vector
-  x.f
-  y.f
-  z.f
+  x.q
+  y.q
+  z.q
 End NEWTYPE
 
 NEWTYPE.Triangle
@@ -121,7 +123,7 @@ NEWTYPE.Triangle
   v2.w   ;Index of Vertex 2
   v3.w   ;Index of Vertex 3
   normal.Vector
-  avgZ.f
+  avgZ.q ;average depth, also the sort key for SortList (a quick is stored as a 32 bit long)
 End NEWTYPE
 
 ;-- used for drawing
@@ -138,7 +140,7 @@ Dim List xVerts.Vertex(750)
 Dim List faces.Triangle(1500)
 Dim List xFaces.Triangle(1500)
 SHARED numFaces.w
-SHARED numFacesX.w          ; culled number of faces
+SHARED numFacesX.w          ; number of visible faces in the list xFaces()
 SHARED numVertices.w
 
 BLITZ
@@ -159,7 +161,7 @@ SHARED verts(), faces(), xVerts(), xFaces()
     ClearList verts() : dummy.b = AddLast(verts()) ; add dummy vertex, as count starts with 1
     ClearList xVerts(): dummy.b = AddLast(xVerts())
     ClearList faces()
-    While NOT Eof(0) OR anyerror.b
+    While (NOT Eof(0)) AND noerrors
       rawLine = Edit$(80)
 
       InitArgParse rawLine
@@ -193,7 +195,6 @@ SHARED verts(), faces(), xVerts(), xFaces()
             faces()\v1 = Val(val1) + vIndex
             faces()\v2 = Val(val2) + vIndex
             faces()\v3 = Val(val3) + vIndex
-            dummy.b = AddLast(xFaces())
           Else
             NPrint "Could not add face to list!"
             noerrors = False
@@ -210,14 +211,14 @@ SHARED verts(), faces(), xVerts(), xFaces()
       EndIf
     Wend
     numFaces = CountList(faces())
-    numVertices = CountList(verts())
+    numVertices = CountList(verts()) - 1
     CloseFile 0
     DefaultInput
   Else
    noerrors = False
   EndIf
   Function Return noerrors
-End Statement
+End Function
 
 
 Statement CalcNormals{}
@@ -225,12 +226,13 @@ SHARED faces(), xVerts()
 
   DEFTYPE.Triangle f
   DEFTYPE.Vertex v1, v2, v3
-  DEFTYPE.f ax, ay, az
-  DEFTYPE.f bx, by, bz
-  DEFTYPE.f nx, ny, nz
+  DEFTYPE.q ax, ay, az
+  DEFTYPE.q bx, by, bz
+  DEFTYPE.q nx, ny, nz, m
 
-  For j.w = 0 To numFaces ;CountList(faces())
-    CopyType faces(j), f
+  For j.w = 0 To numFaces - 1   ;the faces are 0 .. numFaces-1
+
+    CopyType faces(j), f        ; this is just for readability and could be removed for a little speed gain
     CopyType xVerts(f\v1),v1
     CopyType xVerts(f\v2),v2
     CopyType xVerts(f\v3),v3
@@ -251,69 +253,53 @@ SHARED faces(), xVerts()
     nz = (ax * by) - (ay * bx)
 
     ;-- Normalize vector
-    _Length.f = Sqr(nx * nx + ny * ny + nz * nz)
+    ;-- first divide by the largest component, so the squares stay small (quick range)
+    ;-- and very small normals don't lose their precision
+    m = Abs(nx)
+    If Abs(ny) > m Then m = Abs(ny)
+    If Abs(nz) > m Then m = Abs(nz)
 
-    If _Length > 0
-      faces(j)\normal\x = 1.0 * nx / _Length
-      faces(j)\normal\y = 1.0 * ny / _Length
-      faces(j)\normal\z = 1.0 * nz / _Length
+    If m > 0
+      nx = nx / m : ny = ny / m : nz = nz / m
+      _Length.q = Sqr(nx * nx + ny * ny + nz * nz)
+      faces(j)\normal\x = nx / _Length
+      faces(j)\normal\y = ny / _Length
+      faces(j)\normal\z = nz / _Length
     End If
   Next
 
 End Statement
-
-Statement InsertTriangle{*tri.Triangle, _Length.w}
-SHARED xFaces()
-  DEFTYPE.Triangle temp
-  For i.w = 0 To _Length - 1
-    If *tri\avgZ > xFaces(i)\avgZ        ;Found spot To insert tri
-      For j.w = _Length To i + 1 Step -1 ;Shuffle existing items forward
-        ;SWAP faces(j), faces(j - 1)
-        CopyType xFaces(j), temp
-        CopyType xFaces(j-1), xFaces(j)
-        CopyType temp, xFaces(j-1)
-      Next
-      CopyType *tri, xFaces(i)
-      Pop For : Goto endF
-    End If
-  Next
-  endF:
-
-  If i = _Length
-    CopyType *tri, xFaces(_Length)
-  End If
-
-End Statement
-
 
 Statement CullFaces{}
 SHARED faces(), xFaces(), xVerts()
-  DEFTYPE.Vector camVtr
-  DEFTYPE.f x, y, z
+  DEFTYPE.q x, y, z
 
-  numFacesX = -1
-  For i.w = 0 To numFaces; CountList(faces())
+  ;-- xFaces() is used as a real list: the visible faces are appended with AddLast and
+  ;-- sorted once at the end. This replaces InsertTriangle, which had to move all following
+  ;-- entries with CopyType for every inserted face.
+  ClearList xFaces()
+  numFacesX = 0
+  For i.w = 0 To numFaces - 1
     USEPATH faces(i)
-    ;-- The camera vector is the normalised vector from the origin to the first vertex of the triangle
     x = xVerts(\v1)\x
     y = xVerts(\v1)\y
     z = xVerts(\v1)\z
-    _Length.f = Sqr(x * x + y * y + z * z)
-    camVtr\x = x / _Length
-    camVtr\y = y / _Length
-    camVtr\z = z / _Length
-
-    dotProd.f = (camVtr\x * \normal\x) + (camVtr\y * \normal\y) + (camVtr\z * \normal\z)
+    dotProd.q = (x * \normal\x) + (y * \normal\y) + (z * \normal\z)
 
     If dotProd > 0
        \avgZ = (xVerts(\v1)\z + xVerts(\v2)\z + xVerts(\v3)\z) / 3
 
-       ;-- Insert triangles in order
-       numFacesX + 1
-       InsertTriangle{faces(i), numFacesX}
+       ;-- append the visible face to the list
+       If AddLast(xFaces())
+         CopyType faces(i), xFaces()
+         numFacesX + 1
+       EndIf
     End If
   Next
-  ShellSort &xFaces(),numFacesX
+
+  ;-- sort back to front (painter's algorithm): largest depth first
+  ;-- a quick is a 32 bit fixed point long, so SortList can use avgZ directly
+  SortList xFaces(), SizeOf .Triangle\avgZ, -1
 End Statement
 
 
@@ -326,7 +312,7 @@ SHARED light
   l\y = 1.0 * (#hh * light\y) / light\z
   l\z = 1.0 * Abs(light\z)
 
-  Circle #hw + l\x, #hw + l\y, l\z, color
+  Circle #hw + l\x, #hh + l\y, l\z, color
   Locate 0,18 : Print #hw + l\x, "," , #hh + l\y
 End Statement
 
@@ -341,29 +327,20 @@ Statement DrawVertex{*V.Vertex, color.w, @idx.w}
 End Statement
 
 Statement DrawTriangle{*argV1.Vertex, *argV2.Vertex, *argV3.Vertex, color.w, @filled.b}
-  DEFTYPE.Vertex temp
+  DEFTYPE.Polygon p
 
-  CopyType *argV1, v1.Vertex
-  CopyType *argV2, v2.Vertex
-  CopyType *argV3, v3.Vertex
-
-  ;-- Fix order of V2 AND V3 by x val
-  If v2\x > v3\x
-    ;Swap v2, v3
-    CopyType v2, temp
-    CopyType v3, v2
-    CopyType temp, v3
-  End If
-
-  p.Polygon\x0 = #hw + v1\x, #hh + v1\y
-  p.Polygon\x1 = #hw + v2\x, #hh + v2\y
-  p.Polygon\x2 = #hw + v3\x, #hh + v3\y
-;  p.Polygon\x3 = #hw + v1\x, #hh + v1\y
+  p\x0 = #hw + *argV1\x : p\y0 = #hh + *argV1\y
+  p\x1 = #hw + *argV2\x : p\y1 = #hh + *argV2\y
+  p\x2 = #hw + *argV3\x : p\y2 = #hh + *argV3\y
+  p\x3 = p\x0           : p\y3 = p\y0
 
   If filled
-    Polyf 3,p, color;,-1
+    Polyf 3, &p, color
   Else
-    Poly 3,p, color
+    ;FIX wireframe with Line, independent of how Poly closes the outline
+    Line p\x0, p\y0, p\x1, p\y1, color
+    Line p\x1, p\y1, p\x2, p\y2, color
+    Line p\x2, p\y2, p\x0, p\y0, color
   EndIf
 
 End Statement
@@ -372,37 +349,14 @@ End Statement
 Statement RenderFace{*srcTri.Triangle, color.w}
 SHARED config, xVerts()
 
-  DEFTYPE.Vertex v1,v2,v3,v4, temp
-
-  CopyType xVerts(*srcTri\v1),v1
-  CopyType xVerts(*srcTri\v2),v2
-  CopyType xVerts(*srcTri\v3),v3
-
-  ;-- Sort the verticies by y value
-  If v1\y < v2\y    ;Swap v1, v2
-    CopyType v2, temp
-    CopyType v1, v2
-    CopyType temp, v1
-  End If
-
-  If v2\y < v3\y    ;Swap v2, v3
-    CopyType v3, temp 
-    CopyType v2, v3
-    CopyType temp, v2
-  End If
-
-  If v1\y < v2\y    ;Swap v1, v2
-    CopyType v2, temp
-    CopyType v1, v2
-    CopyType temp, v1
-  End If
-skip:
-
+  ;-- The vertices are passed directly as pointers into xVerts(), no copies.
+  ;-- The old sorting of the vertices by y (with up to 12 CopyType per face) was removed:
+  ;-- Polyf and Line don't need a special order of the corners.
   Select config\renderMode
   Case #RENDER_WIREFRAME
-    DrawTriangle{v1, v2, v3, color, False}
+    DrawTriangle{xVerts(*srcTri\v1), xVerts(*srcTri\v2), xVerts(*srcTri\v3), color, False}
   Case #RENDER_FILLED
-    DrawTriangle{v1, v2, v3, color, True}
+    DrawTriangle{xVerts(*srcTri\v1), xVerts(*srcTri\v2), xVerts(*srcTri\v3), color, True}
   End Select
 
 End Statement
@@ -412,7 +366,7 @@ Statement DrawObject{}
 SHARED config, light, xFaces(), xVerts()
 
   If config\renderMode = #RENDER_DOTS OR config\showNums
-    cstep.f = 16.0 / numVertices
+    cstep.q = 16.0 / numVertices
     For i.w = 1 To numVertices
       If config\showNums
         DrawVertex{xVerts(i),i * cstep, i}
@@ -424,53 +378,68 @@ SHARED config, light, xFaces(), xVerts()
     If NOT config\showNums Then Statement Return
   EndIf
 
-  DEFTYPE.Vector n
-  For i.w = 0 To numFacesX
+  DEFTYPE.Vector n, ln
+  DEFTYPE.q colF
+
+  _len.q = Sqr(light\x * light\x + light\y * light\y + light\z * light\z)
+  If _len > 0
+    ln\x = light\x / _len : ln\y = light\y / _len : ln\z = 0 - light\z / _len
+  Else
+    ln\x = 0 : ln\y = 0 : ln\z = -1
+  EndIf
+
+  ;-- xFaces() is sorted as a list, so it must be read with the list commands, not by index
+  k.w = 0                       ; position in the list, only for the debug output
+  ResetList xFaces()
+  While NextItem(xFaces())
 
     If config\normals
-      CopyType xFaces(i)\normal, n
+      CopyType xFaces()\normal, n
 
-      DotProduct_.f = (n\x * light\x) + (n\y * light\y) + (n\z * light\z)
-      Locate 0,0 : NPrint DotProduct_
-      color.b = 15 - (DotProduct_ * 15.0)
+      DotProduct_.q = (n\x * ln\x) + (n\y * ln\y) + (n\z * ln\z)
+      colF = 1 - (DotProduct_ * 14.0)
+      If colF < 4 Then colF = 4
+      If colF > 15 Then colF = 15
+      color.b = colF
     Else
       color.b = 15
     EndIf
 
-    RenderFace{xFaces(i), color}
+    RenderFace{xFaces(), color}
 
-    If i < 20 AND config\showData
+    If k < 20 AND config\showData
       Colour color
-      NPrint "f",i," : ", xFaces(i)\v1, ", ", xFaces(i)\v2, ", ", xFaces(i)\v3
+      NPrint "f",k," : ", xFaces()\v1, ", ", xFaces()\v2, ", ", xFaces()\v3
     EndIf
-  Next i
+    k + 1
+  Wend
 End Statement
 
 
 
 
 ;-- Rotate around the y-axis, angle in radians
-Statement RotateObject{angleX.f, angleY.f, angleZ.f}
+Statement RotateObject{angleX.q, angleY.q, angleZ.q}
 SHARED xVerts()
 
   For i.w = 1 To numVertices
 
     If angleX <> 0
-      _sinX.f = Sin(angleX) : _cosX.f = Cos(angleX)
+      _sinX.q = Sin(angleX) : _cosX.q = Cos(angleX)
       CopyType xVerts(i), vtx.Vertex
       xVerts(i)\y = vtx\y * _cosX - vtx\z * _sinX
       xVerts(i)\z = vtx\y * _sinX + vtx\z * _cosX
     EndIf
 
     If angleY <> 0
-      _sinY.f = Sin(angleY) : _cosY.f = Cos(angleY)
+      _sinY.q = Sin(angleY) : _cosY.q = Cos(angleY)
       CopyType xVerts(i), vtx.Vertex
       xVerts(i)\x = vtx\z * _sinY + vtx\x * _cosY
       xVerts(i)\z = vtx\z * _cosY - vtx\x * _sinY
     EndIf
 
     If angleZ <> 0
-      _sinZ.f = Sin(angleZ) : _cosZ.f = Cos(angleZ)
+      _sinZ.q = Sin(angleZ) : _cosZ.q = Cos(angleZ)
       CopyType xVerts(i), vtx.Vertex
       xVerts(i)\x = vtx\x * _cosZ - vtx\y * _sinZ
       xVerts(i)\y = vtx\x * _sinZ + vtx\y * _cosZ
@@ -479,7 +448,7 @@ SHARED xVerts()
   Next i
 End Statement
 
-Statement TransformObject{tX.f, tY.f, tZ.f}
+Statement TransformObject{tX.q, tY.q, tZ.q}
 SHARED xVerts()
 
   For i.w = 1 To numVertices
@@ -489,7 +458,7 @@ SHARED xVerts()
   Next i
 End Statement
 
-Statement ScaleObject{fX.f, fY.f, fZ.f}
+Statement ScaleObject{fX.q, fY.q, fZ.q}
 SHARED xVerts()
 
   For i.w = 1 To numVertices
@@ -503,8 +472,11 @@ Statement ApplyPerspective{}
 SHARED xVerts()
 
   For i.w = 1 To numVertices
-    xVerts(i)\x = 1.0 * (#hw * xVerts(i)\x) / xVerts(i)\z
-    xVerts(i)\y = 1.0 * (#hh * xVerts(i)\y) / xVerts(i)\z
+    ;-- divide first: #hw * x could leave the quick range for large x
+    If xVerts(i)\z > 0
+      xVerts(i)\x = xVerts(i)\x / xVerts(i)\z * #hw
+      xVerts(i)\y = xVerts(i)\y / xVerts(i)\z * #hh
+    EndIf
   Next i
 End Statement
 
@@ -517,20 +489,49 @@ End Statement
 
 Statement CopyFaces{}
 SHARED faces(), xFaces()
-  For i.w = 0 To numFaces
-    CopyType faces(i), xFaces(i)
+  ;-- all faces visible, unsorted (as before)
+  ClearList xFaces()
+  numFacesX = 0
+  For i.w = 0 To numFaces - 1
+    If AddLast(xFaces())
+      CopyType faces(i), xFaces()
+      numFacesX + 1
+    EndIf
   Next
-  numFacesX = numFaces
 End Statement
 
-Function.f getMaxZSize{}
+Function.q getMaxZSize{}
 SHARED verts()
 
-  DEFTYPE.f tempZ
+  DEFTYPE.q tempZ
   For i.w = 1 To numVertices
     If Abs(verts(i)\z) > tempZ Then tempZ = Abs(verts(i)\z)
   Next
   Function Return tempZ
+End Function
+
+;-- Scale the model so that its largest coordinate is #MODELSIZE.
+;-- This keeps all intermediate values (products, squares) inside the quick range,
+;-- independent of the units used in the .obj file. The picture doesn't change,
+;-- because the camera distance (tz) is calculated from the model size.
+Statement NormaliseModel{}
+SHARED verts()
+  DEFTYPE.q m, f
+
+  For i.w = 1 To numVertices
+    If Abs(verts(i)\x) > m Then m = Abs(verts(i)\x)
+    If Abs(verts(i)\y) > m Then m = Abs(verts(i)\y)
+    If Abs(verts(i)\z) > m Then m = Abs(verts(i)\z)
+  Next
+
+  If m > 0
+    f = #MODELSIZE / m
+    For i = 1 To numVertices
+      verts(i)\x = verts(i)\x * f
+      verts(i)\y = verts(i)\y * f
+      verts(i)\z = verts(i)\z * f
+    Next
+  EndIf
 End Statement
 
 
@@ -541,7 +542,7 @@ objfile.s = "/Data/models/cube.obj"
 ;objfile.s = "/Data/models/pyramid.obj"
 ;objfile.s = "/Data/models/octahedron.obj"
 ;objfile.s = "/Data/models/diamond.obj"
-;objfile.s = "/Data/models/sphere3.obj"
+objfile.s = "/Data/models/sphere3.obj"
 ;objfile.s = "/Data/models/humanoid_quad.obj"
 ;objfile.s = "/Data/models/humanoid_tri.obj"
 ;objfile.s = "/Data/models/spitf3.obj"
@@ -553,6 +554,7 @@ If NOT LoadModel{objfile}
   NPrint "not ok"
   End
 EndIf
+NormaliseModel{}
 
 
 ;-- Install font as number 1
@@ -564,9 +566,11 @@ If suc<>#font
 EndIf
 
 
-;-- init the output and some fancy colors
+;-- init the doubel buffering output and some fancy colors
+BitMap 1,320,256,4
 BitMap 0,320,256,4
 Gosub getPointer
+
 BLITZ
 Slice 0,44,4: Show 0
 InitPalette 0,16
@@ -575,6 +579,7 @@ For i.w = 0 To 15
 Next
 ShowPalette 0
 Pointer 0,0
+
 ;-- set bitmap 0 as output bitmap for print operations
 BitMapOutput 0
 FNSOutput 0,1
@@ -584,14 +589,7 @@ FNSOutput 0,1
 ; -- adjust the transformation to a suitable value
 ; --
 
-  ;light\x = .3
-  ;light\y = -.3
-  ;light\z = .91
-  ;light\x = .577
-  ;light\y = -.577
-  ;light\z = .577
-
-tx.f = 0 : ty.f = 0 : tz.f = getMaxZSize{} * 2.5
+tx.q = 0 : ty.q = 0 : tz.q = getMaxZSize{} * 2.5
 config\renderMode = #RENDER_WIREFRAME
 config\culling = True : config\normals = True
 
@@ -603,29 +601,38 @@ light\z = 1
 ; -- main loop
 ; --
 Mouse On : BlitzKeys On : exit.b = False
-Repeat
-  startTime.f = Timer
-  lastkey.w = BlitzKey
+db.w = 1
 
+;-- frame counter: total number of frames and frames per second,
+frameCount.l = 0                   ; frames since program start
+fpsFrames.l  = 0                   ; frames since the last FPS update
+fpsStart.l   = Timer               ; time of the last FPS update
+fps10.l      = 0                   ; frames per second * 10 (one decimal place without floats)
+
+Repeat
+  startTime.l = Timer
+  lastkey.w = BlitzKey
+  ;-----------
   CopyVerts{}
-  RotateObject{angleX.f,angleY.f,angleZ.f}
+  RotateObject{angleX.q,angleY.q,angleZ.q}
   TransformObject{tx,ty,tz}
   ScaleObject{0,0,0}
   If config\normals Then CalcNormals{}
   If config\culling Then CullFaces{} Else CopyFaces{}
   ApplyPerspective{}
 
-
-  Cls : VWait 1
+  Use BitMap db : BitMapOutput db : FNSOutput db,1
+  Cls
   DrawObject{}
   If config\showLight Then DrawLight{15}
-
-  endTime.f = Timer
+  ;-----------
+  endTime.l = Timer
 
   Locate 0,0 : Colour 15
   NPrint objfile
-  NPrint "Frame time: ", endTime - startTime
-  NPrint "Triangles: ", numFaces + 1,", Vertices: ", numVertices + 1
+  NPrint "Frame time: ", endTime - startTime, " / 50 s"
+  NPrint "Frames: ", frameCount, "  FPS: ", fps10 / 10, ".", fps10 MOD 10, "   " 
+  NPrint "Triangles: ", numFaces,", Vertices: ", numVertices      ;FIX both are counts now
   NPrint "Faces culled: ", numFaces - numFacesX
   NPrint "transform: ",tx," ",ty," ",tz
   NPrint "(L) (V) (C) (N) (I) (D) (W) (F) (+) (-)"
@@ -634,7 +641,22 @@ Repeat
 
   If lastkey<>-1 Then olastkey.w = lastkey
   NPrint olastkey
-  VWait 5
+
+  ;-- show the finished picture and swap the buffers
+  VWait : Show db
+  db = 1 - db
+
+  If #FRAMEWAIT > 0 Then VWait #FRAMEWAIT
+
+  ;-- update the frame counter (includes drawing, text output and VWait)
+  frameCount + 1
+  fpsFrames + 1
+  now.l = Timer
+  If now - fpsStart >= 50
+    fps10 = fpsFrames * 500 / (now - fpsStart)
+    fpsFrames = 0
+    fpsStart = now
+  EndIf
 
   Select lastkey
 
@@ -659,11 +681,12 @@ Repeat
   End Select
 
   If Joyb(0) 
-    light\x = (MouseX-#hw) / #hw * 1.0
-    light\y = (MouseY-#hh) / #hh * 1.0
+    light\x = 1.0 * (MouseX - #hw) / #hw
+    light\y = 1.0 * (MouseY - #hh) / #hh
   EndIf
 
   angleY + (Pi / 128.0)
+  If angleY > 2 * Pi Then angleY - 2 * Pi    ; keep the angle small (quick range)
   angleX = Pi + 0.05
 
 Until exit = True
