@@ -72,7 +72,8 @@ Zeilenende.
 
 **New-Syntax-Modus** – Zustand, der durch Bit 2 des Arguments von `OPTIMIZE`
 eingeschaltet wird (`OPTIMIZE 4`, `OPTIMIZE 5`, …). Er beeinflusst u. a. den
-Macro-Aufruf ohne `{}`, String-Escapes, `@"…"`-Literale und `@@`.
+Macro-Aufruf ohne `{}`, String-Escapes und `@"…"`-Literale (`@@` und `:@`
+wirken auch ohne ihn, [04-lexical.md §4.11](04-lexical.md#411-zeilenfortsetzung-)).
 `OPTIMIZE n` setzt alle Optimierungsflags neu, d. h. `OPTIMIZE 1` *schaltet den
 New-Syntax-Modus aus*. Zu Beginn jedes Compiler-Durchlaufs ist er aus.
 **[C]** `do_OPTIMIZE` (Z. 26829), Rücksetzen Z. 2584.

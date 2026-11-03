@@ -24,7 +24,7 @@ Einordnung:
 
 | Nr. | Thema | Einordnung | Belege |
 |---|---|---|---|
-| [A1](#a1-zeilenfortsetzung--in-der-hauptdatei) | `@@` in der Hauptdatei | Bug | V-JOIN-1/4/6a |
+| [A1](#a1-zeilenfortsetzung--in-der-hauptdatei) | `@@` in der Hauptdatei (erstes Zeichen der Folgezeile) | Bug + Doku | V-JOIN-1/4/6a, V-JOIN-7a–7k |
 | [A2](#a2--in-macro-argumenten) | `@@` in Macro-Argumenten | Bug | V-MAC-ARG-4, V-JOIN-6b |
 | [A3](#a3-einzeilige-macros-in-ausdrücken) | Einzeilige Macros in Ausdrücken | Bug | V-MN-6/7, V-MAC-TR, D-AB3G-2 |
 | [A4](#a4-code-hinter-end-macro) | Code hinter `End Macro` ignoriert | Bug | V-MAC-AE-1/2 |
@@ -57,15 +57,27 @@ führendem `_` funktionieren wie beschrieben (D-BPG-1/2/3/4/5/7/9).
   fortgesetzt werden (New-Syntax-Modus). „compiler changes“: `@@` funktioniert
   **nicht** in Include-Dateien (eigene Fehlermeldung „Joining lines with @ @
   does not work in includes“).
-* **Ist:** Genau umgekehrt. In der Hauptdatei führt `NPrint "a", @@` + `"b"`
-  zu „Syntax error!“ und Folgefehlern – im CLI-Modus und in der IDE, mit und
-  ohne `OPTIMIZE 4`. In einer Include-Datei funktioniert dieselbe Zeile
-  (Ausgabe `ab`). `Tests/macro_test.ab3` im Repository verwendet `@@` genau so.
+* **Ist:** In der Hauptdatei funktioniert `@@` hinter Befehlsparametern,
+  aber nur, wenn die Folgezeile **eingerückt** ist: Das erste Zeichen der
+  Folgezeile wird verschluckt. `NPrint "a", @@` + `··"b"` gibt `ab` aus,
+  `NPrint "a", @@` + `"b"` (Spalte 0) ergibt „Syntax error!“ und Folgefehler,
+  im CLI-Modus und in der IDE, mit und ohne `OPTIMIZE 4` (V-JOIN-1/4/6a,
+  V-JOIN-7a–7d, 7j, 7k). In einem Ausdruck (`1 + @@`) funktioniert `@@` nicht
+  (V-JOIN-5, 7f). In einer Include-Datei funktioniert `@@` hinter `,` – auch
+  mit der Folgezeile in Spalte 0 (V-JOIN-3) –, direkt hinter einem Parameter
+  dagegen kommt die Meldung „does not work in includes“ (V-JOIN-7h). Der
+  New-Syntax-Modus ist nicht nötig (V-JOIN-7a). `Tests/macro_test.ab3`
+  Z. 78/79 hat die Folgezeile in Spalte 0 und scheitert deshalb.
 * **Code:** Die Fortsetzung wird an mehreren Stellen ad hoc behandelt
   (`countpees` Z. 7849 ff., `fetchpees3` Z. 8116/8283 ff., `eval2` Z. 13586).
-  Für die Hauptdatei wird `sourceline`/`sourceline3` auf die Folgezeile
-  gesetzt; der Zeilenzähler der Hauptschleife (`numlines2`) wird aber nicht
-  angepasst. Die genaue Ursache des Syntaxfehlers ist nicht analysiert.
+  Für `@@` direkt hinter einem Parameter (`fetchpees3` Z. 8285–8294) wird
+  `sourceline` auf die Folgezeile gesetzt und danach ein Zeichen mit
+  `get1bytemain` gelesen und verworfen. Das passt zum beobachteten
+  Verlust des ersten Zeichens; für die anderen Pfade ist die Ursache nicht
+  im Einzelnen analysiert. Der Zeilenzähler der Hauptschleife (`numlines2`)
+  wird nicht angepasst.
+* **Einordnung:** Bug (verlorenes Zeichen) und Doku (die Einschränkung für
+  Includes betrifft nur `@@` ohne vorangehendes `,`).
 
 ### A2 `@@` in Macro-Argumenten
 
@@ -221,6 +233,10 @@ beim Laden einer Datei geschieht das nicht.
   `CNIF @#X=-1` ist nie wahr.
 * **Einordnung:** Unklar. AmiBlitz verwendet sonst −1 für „wahr“; der Code
   setzt aber ausdrücklich 1. Entweder Doku oder Code anpassen.
+* Außerdem ist `@#name` kein allgemeines Ausdruckselement, wie die Doku
+  nahelegt: Das `@` wirkt nur direkt hinter `CNIF` und gilt dann für jede
+  Konstante der Bedingung; `CNIF #a + @#b = 1` ergibt „Illegal constant
+  expression“ (V-CNIF-7/8, [§5.3](05-conditional.md#53-cnif-bedingung)).
 
 ### B3 Macro-Parameter a bis z und 0
 

@@ -37,6 +37,38 @@ AmiBlitz3 -dump token RAM:tokens.txt
 als Textdatei mit Zeilen `TOKEN <lib>/<index> <name> <hilfetext>` exportiert
 werden (Reihenfolge = Ladereihenfolge). **[C]** `WriteDump`.
 
+**Eingebaute Tokens (Lib 0 und 1).** Die Befehle, Direktiven und
+68000-Mnemonics des Compilers selbst stehen in
+`Sourcecodes/Amiblitz3/Compiler/internal_commands.ab3` (`!token`/`!a`-Einträge,
+eingebunden bei `.internal_commands`, Z. 27468). Es sind **218** Einträge
+(`$8001`–`$80DB`). **[V]** `results/round14/tokens.txt`. Gegenüber dem
+Original-Compiler BlitzBasic 2.10 (Token-Tabelle in `blitz2.s`, 210 Einträge)
+unterscheiden sie sich so:
+
+| Token-Wort | BlitzBasic 2.10 | AmiBlitz3 |
+|---|---|---|
+| `$8014` | (frei, „Jimi“) | `SYNTAX` |
+| `$803B` | (frei, „Jimi“) | `EXTB` |
+| `$807F` | `MOVEP` | `Chip` |
+| `$80AD` | `TAS` | `BSS` |
+| `$80D2`, `$80D3` | `Runerrson`, `Runerrsoff` | `RunErrsOn`, `RunErrsOff` (wegen des case-sensitiven Vergleichs wichtig) |
+| `$80D4`–`$80DB` | – | `USELASTPATH`, `RegLoad`, `RegSave`, `Object`, `USEPATH2`, `LastRunErrsMode`, `KEEP`, `OPTIMIZE` |
+
+Alle anderen Namen und Nummern sind gleich. Tokenisierte `.bb2`-Dateien
+aus BlitzBasic 2 bleiben damit für Lib 0/1 lesbar. Die Lib-Tokens dagegen
+haben andere Nummern (AmiBlitz3 hat die Bibliotheken neu geordnet).
+
+**Prüfen der Tokenisierung.** `AmiBlitz3 -s QUELLE -save ZIEL.bb2` lädt den
+Quelltext wie für eine Übersetzung (L0 und L1, einschließlich der Kürzung aus
+[02-source-files.md §2.3](02-source-files.md#23-zeilen)) und schreibt die
+tokenisierten Zeilen, jede mit ihrem 0-Byte, ohne zu übersetzen
+(`SaveSource`, CLIModeSupport.ab3 Z. 1016). Das ist die Ausgabe von L1 und eignet sich
+als Referenz für einen Nachbau. **[V]** V-TOK-8: Aus
+`NPrint "V-TOK-8 x" : a$ = Str$(5) : execbase = 1 : show2{1}` wird
+`[NPrint] "V-TOK-8 x" : a$ = [Str$](5) : execbase = 1 : show2{1}`
+(`$DD82`, `$DD83`). `execbase` bleibt ein Name, obwohl es das Token `ExecBase`
+gibt (case-sensitiv), und in `show2` wird `Show` nicht erkannt (§3.3).
+
 Eigenschaften der Tabelle der Standardinstallation (`AB3`-Distribution,
 Commit `6efd21ef`; **[V]** V-TOK-0/7, `results/round2/tokens.txt`):
 

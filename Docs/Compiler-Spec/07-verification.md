@@ -16,7 +16,7 @@ results/done                  Ende-Markierung
 ```
 
 Die Ergebnisse der bisherigen Läufe liegen in `results/round1/` bis
-`results/round3/` (CLI) sowie `results/round4-ide/` und `results/round5-ide/` (IDE); der gcc-Machbarkeitstest steht in `results/round9-spike/` (siehe [10.7](10-assembler-usage.md#107-machbarkeitstest-asm-block-in-einem-gcc-backend)).
+`results/round3/` (CLI) sowie `results/round4-ide/` und `results/round5-ide/` (IDE); der gcc-Machbarkeitstest steht in `results/round9-spike/` (siehe [10.7](10-assembler-usage.md#107-machbarkeitstest-asm-block-in-einem-gcc-backend)). Runde 14 (`results/round14/`) enthält Nachprüfungen, u. a. zu `@@`, Includes und `CNIF @`.
 
 ## 7.1 Testumgebung
 
@@ -36,6 +36,21 @@ Ablauf auf dem Host:
 1. `python3 make_run_script.py [probe …] > run.script`
    (ohne Argumente: alle Probes außer Include-Teildateien).
 2. Amiberry starten, auf `results/done` warten, Amiberry beenden.
+
+**Ohne Fenster (Runde 14):** Amiberry lässt sich unsichtbar betreiben, wenn
+`DISPLAY`, `WAYLAND_DISPLAY`, `XDG_ACTIVATION_TOKEN` und `DESKTOP_STARTUP_ID`
+entfernt und `SDL_VIDEO_DRIVER=offscreen`, `SDL_AUDIO_DRIVER=dummy` gesetzt
+sind, mit `use_gui=no` in der Konfiguration. Runde 14 lief so auf einer
+A1200-Konfiguration (68020 + 68882, Workbench 3.2). Die Verzeichnisse wurden
+als Volumes `AB3:` und `SPEC:` eingehängt, und das Startskript war
+`Assign Blitz3: AB3:` gefolgt von `Execute SPEC:run.script`. Achtung: Die
+gespeicherte Konfiguration `A1200-AB3.uae` muss `SPEC:` auf **dieses**
+Verzeichnis zeigen lassen, sonst schreibt der Lauf woanders hin.
+
+`make_run_script.py` schreibt seit Runde 14 hinter jede Übersetzung den
+Rückgabewert (`rc=…`) in die `.compile.txt`. Proben in `SAVE_ONLY` werden nur
+mit `-save` tokenisiert (Ergebnis `results/<probe>.bb2`, siehe
+[03-tokenizer.md §3.2](03-tokenizer.md#32-token-tabelle)).
 
 ### 7.1.1 IDE-Tests per ARexx
 
@@ -200,8 +215,38 @@ Wörtlich übernommene Beispiele aus `BlitzProgrammers.guide` (BPG) und
 | D-AB3G-4 | ab3g_debug_const | `#__debug` = 0 (ohne Debugger) | ✔ |
 | D-AB3G-5 | ab3g_optional_noparam | `!hello{}` → „Syntax error! → {}“ | ✘ |
 
+### Runde 14: Nachprüfungen
+
+Nachprüfung weiterer Aussagen aus der Codeanalyse und von Widersprüchen zu
+früheren Runden (`probes/r14_*`,
+`results/round14/`).
+
+| ID | Probe | Ergebnis | |
+|---|---|---|---|
+| V-JOIN-7a/7b | r14_join_plain | Hauptdatei ohne `OPTIMIZE`, Folgezeilen eingerückt: `bc` (alle drei Teile), `Str$(@@` ⏎ `3)` → `3` | ✘ (widerlegt V-JOIN-1/4 als allgemeine Aussage) |
+| V-JOIN-7c | r14_join_hdr | dto. mit XTRA-Header: `bc` | ✘ |
+| V-JOIN-7d | r14_join_col0 | Folgezeile in Spalte 0 → „Syntax error!“ | ✔ (Ursache der früheren Fehler) |
+| V-JOIN-7e/7f | r14_join_ns | `OPTIMIZE 4`: Parameterliste ok, `1 + @@` ⏎ `··2` → „Syntax error!“ | ◐ |
+| V-JOIN-7g | r14_join_noparam | `NPrint "a" @@` ⏎ `··,"b"` → `ab` | ✔ |
+| V-JOIN-7h | r14_join_inc_main | dto. in einem Include → „Joining lines with @ @ does not work in includes“ | ✔ |
+| V-JOIN-7j | r14_join_first | eine Leerstelle Einrückung genügt (`b`) | ✔ |
+| V-JOIN-7k | r14_join_macro | `!mk` in Spalte 0 → „Garbage at the end of line → mk“ (das `!` fehlt) | ✔ |
+| V-MAC-ARG-5 | r14_mac_argjoin | `!cnt{a,@@` ⏎ `··b}` → „Garbage at the end of line → b}“ | ✔ |
+| V-CNIF-7 | r14_cnif_at | `CNIF @#zq + #zq = 2`, `CNIF @#zq + #zr = 1` wahr, `CNIF @#zr` falsch | ✔ |
+| V-CNIF-8 | r14_cnif_at_err | `CNIF #zq + @#zq = 6` → „Illegal constant expression“ (auch in den Folgezeilen) | ✔ |
+| V-LONG-4 | r14_longline | nach einer Zeile mit 260-Zeichen-Kommentar fehlen alle weiteren Zeilen („2 line(s) compiled“) | ✘ |
+| V-INC-2 | r14_inc_nolf_main | Include ohne letzten Zeilenumbruch: letzte Zeile fehlt | ✘ |
+| V-INC-3 | r14_inc_h | `INCLUDE "r14_defs.h"` → „You can only include tokenized files (.bb2 \|.bb)“ | ✔ |
+| V-INC-4 | r14_inc_bb | Textdatei `r14_text.bb` als tokenisiert gelesen → „Garbage at the end of line“ | ✔ |
+| V-INC-5 | r14_xinc | `XINCLUDE` „x.ab3“, `XINCLUDE` „x“, 2× `INCLUDE` „x.ab3“ → 3 Ausgaben | ✔ |
+| V-TOK-8 | r14_save | `-save`: tokenisierte Zeilen; `execbase`, `show2` bleiben Namen | ✔ |
+| V-CLI-RC | alle | Rückgabewert 0 auch nach Compilerfehlern | ✘ (I-52) |
+
 ## 7.3 Offene Punkte
 
 * Abbildung alter Token-Wörter (`replacedat`, von den Bibliotheken registriert) – wird für Resident-Dateien gebraucht; ein Export fehlt noch (z. B. als zusätzliche `-dump`-Option).
 * Ursache für „Code hinter `End Macro` wird ignoriert“ im Code nachvollziehen.
 * `.bb2`-Eingabe und `~…~` aus `.bb2` (keine Testdatei vorhanden).
+* `@@` innerhalb eines Strings außerhalb von Macro-Rümpfen (§4.11).
+* Eigene Definition von `#__debug`/`#__include` im Quelltext (§5.3.1).
+* Relocations in `BSS`/`Chip`-Abschnitten (I-54) im Original prüfen.

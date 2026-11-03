@@ -283,7 +283,9 @@ Parameter endet, und der nächste beginnt am Anfang der nächsten physischen
 Zeile. Die Zeilenverwaltung wird dabei aber nicht weitergeschaltet: Die
 Folgezeile wird **anschließend noch einmal als eigene Zeile übersetzt**.
 **[V]** V-MAC-ARG-4: `!cnt{a,@@` ⏎ `b}` → „Garbage at the end of line
-→ b}“, in der IDE identisch (V-JOIN-6b). In der Praxis ist `@@` in Macro-Argumenten damit **unbrauchbar**; ein
+→ b}“, in der IDE identisch (V-JOIN-6b). Eine eingerückte Folgezeile ändert
+daran nichts (V-MAC-ARG-5), anders als bei `@@` in Befehlsparametern
+([04-lexical.md §4.11](04-lexical.md#411-zeilenfortsetzung-)). In der Praxis ist `@@` in Macro-Argumenten damit **unbrauchbar**; ein
 Nachbau sollte es entweder korrekt implementieren oder ablehnen. In
 Include-Dateien ist `@@` hier ein Fehler (**[C]**).
 

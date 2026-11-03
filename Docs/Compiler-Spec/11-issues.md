@@ -24,9 +24,9 @@ Code abgeleitet.
 
 | ID | Einstufung | Problem | Beleg | Details |
 |---|---|---|---|---|
-| I-01 | Bug | Zeilenfortsetzung `@@` hinter Befehlsparametern scheitert in der Hauptdatei (CLI und IDE), funktioniert in Include-Dateien – entgegen der Doku. | [V] V-JOIN-1/4/6a | [§4.11](04-lexical.md#411-zeilenfortsetzung-), [A1](08-doc-differences.md#a1-zeilenfortsetzung--in-der-hauptdatei) |
+| I-01 | Bug | Zeilenfortsetzung `@@` in der Hauptdatei: Das erste Zeichen der Folgezeile wird verschluckt. Eingerückte Folgezeilen funktionieren, eine Folgezeile in Spalte 0 ergibt einen Syntaxfehler (CLI und IDE; betrifft `Tests/macro_test.ab3`). In Include-Dateien funktioniert `@@` nur hinter `,`, entgegen der Doku („nicht in Includes“). In Ausdrücken (`1 + @@`) funktioniert es nie. | [V] V-JOIN-1/4/6a, V-JOIN-7a–7k | [§4.11](04-lexical.md#411-zeilenfortsetzung-), [A1](08-doc-differences.md#a1-zeilenfortsetzung--in-der-hauptdatei) |
 | I-02 | Bug | Das letzte Wort einer Datei ohne abschließenden Zeilenumbruch wird nicht tokenisiert (`… EndIf` → „'If' without 'End If'“). | [V] V-EOF-2 | [§3.4](03-tokenizer.md#34-algorithmus) |
-| I-03 | Bug | Zeilen über 250 Bytes (tokenisiert) werden in der Hauptdatei ohne Meldung abgeschnitten; in Include-Dateien nicht. | [V] V-LONG-1–3 | [§2.3](02-source-files.md#23-zeilen) |
+| I-03 | Bug | Eine Zeile über 250 Bytes (tokenisiert) in der Hauptdatei wird ohne Meldung abgeschnitten, **und alle folgenden Zeilen gehen verloren** (`LoadSource` liest sie mit `PeekT(…,10)` bis zum Pufferende); in Include-Dateien nicht. | [V] V-LONG-1–4 | [§2.3](02-source-files.md#23-zeilen) |
 | I-04 | Bug | `:@` (Code im Kommentar) wirkt nur am Zeilenanfang und nach Befehlsparametern, nicht nach Zuweisungen und nicht in Macro-Rümpfen; Keywords dahinter werden nie tokenisiert. Fehlt `:@`, gibt es keine Meldung. | [V] V-CMT-1–5 | [§4.3](04-lexical.md#43-kommentare), [A8](08-doc-differences.md#a8--im-kommentar) |
 | I-05 | Bug (Regression) | Das CMake-Zeichen `~…~` funktioniert nicht mehr: Der Compiler erwartet `$7F`, der ASCII-Tokenizer entfernt `$7F` und lässt `~` stehen. | [V] D-BPG-6, V-TILDE-1 | [§4.10](04-lexical.md#410-konstanten-einfügung-ausdruck-legacy), [A5](08-doc-differences.md#a5-cmake-zeichen--funktioniert-nicht-mehr) |
 | I-06 | Bug | Bytes ≥ `$80` außerhalb von Strings und Kommentaren werden kommentarlos durch `?` ersetzt. | [C] | [§3.3](03-tokenizer.md#33-zeichenklassen) |
@@ -34,6 +34,8 @@ Code abgeleitet.
 | I-08 | Bug | Token-Namen mit `.` (`Largest.l`, `Smallest.q`, `Avg.l` … in Lib 105) können nie erkannt werden; `Largest.l(a,b)` ruft die untypisierte Variante `Largest` auf. | [C] Tokenizer, Token-Tabelle | [§3.2](03-tokenizer.md#32-token-tabelle) |
 | I-09 | Fragil | 9 Token-Namen sind doppelt vergeben (`fadd`, `fsub`, `fmul`, `fdiv`, `fneg`, `STOP`, `DBactive`, `MakeDir`, `PeekMax$`); es gilt die erste Lib in Ladereihenfolge, die übrigen sind unerreichbar. | [V] tokens.txt | [§3.2](03-tokenizer.md#32-token-tabelle) |
 | I-10 | Grenze | Leerzeichen innerhalb von Zahlliteralen werden ignoriert (`12 34` = 1234). | [V] V-WS-1 | [§4.1.1](04-lexical.md#411-folgen-für-die-syntax) |
+| I-50 | Bug | Die letzte Zeile einer Include-Datei ohne abschließenden Zeilenumbruch wird ohne Meldung nicht übersetzt. | [V] V-INC-2 | [§2.3](02-source-files.md#23-zeilen) |
+| I-51 | Fragil | Die Art einer Include-Datei hängt nur von den letzten drei Zeichen des Namens ab, case-sensitiv (`ab3`, `AB3`, `ab2` = Text; `bb2`, `.bb` = tokenisiert). `x.Ab3` oder `x.AB2` werden abgelehnt, eine Textdatei `x.bb` wird als tokenisiert gelesen. Der Hauptquelltext wird dagegen case-insensitiv eingeordnet. | [V] V-INC-3/4, [C] `processInclude` | [§2.4.1](02-source-files.md#241-art-der-include-datei) |
 | I-11 | Fragil | Fehlt im Hauptquelltext die Zeile `; /XTRA`, wird die gesamte Datei als Header gelesen; Zeilen mit `=` können Projekteinstellungen verändern. Hauptdatei und Includes erkennen den Header mit unterschiedlichen Algorithmen. | [C] | [§2.2](02-source-files.md#22-xtra-header) |
 
 ## 11.2 Compiler: Escape-Sequenzen
@@ -65,7 +67,7 @@ Code abgeleitet.
 | ID | Einstufung | Problem | Beleg | Details |
 |---|---|---|---|---|
 | I-26 | Unklar | `#__include` und `@#name` liefern 1 statt −1 (Doku); `CNIF @#X=-1` ist nie wahr. | [V] V-INC-1, V-CNIF-3 | [B2](08-doc-differences.md#b2-werte-von-__include-und-name) |
-| I-27 | Fragil | Das `@` in `CNIF @#X` gilt für den ganzen Ausdruck: `CNIF @#A AND #B=2` ist auch für `#B` ein Definiertheitstest. | [C] | [§5.3](05-conditional.md#53-cnif-bedingung) |
+| I-27 | Fragil | Das `@` in `CNIF @#X` gilt für den ganzen Ausdruck: `CNIF @#A AND #B=2` ist auch für `#B` ein Definiertheitstest. Ein `@` an anderer Stelle der Bedingung ist ein Fehler. | [V] V-CNIF-7/8 | [§5.3](05-conditional.md#53-cnif-bedingung) |
 | I-28 | Fragil | Jedes weitere `CELSE` auf derselben Ebene schaltet erneut um. | [V] V-CNIF-5 | [§5.2](05-conditional.md#52-semantik) |
 
 ## 11.5 Laufzeit, Bibliotheken, Assembler
@@ -82,6 +84,14 @@ Code abgeleitet.
 | I-32 | Doku | `GetReg` wird in generierten Includes auch mit Adressregistern benutzt (`GetReg a6,*_AmiSSLMasterBase`); die BPG sagt „only data registers“. | [C] | [§10.3](10-assembler-usage.md#103-wrapper-macros-für-os-libraries) |
 | I-33 | Fragil | `all.res` enthält Token-Wörter alter Lib-Nummern (`$B58D`, `$B593`, `$DC86`, `$DC87`), die nur über die von den Libs registrierte Tabelle `replacedat` auf aktuelle Tokens abgebildet werden. Fehlt eine Lib, sind die betroffenen Macros defekt. | [V] `res_macros.py` | [§6.1.1](06-macros.md#611-macros-in-resident-dateien) |
 | I-34 | Unklar | Argumenttyp `8` bedeutet in `libmacs.ab3` sowohl `#double` (neu in AB3) als auch das Flag `#unknown`. | [C] | [§9.2.2](09-blitzlibs.md#922-token-einträge) |
+
+## 11.5a Compiler: CLI-Modus und Ausgabedatei
+
+| ID | Einstufung | Problem | Beleg | Details |
+|---|---|---|---|---|
+| I-52 | Bug | Der CLI-Modus (`AmiBlitz3 -s … -e …`) liefert auch nach Compilerfehlern den Rückgabewert 0; ein Build-Skript kann einen Fehler nur an der fehlenden Ausgabedatei erkennen. | [V] alle Proben der Runde 14 (`rc=0` nach „A unknow error happend!“) | [§7.2](07-verification.md#runde-14-nachprüfungen) |
+| I-53 | Bug | Beim Start nimmt AmiBlitz3 `Blitz3:Libs` in die Mehrfachzuweisung `LIBS:` auf, ohne zu prüfen, ob das Verzeichnis existiert (`dos_AddAssign`). Fehlt es, wird `AssignAdd_` mit Lock 0 aufgerufen, und es entsteht ein Eintrag ohne Verzeichnis, den das Entfernen beim Beenden nicht wiederfindet. | [C] `AmiBlitz3.ab3` Z. 344–346, `dos.include.ab3` Z. 1066–1075 | – |
+| I-54 | Bug | Relocations in den mit `BSS`/`Chip` abgetrennten Abschnitten: Alle RELOC32-Tabellen für den Code-Hunk werden mit Zielhunk 0 geschrieben („always segment 0“), und die Offsets werden nur für Einträge **hinter** dem Chip-/BSS-Abschnitt verschoben. Ein `Dc.l label` innerhalb des Chip-Abschnitts wird daher mit einem falschen Offset im Code-Hunk reloziert; `LoadSeg` verändert dann eine falsche Stelle. Nicht im Original nachgeprüft. | [C] Z. 10077–10130 | – |
 
 ## 11.6 IDE (PED)
 

@@ -16,7 +16,10 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 PROBES = HERE / "probes"
 # include-only files are compiled through their main file
-INCLUDE_ONLY = {"include_sub", "join_inc_sub"}
+INCLUDE_ONLY = {"include_sub", "join_inc_sub", "r14_join_inc_bad",
+                "r14_inc_nolf_sub", "r14_xsub"}
+# probes that are only tokenised and saved (-save), not compiled
+SAVE_ONLY = {"r14_save"}
 # probes that may crash the compiler run last
 LAST = ["esc_empty"]
 
@@ -44,9 +47,16 @@ def main(argv):
         src = f"SPEC:probes/{n}.ab3"
         exe = f"RAM:{base}"
         res = f"SPEC:results/{base}"
+        if base in SAVE_ONLY:
+            out += [
+                f"Echo \"{n}\" >>SPEC:results/progress.txt",
+                f"AmiBlitz3 -s {src} -save {res}.bb2 >{res}.compile.txt",
+            ]
+            continue
         out += [
             f"Echo \"{n}\" >>SPEC:results/progress.txt",
             f"AmiBlitz3 -s {src} -e {exe} >{res}.compile.txt",
+            f"Echo \"rc=$RC\" >>{res}.compile.txt",
             f"IF EXISTS {exe}",
             f"  {exe} >{res}.run.txt",
             f"  Delete {exe} QUIET",

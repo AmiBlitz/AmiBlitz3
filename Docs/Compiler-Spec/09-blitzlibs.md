@@ -29,6 +29,21 @@ Die Libs liegen in vier **BigLib-Dateien** im Verzeichnis `BlitzLibs/`:
 `baseLibs`, `utilLibs`, `OsLibs`, `csLibs` (Pfade per Tooltype änderbar)
 sowie optional einzeln in `BlitzLibs/UserLibs/`. **[C]**
 
+* **Ladereihenfolge:** `baseLibs`, `utilLibs`, `OsLibs`, `csLibs`, danach jede
+  Datei des Verzeichnisses `UserLibs/` in Verzeichnisreihenfolge (flach, ohne
+  Unterverzeichnisse). **[C]** Z. 9420–9474. Die Reihenfolge bestimmt, welcher
+  von zwei gleichen Token-Namen gilt ([03-tokenizer.md §3.2](03-tokenizer.md#32-token-tabelle)).
+* **Ersetzen:** Hat eine UserLib die Nummer einer schon geladenen Lib, so
+  ersetzt sie diese. **[C]** `read_userlibsfile` (Z. 27231 ff., Prüfung der
+  Lib-Nummer bei +4 des Lib-Headers).
+* Zum Vergleich BlitzBasic 2.10 (Original-Compiler `blitz2.s`,
+  `loadblitzlibs`): zwei Dateien `acidlibs` und `deflibs`, dazu die Dateien
+  eines gewählten Unterverzeichnisses von `userlibs/`. Die Lib-Nummern von AmiBlitz3 sind andere
+  als die von BlitzBasic 2.10. Die compilerinternen Einsprünge (Lib-Tokens
+  `$C000`–`$D404`, die der Compiler selbst aufruft) liegen aber in beiden
+  unter derselben Nummer; AmiBlitz3 hat nur Einträge angehängt (z. B.
+  `runerrlib` bis `$C320`, `strings2lib` `$C703` `setfpumode`).
+
 Eine BigLib-Datei ist eine Folge von Einträgen, abgeschlossen durch ein
 Langwort 0:
 

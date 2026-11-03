@@ -109,6 +109,14 @@ Lib-Routine darf alle Register außer a4, a5, a7 verändern **[V]** (§10.8.1:
 `NPrint` verändert u. a. a2, a3, a6 und d7). Inline-Routinen (`$A0 $00`) und
 Routinen ohne Code verhalten sich wie in §9.3.2 beschrieben.
 
+Einige Lib-Aufrufe erzeugt der Compiler selbst, ohne dass ein Token im
+Quelltext steht. Ein Nachbau muss diese Nummern kennen. Ein Beispiel ist der
+Operator `^` auf Fließkommawerten: Ohne FPU-Modus ruft er Token `$1601` auf
+(Lib 44, „mathtranslib“), mit FPU-Modus wird ein FPU-Befehl inline erzeugt.
+**[C]** Z. 14555–14566. In BlitzBasic 2.10 ist es Lib 192 (Original-Compiler
+`blitz2.s`, `mathq`). Weitere solche Einsprünge sind die compilerinternen
+Lib-Tokens aus [§9.1](09-blitzlibs.md#91-dateien).
+
 ## 12.6 AmigaOS-Library-Aufrufe
 
 Aufrufe von Funktionen der Betriebssystem-Libraries (exec, dos, intuition …)
@@ -123,6 +131,7 @@ Amiga ROM Kernel Reference Manual.
 | Ausnahme dos.library | auch Zeiger in Datenregistern, Zählung ab **D1** | `Open(name, accessMode)(d1,d2)`, `Read(file,buffer,length)(d1,d2,d3)`, `SetIoErr(result)(d1)` |
 | Ergebnis | in **d0**; einige Funktionen liefern ein zweites Ergebnis in **d1** | `quotient:remainder = UDivMod32(dividend,divisor)` → D0:D1 (utility.doc) |
 | veränderte Register | **d0, d1, a0, a1** dürfen verändert werden, alle anderen (auch a6) bleiben erhalten | RKM-Konvention |
+| Parameter in a4/a5 | Einige Funktionen erwarten Argumente in **a4** oder **a5**. Diese Register tragen in Basic die Variablenbasen (12.1). Der Compiler legt deshalb vor einem solchen Aufruf `MOVEM.l a4/a5,-(a7)` und danach `MOVEM.l (a7)+,a4/a5` in den Code (`checka4a5`/`restorea4a5`, Z. 27110–27135: Registercode `$14`/`$15` in der Argumentbeschreibung). BlitzBasic 2.10 sichert die beiden nicht (Original-Compiler `blitz2.s`, `stamigalib`); nach dem Aufruf sind dort die Variablenbasen verloren | **[C]** |
 | Varargs-Varianten | `…Tags`/Varargs-Stubs (z. B. `BuildEasyRequest`) sind Funktionen aus `amiga.lib` bzw. Inline-Stubs, keine LVO-Einsprünge | intuition.doc „Varargs stub“ |
 
 Die Bibliotheks-Wrapper in den Includes (`amissl.include.ab3` …, §10.3)

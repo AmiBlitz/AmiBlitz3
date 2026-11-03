@@ -10,7 +10,8 @@
 | jede andere | wie `.ab3` behandelt | ja |
 
 **[C]** `LoadSource` (CLIModeSupport.ab3 Z. 437 ff.). Die Endung wird
-case-insensitiv verglichen.
+case-insensitiv verglichen. Das gilt nur für den Hauptquelltext; Include-Dateien
+werden nach einer eigenen, case-sensitiven Regel eingeordnet (§2.4.1).
 
 > Hinweis: In `.bb2`-Dateien hängen die Token-Wörter von den beim Speichern
 > geladenen Bibliotheksnummern ab („Lib-Clash“). Ein Nachbau, der `.bb2`
@@ -76,10 +77,27 @@ enthält.
    300-Zeichen-String ergibt „No terminating quote“. Die IDE (PED) hat eine
    entsprechende Begrenzung im Editor. Für Include-Dateien gibt es **keine**
    Kürzung. **[V]** V-LONG-2 (300 Zeichen werden vollständig ausgegeben).
-4. Fehlt am Dateiende der Zeilenumbruch, so wird die letzte Zeile trotzdem
-   übernommen. **Quirk:** Das letzte Wort einer solchen Zeile wird vom
-   Tokenizer nicht in ein Token umgewandelt (siehe
+
+   **Quirk (Bug): Mit der zu langen Zeile endet der Quelltext.** Alle Zeilen
+   danach gehen ohne Meldung verloren. `LoadSource` liest eine Zeile über
+   250 Bytes noch einmal mit `PeekT(…, 10)`, also bis zum nächsten LF. Nach
+   dem Tokenisieren gibt es aber kein LF mehr, sodass der ganze Rest des
+   Puffers als diese eine Zeile gilt; sie wird dann auf 250 Bytes gekürzt.
+   **[C]** CLIModeSupport.ab3 Z. 480–497, **[V]** V-LONG-4: Eine Zeile mit
+   einem 260 Zeichen langen Kommentar zwischen zwei `NPrint` ergibt
+   „2 line(s) compiled“, und nur das erste `NPrint` wird ausgegeben; schon
+   V-LONG-1 meldete „1 line(s) compiled“ für drei Zeilen. Ein Nachbau sollte
+   die Zeile kürzen (oder einen Fehler melden) und die folgenden Zeilen
+   behalten.
+4. Fehlt am Dateiende des **Hauptquelltexts** der Zeilenumbruch, so wird die
+   letzte Zeile trotzdem übernommen. **Quirk:** Das letzte Wort einer solchen
+   Zeile wird vom Tokenizer nicht in ein Token umgewandelt (siehe
    [03-tokenizer.md §3.4](03-tokenizer.md#34-algorithmus)).
+   Bei einer **Include-Datei** ohne abschließenden Zeilenumbruch geht die
+   letzte Zeile dagegen ganz verloren: Sie wird nicht übersetzt, und zwar ohne
+   Meldung. **Quirk (Bug)**, **[V]** V-INC-2 (das zweite von zwei `NPrint`
+   wird nicht ausgegeben). Vermutlich bricht `read_includeline` (Z. 19412)
+   vor dem abschließenden 0-Byte des Puffers ab. **[?]**
 
 Zeilennummern zählen physische Zeilen ab 1 **nach** dem XTRA-Header (Fehlermeldungen
 und `\\__CODELINE`). **[V]** V-ESC-cl, V-EOF-2.
@@ -100,6 +118,49 @@ Suchreihenfolge für den Dateinamen **[C]** `check_incdir`:
 Für jeden Kandidaten werden nacheinander probiert: der Name selbst, dann
 Endung ersetzt durch `.ab3`, `.ab2`, `.bb2`, dann Name + `.<alte Endung>.ab3`,
 `.ab2`, `.bb2`. **[C]** `ab3_GetIncludeLock`.
+Der Pfad wird mit `AddPart` gebildet; ein Name mit Gerät (`DH0:x.ab3`) wird
+deshalb unverändert genommen. Ab dann gilt der vollständige Name der
+gefundenen Datei (`NameFromLock`, z. B. `SPEC:probes/lib.ab3`) als Name des
+Includes, auch in Fehlermeldungen. **[C]**, **[V]** V-JOIN-7h.
+
+### 2.4.1 Art der Include-Datei
+
+Ob ein Include als Text tokenisiert oder als bereits tokenisierte Datei
+gelesen wird, hängt **nur von den letzten drei Zeichen des gefundenen Namens**
+ab. Sie werden **case-sensitiv** verglichen. **[C]** `processInclude`
+(Z. 20754–20759):
+
+| Ende des Namens | Behandlung |
+|---|---|
+| `ab3`, `AB3`, `ab2` | Text: L0 (Algorithmus 2.2.2) und L1 |
+| `bb2`, `.bb` | bereits tokenisiert, wird roh gelesen |
+| alles andere (auch `Ab3`, `AB2`, `.h`) | Fehler „You can only include tokenized files (.bb2 \|.bb)“ |
+
+**[V]** V-INC-3: `INCLUDE "r14_defs.h"` → dieser Fehler, obwohl die Datei
+existiert (und dann auch, wenn sie nicht existiert, sofern keine der
+Endungs-Varianten aus 2.4 passt). **[V]** V-INC-4: Eine Textdatei
+`r14_text.bb` wird als tokenisiert gelesen; ihr Inhalt ergibt „Garbage at
+the end of line“. Der Inhalt einer Datei wird also nie geprüft.
+
+Hinweis zu BlitzBasic 2: Dort liest `INCLUDE` nur tokenisierte Dateien
+(Original-Compiler `blitz2.s`, `doinclude` → `doinc2` → `readinc`: die Datei
+wird roh gelesen, jedes 0-terminierte Stück ist eine Zeile). Text-Includes,
+die Endungs-Ergänzung und die Suchreihenfolge sind Erweiterungen von
+AmiBlitz.
+
+### 2.4.2 Wiederholte Includes
+
+* `XINCLUDE` überspringt eine Datei, deren **Dateiteil** (Name ohne Pfad)
+  schon einmal mit `XINCLUDE` eingebunden wurde. Verglichen wird der
+  gefundene Name, deshalb wird `XINCLUDE "lib"` nach `XINCLUDE "lib.ab3"`
+  ebenfalls übersprungen. **[C]** `do_xinclude` (Z. 20615), **[V]** V-INC-5.
+* `INCLUDE` derselben Datei zweimal nacheinander übersetzt sie **zweimal**.
+  **[V]** V-INC-5 (`XINCLUDE`, `XINCLUDE` ohne Endung, `INCLUDE`, `INCLUDE`
+  derselben Datei → drei Ausgaben).
+* Nur eine Datei, die gerade **offen** ist (ein Include, das sich direkt oder
+  über andere Includes selbst einbindet), ergibt einen Fehler. `findinclude`
+  (Z. 11243) durchsucht nur die offenen Includes, wie `findinc` im
+  Original-Compiler `blitz2.s`. **[C]**
 
 Die Konstante `#__include` ist im Hauptquelltext `0` und während der
 Verarbeitung einer Include-Datei `1` (nach dem Verlassen der letzten

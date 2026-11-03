@@ -79,7 +79,10 @@ wenn der Wert **≠ 0** ist. Vergleichsoperatoren gehören zum Ausdruck
 
 **Definiertheitstest:** Beginnt die Bedingung mit `@`, so wird im gesamten
 folgenden Ausdruck jede Konstante `#name` durch 1 (definiert) bzw. 0 (nicht
-definiert) ersetzt (`incnif`-Flag, `fetch_Constant`). Beispiel:
+definiert) ersetzt (`incnif`-Flag, `fetch_Constant`). Für eine nicht
+definierte Konstante gibt es dabei keinen Fehler „Constant not found“.
+**[C]** `getchar` Z. 10677–10686 (das `@` wird nur als erstes Zeichen nach
+`CNIF` gelesen), `fetch_Constant` Z. 15409–15412 (`findlabel2`). Beispiel:
 
 ```
 CNIF @#DEBUG=0          ; übersetzen, wenn #DEBUG nicht definiert ist
@@ -89,7 +92,34 @@ CNIF @#DEBUG=0          ; übersetzen, wenn #DEBUG nicht definiert ist
   **[V]** V-CNIF-3: `CNIF @#X=1` übersetzt, `CNIF @#X=-1` nicht; `CNIF @#X`
   und `CNIF @#Y … CELSE` verhalten sich wie erwartet.
 * Da das Flag für den ganzen Ausdruck gilt, ist `CNIF @#A AND #B=2` ein
-  Definiertheitstest auch für `#B`. **Quirk.**
+  Definiertheitstest auch für `#B`. **Quirk**, **[V]** V-CNIF-7: mit `#zq`
+  definiert und `#zr` nicht sind `CNIF @#zq + #zq = 2` und
+  `CNIF @#zq + #zr = 1` wahr, `CNIF @#zr` ist falsch.
+* Ein `@` an anderer Stelle der Bedingung ist ein Fehler „Illegal constant
+  expression“ (`CNIF #zq + @#zq = 6`). **[V]** V-CNIF-8. Der Fehler wird auch
+  für die folgenden Zeilen wiederholt (Fehlerbehandlung des Compilers).
+* Der Test sucht in der gemeinsamen Liste der Labels und Konstanten
+  (`findlabel2`). Ein gleichnamiger Eintrag anderer Art zählt deshalb
+  vermutlich ebenfalls als „definiert“. **[?]**
+
+### 5.3.1 Vordefinierte Konstanten
+
+Zu Beginn jedes Compiler-Durchlaufs trägt der Compiler zwei Konstanten in die
+Konstantenliste ein, **bevor** der Quelltext gelesen wird. **[C]** Z. 3405–3443:
+
+| Konstante | Wert |
+|---|---|
+| `#__include` | 0; beim Öffnen eines Includes 1, nach dem Schließen des letzten wieder 0 (§[2.4](02-source-files.md#24-include--xinclude)) **[V]** V-INC-1 |
+| `#__debug` | Wert von `debugmode` (Byte, vorzeichenerweitert): −1, wenn der Laufzeit-Debugger eingeschaltet ist, sonst 0. Im CLI-Modus ohne Debugger immer 0 **[V]** D-AB3G-4 |
+
+Weil es echte Einträge sind, ist `CNIF @#__debug` wahr. Ein gleichnamiger
+Eintrag aus einer Resident-Datei (`all.res` enthält einen Eintrag `__debug`) bekommt
+zu Beginn jedes Durchlaufs den aktuellen Wert: `findlabel2` findet den
+vorhandenen Eintrag, und nur dessen Wert wird überschrieben. **[C]** Was eine
+eigene Definition im Quelltext (`#__debug = 5`) bewirkt (neuer Wert oder
+Fehler wegen doppelter Definition), ist nicht geprüft. **[?]** `#__debug` eignet sich so für Code, der nur in
+Debug-Builds übersetzt werden soll (`CNIF #__debug : … : CEND`). BlitzBasic
+2.10 kennt keine der beiden Konstanten.
 
 ## 5.4 CSIF-Bedingung
 

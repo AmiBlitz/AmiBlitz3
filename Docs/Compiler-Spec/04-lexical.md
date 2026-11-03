@@ -256,7 +256,7 @@ Details: Parser.
 |---|---|
 | `#name` | Konstante; `#name = …` am Anweisungsbeginn definiert sie |
 | `#@name` | Auto-Konstante: erhält den Wert von `#__autoconstantnum`, der danach erhöht wird **[C]** `fetch_Constant` |
-| `@#name` | in `CNIF`: 1, wenn Konstante definiert, sonst 0 (Doku: −1) **[V]** V-CNIF-3 |
+| `CNIF @…` | `@` **direkt hinter `CNIF`**: jedes `#name` der Bedingung ist ein Definiertheitstest, 1 oder 0 (Doku: −1); `@` an anderer Stelle ist ein Fehler **[V]** V-CNIF-3/7/8, [§5.3](05-conditional.md#53-cnif-bedingung) |
 | `.name` | Label-Definition am Anweisungsbeginn; sonst Typsuffix |
 | `name:` | Label-Definition (ohne `:` nur im New-Syntax-Modus) |
 | `'name` | lokales Label |
@@ -323,27 +323,49 @@ Regeln:
 * Hinter `@@` wird der Rest der physischen Zeile ignoriert; das Lesen wird am
   Anfang der nächsten Zeile fortgesetzt (Zeilen, die nur aus Leerzeichen und
   einem Kommentar bestehen, werden übersprungen **[C]** Z. 3121–3130).
-* Für Include-Dateien gibt es eigene Codepfade (der Include-Puffer ist
-  zusammenhängend); an einigen Stellen wird stattdessen der Fehler
-  „Joining lines with @ @ does not work in includes“ ausgelöst. **[C]**
+* Ein New-Syntax-Modus ist nicht nötig. **[V]** V-JOIN-7a (ohne `OPTIMIZE`).
+* `@@` innerhalb eines Strings soll keine Zeilen verbinden. **[?]** (nicht
+  verifiziert; in Macro-Rümpfen verbindet es trotzdem, siehe
+  [06-macros.md §6.2.3](06-macros.md#623-sammeln-des-rumpfs)).
+* **Quirk (Bug): Das erste Zeichen der Folgezeile geht verloren**, wenn
+  `@@` in der Hauptdatei hinter einem Parameter oder einem `,` steht. Nach
+  dem Zeilenwechsel liest `fetchpees3` mit `get1bytemain` ein Zeichen und
+  verwirft es (Z. 8287–8294). Ist die Folgezeile eingerückt, trifft das ein
+  Leerzeichen, und alles funktioniert. Beginnt sie in Spalte 0, fehlt ihr
+  erstes Zeichen (`"b"` wird zu `b"` → „Syntax error!“). **[V]** V-JOIN-7a/7c/7j
+  (eingerückt, auch mit einem Leerzeichen: korrekt), V-JOIN-7d (Spalte 0:
+  Syntaxfehler), V-JOIN-7k (`!mk` in Spalte 0 → „Garbage at the end of
+  line → mk“: das `!` fehlt). Ein Nachbau sollte die Folgezeile vollständig lesen;
+  eingerückte Quelltexte verhalten sich dann wie im Original.
+* **Include-Dateien:** Der Include-Puffer ist zusammenhängend, deshalb gibt es
+  eigene Codepfade. Nur `@@` **hinter einem `,`** funktioniert (auch in
+  Spalte 0, V-JOIN-3). `@@` direkt hinter einem Parameter ergibt den Fehler
+  „Joining lines with @ @ does not work in includes“ (Z. 8285). **[V]**
+  V-JOIN-7h.
 
-**Beobachtetes Verhalten im CLI-Modus** (**[V]**, Runde 1):
+**Beobachtetes Verhalten im CLI-Modus** (**[V]**, Runden 1 und 14):
 
 | Fall | Ergebnis |
 |---|---|
+| Hauptdatei: `NPrint "a", @@` ⏎ `··"b", @@` ⏎ `··"c"` | funktioniert, `abc` (V-JOIN-7a; mit XTRA-Header: V-JOIN-7c) |
+| Hauptdatei: `NPrint "a" @@` ⏎ `··,"b"` (ohne `,` vor `@@`) | funktioniert, `ab` (V-JOIN-7g) |
+| Hauptdatei: `Str$(@@` ⏎ `3)` (Beginn einer Parameterliste) | funktioniert, `3` (V-JOIN-7b) |
+| Hauptdatei: Folgezeile in Spalte 0 (`"b"`, `!mk`) | Syntaxfehler bzw. „Garbage at the end of line“, mit oder ohne New-Syntax-Modus (V-JOIN-1/2/4, V-JOIN-7d/7k) |
+| Hauptdatei: in einem Ausdruck `1 + @@` ⏎ `··2` | Syntaxfehler, auch eingerückt und mit `OPTIMIZE 4` (V-JOIN-5, V-JOIN-7f) |
 | Include: `NPrint "a", @@` ⏎ `"b"` | funktioniert, Ausgabe `ab` (V-JOIN-3) |
-| Hauptdatei, New-Syntax: dieselben Zeilen | Syntaxfehler, Folgefehler in den nächsten Zeilen (V-JOIN-1/2/5) |
-| Hauptdatei, klassisch | Syntaxfehler (V-JOIN-4) |
-| Macro-Argumente `!m{a,@@` ⏎ `b}` | die Folgezeile wird für die Argumente gelesen **und danach noch einmal als eigene Zeile übersetzt** → „Garbage at the end of line“ (V-MAC-ARG-4) |
+| Include: `NPrint "a" @@` ⏎ `··,"b"` | Fehler „Joining lines with @ @ does not work in includes“ (V-JOIN-7h) |
+| Macro-Argumente `!m{a,@@` ⏎ `b}` | die Folgezeile wird für die Argumente gelesen **und danach noch einmal als eigene Zeile übersetzt** → „Garbage at the end of line“, auch eingerückt (V-MAC-ARG-4, V-MAC-ARG-5) |
 
-Der Fehler in der Hauptdatei tritt **auch in der IDE** auf (per ARexx
-`LOAD`/`COMPILE` gesteuert: „Syntax error“ in der Zeile mit `@@`). **[V]**
-V-JOIN-6a. Es ist also kein CLI-spezifisches Problem; `@@` hinter einem
-Befehlsparameter funktioniert in dieser Compiler-Version (3.14.0) in der
-Hauptdatei nicht, obwohl `Tests/macro_test.ab3` es so verwendet. Auch der Fehler bei
-`@@` in Macro-Argumenten tritt in der IDE identisch auf. **[V]** V-JOIN-6b. `@@` ist damit im Wesentlichen ein
-Parser-Thema; für einen Nachbau empfiehlt sich eine saubere, allgemeine
-Zeilenfortsetzung in Schicht L2 (Kompatibilitätsentscheidung).
+Die früheren Proben V-JOIN-1/2/4 und V-JOIN-6a (IDE) hatten die Folgezeile
+in Spalte 0. Ihr „Syntax error“ ist der verlorene erste Buchstabe, kein
+generelles Versagen von `@@` in der Hauptdatei. Die meisten Quelltexte des
+Repositorys rücken Folgezeilen ein (z. B. `Tests/windowtags.ab3`) und
+funktionieren deshalb. `Tests/macro_test.ab3` Z. 78/79 (`NPrint test1, @@` ⏎
+`!test2` in Spalte 0) ist dagegen genau der Fall aus V-JOIN-7k. Der Fehler bei `@@` in
+Macro-Argumenten tritt in der IDE identisch auf. **[V]** V-JOIN-6b.
+Für einen Nachbau empfiehlt sich eine saubere, allgemeine Zeilenfortsetzung
+in Schicht L2 (Kompatibilitätsentscheidung). Sie muss mindestens die Fälle
+abdecken, die im Original funktionieren.
 
 ## 4.12 Operatoren und Satzzeichen
 
