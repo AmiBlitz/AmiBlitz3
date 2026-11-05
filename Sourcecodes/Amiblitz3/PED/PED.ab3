@@ -364,9 +364,9 @@ XINCLUDE "translation.include.ab3"
 .LOGGING
 XINCLUDE "logging.include.ab3"
 
-#EXLUDE_LOG = 1
+#INCLUDE_LOG = 1                      ; 1 = compile the log_PrintOut calls in, 0 = leave them out
 Macro log_PrintOut
-  CNIF #EXLUDE_LOG = 1
+  CNIF #INCLUDE_LOG = 1
     CNIF `0 = 1
       log_Print{`1}
     CELSE
@@ -1667,24 +1667,92 @@ SHARED sourceWindow
 End Statement
 
 
-Function.b PED_CheckLabelRelevance{testString.s}
-SHARED ped
+Function.b PED_HasUnknownToken{txtaddr.l}
+  ;-- searches the zero-terminated text for "????L" (unknown token, see PED_GetTokenName)
+  res.l = 0
+  GetReg A0,txtaddr
+  MOVEQ #0,D0
+  'ut_loop:
+    MOVE.b (A0)+,D1
+    BEQ 'ut_done
+    CMP.b #$3F,D1
+    BNE 'ut_loop
+    CMP.b #$3F,(A0)
+    BNE 'ut_loop
+    CMP.b #$3F,1(A0)
+    BNE 'ut_loop
+    CMP.b #$3F,2(A0)
+    BNE 'ut_loop
+    CMP.b #$4C,3(A0)
+    BNE 'ut_loop
+    MOVEQ #1,D0
+  'ut_done:
+  PutReg D0,res
+  Function Return res
+End Function
 
-  tmppos.w = 1
-  While Mid$(testString,tmppos,1) = " "
-    tmppos + 1
+Function.b PED_LabelListMode{}
+SHARED ped
+  ;-- mode of the source browser, same order as in listLabels:
+  ;-- 0 = labels/functions/statements/macros/breakpoints, 1 = all code lines,
+  ;-- 2 = Case branches, 3 = remarks
+  mode.b = 0
+  If ped\ptrCurrentSourceData\LabelAll Then mode = 1
+  If ped\ptrCurrentSourceData\LabelCase Then mode = 2
+  If ped\ptrCurrentSourceData\LabelRemark Then mode = 3
+  Function Return mode
+End Function
+
+Function.l PED_LabelCandidate{txtaddr.l, mode.b}
+SHARED ped
+  ;-- quick check on the raw (tokenized, zero-terminated) text of a source line whether it
+  ;-- can appear in the source browser in the given mode (see listLabels).
+  ;-- Returns 0 = no, otherwise 1 + offset of the relevant byte
+  ;-- (modes 0..2: first non-space character, mode 3: the ";" of the remark)
+  res.l = 0
+  i.l = 0
+  While PeekB(txtaddr + i) = @" "
+    i + 1
   Wend
-  Repeat
-    tmpchar.b = Asc(Mid$(testString,tmppos,1))
-    If tmpchar = ped\labelIdentifier Then Function Return True
-    If tmpchar = @";" Then Function Return True    ; ";"
-    If tmpchar = $80
-      If Asc(Mid$(testString,tmppos+1,1))= $2d OR Asc(Mid$(testString,tmppos+1,1)) = $ae ; Token "Stop" or Token "TRAP"
-        Function Return True
+  c.l = PeekB(txtaddr + i) AND $FF
+  If c <> 0
+    If mode = 1                                   ; all code lines
+      res = i + 1
+    EndIf
+    If mode = 2                                   ; Case branches
+      If c >= $80
+        If (PeekW(txtaddr + i) AND $FFFF) = #TOKEN_Case Then res = i + 1
       EndIf
     EndIf
-    tmppos + 1
-  Until tmpchar <= 0
+    If mode = 3                                   ; remarks: ";" outside of a string
+      inStr.b = False
+      While (c <> 0) AND (res = 0)
+        If c = $22 Then inStr = NOT inStr
+        If (inStr = False) AND (c = @";") Then res = i + 1
+        i + 1
+        c = PeekB(txtaddr + i) AND $FF
+      Wend
+    EndIf
+    If mode = 0                                   ; labels, functions, statements, macros, breakpoints
+      If c = (ped\labelIdentifier AND $FF) Then res = i + 1
+      If c >= $80
+        tok.l = PeekW(txtaddr + i) AND $FFFF
+        If (tok = #TOKEN_Statement) OR (tok = #TOKEN_Function) OR (tok = #TOKEN_Macro) Then res = i + 1
+        If (tok = #TOKEN_Stop) OR (tok = #TOKEN_TRAP) Then res = i + 1
+      EndIf
+      If res = 0
+        If PED_HasUnknownToken{txtaddr} Then res = i + 1
+      EndIf
+    EndIf
+  EndIf
+  Function Return res
+End Function
+
+Function.b PED_CheckLabelRelevance{testString.s}
+SHARED ped
+  ;-- only a line that can appear in the source browser makes an update of the
+  ;-- label list necessary (before, any "." or ";" in the line triggered a full rescan)
+  If PED_LabelCandidate{&testString, PED_LabelListMode{}} Then Function Return True
   Function Return False
 End Function
 
@@ -1992,10 +2060,8 @@ SHARED ped
   ;-- copy string to new sourceline
   CopyMem_  &newline, lineaddr + 9, _strLen
 
-  ;-- check if there is a label in the new sourceline
-  For i.w = 0 To _strLen - 1
-    If PeekB(&newline + i) = ped\labelIdentifier Then ped\labelListChanged = True
-  Next i
+  ;-- check if the new sourceline is relevant for the source browser
+  If PED_LabelCandidate{lineaddr + 9, PED_LabelListMode{}} Then ped\labelListChanged = True
 
   Function Return lineaddr
 End Function
@@ -2021,6 +2087,8 @@ SHARED ped
 
   If ped\ptrCurrentSourceData\FirstSourceLine = *oldLine Then ped\ptrCurrentSourceData\FirstSourceLine = *newLine
   If ped\ptrCurrentSourceData\LastSourceLine = *oldLine Then ped\ptrCurrentSourceData\LastSourceLine = *newLine
+  ;-- the replaced line may have been an entry of the source browser
+  If PED_LabelCandidate{*oldLine + 9, PED_LabelListMode{}} Then ped\labelListChanged = True
   PED_DeleteSourceLine{*oldLine}
   ped\ptrCurrentSourceData\SourceChanged = $FFFF
   Function Return *newLine
@@ -3132,8 +3200,14 @@ SHARED ped, pedconfig
           i + 1 ; skip next byte as it is part of the replaced token        
           CopyMem_ &_tokname, ped\ptrTextbufferPrint + runnerP, _toklen
 
-          ;-- update Highlight-info
-          MemCls ped\ptrTextbufferHighlight + runnerP, _toklen, @"1"
+          ;-- update Highlight-info: "1" = token, "8" = token of a classic lib/command
+          ;-- (decided here from the token number, so PED_PrintHighlightedText does not
+          ;-- have to search the token list by name)
+          tokHigh.b = @"1"
+          If pedconfig\highlighting
+            If PED_CheckForClassicToken{_token AND $7FFF} Then tokHigh = @"8"
+          EndIf
+          MemCls ped\ptrTextbufferHighlight + runnerP, _toklen, tokHigh
 
           runnerP + _toklen
           Pop If : Pop If : Goto skip_me
@@ -3882,6 +3956,7 @@ USEPATH sourceWindow
   ;-- it uses highlighting information stored in ptrTextbufferHighlight as follows
   ;-- 00  standard text
   ;-- "1" token
+  ;-- "8" token of a classic lib/command (printed like "1", but in the classic color)
   ;-- "2" string
   ;-- "3" comment
   ;-- "4" constants
@@ -3925,16 +4000,21 @@ USEPATH sourceWindow
   If numCharacters > 0
     tmpExpand = PeekS(ped\ptrTextbufferPrint + startPos + countStart, numCharacters)
 
-    Select highlightType
+    ;-- "8" = classic token: printed like a token, but in the classic color
+    curType.b = highlightType
+    isClassic.b = False
+    If curType = @"8"
+      curType = @"1"
+      isClassic = True
+    EndIf
+
+    Select curType
     Case @"1";-- Token
       tcolor.w = AB3Pen(#AB3_ctoken)
       tcolorb.w = AB3Pen(#AB3_ctokenbackground)
 
-      ;-- check for classic token and set classic color
-      If (pedconfig\highlighting) AND (tcolor <> AB3Pen(#AB3_cclassic))
-        _token.l = PED_GetTokenID{tmpExpand}
-        If PED_CheckForClassicToken{_token} Then tcolor = AB3Pen(#AB3_cclassic)
-      EndIf
+      ;-- classic token (marked in PED_Detokenize2Printbuffer) -> classic color
+      If isClassic Then tcolor = AB3Pen(#AB3_cclassic)
 
       If pedconfig\bold_tokens Then SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
       PED_PrintText{&tmpExpand, tposx, tposy, numCharacters, tcolor, tcolorb}
@@ -4221,7 +4301,7 @@ USEPATH sourceWindow
     Exchange bm\yMin, bm\yMax
   EndIf
 
-  VWait 1
+;VWait 1   ; removed: cost up to one frame on every redraw with a marked block
   If bm\yMin = bm\yMax
     Gosub rectfill2                       ; draw block in a single line
   Else
@@ -8792,7 +8872,6 @@ Return
   ped\ptrCurrentSourceData\DisplayLineOffset = 0
   ped\ptrCurrentSourceData\DisplayLine = 0
 
-  ped\ptrCurrentSourceData\CreateDebugFile = 0
   ped\ptrCurrentSourceData\SourceChanged = 0
   ped\ptrCurrentSourceData\CursorPosStore = 0
 
@@ -8856,9 +8935,9 @@ Return
   If WZ_IsOpen{"WIN_LABELS"}
     Use Window WZID("WIN_LABELS")
     WZPrint "STRING_LABEL",LabelListSearchString
-    WZPrint "case"        ,PeekW(?comWord_LabelCase)
-    WZPrint "rem"         ,PeekW(?comWord_LabelRemark)
-    WZPrint "all"         ,PeekW(?comWord_LabelAll)
+    WZPrint "case"        ,ped\ptrCurrentSourceData\LabelCase
+    WZPrint "rem"         ,ped\ptrCurrentSourceData\LabelRemark
+    WZPrint "all"         ,ped\ptrCurrentSourceData\LabelAll
     WZListRemove list_usedBlitzLibs
     WZPrint "LIBRARY_LIST",0,list_usedBlitzLibs
   EndIf
@@ -11456,37 +11535,38 @@ Return
 
 .listLabels:
   labelListMode.b = 0
-  If PeekW(?comWord_LabelAll) Then labelListMode = 1
-  If PeekW(?comWord_LabelCase) Then labelListMode = 2
-  If PeekW(?comWord_LabelRemark) Then labelListMode = 3
+  If ped\ptrCurrentSourceData\LabelAll Then labelListMode = 1
+  If ped\ptrCurrentSourceData\LabelCase Then labelListMode = 2
+  If ped\ptrCurrentSourceData\LabelRemark Then labelListMode = 3
 
   ;!log_PrintOut{"listLabels: " + Str$(labelListMode) + ", search: " + labelWord1}
 
   tmpLineCounter.l = 0 : tmpPercentage.b = 0 : tmpPercentageOld.b = 0
   labelBreak.b = False
   While *nextline AND (labelBreak = False)
-    tmpStr.s = StripLead$(Peek.s(*nextline + 9),@" ")
     found.b = False
+    tmpStr.s = ""
 
-    If tmpStr <> ""
+    ;-- quick check on the raw line: only lines that can be listed are copied into a string
+    lcPos.l = PED_LabelCandidate{*nextline + 9, labelListMode}
+    If lcPos
+      If labelListMode = 3
+        tmpStr = Peek.s(*nextline + 9 + lcPos)  ; remark text after the ";"
+      Else
+        tmpStr = StripLead$(Peek.s(*nextline + 9),@" ")
+      EndIf
+    EndIf
+
+    If lcPos
 
       Select labelListMode
       Case 2   ; -- labelmode = all "Case"-branches
         checkWord.l = PeekW(&tmpStr) AND $FFFF
         If checkWord = #TOKEN_Case Then found = True
 
-      Case 3    ; -- labelmode = all remarks
+      Case 3    ; -- labelmode = all remarks (the ";" was already found by PED_LabelCandidate)
         ped\inString = False : ped\inComment = False
-        ped\labelEntryType = $FFFE : found.b = False
-        Repeat
-          checkByte.b = PeekB(&tmpStr) AND $FF
-
-          ;-- check if we are in a string or a comment
-          If (NOT ped\inComment) AND (checkByte = $22) Then ped\inString = NOT ped\inString
-          If (NOT ped\inString) AND (checkByte = @";") Then found = True
-
-          tmpStr = UnRight$(tmpStr,1)
-        Until found OR tmpStr = ""
+        ped\labelEntryType = $FFFE : found.b = True
 
       Default  ; -- labelmode = all or standard: list functions,statements,breakpoint and labels
 
@@ -11750,15 +11830,28 @@ Return
 .free_actualsource:
   !log_PrintOut{"Freeing current source..."}
 
+  ;-- free the lines from the last one back to the first one: the lines are mostly
+  ;-- allocated in ascending address order, and freeing them in descending order lets
+  ;-- exec insert each freed block at the start of the pool's free list instead of
+  ;-- walking the whole list for every line (which made freeing big sources slow)
+
+  ;-- find the last line (at most TotalLines lines, as before)
   *tempLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
+  fas_count.l = 0
+  If (*tempLine <> #NULL) AND (ped\ptrCurrentSourceData\TotalLines > 0)
+    fas_count = 1
+    While (*tempLine\nextLine <> #NULL) AND (fas_count < ped\ptrCurrentSourceData\TotalLines)
+      *tempLine = *tempLine\nextLine
+      fas_count + 1
+    Wend
+  EndIf
 
-  While (*tempLine <> #NULL) AND (ped\ptrCurrentSourceData\TotalLines > 0)
-
-    *nextLine = *tempLine\nextLine
+  ;-- free them backwards
+  While fas_count > 0
+    *fas_prev.sourceLine = *tempLine\previousLine
     FreePooled_ ped\mempool,*tempLine-4,PeekL(*tempLine-4)
-    *tempLine = *nextLine
-
-    ped\ptrCurrentSourceData\TotalLines - 1
+    *tempLine = *fas_prev
+    fas_count - 1
   Wend
 
   ped\ptrCurrentSourceData\TotalLines = 1
@@ -16162,8 +16255,8 @@ Return
 
   Use Window WZID("WIN_LABELS")
   LabelList_PreSelectItemNumber = -1                             ;added because we don't know what was the preselectitem  tomsmart1
-  WZPrint "rem",PeekW(?comWord_LabelRemark)
-  WZPrint "all",PeekW(?comWord_LabelAll)
+  WZPrint "rem",ped\ptrCurrentSourceData\LabelRemark
+  WZPrint "all",ped\ptrCurrentSourceData\LabelAll
   WZPrint "STRING_LABEL",LabelListSearchString
   WZPrint "LISTVIEW_LABELS",LabelList_PreSelectItemNumber,list_Labels,LabelList_1VisableItem
 
@@ -16225,27 +16318,27 @@ Return
           PED_GotoLineAddress{lineAddress}
 
         Case "case"
-          PokeW ?comWord_LabelCase,WZInput
-          PokeW ?comWord_LabelRemark,0
-          PokeW ?comWord_LabelAll,0
+          ped\ptrCurrentSourceData\LabelCase = WZInput
+          ped\ptrCurrentSourceData\LabelRemark = 0
+          ped\ptrCurrentSourceData\LabelAll = 0
           WZPrint "rem",0
           WZPrint "all",0
           Gosub reset_labellist
           WZ_ActivateGadget{"STRING_LABEL"}
 
         Case "rem"
-          PokeW ?comWord_LabelCase,0
-          PokeW ?comWord_LabelRemark,WZInput
-          PokeW ?comWord_LabelAll,0
+          ped\ptrCurrentSourceData\LabelCase = 0
+          ped\ptrCurrentSourceData\LabelRemark = WZInput
+          ped\ptrCurrentSourceData\LabelAll = 0
           WZPrint "case",0
           WZPrint "all",0
           Gosub reset_labellist
           WZ_ActivateGadget{"STRING_LABEL"}
 
         Case "all"
-          PokeW ?comWord_LabelCase,0
-          PokeW ?comWord_LabelRemark,0
-          PokeW ?comWord_LabelAll,WZInput
+          ped\ptrCurrentSourceData\LabelCase = 0
+          ped\ptrCurrentSourceData\LabelRemark = 0
+          ped\ptrCurrentSourceData\LabelAll = WZInput
           WZPrint "case",0
           WZPrint "rem",0
           Gosub reset_labellist
