@@ -60,6 +60,7 @@
 ; Max BitMap      = 10
 ; Max Screen      = 5
 ; Max Palette     = 32
+; Max Window      = 25
 ; Max Sound       = 10
 ; Max MedModule   = 8
 ; Max Buffer      = 10
@@ -75,7 +76,6 @@
 ; Max Stencil     = 5
 ; Max XBSound     = 10
 ; Max Page        = 4
-; Max Window      = 25
 ; /XTRA
 ;///////////////////////////////////////////////////////////////////////////////
 ;/ Name: PED                                                                   /
@@ -1173,6 +1173,38 @@ SHARED ped
   FreePooled_ ped\mempool,memptr-4,PeekL(memptr-4)
 End Statement
 
+;-- source lines are allocated from a pool of their own for each source (ptrCurrentSourceData\linePool,
+;-- copied with the other source data by storeCurrentSourceData/getCurrentSourceData), so a
+;-- whole source can be freed at once with DeletePool_ (see free_actualsource). The layout is
+;-- the same as with PED_AllocMem: the size is stored in the 4 bytes in front of the line.
+;-- textsize = length of the text including the terminating 0-byte; the 9 bytes of the
+;-- line header (nextLine, previousLine, strLength) are added here.
+Function.l PED_AllocLine{textsize.l}
+SHARED ped
+  pool.l = ped\ptrCurrentSourceData\linePool
+  If pool = 0 Then pool = ped\mempool               ; no source entry yet (should not happen)
+  allocsize.l = 4 + 9 + textsize                    ; size info + line header + text
+  memptr.l = AllocPooled_(pool, allocsize)
+  If memptr <> 0
+    PokeL memptr, allocsize
+    Function Return memptr + 4
+  Else
+    Function Return False
+  EndIf
+End Function
+
+Statement PED_FreeLine{memptr.l}
+SHARED ped
+  pool.l = ped\ptrCurrentSourceData\linePool
+  If pool = 0 Then pool = ped\mempool
+  FreePooled_ pool,memptr-4,PeekL(memptr-4)
+End Statement
+
+;-- create / delete the line pool of a source entry
+Function.l PED_CreateLinePool{}
+  Function Return CreatePool_(#MEMF_CLEAR,40000,40000)
+End Function
+
 Statement PED_ClearTokencache{}
 SHARED ped
   GetReg A1, ped\tokenCache
@@ -2032,7 +2064,7 @@ SHARED ped
     If PED_CheckLabelRelevance{tmpStr} Then ped\labelListChanged = True
   EndIf
 
-  PED_FreeMem{*delLine} : *delLine = 0
+  PED_FreeLine{*delLine} : *delLine = 0
   Function Return True
 End Function
 
@@ -2051,8 +2083,8 @@ SHARED ped
   newline + Chr$(0)
   _strLen + 1
   
-  ;-- allocate memory for new sourceline
-  lineaddr.l = PED_AllocMem{9 + _strLen}
+  ;-- allocate memory for new sourceline (from the line pool of the current source)
+  lineaddr.l = PED_AllocLine{_strLen}
   PokeL lineaddr    ,0        ; clear pointer to prevline
   PokeL lineaddr + 4,0        ; clear pointer to nextline
   PokeB lineaddr + 8,_strLen  ; store length of string
@@ -7559,6 +7591,14 @@ exit_PED_closelibraries:
   End If
 
 .exit_PED_nomem:
+  !log_PrintOut{"deleting line pools of the remaining sources..."}
+  *poolEntry.sourceEntry = ped\firstSourceEntry
+  While *poolEntry
+    If *poolEntry\linePool Then DeletePool_ *poolEntry\linePool
+    *poolEntry\linePool = 0
+    *poolEntry = *poolEntry\nextEntry
+  Wend
+  ped\ptrCurrentSourceData\linePool = 0
   !log_PrintOut{"deleting mempool..."}
   DeletePool_ ped\mempool
 
@@ -8779,6 +8819,13 @@ Even
     EndIf
   EndIf
 
+  ; -- load into a new line pool: after a successful load the old pool is deleted together with
+  ; -- all lines the tab had before, after a failed load the new pool is deleted and the tab keeps
+  ; -- its old lines (before, reloading an already opened file kept the old lines in memory)
+  loadOldPool.l = ped\ptrCurrentSourceData\linePool
+  loadNewPool.l = PED_CreateLinePool{}
+  If loadNewPool Then ped\ptrCurrentSourceData\linePool = loadNewPool
+
   ; -- load the source file
   PED_SetPointerBusy{}
 
@@ -8805,8 +8852,19 @@ Even
 
   If loadsuccess = 0
     !log_PrintOut{"Loading aborted with error.",#log_error}
+    ;-- keep the old lines, throw away whatever was loaded
+    If loadNewPool
+      DeletePool_ loadNewPool
+      ped\ptrCurrentSourceData\linePool = loadOldPool
+    EndIf
   Else
     !log_PrintOut{"loaded " + Str$(ped\ptrCurrentSourceData\TotalLines) + " lines of text"}
+
+    ;-- the tab now uses the new pool: delete the old one together with the old lines
+    If loadNewPool
+      If loadOldPool Then DeletePool_ loadOldPool
+      If ped\currentSourceEntry Then ped\currentSourceEntry\linePool = loadNewPool   ; keep the stored copy in sync
+    EndIf
 
     Gosub storeCurrentSourceData    
     !log_PrintOut{"deleting and storing xtra prefs..."}
@@ -9670,6 +9728,10 @@ Return
       ped\currentSourceEntry = 0
     EndIf
   EndIf
+  ;-- delete the line pool of the closed source (its lines were freed by free_actualsource)
+  If *sourceEntry\linePool Then DeletePool_ *sourceEntry\linePool
+  *sourceEntry\linePool = 0
+  ped\ptrCurrentSourceData\linePool = 0        ; set again by getCurrentSourceData
   PED_FreeMem{*sourceEntry}
 
   If ped\currentSourceEntry
@@ -10399,12 +10461,26 @@ Return
   ;!log_PrintOut{"value of ped\firstLoadedEntry: " + Hex$(ped\firstLoadedEntry)}
 
   ; -- alloc memory for a new fileentry
+  ;-- the sourceEntry holds a copy of the xtra data (comLong_XtraBegin .. comDef_XtraEnd,
+  ;-- see storeCurrentSourceData); check that common.ab3 matches
   MOVE.l #comDef_XtraEnd-comLong_XtraBegin,d0 : tmpMemSize.l = PutD0
-  *newEntry.sourceEntry = PED_AllocMem{tmpMemSize}
+  If SizeOf .sourceEntry < tmpMemSize
+    error{"NEWTYPE .sourceEntry is smaller than the xtra data, check common.ab3!"}
+    Return
+  EndIf
+  *newEntry.sourceEntry = PED_AllocMem{SizeOf .sourceEntry}
   If *newEntry = 0
     Gosub display_memoryalert
     Return
   EndIf
+  ;-- each source gets its own memory pool for its lines
+  *newEntry\linePool = PED_CreateLinePool{}
+  If *newEntry\linePool = 0
+    PED_FreeMem{*newEntry}
+    Gosub display_memoryalert
+    Return
+  EndIf
+
   !log_PrintOut{"new fileentry allocated at: " + Hex$(*newEntry) }
 
   ; -- adding the new source into the source list
@@ -10439,7 +10515,9 @@ Return
       *newEntry\nextEntry = 0
     EndIf
     ped\currentSourceEntry = *newEntry
+    ped\ptrCurrentSourceData\linePool = *newEntry\linePool  ; from now on lines belong to the new source
   EndIf
+
   Gosub clear_sourcebuffer
   Gosub reset_sourcewindow
 Return
@@ -10563,7 +10641,7 @@ Return
     ped\currentSourceEntry = ped\currentSourceEntry\nextEntry
   Else
     If ped\firstSourceEntry = ped\currentSourceEntry
-      Pop If : Pop If : Returnsdf
+      Pop If : Pop If : Return
     Else
         ped\currentSourceEntry = ped\firstSourceEntry
     EndIf
@@ -11830,29 +11908,17 @@ Return
 .free_actualsource:
   !log_PrintOut{"Freeing current source..."}
 
-  ;-- free the lines from the last one back to the first one: the lines are mostly
-  ;-- allocated in ascending address order, and freeing them in descending order lets
-  ;-- exec insert each freed block at the start of the pool's free list instead of
-  ;-- walking the whole list for every line (which made freeing big sources slow)
-
-  ;-- find the last line (at most TotalLines lines, as before)
-  *tempLine.sourceLine = ped\ptrCurrentSourceData\FirstSourceLine
-  fas_count.l = 0
-  If (*tempLine <> #NULL) AND (ped\ptrCurrentSourceData\TotalLines > 0)
-    fas_count = 1
-    While (*tempLine\nextLine <> #NULL) AND (fas_count < ped\ptrCurrentSourceData\TotalLines)
-      *tempLine = *tempLine\nextLine
-      fas_count + 1
-    Wend
+  ;-- all lines of the current source are in its own line pool: delete the pool (frees all
+  ;-- lines at once) and give the source a new, empty pool
+  If ped\currentSourceEntry
+    If ped\ptrCurrentSourceData\linePool Then DeletePool_ ped\ptrCurrentSourceData\linePool
+    ped\ptrCurrentSourceData\linePool = PED_CreateLinePool{}
+    ped\currentSourceEntry\linePool = ped\ptrCurrentSourceData\linePool   ; keep the stored copy in sync
+    If ped\ptrCurrentSourceData\linePool = 0 Then Gosub display_memoryalert
   EndIf
-
-  ;-- free them backwards
-  While fas_count > 0
-    *fas_prev.sourceLine = *tempLine\previousLine
-    FreePooled_ ped\mempool,*tempLine-4,PeekL(*tempLine-4)
-    *tempLine = *fas_prev
-    fas_count - 1
-  Wend
+  ped\ptrCurrentSourceData\FirstSourceLine = 0
+  ped\ptrCurrentSourceData\LastSourceLine = 0
+  ped\ptrCurrentSourceData\CurrentSourceLine = 0
 
   ped\ptrCurrentSourceData\TotalLines = 1
   Gosub free_labellist
