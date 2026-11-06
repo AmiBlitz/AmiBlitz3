@@ -1,0 +1,136 @@
+; ==================================================================================
+; MemCls_Test.ab3
+; Test program for the new MemCls of LotanMemLib
+;
+; For every test case the whole buffer is filled with a guard byte ($AA),
+; then MemCls fills a range with the test byte. Afterwards it is checked that
+;  - every byte inside the range has the test byte
+;  - every byte before and after the range still has the guard byte
+; The test cases cover odd/even addresses, length 0 and negative lengths,
+; lengths that are not divisible by 4 and lengths > 65536.
+; The fill and check routines do not use MemCls, so they are independent of it.
+; ==================================================================================
+
+#BUFSIZE = 400000
+#GUARD   = $AA
+#PRE     = 16            ; guard bytes in front of every test range
+
+;-- fills size bytes at addr with value (simple byte loop, independent of MemCls)
+Statement FillBytes{addr.l, size.l, value.l}
+  GetReg A0,addr
+  GetReg D1,size
+  GetReg D2,value
+  TST.l D1
+  BLE 'fb_done
+  'fb_loop:
+    MOVE.b D2,(A0)+
+    SUBQ.l #1,D1
+  BNE 'fb_loop
+  'fb_done:
+End Statement
+
+;-- returns the number of bytes in addr..addr+size-1 that are not equal to value
+Function.l CountDiff{addr.l, size.l, value.l}
+  res.l = 0
+  GetReg A0,addr
+  GetReg D1,size
+  GetReg D2,value
+  MOVEQ #0,D0
+  TST.l D1
+  BLE 'cd_done
+  'cd_loop:
+    CMP.b (A0)+,D2
+    BEQ 'cd_same
+    ADDQ.l #1,D0
+    'cd_same:
+    SUBQ.l #1,D1
+  BNE 'cd_loop
+  'cd_done:
+  PutReg D0,res
+  Function Return res
+End Function
+
+;-- main
+mem.l = AllocMem_(#BUFSIZE, 0)
+If mem = 0
+  NPrint "Not enough memory for the test buffer."
+  End
+EndIf
+
+NPrint "MemCls test"
+NPrint "-----------"
+
+failCount.l = 0 : testNum.l = 0
+Restore testdata
+Repeat
+  Read tOffset.l, tLen.l, tByte.l
+  If tOffset >= 0
+    testNum + 1
+
+    ;-- prepare the buffer
+    guardVal.l = #GUARD
+    bufSize.l = #BUFSIZE
+    FillBytes{mem, bufSize, guardVal}
+
+    ;-- call MemCls (tByte = -1: two parameter version, fills with 0)
+    dest.l = mem + #PRE + tOffset
+    If tByte = -1
+      MemCls dest, tLen
+      expByte.l = 0
+    Else
+      fillByte.b = tByte
+      MemCls dest, tLen, fillByte
+      expByte.l = tByte
+    EndIf
+
+    ;-- check inside, before and after the range
+    realLen.l = tLen
+    If realLen < 0 Then realLen = 0
+    badInside.l = CountDiff{dest, realLen, expByte}
+    badBefore.l = CountDiff{mem, #PRE + tOffset, guardVal}
+    restSize.l = #BUFSIZE - #PRE - tOffset - realLen
+    badAfter.l = CountDiff{dest + realLen, restSize, guardVal}
+
+    resText.s = "ok"
+    If badInside + badBefore + badAfter > 0
+      resText = "FAILED (inside " + Str$(badInside) + ", before " + Str$(badBefore) + ", after " + Str$(badAfter) + ")"
+      failCount + 1
+    EndIf
+
+    If tByte = -1 Then byteText.s = "default" Else byteText.s = "$" + Right$(Hex$(tByte), 2)
+    NPrint "Test " + Str$(testNum) + ": addr " + Hex$(dest) + "  len " + Str$(tLen) + "  byte " + byteText + "  -> " + resText
+  EndIf
+Until tOffset < 0
+
+FreeMem_ mem, #BUFSIZE
+
+NPrint ""
+If failCount = 0
+  NPrint "All " + Str$(testNum) + " tests passed."
+Else
+  NPrint Str$(failCount) + " of " + Str$(testNum) + " tests FAILED."
+EndIf
+NPrint "Click the left mouse button to quit."
+MouseWait
+End
+
+;-- test cases: offset to the (longword aligned) buffer start, length, fill byte
+;-- fill byte -1 = call MemCls without the byte parameter (expects 0)
+testdata:
+Data.l 1, 0, $20             ; length 0: nothing may be written
+Data.l 1, -5, $20            ; negative length: nothing may be written
+Data.l 0, 1, $20             ; 1 byte, even address
+Data.l 1, 1, $20             ; 1 byte, odd address
+Data.l 1, 2, $21             ; odd address, 2 bytes
+Data.l 1, 7, $33             ; odd address, not divisible by 4
+Data.l 0, 8, $34             ; even address, divisible by 4
+Data.l 2, 3, $01             ; even address, only tail bytes
+Data.l 3, 250, $20           ; typical PED line length
+Data.l 3, 65535, $55         ; just below 64 KB
+Data.l 0, 65536, $11         ; exactly 64 KB
+Data.l 1, 65537, $12         ; just above 64 KB
+Data.l 2, 131072, $56        ; 128 KB (old MemCls cleared only 64 KB)
+Data.l 3, 262147, $77        ; > 256 KB = more than 65536 longs
+Data.l 0, 300001, $FF        ; large, odd length, byte $FF
+Data.l 1, 1000, -1           ; two parameter version (fills with 0)
+Data.l -1, 0, 0              ; end of list
