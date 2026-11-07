@@ -1,0 +1,508 @@
+; XTRA
+; Embedded .xtra Header
+; 
+; General Info
+; -------------------------------------------------------
+; ExePath         = "Blitz3:Sourcecodes/Bin"
+; ExeFile         = "fractals_flight"
+; CreateIcon      = 0
+; Residents       = "all.res"
+; 
+; Compiler
+; -------------------------------------------------------
+; StringBuffer    = 100000
+; MakeSmallest    = 1
+; FuncOptimize    = 1
+; Version         = 0.0.0
+; NumberOfBuilds  = 1
+; 
+; Debugger
+; -------------------------------------------------------
+; CliArgs         = ""
+; StackSize       = 8192
+; RuntimeDebug    = 0
+; DebugInfo       = 0
+; CreateDbgFile   = 0
+; OverflowCheck   = 0
+; AssemblerCheck  = 0
+; InterruptCheck  = 1
+; AutoRun         = 1
+; 
+; Editor
+; -------------------------------------------------------
+; CursorLine      = 357
+; CursorColumn    = 20
+; LabelSearch     = ""
+; LabelRemark     = 0
+; LabelAll        = 1
+; LabelCase       = 0
+; LabelPosition   = 0
+; 
+; Blitz Objects
+; -------------------------------------------------------
+; Max File        = 100
+; Max GadgetList  = 100
+; Max Shape       = 200
+; Max MenuList    = 100
+; Max IntuiFont   = 10
+; Max BlitzFont   = 1
+; Max Bank        = 1
+; Max GTList      = 100
+; Max IconInfo    = 1
+; Max MUIObject   = 50
+; Max AsyncReq    = 4
+; Max GTMenuList  = 100
+; Max Console     = 5
+; Max TCPSock     = 5
+; Max Tape        = 5
+; Max TagList     = 5
+; Max Database    = 16
+; Max BitMap      = 10
+; Max Screen      = 5
+; Max Palette     = 4
+; Max Window      = 100
+; Max Sound       = 10
+; Max MedModule   = 8
+; Max Buffer      = 10
+; Max Queue       = 10
+; Max Sprite      = 20
+; Max Module      = 5
+; Max Slice       = 10
+; Max CopList     = 10
+; Max PTModule    = 5
+; Max Anim        = 10
+; Max NChunky     = 50
+; Max Chunky      = 20
+; Max Stencil     = 5
+; Max XBSound     = 10
+; Max Page        = 4
+; /XTRA
+; Fractal landscape flight
+; Based on the Compute! listing "Fractal Mountains" (Copyright 1987 Compute! Publications, Inc.)
+; and its AmiBlitz3 port fractals_fixed.ab3 (64 x 128 cells view).
+;
+; The height map is generated once as a seamless (wrapping) 128 x 128 fractal.
+; A window of 64 x 128 cells (width x depth) is drawn, and the camera flies into the depth
+; by moving this window one row per frame. Because the map wraps around, the flight is endless.
+OPTIMIZE 7: NoCli
+
+#MAPSIZE  = 128                 ; size of the height map (must be a power of 2)
+#MAPMASK  = #MAPSIZE - 1        ; for wrapping coordinates: x AND #MAPMASK
+#MAPITER  = 7                   ; 2 ^ #MAPITER = #MAPSIZE
+#VIEWW    = 64                  ; number of grid cells drawn in x direction (width)
+#VIEWD    = 128                 ; number of grid cells drawn in y direction (depth), max. #MAPSIZE
+
+;-- palette layout: colour 0 = background, 1 = water, then 3 bands of #SHADES brightness levels
+#SHADES    = 10                   ; brightness levels per band
+#COL_WATER = 1
+#COL_GREEN = 2                    ; vegetation:  2..11
+#COL_ROCK  = #COL_GREEN + #SHADES ; rock / soil: 12..21
+#COL_SNOW  = #COL_ROCK + #SHADES  ; snow:        22..31
+
+;-- used for drawing
+NEWTYPE.Polygon
+  x0.w : y0.w
+  x1.w : y1.w
+  x2.w : y2.w
+End NEWTYPE
+
+;-- one palette entry, 8 bit per channel (0..255)
+;-- .w instead of .b, because .b is signed (-128..127)
+NEWTYPE.ColorRGB
+  r.w
+  g.w
+  b.w
+End NEWTYPE
+
+;-- display parameters for DrawView
+NEWTYPE.ViewParams
+  xm.q          ; horizontal scale: screen pixels per grid step in x direction
+  ym.q          ; vertical scale: screen lines per grid step in depth
+  xshift.q      ; horizontal shear per row
+  xp.q          ; horizontal offset of the left edge
+  yp.q          ; vertical offset of the back row
+  hScale.q      ; height scale: 1 = original heights
+  roll.q        ; roll angle around the viewing direction (radians, positive = clockwise)
+  rcx.q         ; centre of the roll rotation on the screen
+  rcy.q
+  wire.b        ; True = wireframe (only the grid lines, no filled areas, see-through)
+End NEWTYPE
+
+DEFTYPE.q
+Dim heightMap.q(#MAPMASK, #MAPMASK)     ; heights of the grid points (wrapping)
+Dim centreMap.q(#MAPMASK, #MAPMASK)     ; precalculated height of each cell centre
+Dim shadeMap.b(#MAPMASK, #MAPMASK, 3)   ; precalculated colours of the 4 triangles of each cell
+Dim cmap.ColorRGB(31)
+
+
+;============================================================================================
+; -- Brightness of a triangle (1 = dark .. 15 = bright) from the cell centre height (lvC)
+; -- and its two corner heights h1, h2. Same formula as GetShade in fractals_fixed.ab3,
+; -- but without the snow and water colours, these are chosen by BandColour now.
+; -- FAST: local variables are not cleared -> s is always assigned first.
+;============================================================================================
+Function.q FAST GetLight{h1.q, h2.q, lvC.q}
+  s.q = 14 / ((1 + Abs(lvC + lvC - h1 - h2) / 2) * (1 + Abs(h2 - h1) / 2)) + 1
+  Function Return s
+End Function
+
+
+;============================================================================================
+; -- Palette colour for a brightness (1..15) inside a colour band.
+; -- band: first colour of the band (#COL_GREEN, #COL_ROCK, #COL_SNOW) or -1 for water
+;============================================================================================
+Function.w FAST BandColour{band.w, light.q}
+  If band < 0 Then Function Return #COL_WATER
+  col.w = band + Int((light - 1) * (#SHADES - 1) / 14)
+  Function Return col
+End Function
+
+
+;-- BLITZ also switches the compiler to Blitz mode: all following commands are compiled
+;-- in their Blitz mode version (Polyf, Inkey$).
+;-- So BLITZ must be placed before these procedures.
+;-- At runtime the procedure bodies are skipped, so BLITZ is executed right at program start.
+BLITZ
+
+
+;============================================================================================
+; -- Create the seamless height map with midpoint displacement.
+; -- All coordinates wrap around (AND #MAPMASK), so the right edge fits to the left edge
+; -- and the front edge fits to the back edge.
+; -- Afterwards the heights are normalised:
+; --   maxVar   : maximum random variation (0 - 2), controls how rough the landscape is
+; --   maxHeight: height of the highest point after normalisation
+; --   seaLevel : part of the height range below the water line (0 - 1)
+;============================================================================================
+Statement MakeMount{maxVar.q, maxHeight.q, seaLevel.q}
+SHARED heightMap()
+  DEFTYPE.q ran, oLd, oLd1, oLd2, hMin, hMax, sea, f, h
+
+  For iter.b = #MAPITER To 1 Step -1
+    sk.w = 2 ^ iter          ; step width of this iteration: 128, 64, ... 2
+    hL.w = sk / 2            ; half step
+
+    ;-- tops & bottoms: midpoints of the horizontal edges
+    For y.w = 0 To #MAPMASK Step sk
+      For x.w = hL To #MAPMASK Step sk
+        ran = (Rnd - 0.5) * maxVar * sk
+        oLd = (heightMap(x - hL, y) + heightMap((x + hL) AND #MAPMASK, y)) / 2
+        heightMap(x, y) = oLd + ran
+      Next x
+    Next y
+
+    ;-- sides: midpoints of the vertical edges
+    For x = 0 To #MAPMASK Step sk
+      For y = hL To #MAPMASK Step sk
+        ran = (Rnd - 0.5) * maxVar * sk
+        oLd = (heightMap(x, y - hL) + heightMap(x, (y + hL) AND #MAPMASK)) / 2
+        heightMap(x, y) = oLd + ran
+      Next y
+    Next x
+
+    ;-- centres: average of the two diagonals
+    For x = hL To #MAPMASK Step sk
+      For y = hL To #MAPMASK Step sk
+        ran = (Rnd - 0.5) * maxVar * sk
+        oLd1 = (heightMap((x + hL) AND #MAPMASK, y - hL) + heightMap(x - hL, (y + hL) AND #MAPMASK)) / 2
+        oLd2 = (heightMap(x - hL, y - hL) + heightMap((x + hL) AND #MAPMASK, (y + hL) AND #MAPMASK)) / 2
+        oLd = (oLd1 + oLd2) / 2
+        heightMap(x, y) = oLd + ran
+      Next y
+    Next x
+  Next iter
+
+  ;-- find the height range
+  hMin = heightMap(0, 0) : hMax = hMin
+  For y = 0 To #MAPMASK
+    For x = 0 To #MAPMASK
+      h = heightMap(x, y)
+      If h < hMin Then hMin = h
+      If h > hMax Then hMax = h
+    Next x
+  Next y
+
+  ;-- normalise: water line -> 0, highest point -> maxHeight, everything below 0 is water
+  sea = hMin + (hMax - hMin) * seaLevel
+  If hMax > sea Then f = maxHeight / (hMax - sea) Else f = 1
+  For y = 0 To #MAPMASK
+    For x = 0 To #MAPMASK
+      h = (heightMap(x, y) - sea) * f
+      If h < 0 Then h = 0
+      heightMap(x, y) = h
+    Next x
+  Next y
+End Statement
+
+
+;============================================================================================
+; -- Precalculate the centre height and the colours of the 4 triangles of every cell.
+; -- They only depend on the heights, not on the camera, so this is done once
+; -- and makes every frame a lot faster.
+; -- Triangle index: 0 = back, 1 = right, 2 = left, 3 = front
+; --
+; -- Colour band of a cell:
+; --   centre height <= 0                            -> water
+; --   centre height >  snowLine                     -> snow
+; --   centre height <  vegLine and slope < maxSlope -> vegetation (green)
+; --   everything else                               -> rock / soil (brown)
+; -- vegLine gets a small random offset per cell, so the borders of the green areas are frayed.
+;============================================================================================
+Statement CalcShades{snowLine.q, vegLine.q, maxSlope.q}
+SHARED heightMap(), centreMap(), shadeMap()
+  DEFTYPE.q h1, h2, h3, h4, c, slope, d
+
+  For y.w = 0 To #MAPMASK
+    y1.w = (y + 1) AND #MAPMASK
+    For x.w = 0 To #MAPMASK
+      x1.w = (x + 1) AND #MAPMASK
+      h1 = heightMap(x, y)   : h2 = heightMap(x1, y)       ; back left, back right
+      h3 = heightMap(x, y1)  : h4 = heightMap(x1, y1)      ; front left, front right
+      c = (h1 + h2 + h3 + h4) / 4
+      centreMap(x, y) = c
+
+      ;-- slope = steepest edge of the cell
+      slope = Abs(h1 - h2)
+      d = Abs(h1 - h3) : If d > slope Then slope = d
+      d = Abs(h4 - h2) : If d > slope Then slope = d
+      d = Abs(h4 - h3) : If d > slope Then slope = d
+
+      ;-- choose the colour band
+      band.w = #COL_ROCK
+      If c <= 0
+        band = -1
+      Else
+        If c > snowLine
+          band = #COL_SNOW
+        Else
+          If (c < vegLine + (Rnd - 0.5) * 6) AND (slope < maxSlope) Then band = #COL_GREEN
+        EndIf
+      EndIf
+
+      shadeMap(x, y, 0) = BandColour{band, GetLight{h1, h2, c}}
+      shadeMap(x, y, 1) = BandColour{band, GetLight{h2, h4, c}}
+      shadeMap(x, y, 2) = BandColour{band, GetLight{h3, h1, c}}
+      shadeMap(x, y, 3) = BandColour{band, GetLight{h4, h3, c}}
+    Next x
+  Next y
+End Statement
+
+
+;============================================================================================
+; -- Draw a #VIEWW x #VIEWD window of the height map back to front (painter's algorithm).
+; -- Each grid cell is split into 4 triangles around its centre.
+; -- *v        : display parameters (including the roll angle)
+; -- camX, camY: camera position in the map. Increasing camY moves the camera into the depth.
+; --
+; -- Roll: the whole picture is rotated by v\roll around (v\rcx, v\rcy).
+; -- Because the projection is linear, a grid point (column c, row r, height h) lands at
+; --   x = ox + c * dxc + r * dxr + h * hx
+; --   y = oy + c * dyc + r * dyr + h * hy
+; -- The step vectors are rotated once per frame, so the rotation costs nothing per point:
+; -- moving one column / row is just an addition, only the height needs a multiplication.
+;============================================================================================
+Statement DrawView{*v.ViewParams, camX.w, camY.w}
+SHARED heightMap(), centreMap(), shadeMap()
+  DEFTYPE.Polygon area
+  DEFTYPE.q ca, sa, dxc, dyc, dxr, dyr, hx, hy, ox, oy, dx, dy
+  DEFTYPE.q rowX, rowY, bx, by, h1, h2, h3, h4, hc
+  DEFTYPE.q rx, ry, rx1, ry1, rx2, ry2, rx3, ry3, rx4, ry4
+
+  ca = Cos(*v\roll) : sa = Sin(*v\roll)
+
+  ;-- step on the screen for one column (x direction of the map) ...
+  dxc = *v\xm * ca
+  dyc = *v\xm * sa
+  ;-- ... for one row (depth) ...
+  dxr = *v\xshift * ca - *v\ym * sa
+  dyr = *v\xshift * sa + *v\ym * ca
+  ;-- ... and for one unit of height (heights go up = negative y before the rotation)
+  hx = *v\hScale * sa
+  hy = 0 - *v\hScale * ca
+  ;-- screen position of the back left corner at height 0 (rotated around rcx, rcy)
+  ox = *v\rcx + (*v\xp - *v\rcx) * ca - (*v\yp - *v\rcy) * sa
+  oy = *v\rcy + (*v\xp - *v\rcx) * sa + (*v\yp - *v\rcy) * ca
+  ;-- half diagonal of a cell: offset from the back left corner to the cell centre
+  dx = (dxc + dxr) / 2
+  dy = (dyc + dyr) / 2
+
+  rowX = ox : rowY = oy
+  For r.w = 0 To #VIEWD - 1                  ; screen row: 0 = back, #VIEWD-1 = front
+    my.w  = (r - camY) AND #MAPMASK          ; map row of this screen row
+    my1.w = (my + 1) AND #MAPMASK
+    bx = rowX : by = rowY                    ; back left corner of the cell at height 0
+
+    For c.w = 0 To #VIEWW - 1                ; screen column
+      mx.w  = (c + camX) AND #MAPMASK        ; map column
+      mx1.w = (mx + 1) AND #MAPMASK
+
+      h1 = heightMap(mx, my)   : h2 = heightMap(mx1, my)    ; back left, back right
+      h3 = heightMap(mx, my1)  : h4 = heightMap(mx1, my1)   ; front left, front right
+      hc = centreMap(mx, my)
+
+      rx1 = bx             + h1 * hx : ry1 = by             + h1 * hy
+      rx2 = bx + dxc       + h2 * hx : ry2 = by + dyc       + h2 * hy
+      rx3 = bx + dxr       + h3 * hx : ry3 = by + dyr       + h3 * hy
+      rx4 = bx + dxc + dxr + h4 * hx : ry4 = by + dyc + dyr + h4 * hy
+
+      If *v\wire
+        ;-- wireframe: back and left edge of every cell, the right and front edges
+        ;-- only for the last column / row (all other ones are drawn by the neighbour cells)
+        Line rx1, ry1, rx2, ry2, shadeMap(mx, my, 0)                         ; back edge
+        Line rx1, ry1, rx3, ry3, shadeMap(mx, my, 2)                         ; left edge
+        If c = #VIEWW - 1 Then Line rx2, ry2, rx4, ry4, shadeMap(mx, my, 1)  ; right edge
+        If r = #VIEWD - 1 Then Line rx3, ry3, rx4, ry4, shadeMap(mx, my, 3)  ; front edge
+      Else
+        rx  = bx + dx        + hc * hx : ry  = by + dy        + hc * hy
+
+        area\x0 = rx  : area\y0 = ry           ; back triangle
+        area\x1 = rx1 : area\y1 = ry1
+        area\x2 = rx2 : area\y2 = ry2
+        Polyf 3, &area, shadeMap(mx, my, 0)
+
+        area\x0 = rx  : area\y0 = ry           ; right triangle
+        area\x1 = rx2 : area\y1 = ry2
+        area\x2 = rx4 : area\y2 = ry4
+        Polyf 3, &area, shadeMap(mx, my, 1)
+
+        area\x0 = rx  : area\y0 = ry           ; left triangle
+        area\x1 = rx1 : area\y1 = ry1
+        area\x2 = rx3 : area\y2 = ry3
+        Polyf 3, &area, shadeMap(mx, my, 2)
+
+        area\x0 = rx  : area\y0 = ry           ; front triangle
+        area\x1 = rx3 : area\y1 = ry3
+        area\x2 = rx4 : area\y2 = ry4
+        Polyf 3, &area, shadeMap(mx, my, 3)
+      EndIf
+
+      bx + dxc : by + dyc                    ; next column
+    Next c
+
+    rowX + dxr : rowY + dyr                  ; next row
+  Next r
+End Statement
+
+
+;============================================================================================
+; -- Returns True if a key or a mouse button is pressed.
+; -- Keys are buffered (BlitzKeys On), mouse buttons are only seen while they are held down.
+;============================================================================================
+Function.b InputPressed{}
+  If Inkey$ <> "" Then Function Return True
+  If Joyb(0) <> 0 Then Function Return True
+  Function Return False
+End Function
+
+
+;============================================================================================
+; -- Waits for a key or mouse button, then waits until the mouse button is released again,
+; -- so the same click is not seen twice.
+;============================================================================================
+Statement WaitInput{}
+  Repeat
+    VWait
+  Until InputPressed{}
+  While Joyb(0) <> 0
+    VWait
+  Wend
+End Statement
+
+
+;============================================================================================
+; -- main program
+;============================================================================================
+
+;-- landscape parameters
+maxVar    = 2.0     ; maximum variation (0 - 2): roughness of the landscape
+maxHeight = 45      ; height of the highest point (in pixels, before hScale)
+seaLevel  = 0.35    ; 35% of the height range is below the water line
+snowLine  = maxHeight - maxHeight / 4   ; the top quarter of the height range is snow
+vegLine   = maxHeight * 0.35            ; vegetation grows below 35% of the maximum height ...
+maxSlope  = 2.5                         ; ... but only where the ground is not too steep
+
+;-- display parameters
+;-- The landscape is a bit narrower and higher up than in fractals_fixed.ab3,
+;-- so the corners stay inside the screen while rolling.
+DEFTYPE.ViewParams view
+view\xm     = 4.0   ; 64 cells * 4.0 = 256 pixels, plus shear = 272 pixels
+view\ym     = 1.0   ; 128 rows * 1.0 = 128 lines; smaller = more from the side, larger = more from above
+view\xshift = 0.125 ; 128 rows * 0.125 = 16 pixels shear; 0 = straight front view
+view\xp     = 24    ; (320 - 272) / 2: landscape centred horizontally
+view\yp     = 95    ; vertical offset of the back row (leaves room for the highest peaks)
+view\hScale = 1.5   ; height scale: 1 = original heights, larger = higher mountains
+view\roll   = 0     ; no roll for the first picture
+view\wire   = True  ; True = draw a wireframe (grid lines only, faster), False = filled areas
+view\rcx    = 160   ; roll around the centre of the landscape
+view\rcy    = 125
+
+;-- roll during the flight: the landscape swings slowly between -rollMax and +rollMax
+rollMax.q   = 8 * Pi / 180    ; 8 degrees; more than ~8 degrees moves the corners out of the screen
+rollSpeed.q = 0.05            ; phase step per frame: one full swing takes 2 * Pi / 0.05 = ~126 frames
+rollPhase.q = 0
+
+camX.w = 0          ; camera position in the map
+camY.w = 0
+
+RndSeed Timer
+
+;-- two bitmaps for double buffering (draw into one, show the other)
+BitMap 1,320,256,5
+BitMap 0,320,256,5                 ; 5 bitplanes = 32 colours
+Use BitMap 0
+
+;-- build the colour map (8 bit per channel)
+;-- each band runs linearly from its darkest to its brightest colour
+cmap(0)\r = 0 : cmap(0)\g = 0 : cmap(0)\b = 0                               ; background
+cmap(#COL_WATER)\r = 0 : cmap(#COL_WATER)\g = 64 : cmap(#COL_WATER)\b = 128 ; water
+For i.w = 0 To #SHADES - 1
+  f.q = i : f = f / (#SHADES - 1)          ; 0 = darkest .. 1 = brightest (calculated as quick, not integer)
+  cmap(#COL_GREEN + i)\r = 20  + 100 * f   ; vegetation:  (20,50,10) .. (120,200,60)
+  cmap(#COL_GREEN + i)\g = 50  + 150 * f
+  cmap(#COL_GREEN + i)\b = 10  +  50 * f
+  cmap(#COL_ROCK + i)\r  = 34  + 221 * f   ; rock / soil: (34,20,10) .. (255,153,76)
+  cmap(#COL_ROCK + i)\g  = 20  + 133 * f
+  cmap(#COL_ROCK + i)\b  = 10  +  66 * f
+  cmap(#COL_SNOW + i)\r  = 100 + 155 * f   ; snow:        (100,100,110) .. (255,255,255)
+  cmap(#COL_SNOW + i)\g  = 100 + 155 * f
+  cmap(#COL_SNOW + i)\b  = 110 + 145 * f
+Next
+
+;-- transfer the colour map to the palette
+;-- PalRGB expects 4 bit per channel (0..15): (v + 8) / 17 rounds 0..255 to 0..15
+InitPalette 0,32
+For i = 0 To 31
+  PalRGB 0, i, Int((cmap(i)\r + 8) / 17), Int((cmap(i)\g + 8) / 17), Int((cmap(i)\b + 8) / 17)
+Next
+
+Slice 0,44,5 : Show 0 : Use Palette 0
+
+Mouse On : BlitzKeys On
+
+;-- set bitmap 0 as output bitmap for print operations
+BitMapOutput 0 : Locate 0,0 : Colour 15
+
+MakeMount{maxVar, maxHeight, seaLevel}
+CalcShades{snowLine, vegLine, maxSlope}
+
+;-- first picture
+Cls
+DrawView{view, camX, camY}
+WaitInput{}
+
+;-- flight: move the camera one row into the depth per frame and roll it slowly,
+;-- until a key or mouse button is pressed
+db.w = 1                                   ; back buffer = bitmap we are drawing into
+Repeat
+  camY = (camY + 1) AND #MAPMASK           ; the map wraps, so the flight is endless
+  rollPhase + rollSpeed
+  If rollPhase > 2 * Pi Then rollPhase - 2 * Pi
+  view\roll = rollMax * Sin(rollPhase)     ; roll smoothly left and right
+
+  Use BitMap db : Cls                      ; draw into the invisible bitmap ...
+  DrawView{view, camX, camY}
+  VWait : Show db                          ; ... and show it when it is complete
+  db = 1 - db                              ; swap front and back buffer
+Until InputPressed{}
+
+End
