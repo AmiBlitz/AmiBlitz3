@@ -3,7 +3,7 @@
 ; 
 ; General Info
 ; -------------------------------------------------------
-; ExePath         = "Blitz3:BlitzLibs/Decompiled/thirdpartylibs"
+; ExePath         = "Development:AmiBlitz3/BlitzLibs/Userlibs"
 ; ExeFile         = "nC2P_new.obj"
 ; CreateIcon      = 0
 ; Residents       = "libnums.res,libjsrs.res,libmacs.res,LVO.res"
@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 4
+; NumberOfBuilds  = 5
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -43,25 +43,24 @@
 ; Max File        = 5
 ; Max GadgetList  = 5
 ; Max Shape       = 100
-; Max Bank        = 5
 ; Max MenuList    = 5
-; Max GTList      = 20
-; Max BitMap      = 10
-; Max Screen      = 5
 ; Max IntuiFont   = 5
-; Max Window      = 20
-; Max Palette     = 4
 ; Max BlitzFont   = 4
+; Max Bank        = 5
+; Max GTList      = 20
 ; Max IconInfo    = 1
 ; Max MUIObject   = 50
 ; Max AsyncReq    = 4
-; Max Req-Lib     = 5
 ; Max GTMenuList  = 5
 ; Max Console     = 5
 ; Max TCPSock     = 5
 ; Max Tape        = 5
 ; Max TagList     = 5
 ; Max Database    = 16
+; Max BitMap      = 10
+; Max Screen      = 5
+; Max Palette     = 4
+; Max Window      = 20
 ; Max Sound       = 10
 ; Max MedModule   = 8
 ; Max Buffer      = 10
@@ -69,7 +68,6 @@
 ; Max Sprite      = 20
 ; Max Module      = 5
 ; Max Slice       = 10
-; Max Page        = 4
 ; Max CopList     = 10
 ; Max PTModule    = 5
 ; Max Anim        = 10
@@ -77,6 +75,7 @@
 ; Max Chunky      = 20
 ; Max Stencil     = 5
 ; Max XBSound     = 10
+; Max Page        = 4
 ; /XTRA
 ; ===========================================================================
 ; Note on the chunky-to-planar routines (c2p) - comparison of 2026-11-05
@@ -101,6 +100,10 @@
 ;   - fixed: 320 x 200 (or 256), bitplanes must follow each other directly
 ;     (8000 bytes apart for 320 x 200); always converts the whole buffer
 ;   - call with address of the 1st bitplane - 4
+;
+;   c2pBitMapRows (added 2026-11-05, see end of file):
+;   - same merge c2p, but for any range of rows of a standard 8-bitplane
+;     BitMap (plane spacing taken from the BitMap), runs on 68000 and up
 ; ===========================================================================
 ABSEXECBASE EQU $4
 
@@ -117,6 +120,12 @@ ABSEXECBASE EQU $4
 !libs
 !subs{do_c2p040_320_256,0,0}
 !name{"c2p040_320_256","(ChunkyBufferAdress, BitmapAdress)"}
+
+!afunction{#long}
+!args{#long,#long,#word,#word}
+!libs
+!subs{do_c2pbitmaprows,0,0}
+!name{"c2pBitMapRows","(ChunkyBufferAdress, BitMapStructAdress, FirstRow, NumRows) -> 1 = done, 0 = unsuitable BitMap"}
 
 !libfin
 ; ================================================================
@@ -1805,3 +1814,240 @@ RTS    ;09a6: 4e75
   MOVE.L A4,(A1)   ;126e: 228c
   MOVEM.L (A7)+,D0-D7/A0-A6 ;1270: 4cdf7fff
 RTS    ;1274: 4e75
+
+; ---------------------------------------------------------------------------
+; c2pBitMapRows(ChunkyBufferAdress, BitMapStructAdress, FirstRow, NumRows)
+;   converts the rows FirstRow .. FirstRow + NumRows - 1 (clipped to the
+;   BitMap) of an 8-bit chunky buffer into a standard 8-bitplane BitMap.
+;   - BitMapStructAdress = address of a struct BitMap (e.g. Addr BitMap(0));
+;     the chunky buffer must be BytesPerRow * 8 pixels wide
+;   - requirements: Depth = 8, BytesPerRow a multiple of 4, planes equally
+;     spaced and not interleaved; otherwise nothing is done and 0 returned
+;   - merge c2p (stages 8, 4, 1, 16, 2 bits): 32 pixels per loop, one
+;     longword write per bitplane; any plane spacing, runs on 68000 and up
+;   - returns 1 when done (also when no row lies inside the BitMap)
+; ---------------------------------------------------------------------------
+.do_c2pbitmaprows:                  ; d0: chunky, d1: struct BitMap, d2: FirstRow, d3: NumRows
+  MOVEM.L D2-D7/A2-A6,-(A7)
+  MOVEA.L D0,A0                     ; a0 = chunky buffer
+  MOVEA.L D1,A1                     ; a1 = struct BitMap
+  MOVEQ #0,D0                       ; result: 0 = unsuitable BitMap
+  CMPI.B #8,5(A1)                   ; Depth must be 8
+  BNE.W c2pbr_end
+  MOVEQ #0,D4
+  MOVE.W (A1),D4                    ; d4 = BytesPerRow
+  BEQ.W c2pbr_end
+  MOVE.L D4,D5
+  ANDI.L #3,D5                      ; BytesPerRow must be a multiple of 4
+  BNE.W c2pbr_end
+  MOVE.L 12(A1),D6                  ; d6 = S = Planes[1] - Planes[0]
+  SUB.L 8(A1),D6
+  MOVEQ #0,D5
+  MOVE.W 2(A1),D5                   ; d5 = Rows
+  MOVE.L D5,D7
+  MULU D4,D7                        ; plane size = Rows * BytesPerRow
+  CMP.L D7,D6                       ; S >= plane size (not interleaved)
+  BCS.W c2pbr_end
+  LEA 12(A1),A2                     ; Planes[p+1] - Planes[p] = S for all p
+  MOVEQ #5,D7
+c2pbr_chk:
+  MOVE.L 4(A2),D1
+  SUB.L (A2)+,D1
+  CMP.L D6,D1
+  BNE.W c2pbr_end
+  DBRA D7,c2pbr_chk
+  EXT.L D2                          ; clip FirstRow / NumRows
+  EXT.L D3
+  TST.L D2
+  BPL.W c2pbr_y0ok
+  ADD.L D2,D3
+  MOVEQ #0,D2
+c2pbr_y0ok:
+  MOVE.L D5,D7
+  SUB.L D2,D7
+  BLE.W c2pbr_ok
+  CMP.L D7,D3
+  BLE.W c2pbr_rowsok
+  MOVE.L D7,D3
+c2pbr_rowsok:
+  TST.L D3
+  BLE.W c2pbr_ok
+  MOVE.L D2,D7
+  MULU D4,D7                        ; FirstRow * BytesPerRow
+  MOVEA.L 8(A1),A1                  ; a1 = Planes[0] + offset
+  ADDA.L D7,A1
+  LSL.L #3,D7                       ; chunky: 8 pixels per plane byte
+  ADDA.L D7,A0
+  MULU D4,D3                        ; blocks of 32 pixels = NumRows * BytesPerRow / 4
+  LSR.L #2,D3
+  MOVE.L D6,D7
+  ADD.L D7,D7
+  LEA 0(A1,D7.L),A3                 ; a3 = Planes[2] + offset
+  ADD.L D7,D7                       ; d7 = 4 * S
+  MOVE.L D3,-(A7)                   ; block counter on the stack
+c2pbr_loop:
+  MOVEM.L (A0)+,D0-D3               ; pixels 0..15
+  MOVE.L D2,D4
+  LSR.L #8,D4
+  EOR.L D0,D4
+  AND.L #$00FF00FF,D4
+  EOR.L D4,D0
+  LSL.L #8,D4
+  EOR.L D4,D2
+  MOVE.L D3,D4
+  LSR.L #8,D4
+  EOR.L D1,D4
+  AND.L #$00FF00FF,D4
+  EOR.L D4,D1
+  LSL.L #8,D4
+  EOR.L D4,D3
+  MOVE.L D1,D4
+  LSR.L #4,D4
+  EOR.L D0,D4
+  AND.L #$0F0F0F0F,D4
+  EOR.L D4,D0
+  LSL.L #4,D4
+  EOR.L D4,D1
+  MOVE.L D3,D4
+  LSR.L #4,D4
+  EOR.L D2,D4
+  AND.L #$0F0F0F0F,D4
+  EOR.L D4,D2
+  LSL.L #4,D4
+  EOR.L D4,D3
+  MOVE.L D2,D4
+  LSR.L #1,D4
+  EOR.L D0,D4
+  AND.L #$55555555,D4
+  EOR.L D4,D0
+  LSL.L #1,D4
+  EOR.L D4,D2
+  MOVE.L D3,D4
+  LSR.L #1,D4
+  EOR.L D1,D4
+  AND.L #$55555555,D4
+  EOR.L D4,D1
+  LSL.L #1,D4
+  EOR.L D4,D3
+  MOVEA.L D0,A2
+  MOVEA.L D1,A4
+  MOVEA.L D2,A5
+  MOVEA.L D3,A6
+  MOVEM.L (A0)+,D0-D3               ; pixels 16..31
+  MOVE.L D2,D4
+  LSR.L #8,D4
+  EOR.L D0,D4
+  AND.L #$00FF00FF,D4
+  EOR.L D4,D0
+  LSL.L #8,D4
+  EOR.L D4,D2
+  MOVE.L D3,D4
+  LSR.L #8,D4
+  EOR.L D1,D4
+  AND.L #$00FF00FF,D4
+  EOR.L D4,D1
+  LSL.L #8,D4
+  EOR.L D4,D3
+  MOVE.L D1,D4
+  LSR.L #4,D4
+  EOR.L D0,D4
+  AND.L #$0F0F0F0F,D4
+  EOR.L D4,D0
+  LSL.L #4,D4
+  EOR.L D4,D1
+  MOVE.L D3,D4
+  LSR.L #4,D4
+  EOR.L D2,D4
+  AND.L #$0F0F0F0F,D4
+  EOR.L D4,D2
+  LSL.L #4,D4
+  EOR.L D4,D3
+  MOVE.L D2,D4
+  LSR.L #1,D4
+  EOR.L D0,D4
+  AND.L #$55555555,D4
+  EOR.L D4,D0
+  LSL.L #1,D4
+  EOR.L D4,D2
+  MOVE.L D3,D4
+  LSR.L #1,D4
+  EOR.L D1,D4
+  AND.L #$55555555,D4
+  EOR.L D4,D1
+  LSL.L #1,D4
+  EOR.L D4,D3
+  MOVE.L A4,D5                      ; planes 3 / 1
+  SWAP D1
+  EOR.W D1,D5
+  EOR.W D5,D1
+  EOR.W D1,D5
+  SWAP D1
+  MOVE.L D1,D4
+  LSR.L #2,D4
+  EOR.L D5,D4
+  AND.L #$33333333,D4
+  EOR.L D4,D5
+  LSL.L #2,D4
+  EOR.L D4,D1
+  MOVE.L D5,0(A3,D6.L)
+  MOVE.L D1,0(A1,D6.L)
+  MOVE.L A6,D5                      ; planes 2 / 0
+  SWAP D3
+  EOR.W D3,D5
+  EOR.W D5,D3
+  EOR.W D3,D5
+  SWAP D3
+  MOVE.L D3,D4
+  LSR.L #2,D4
+  EOR.L D5,D4
+  AND.L #$33333333,D4
+  EOR.L D4,D5
+  LSL.L #2,D4
+  EOR.L D4,D3
+  MOVE.L D5,(A3)
+  MOVE.L D3,(A1)
+  ADDA.L D7,A1                      ; to planes 4..7
+  ADDA.L D7,A3
+  MOVE.L A2,D5                      ; planes 7 / 5
+  SWAP D0
+  EOR.W D0,D5
+  EOR.W D5,D0
+  EOR.W D0,D5
+  SWAP D0
+  MOVE.L D0,D4
+  LSR.L #2,D4
+  EOR.L D5,D4
+  AND.L #$33333333,D4
+  EOR.L D4,D5
+  LSL.L #2,D4
+  EOR.L D4,D0
+  MOVE.L D5,0(A3,D6.L)
+  MOVE.L D0,0(A1,D6.L)
+  MOVE.L A5,D5                      ; planes 6 / 4
+  SWAP D2
+  EOR.W D2,D5
+  EOR.W D5,D2
+  EOR.W D2,D5
+  SWAP D2
+  MOVE.L D2,D4
+  LSR.L #2,D4
+  EOR.L D5,D4
+  AND.L #$33333333,D4
+  EOR.L D4,D5
+  LSL.L #2,D4
+  EOR.L D4,D2
+  MOVE.L D5,(A3)
+  MOVE.L D2,(A1)
+  SUBA.L D7,A1                      ; back to planes 0..3, next longword
+  SUBA.L D7,A3
+  ADDQ.L #4,A1
+  ADDQ.L #4,A3
+  SUBQ.L #1,(A7)
+  BNE.W c2pbr_loop
+  ADDQ.L #4,A7
+c2pbr_ok:
+  MOVEQ #1,D0                       ; result: 1 = done
+c2pbr_end:
+  MOVEM.L (A7)+,D2-D7/A2-A6
+RTS
+

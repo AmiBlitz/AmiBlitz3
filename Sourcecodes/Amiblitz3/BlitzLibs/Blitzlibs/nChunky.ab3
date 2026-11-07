@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 12
+; NumberOfBuilds  = 13
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -31,7 +31,7 @@
 ; Editor
 ; -------------------------------------------------------
 ; CursorLine      = 283
-; CursorColumn    = 26
+; CursorColumn    = 1
 ; LabelSearch     = ""
 ; LabelRemark     = 0
 ; LabelAll        = 0
@@ -43,25 +43,24 @@
 ; Max File        = 5
 ; Max GadgetList  = 5
 ; Max Shape       = 100
-; Max Bank        = 5
 ; Max MenuList    = 5
-; Max GTList      = 20
-; Max BitMap      = 10
-; Max Screen      = 5
 ; Max IntuiFont   = 5
-; Max Window      = 20
-; Max Palette     = 4
 ; Max BlitzFont   = 4
+; Max Bank        = 5
+; Max GTList      = 20
 ; Max IconInfo    = 1
 ; Max MUIObject   = 50
 ; Max AsyncReq    = 4
-; Max Req-Lib     = 5
 ; Max GTMenuList  = 5
 ; Max Console     = 5
 ; Max TCPSock     = 5
 ; Max Tape        = 5
 ; Max TagList     = 5
 ; Max Database    = 16
+; Max BitMap      = 10
+; Max Screen      = 5
+; Max Palette     = 4
+; Max Window      = 20
 ; Max Sound       = 10
 ; Max MedModule   = 8
 ; Max Buffer      = 10
@@ -69,7 +68,6 @@
 ; Max Sprite      = 20
 ; Max Module      = 5
 ; Max Slice       = 10
-; Max Page        = 4
 ; Max CopList     = 10
 ; Max PTModule    = 5
 ; Max Anim        = 10
@@ -77,6 +75,7 @@
 ; Max Chunky      = 20
 ; Max Stencil     = 5
 ; Max XBSound     = 10
+; Max Page        = 4
 ; /XTRA
 ; ===========================================================================
 ; Note on the chunky-to-planar routines (c2p) - comparison of 2026-11-05
@@ -122,7 +121,10 @@
 !args{#byte}
 !libs
 !subs{do_nchunkycls,0,0}
-!name{"NChunkyCls","Colour"}
+!args{#byte,#word,#word}
+!libs
+!subs{do_nchunkycls2,0,0}
+!name{"NChunkyCls","Colour [,FirstRow, NumRows]"}
 
 !astatement
 !args{#word,#word,#byte}
@@ -259,24 +261,92 @@ RTS    ;35c: 4e75
   CMP.W D1,D3 : BLT.W LAB_0006  ;386: 6d00ffea
 RTS    ;38a: 4e75
 
-.do_nchunkycls:
+; ---------------------------------------------------------------------------
+; NChunkyCls Colour [,FirstRow, NumRows]
+;   fills the current chunky buffer (or only the rows FirstRow ..
+;   FirstRow + NumRows - 1, clipped to the buffer) with Colour.
+;   Fills backwards with MOVEM.L (12 registers = 48 bytes per instruction),
+;   the length is counted as a longword (buffers > 64 KB work), runs on
+;   68000 and up (odd start address handled). 2026-11-05
+; ---------------------------------------------------------------------------
+.do_nchunkycls:                       ; d0: Colour -> clear the whole buffer
+  MOVEQ #0,D1                         ; FirstRow = 0
+  MOVE.W chunkyHeight(PC),D2          ; NumRows = height
+.do_nchunkycls2:                      ; d0: Colour, d1: FirstRow, d2: NumRows
+  MOVEM.L D2-D7/A2-A6,-(A7)
+  MOVE.W D2,D7                        ; d7 = NumRows (later: byte counter)
+  EXT.L D1
+  EXT.L D7
+  MOVEQ #0,D3
+  MOVE.W chunkyHeight(PC),D3
+  TST.L D1                            ; clip FirstRow < 0
+  BPL.W nccls_y0ok
+    ADD.L D1,D7
+    MOVEQ #0,D1
+  nccls_y0ok:
+  MOVE.L D3,D4                        ; clip to the buffer height
+  SUB.L D1,D4
+  BLE.W nccls_end
+  CMP.L D4,D7
+  BLE.W nccls_rowsok
+    MOVE.L D4,D7
+  nccls_rowsok:
+  TST.L D7
+  BLE.W nccls_end
+  MOVEQ #0,D3
+  MOVE.W chunkyWidth(PC),D3
   MOVEA.L ptr_chunky(PC),A0
-  MOVE.W chunkyWidth(PC),D1
-  MOVE.W chunkyHeight(PC),D2
-  MULU D1,D2
-  ADDQ.W #4,D2
+  MULU D3,D1                          ; FirstRow * width
+  ADDA.L D1,A0                        ; a0 = first byte
+  MULU D3,D7                          ; d7 = number of bytes
+  ANDI.L #255,D0                      ; colour -> 4 bytes
   MOVE.L D0,D3
-  LSL.B #8,D3 : OR.B D0,D3
-  LSL.W #8,D3 : OR.B D0,D3
-  LSL.L #8,D3 : OR.B D0,D3
-  LSL.L #8,D3 : OR.B D0,D3
-
-  LAB_0008:
-    SUBQ.W #4,D2   ;3ae: 5942
-    TST.L D2 : BLE.W LAB_0009  ;3b2: 6f000008
-      MOVE.L D3,(A0)+  ;3b6: 20c3
-  BRA.W LAB_0008  ;3b8: 6000fff4
-  LAB_0009:
+  LSL.L #8,D3
+  OR.L D3,D0
+  MOVE.L D0,D3
+  SWAP D3
+  OR.L D3,D0
+  MOVE.L A0,D3                        ; odd start: one byte first (68000)
+  BTST #0,D3
+  BEQ.W nccls_even
+    MOVE.B D0,(A0)+
+    SUBQ.L #1,D7
+  nccls_even:
+  ADDA.L D7,A0                        ; fill backwards from the end
+  nccls_tail:                         ; until the length is a multiple of 4
+    MOVE.L D7,D3
+    ANDI.L #3,D3
+    BEQ.W nccls_tailok
+    MOVE.B D0,-(A0)
+    SUBQ.L #1,D7
+  BRA.W nccls_tail
+  nccls_tailok:
+  MOVE.L D0,D1                        ; 12 registers = 48 bytes per MOVEM
+  MOVE.L D0,D2
+  MOVE.L D0,D3
+  MOVE.L D0,D4
+  MOVE.L D0,D5
+  MOVE.L D0,D6
+  MOVEA.L D0,A1
+  MOVEA.L D0,A2
+  MOVEA.L D0,A3
+  MOVEA.L D0,A4
+  MOVEA.L D0,A5
+  MOVEA.L D0,A6
+  nccls_blk:
+    SUB.L #48,D7
+    BCS.W nccls_blkend
+    MOVEM.L D1-D6/A1-A6,-(A0)
+  BRA.W nccls_blk
+  nccls_blkend:
+  ADD.L #48,D7
+  nccls_lw:                           ; remaining longwords
+    SUBQ.L #4,D7
+    BCS.W nccls_end
+    MOVE.L D0,-(A0)
+  BRA.W nccls_lw
+  nccls_end:
+  MOVEM.L (A7)+,D2-D7/A2-A6
 RTS
 
 .do_nchunkyplot: ;d0:X, d1:Y, d2:Colour
@@ -288,24 +358,93 @@ RTS
   MOVE.B D2,(A0)
 RTS
 
-.do_nchunkyboxf: ;d0:X1, d1:Y1, d2:X2, d3:Y2, d4:Colour
-  MOVEA.L ptr_chunky(PC),A0
-  _loopY:
-  MOVE.W chunkyWidth(PC),D5  
-  MULU    d1,d5           ; d5 = y1*AWidth
-  MOVE.l  d0,d6           ; d6 = x1
-  _loopX:
-  MOVE.l  d5,d7           ; d7 = y1*AWidth
-  ADD.l   d6,d7           ; d7 = x1+(y1*AWidth)
-
-  ANDI.b  #$FF,d4
-  MOVE.b  d4,0(a0,d7.l)   ; Poke d4
-  ADDQ    #1,d6           ; d6 = x1+1
-  CMP.l   d6,d2           ; Tst d6=d2 ?
-  BPL     _loopX          ;
-  ADDQ    #1,d1           ; d2 = y1+1
-  CMP.l   d1,d3           ; Tst d2=d4 ?
-  BPL     _loopY          ;
+; ---------------------------------------------------------------------------
+; NChunkyBoxf X1, Y1, X2, Y2, Colour
+;   fills the box X1..X2 / Y1..Y2 (inclusive, corners in any order) of the
+;   current chunky buffer with Colour; clipped to the buffer.
+;   Row by row with longword writes, word arguments are sign-extended
+;   (upper register halves are ignored), runs on 68000 and up. 2026-11-05
+; ---------------------------------------------------------------------------
+.do_nchunkyboxf:                      ; d0: X1, d1: Y1, d2: X2, d3: Y2, d4: Colour
+  MOVEM.L D2-D7/A2,-(A7)
+  EXT.L D0                            ; word arguments -> longwords
+  EXT.L D1
+  EXT.L D2
+  EXT.L D3
+  CMP.L D0,D2                         ; X1 <= X2 and Y1 <= Y2
+  BGE.W ncbox_xord
+    EXG D0,D2
+  ncbox_xord:
+  CMP.L D1,D3
+  BGE.W ncbox_yord
+    EXG D1,D3
+  ncbox_yord:
+  MOVEQ #0,D5
+  MOVE.W chunkyWidth(PC),D5           ; d5 = width (bytes per row)
+  MOVEQ #0,D6
+  MOVE.W chunkyHeight(PC),D6          ; d6 = height
+  TST.L D0                            ; clip to the buffer
+  BPL.W ncbox_x1ok
+    MOVEQ #0,D0
+  ncbox_x1ok:
+  CMP.L D5,D2
+  BLT.W ncbox_x2ok
+    MOVE.L D5,D2
+    SUBQ.L #1,D2
+  ncbox_x2ok:
+  CMP.L D2,D0
+  BGT.W ncbox_end
+  TST.L D1
+  BPL.W ncbox_y1ok
+    MOVEQ #0,D1
+  ncbox_y1ok:
+  CMP.L D6,D3
+  BLT.W ncbox_y2ok
+    MOVE.L D6,D3
+    SUBQ.L #1,D3
+  ncbox_y2ok:
+  CMP.L D3,D1
+  BGT.W ncbox_end
+  ANDI.L #255,D4                      ; colour -> 4 bytes
+  MOVE.L D4,D6
+  LSL.L #8,D6
+  OR.L D6,D4
+  MOVE.L D4,D6
+  SWAP D6
+  OR.L D6,D4
+  MOVEA.L ptr_chunky(PC),A0           ; a0 = first byte of the box
+  MOVE.L D1,D6
+  MULU D5,D6
+  ADDA.L D6,A0
+  ADDA.L D0,A0
+  SUB.L D0,D2                         ; d2 = bytes per row of the box
+  ADDQ.L #1,D2
+  SUB.L D1,D3                         ; d3 = rows - 1
+  ncbox_row:
+    MOVEA.L A0,A2
+    MOVE.L D2,D7                      ; d7 = byte counter
+    MOVE.L A2,D6                      ; odd address: one byte first (68000)
+    BTST #0,D6
+    BEQ.W ncbox_long
+      MOVE.B D4,(A2)+
+      SUBQ.L #1,D7
+    ncbox_long:
+      SUBQ.L #4,D7
+      BCS.W ncbox_longend
+      MOVE.L D4,(A2)+
+    BRA.W ncbox_long
+    ncbox_longend:
+    ADDQ.L #4,D7
+    ncbox_byte:
+      SUBQ.L #1,D7
+      BCS.W ncbox_rowend
+      MOVE.B D4,(A2)+
+    BRA.W ncbox_byte
+    ncbox_rowend:
+    ADDA.L D5,A0
+  DBRA D3,ncbox_row
+  ncbox_end:
+  MOVEM.L (A7)+,D2-D7/A2
 RTS
 
 .do_nchunkypoint: ;d0:X1, d1:Y1
