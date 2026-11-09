@@ -3237,7 +3237,6 @@ Function.b PED_Detokenize2Printbuffer{lineaddr.l, strLen.w}
 SHARED ped, pedconfig
 
   If strLen > 0
-    inString.b = False : inComment.b = False : endInString.b = False
     inConstant.b = False
     inNewtype.b = False
     inMacro.b = False
@@ -3247,116 +3246,132 @@ SHARED ped, pedconfig
       highlightType.b = 0
       curChar.b = PeekB(lineaddr + i)
 
-      ;-- check if we are in a string or a comment
-      If (NOT inComment) AND (curChar = $22)
-        If (NOT inString) Then inString = True Else endInString = True
-      EndIf 
-
-      If (NOT inString) AND (curChar = @";") Then inComment = True
-
-      If NOT (inString OR inComment)
-        ;-- we found a token if the tokenbit (7) is set in a character
-        If curChar BitTst 7
-          _token.l = PeekW(lineaddr + i) AND $7FFF
-          i + 1 ; skip next byte as it is part of the replaced token
-
-          ;-- name length and classic flag from the token info table
-          ;-- (filled once per token by PED_CacheToken)
-          ;-- this is much faster than the former search by PED_GetTokenName{}
-          tokInfo.b = PeekB(ped\tokenInfo + _token)
-          If tokInfo = 0 Then tokInfo = PED_CacheToken{_token}
-
-          ;-- update Highlight-info: "1" = token, "8" = token of a classic lib/command
-          ;-- (decided here from the token number, so PED_PrintHighlightedText does not
-          ;-- have to search the token list by name)
-          tokHigh.b = @"1"
-          If tokInfo
-            ;-- known token: copy the name directly from the token data (no string)
-            *tokData.tokendata = PeekL(ped\tokenCache + _token * 4)
-            toklen.l = tokInfo AND $7F
-            PED_CopyBytes{&*tokData\dat, ped\ptrTextbufferPrint + runnerP, toklen}
-
-            If pedconfig\highlighting
-              If tokInfo BitTst 7 Then tokHigh = @"8"
-            EndIf
-          Else
-            ;-- unknown token: fallback to the "????Lib" text of PED_GetTokenName
-            _tokname.s = PED_GetTokenName{_token}
-            toklen = FLen(_tokname)
-            CopyMem_ &_tokname, ped\ptrTextbufferPrint + runnerP, toklen
-          EndIf
-          MemCls ped\ptrTextbufferHighlight + runnerP, toklen, tokHigh
-
-          runnerP + toklen
-          Pop If : Pop If : Goto skip_me
-        Else
-          If pedconfig\highlighting
-            ;-- check for statement/function
-            If curChar = @"{" AND NOT inMacro
-              ;If AB3Pen(#AB3_cfunction) <> AB3Pen(#AB3_cother)
-                For i2.w = i - 1 To 0 Step -1
-                  checkchr.b = PeekB(lineaddr + i2)
-
-                  ;-- check if we have a macro instead of an statement/function
-                  If checkchr = @"!"; OR (checkchr < 0) 
-                    Pop For : Goto skip_function
-                  EndIf
-
-                  If !IsIllegalChar{checkchr} OR (i2 = 0)
-                    If i2 > 0 Then i2 + 1
-                    If i-i2>0 Then MemCls ped\ptrTextbufferHighlight + runnerP - (i - i2), i - i2, @"7"
-                    
-                    Pop For : Goto skip_function
-                  EndIf
-                Next i2
-                skip_function:
-              ;EndIf       
-            EndIf    
-
-            ;-- check for constant
-            If curChar = @"#" Then inConstant = True
-            If inConstant
-              If curChar <> @"$" AND curChar <> @"%"; OR checkchr = @"-"
-                If !IsIllegalChar{curChar} Then inConstant = False
-              EndIf
-            EndIf
-            If inConstant Then highlightType = @"4"
-
-            ;-- check for newtype
-            If curChar = @"\" Then inNewtype = True
-            If inNewtype
-              ;If curChar <> @"\"
-                If !IsIllegalChar{curChar} Then inNewtype = False
-              ;EndIf
-            EndIf
-            If inNewtype Then highlightType = @"5"
-
-            ;-- check for macro
-            If curChar = @"!" Then inMacro = True
-            If inMacro
-              If !IsIllegalChar{curChar} Then inMacro = False
-            EndIf
-            If inMacro Then highlightType = @"6"
- 
-            ;-- old code, dont't know if we need it anymore for special handling
-            ;If inNewtype Then highlightType = @"5"          
-              ;If AB3Pen(#AB3_cmacro) <> AB3Pen(#AB3_cother)
-              ;  For i2.w = i + 1 To #MAX_Columns - 1
-              ;    If !IsIllegalChar{PeekB(lineaddr + i2)}
-              ;      MemCls ped\ptrTextbufferHighlight + runnerP, i2 - i, @"6"
-              ;      Pop For : Goto skip_macro
-              ;    EndIf
-              ;  Next i2
-              ;  skip_macro:
-              ;EndIf
-            ;EndIf
-
-          EndIf
+      ;-- comments and strings are copied as one block: they contain no tokens
+      ;-- and the whole block has the same highlight type
+      If (curChar = @";") OR (curChar = $22)
+        blockLen.w = strLen - i                   ; comment: the rest of the line
+        blockType.b = @"3"
+        If curChar = $22
+          ;-- string: up to and including the closing quote (or the rest of the line)
+          j.w = i + 1
+          While (j < strLen) AND (PeekB(lineaddr + j) <> $22) : j + 1 : Wend
+          If j < strLen Then blockLen = j - i + 1
+          blockType = @"2"
         EndIf
-      Else ; -- we are in a string or comment
+        If NOT pedconfig\highlighting Then blockType = 0
+
+        ;-- never write behind the print buffer
+        If runnerP + blockLen > #MAX_Columns
+          blockLen = #MAX_Columns - runnerP
+          curChar = @";"                          ; buffer full: stop after this block
+        EndIf
+        If blockLen > 0
+          CopyMem_ lineaddr + i, ped\ptrTextbufferPrint + runnerP, blockLen
+          MemCls ped\ptrTextbufferHighlight + runnerP, blockLen, blockType
+          runnerP + blockLen
+        EndIf
+
+        ;-- continue behind the block (a comment ends the line)
+        If curChar = @";" Then i = strLen - 1 Else i + blockLen - 1
+        Pop If : Goto skip_me
+      EndIf
+
+      ;-- we found a token if the tokenbit (7) is set in a character
+      If curChar BitTst 7
+        _token.l = PeekW(lineaddr + i) AND $7FFF
+        i + 1 ; skip next byte as it is part of the replaced token
+
+        ;-- name length and classic flag from the token info table
+        ;-- (filled once per token by PED_CacheToken)
+        ;-- this is much faster than the former search by PED_GetTokenName{}
+        tokInfo.b = PeekB(ped\tokenInfo + _token)
+        If tokInfo = 0 Then tokInfo = PED_CacheToken{_token}
+
+        ;-- update Highlight-info: "1" = token, "8" = token of a classic lib/command
+        ;-- (decided here from the token number, so PED_PrintHighlightedText does not
+        ;-- have to search the token list by name)
+        tokHigh.b = @"1"
+        If tokInfo
+          ;-- known token: copy the name directly from the token data (no string)
+          *tokData.tokendata = PeekL(ped\tokenCache + _token * 4)
+          toklen.l = tokInfo AND $7F
+          PED_CopyBytes{&*tokData\dat, ped\ptrTextbufferPrint + runnerP, toklen}
+
+          If pedconfig\highlighting
+            If tokInfo BitTst 7 Then tokHigh = @"8"
+          EndIf
+        Else
+          ;-- unknown token: fallback to the "????Lib" text of PED_GetTokenName
+          _tokname.s = PED_GetTokenName{_token}
+          toklen = FLen(_tokname)
+          CopyMem_ &_tokname, ped\ptrTextbufferPrint + runnerP, toklen
+        EndIf
+        MemCls ped\ptrTextbufferHighlight + runnerP, toklen, tokHigh
+
+        runnerP + toklen
+        Pop If : Goto skip_me
+      Else
         If pedconfig\highlighting
-          If inString Then highlightType = @"2"
-          If inComment Then highlightType = @"3"
+          ;-- check for statement/function
+          If curChar = @"{" AND NOT inMacro
+            ;If AB3Pen(#AB3_cfunction) <> AB3Pen(#AB3_cother)
+              For i2.w = i - 1 To 0 Step -1
+                checkchr.b = PeekB(lineaddr + i2)
+
+                ;-- check if we have a macro instead of an statement/function
+                If checkchr = @"!"; OR (checkchr < 0) 
+                  Pop For : Goto skip_function
+                EndIf
+
+                If !IsIllegalChar{checkchr} OR (i2 = 0)
+                  If i2 > 0 Then i2 + 1
+                  If i-i2>0 Then MemCls ped\ptrTextbufferHighlight + runnerP - (i - i2), i - i2, @"7"
+                  
+                  Pop For : Goto skip_function
+                EndIf
+              Next i2
+              skip_function:
+            ;EndIf       
+          EndIf    
+
+          ;-- check for constant
+          If curChar = @"#" Then inConstant = True
+          If inConstant
+            If curChar <> @"$" AND curChar <> @"%"; OR checkchr = @"-"
+              If !IsIllegalChar{curChar} Then inConstant = False
+            EndIf
+          EndIf
+          If inConstant Then highlightType = @"4"
+
+          ;-- check for newtype
+          If curChar = @"\" Then inNewtype = True
+          If inNewtype
+            ;If curChar <> @"\"
+              If !IsIllegalChar{curChar} Then inNewtype = False
+            ;EndIf
+          EndIf
+          If inNewtype Then highlightType = @"5"
+
+          ;-- check for macro
+          If curChar = @"!" Then inMacro = True
+          If inMacro
+            If !IsIllegalChar{curChar} Then inMacro = False
+          EndIf
+          If inMacro Then highlightType = @"6"
+ 
+          ;-- old code, dont't know if we need it anymore for special handling
+          ;If inNewtype Then highlightType = @"5"          
+            ;If AB3Pen(#AB3_cmacro) <> AB3Pen(#AB3_cother)
+            ;  For i2.w = i + 1 To #MAX_Columns - 1
+            ;    If !IsIllegalChar{PeekB(lineaddr + i2)}
+            ;      MemCls ped\ptrTextbufferHighlight + runnerP, i2 - i, @"6"
+            ;      Pop For : Goto skip_macro
+            ;    EndIf
+            ;  Next i2
+            ;  skip_macro:
+            ;EndIf
+          ;EndIf
+
         EndIf
       EndIf
 
@@ -3364,10 +3379,6 @@ SHARED ped, pedconfig
       PokeB ped\ptrTextbufferPrint + runnerP, curChar
       runnerP + 1
       skip_me:
-      If endInString
-        inString = False
-        endInString = False
-      EndIf
     Next i    
   EndIf
   ;!log_HexDump{ped\ptrTextbufferHighlight,32}
