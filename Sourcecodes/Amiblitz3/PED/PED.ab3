@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 15511
-; CursorColumn    = 1
-; LabelSearch     = ""
+; CursorLine      = 4054
+; CursorColumn    = 3
+; LabelSearch     = "PED_Printhigh"
 ; LabelRemark     = 0
 ; LabelAll        = 0
 ; LabelCase       = 0
@@ -573,6 +573,7 @@ NEWTYPE.ped
   mempool.l
   illegalCharTable.l
   tokenCache.l
+  tokenInfo.l                   ; 1 byte per token: bits 0-6 = length of the name, bit 7 = classic token, 0 = not cached
   errorCode.w
 
   currentDir.s
@@ -656,6 +657,8 @@ NEWTYPE.ped
   ptrTextbufferHighlight.l
 
   ptrLineUndeleteStore.l
+
+  ptrHighlightbuffer.l          ; highlight types of the lines in ptrTextbuffer (same layout)
 End NEWTYPE
 DEFTYPE.ped ped
 
@@ -1207,11 +1210,8 @@ End Function
 
 Statement PED_ClearTokencache{}
 SHARED ped
-  GetReg A1, ped\tokenCache
-  MOVE.l #32767,d0
-  'l11:
-    CLR.l (a1)+
-  DBF d0,'l11
+  MemCls ped\tokenCache, 32768 * 4, 0    ; token pointers
+  MemCls ped\tokenInfo, 32768, 0         ; name length + classic flag
 End Statement
 
 Statement PED_FreeTextbuffer{}
@@ -1220,6 +1220,10 @@ SHARED ped
     !log_PrintOut{"freeing textbuffer..."}  
     PED_FreeMem{ped\ptrTextbuffer}
     ped\ptrTextbuffer = 0
+  EndIf
+  If ped\ptrHighlightbuffer
+    PED_FreeMem{ped\ptrHighlightbuffer}
+    ped\ptrHighlightbuffer = 0
   EndIf
 End Statement
 
@@ -1230,7 +1234,8 @@ SHARED sourceWindow, ped
   PED_FreeTextbuffer{}
 
   ped\ptrTextbuffer = PED_AllocMem{#MAX_Columns * sourceWindow\visibleLines}
-  If ped\ptrTextbuffer = 0
+  ped\ptrHighlightbuffer = PED_AllocMem{#MAX_Columns * sourceWindow\visibleLines}
+  If (ped\ptrTextbuffer = 0) OR (ped\ptrHighlightbuffer = 0)
     error{!TRANS{"Unable to allocate memory for text buffer!"}}
     Pop If : Goto exit_PED_closeall
   EndIf
@@ -1243,18 +1248,9 @@ SHARED sourceWindow, ped
 
   ped\ptrCurrentSourceData\TextBufferOffset = 0
   
-  ;_from.l = ped\ptrTextbuffer
-  ;_to.l = _from + (#MAX_Columns / 2) * sourceWindow\visibleLines - 1
-  ;For tb.l = _from To _to Step 2
-  ;  PokeW tb, $2020
-  ;Next tb
-
-  GetReg D1,sourceWindow\visibleLines
-  GetReg A0,ped\ptrTextbuffer
-  MOVE.w #MAX_Columns,D0 : LSR.w #1,D0 : MULS d0,d1 : SUBQ.w #1,D1
-  JL_0_76A6:
-    MOVE.w #$2020,(A0)+
-  DBF D1,JL_0_76A6
+  ;-- fill the textbuffer with spaces, highlight types = standard text
+  MemCls ped\ptrTextbuffer, #MAX_Columns * sourceWindow\visibleLines, @" "
+  MemCls ped\ptrHighlightbuffer, #MAX_Columns * sourceWindow\visibleLines, 0
 End Statement
 
 
@@ -1701,7 +1697,6 @@ End Statement
 
 Function.b PED_HasUnknownToken{txtaddr.l}
   ;-- searches the zero-terminated text for "????L" (unknown token, see PED_GetTokenName)
-  res.l = 0
   GetReg A0,txtaddr
   MOVEQ #0,D0
   'ut_loop:
@@ -1719,8 +1714,7 @@ Function.b PED_HasUnknownToken{txtaddr.l}
     BNE 'ut_loop
     MOVEQ #1,D0
   'ut_done:
-  PutReg D0,res
-  Function Return res
+  Function Return PutRegD0
 End Function
 
 Function.b PED_LabelListMode{}
@@ -3202,6 +3196,45 @@ Function.s PED_Detokenize{*sourceLine.sourceLine}
   Function Return PED_DetokenizeText{Peek.s(*sourceLine + 9)}
 End Function
 
+Statement PED_CopyBytes{src.l, dst.l, num.l}
+  ;-- copies num bytes from src to dst with a simple byte loop
+  ;-- (faster than CopyMem_ for short blocks like token names; num <= 0 copies nothing)
+  GetReg A0,src
+  GetReg A1,dst
+  GetReg D0,num
+  TST.l D0
+  BLE 'cb_done
+  SUBQ.l #1,D0
+  'cb_loop:
+    MOVE.b (A0)+,(A1)+
+  DBF D0,'cb_loop
+  'cb_done:
+End Statement
+
+Function.b PED_CacheToken{_tn.l}
+SHARED *tokenbase, ped
+  ;-- fills tokenCache and tokenInfo for the token number _tn (bit 15 cleared)
+  ;-- returns the info byte: bits 0-6 = length of the name, bit 7 = classic token
+  ;-- returns 0 for unknown tokens or names longer than 127 chars (they are not cached)
+  *token.tokendata = PeekL(ped\tokenCache + _tn * 4)
+  If *token = 0
+    *found.tokendata = 0
+    *token = *tokenbase
+    While (*token <> 0) AND (*found = 0)
+      If *token\number = _tn Then *found = *token Else *token = *token\next_token
+    Wend
+    If *found = 0 Then Function Return 0
+    *token = *found
+    PokeL ped\tokenCache + _tn * 4, *token
+  EndIf
+
+  _info.l = StrLen(&*token\dat)
+  If (_info = 0) OR (_info > 127) Then Function Return 0
+  If PED_CheckForClassicToken{_tn} Then _info = _info OR $80
+  PokeB ped\tokenInfo + _tn, _info
+  Function Return _info
+End Function
+
 Function.b PED_Detokenize2Printbuffer{lineaddr.l, strLen.w}
 SHARED ped, pedconfig
 
@@ -3226,22 +3259,37 @@ SHARED ped, pedconfig
       If NOT (ped\inString OR ped\inComment)
         ;-- we found a token if the tokenbit (7) is set in a character
         If curChar BitTst 7
-          _token.l = PeekW(lineaddr + i)
-          _tokname.s = PED_GetTokenName{_token}
-          _toklen.b = FLen(_tokname)
-          i + 1 ; skip next byte as it is part of the replaced token        
-          CopyMem_ &_tokname, ped\ptrTextbufferPrint + runnerP, _toklen
+          _token.l = PeekW(lineaddr + i) AND $7FFF
+          i + 1 ; skip next byte as it is part of the replaced token
+
+          ;-- name length and classic flag from the token info table
+          ;-- (filled once per token by PED_CacheToken)
+          ;-- this is much faster than the former search by PED_GetTokenName{}
+          tokInfo.b = PeekB(ped\tokenInfo + _token)
+          If tokInfo = 0 Then tokInfo = PED_CacheToken{_token}
 
           ;-- update Highlight-info: "1" = token, "8" = token of a classic lib/command
           ;-- (decided here from the token number, so PED_PrintHighlightedText does not
           ;-- have to search the token list by name)
           tokHigh.b = @"1"
-          If pedconfig\highlighting
-            If PED_CheckForClassicToken{_token AND $7FFF} Then tokHigh = @"8"
-          EndIf
-          MemCls ped\ptrTextbufferHighlight + runnerP, _toklen, tokHigh
+          If tokInfo
+            ;-- known token: copy the name directly from the token data (no string)
+            *tokData.tokendata = PeekL(ped\tokenCache + _token * 4)
+            toklen.l = tokInfo AND $7F
+            PED_CopyBytes{&*tokData\dat, ped\ptrTextbufferPrint + runnerP, toklen}
 
-          runnerP + _toklen
+            If pedconfig\highlighting
+              If tokInfo BitTst 7 Then tokHigh = @"8"
+            EndIf
+          Else
+            ;-- unknown token: fallback to the "????Lib" text of PED_GetTokenName
+            _tokname.s = PED_GetTokenName{_token}
+            toklen = FLen(_tokname)
+            CopyMem_ &_tokname, ped\ptrTextbufferPrint + runnerP, toklen
+          EndIf
+          MemCls ped\ptrTextbufferHighlight + runnerP, toklen, tokHigh
+
+          runnerP + toklen
           Pop If : Pop If : Goto skip_me
         Else
           If pedconfig\highlighting
@@ -3970,17 +4018,53 @@ SHARED ped,sourceWindow,AB3Pen()
       tposx.w = xPos * sourceWindow\font\tf_XSize + sourceWindow\BoxLeft
       tposy.w = yPos * sourceWindow\font\tf_YSize + sourceWindow\BoxTop + sourceWindow\font\tf_Baseline
     
-      If textcolor <> -1 Then SetAPen_ sourceWindow\win\RPort, textcolor
-      If backcolor <> -1 Then SetBPen_ sourceWindow\win\RPort, backcolor Else SetBPen_ sourceWindow\win\RPort, AB3Pen(#AB3_cbackground)
-      Move_ sourceWindow\win\RPort, tposx, tposy  
-      Text_ sourceWindow\win\RPort, textaddr, textlen
+      ;-- only set the pens if they change (the RastPort holds the current pens)
+      *rp.RastPort = sourceWindow\win\RPort
+      If backcolor = -1 Then backcolor = AB3Pen(#AB3_cbackground)
+      If textcolor <> -1
+        If (*rp\FgPen AND $FF) <> textcolor Then SetAPen_ *rp, textcolor
+      EndIf
+      If (*rp\BgPen AND $FF) <> backcolor Then SetBPen_ *rp, backcolor
+      Move_ *rp, tposx, tposy  
+      Text_ *rp, textaddr, textlen
     EndIf
   EndIf
   
 End Statement
 
 
-Statement PED_PrintHighlightedText{startPos.w, size.w, tposx.w, tposy.w}
+Function.l PED_TrimLen{txtaddr.l, numBytes.l, @hladdr.l}
+  ;-- returns numBytes without the trailing blanks of the text at txtaddr (scanned from right to left).
+  ;-- A blank is a space. If hladdr (highlight types of the text) is given, only a space
+  ;-- with highlight type 0 counts as blank (it has the normal background color).
+  ;-- Used for textbuffer lines (no 0-byte) and by PED_PrintHighlightedText.
+  ;-- Note: the result is fetched with PutRegD0, because PutReg D0,var only works
+  ;-- for global variables (it addresses the variable relative to A5, locals are relative to A4)
+  If numBytes <= 0 Then Function Return 0
+  If hladdr = -1 Then hladdr = 0          ; 0 = no highlight check
+
+  GetReg A0,txtaddr
+  GetReg A1,hladdr
+  GetReg D0,numBytes
+  ADDA.l D0,A0                            ; A0 = behind the last char
+  MOVE.l A1,D1
+  BEQ 'tl_loop                            ; no highlight buffer
+  ADDA.l D0,A1                            ; A1 = behind the last highlight type
+  'th_loop:
+    CMP.b #32,-(A0) : BNE 'tl_done        ; not a space
+    TST.b -(A1)     : BNE 'tl_done        ; space with a highlight type (e.g. comment background)
+    SUBQ.l #1,D0
+  BNE 'th_loop
+  BRA 'tl_done
+  'tl_loop:
+    CMP.b #32,-(A0) : BNE 'tl_done        ; not a space
+    SUBQ.l #1,D0
+  BNE 'tl_loop
+  'tl_done:
+  Function Return PutRegD0
+End Function
+
+Statement PED_PrintHighlightedText{startPos.w, size.w, tposx.w, tposy.w, @txtBase.l, @hlBase.l}
 SHARED sourceWindow, ped, pedconfig, AB3Pen()
 USEPATH sourceWindow
 
@@ -3995,93 +4079,119 @@ USEPATH sourceWindow
   ;-- "5" newtype
   ;-- "6" macro
   ;-- "7" function/statement
+  ;--
+  ;-- Every run of characters with the same highlight type is printed with one Text_() call.
 
-  ;-- work with printbuffer
-  If PeekB(ped\ptrTextbufferPrint) = 0
+  ;-- default: work with printbuffer (txtBase/hlBase can point to a line of the
+  ;-- textbuffer/highlightbuffer instead, see PED_RedrawTextbuffer)
+  If txtBase = -1
+    txtBase = ped\ptrTextbufferPrint
+    hlBase = ped\ptrTextbufferHighlight
+  EndIf
+  If PeekB(txtBase) = 0
     !log_PrintOut{"PED_PrintHighlightedText(): nothing to print.", #log_warning}
     Statement Return
   EndIf
 
   ;-- calculate the maximum size of the text that may be printed in the source area
-  
-  tposx = tposx / \font\tf_XSize  
+  tposx = tposx / \font\tf_XSize
   If (size < 0) OR (size > \visibleColumns - tposx)
     size = \visibleColumns - tposx
   EndIf
 
-  ;-- loop the highlightbuffer and print the text
-  tcolor.w = AB3Pen(#AB3_cother) : tcolorb.w = -1
-  highlightType.b = -1 : runner.w = 0 : numCharacters.w = 0 : countStart.w = 0
-  Repeat
-    curHigh.b = PeekB(ped\ptrTextbufferHighlight + startPos + runner)
-    
-    ;-- if there is a change in highlight mode, print the current highlight text
-    If highlightType <> curHigh
-      Gosub print_it
-      countStart = runner
-    EndIf
-    highlightType = curHigh
-    runner + 1
-  Until runner > size
+  bgPen.w = AB3Pen(#AB3_cbackground)
 
-  Gosub print_it
+  hlAddr.l  = hlBase + startPos
+  txtAddr.l = txtBase + startPos
+
+  ;-- find the last char of the range that needs Text_(). Everything behind it is
+  ;-- a space of type 0 (= background only) and is cleared with one RectFill_,
+  ;-- which is much faster than printing spaces with Text_() into all bitplanes.
+  ;-- lastIdx is relative to startPos, -1 = the whole range is blank
+  lastIdx.l = PED_TrimLen{txtAddr, size + 1, hlAddr} - 1
+
+  ;-- loop the highlightbuffer and print every run with the same highlight type
+  runType.w = -1 : runFg.w = -1 : runBg.w = -1 : runBold.b = False
+  curBold.b = False : countStart.w = 0 : numCharacters.w = 0
+  runner.w = 0
+  While runner <= lastIdx
+    idx.w = PeekB(hlAddr + runner)
+    If idx <> 0 Then idx - @"0"
+    If (idx < 0) OR (idx > 8) Then idx = 0
+
+    ;-- a change of the highlight type ends the current run
+    If idx <> runType
+      Gosub print_run
+      runType = idx
+    EndIf
+    runner + 1
+  Wend
+  Gosub print_run
+
+  ;-- restore the normal font style
+  If curBold Then SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
+
+  ;-- clear the rest of the range (same area as before covered by spaces) with one RectFill_
+  fromCol.w = tposx + lastIdx + 1
+  toCol.w = tposx + size + 1
+  If toCol > \visibleColumns Then toCol = \visibleColumns
+  rowY.w = \BoxTop + tposy * \font\tf_YSize
+  If toCol > fromCol
+    SetAPen_ \win\RPort, bgPen
+    rectX1.w = \BoxLeft + fromCol * \font\tf_XSize
+    rectX2.w = \BoxLeft + toCol * \font\tf_XSize - 1
+    rectY2.w = rowY + \font\tf_YSize - 1
+    RectFill_ \win\RPort, rectX1, rowY, rectX2, rectY2
+  EndIf
+
+  ;-- set the current position to the end of the range, like Text_() did before
+  ;-- (clearEndOfLine in PED_PrintSourceText starts there)
+  Move_ \win\RPort, \BoxLeft + toCol * \font\tf_XSize, rowY + \font\tf_Baseline
   Statement Return
 
-  print_it:
+  print_run:
+  ;-- print the characters from countStart to runner-1 and start a new run at runner
   numCharacters = runner - countStart
   If numCharacters > 0
-    ;-- print directly from the printbuffer (no copy into a string)
-    runAddr.l = ped\ptrTextbufferPrint + startPos + countStart
-
-    ;-- "8" = classic token: printed like a token, but in the classic color
-    curType.b = highlightType
-    isClassic.b = False
-    If curType = @"8"
-      curType = @"1"
-      isClassic = True
-    EndIf
-
-    Select curType
-    Case @"1";-- Token
-      tcolor.w = AB3Pen(#AB3_ctoken)
-      tcolorb.w = AB3Pen(#AB3_ctokenbackground)
-
-      ;-- classic token (marked in PED_Detokenize2Printbuffer) -> classic color
-      If isClassic Then tcolor = AB3Pen(#AB3_cclassic)
-
-      If pedconfig\bold_tokens Then SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
-      PED_PrintText{runAddr, tposx, tposy, numCharacters, tcolor, tcolorb}
-      If pedconfig\bold_tokens THen SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
-      Pop Select : Goto skip_highprint
-
-    Case @"2";-- Strings
-      tcolor = AB3Pen(#AB3_cstring) : tcolorb = -1
-
-    Case @"3";-- Comments
-      tcolor = AB3Pen(#AB3_cremarkforeground) : tcolorb = AB3Pen(#AB3_cremarkbackground)
-
-    Case @"4";-- Constants
-      tcolor = AB3Pen(#AB3_cconstant) : tcolorb = -1
-
-    Case @"5";-- Newtype
-      tcolor = AB3Pen(#AB3_cnewtype) : tcolorb = -1
-
-    Case @"6";-- Macro
-      tcolor = AB3Pen(#AB3_cmacro) : tcolorb = -1
-
-    Case @"7";-- Function/Statement
-      tcolor = AB3Pen(#AB3_cfunction) : tcolorb = -1
-
-    Default  ;-- Standardtext
-      tcolor = AB3Pen(#AB3_cother) : tcolorb = -1
-
+    ;-- pens and font style of the highlight type
+    runBg = -1 : runBold = False
+    Select runType
+    Case 1 ;-- token
+      runFg = AB3Pen(#AB3_ctoken)
+      runBg = AB3Pen(#AB3_ctokenbackground)
+      runBold = pedconfig\bold_tokens
+    Case 8 ;-- token of a classic lib/command
+      runFg = AB3Pen(#AB3_cclassic)
+      runBg = AB3Pen(#AB3_ctokenbackground)
+      runBold = pedconfig\bold_tokens
+    Case 2 ;-- string
+      runFg = AB3Pen(#AB3_cstring)
+    Case 3 ;-- comment
+      runFg = AB3Pen(#AB3_cremarkforeground)
+      runBg = AB3Pen(#AB3_cremarkbackground)
+    Case 4 ;-- constant
+      runFg = AB3Pen(#AB3_cconstant)
+    Case 5 ;-- newtype
+      runFg = AB3Pen(#AB3_cnewtype)
+    Case 6 ;-- macro
+      runFg = AB3Pen(#AB3_cmacro)
+    Case 7 ;-- function/statement
+      runFg = AB3Pen(#AB3_cfunction)
+    Default ;-- standard text
+      runFg = AB3Pen(#AB3_cother)
     End Select
 
-    PED_PrintText{runAddr, tposx, tposy, numCharacters, tcolor, tcolorb}
-    skip_highprint:
-
-    tposx + numCharacters
+    If runBold <> curBold
+      If runBold
+        SetSoftStyle_ \win\RPort,#FSF_BOLD,#FSF_BOLD
+      Else
+        SetSoftStyle_ \win\RPort,#FS_NORMAL,#FSF_BOLD
+      EndIf
+      curBold = runBold
+    EndIf
+    PED_PrintText{txtAddr + countStart, tposx + countStart, tposy, numCharacters, runFg, runBg}
   EndIf
+  countStart = runner
   Return
 
 End Statement
@@ -4097,11 +4207,16 @@ SHARED sourceWindow,ped,AB3Pen()
   PED_PrintText{&enteredChar, ped\ptrCurrentSourceData\Column, ped\ptrCurrentSourceData\DisplayLine, 1, AB3Pen(#AB3_cother)}
 End Function
 
-Statement PED_PrintSourceText{*textaddr.l, startPos.w, size.w, tposx.w, tposy.w, @clearEndOfLine.b}
+Statement PED_PrintSourceText{*textaddr.l, startPos.w, size.w, tposx.w, tposy.w, @clearEndOfLine.b, @textLen.w}
 SHARED sourceWindow, ped, pedconfig, AB3Pen()
 
-  ;-- length of the line (StrLen from LotanString lib), clipped to max columns
-  _strLen.w = StrLen(*textaddr)
+  ;-- length of the line, clipped to max columns:
+  ;-- textLen if given (textbuffer lines have no 0-byte), else StrLen from LotanString lib
+  If textLen >= 0
+    _strLen.w = textLen
+  Else
+    _strLen.w = StrLen(*textaddr)
+  EndIf
   If _strLen > #MAX_Columns - 1 Then _strLen = #MAX_Columns - 1
 
   ;-- clear textBufferPrint
@@ -4219,8 +4334,9 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
 
   If pedconfig\linenumbers Then PED_PrintLineNumber{}
 
-  ;-- clear current line in textBuffer
+  ;-- clear current line in textBuffer and highlight buffer
   MemCls ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns, @" "
+  MemCls ped\ptrHighlightbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns, 0
 
   If ped\ptrCurrentSourceData\CurrentSourceLine = 0
     !log_PrintOut{"PrintCurrentSourceLine(): Current sourceline is NULL.", #log_error}
@@ -4230,8 +4346,10 @@ SHARED pedconfig, ped, sourceWindow, AB3Pen()
   If PeekB(ped\ptrCurrentSourceData\CurrentSourceLine + 9) <> 0   ; first character of text
 
     PED_PrintSourceText{ped\ptrCurrentSourceData\CurrentSourceLine + 9, ped\ptrCurrentSourceData\ColumnsOffset, -1,0,ped\ptrCurrentSourceData\DisplayLine, clearEndOfLine}
-    ;-- copy the detokenized text to the textbuffer
+    ;-- copy the detokenized text to the textbuffer and the highlight types to the
+    ;-- highlight buffer (used by PED_RedrawTextbuffer, e.g. for horizontal scrolling)
     CopyMem_ ped\ptrTextbufferPrint, ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns
+    CopyMem_ ped\ptrTextbufferHighlight, ped\ptrHighlightbuffer + ped\ptrCurrentSourceData\TextBufferOffset, #MAX_Columns
 ;    !log_PrintOut{Peek.s(ped\ptrTextbufferPrint)}
 ;    VWait 10
   Else
@@ -4630,15 +4748,25 @@ SHARED ped, sourceWindow
   curX = curX * sourceWindow\font\tf_XSize
 
   lineaddr.l = ped\ptrTextbuffer
+  hladdr.l = ped\ptrHighlightbuffer
   For curY.w = 0 To sourceWindow\visibleLines - 1    
     If PeekB(lineaddr) <> 0
-      PED_PrintSourceText{lineaddr, startPos, tsize, curX, curY, False}
+      If (curY = ped\ptrCurrentSourceData\DisplayLine) AND (ped\ptrCurrentSourceData\sourceLineChanged <> 0)
+        ;-- the cursor line has been edited in the textbuffer and is not parsed yet,
+        ;-- so the stored highlight types do not fit: highlight it again
+        lineLen.w = PED_TrimLen{lineaddr, #MAX_Columns}
+        PED_PrintSourceText{lineaddr, startPos, tsize, curX, curY, False, lineLen}
+      Else
+        ;-- print with the stored highlight types (no detokenizing)
+        PED_PrintHighlightedText{startPos, tsize, curX, curY, lineaddr, hladdr}
+      EndIf
     Else
       !log_PrintOut{"line starts with 0-byte, will be ignored"}
     EndIf
 
     ; -- increase text line pointer in textbufferoffset
     lineaddr + #MAX_Columns
+    hladdr + #MAX_Columns
   Next curY
 
   ;-- redraw or update the block
@@ -5360,9 +5488,13 @@ USEPATH sourceWindow
   EndIf
   startAddr.l = destAddr + (#MAX_Columns * direction)
 
+  ;-- the highlight buffer has the same layout, so it is moved with the same offsets
+  hlDelta.l = ped\ptrHighlightbuffer - ped\ptrTextbuffer
+
   numberofRows2Copy.l = (sourceWindow\visibleLines - 1) - yStart
   For r.w = 1 To numberofRows2Copy
     CopyMem_ startAddr, destAddr, #MAX_Columns
+    CopyMem_ startAddr + hlDelta, destAddr + hlDelta, #MAX_Columns
     destAddr + (#MAX_Columns * direction)
     startAddr + (#MAX_Columns * direction)
   Next r
@@ -5370,6 +5502,7 @@ USEPATH sourceWindow
   ;-- prepare the new displayed line with spaces    
   ;FillMem destAddr, #MAX_Columns, @" "
   MemCls destAddr, #MAX_Columns, @" "
+  MemCls destAddr + hlDelta, #MAX_Columns, 0
 
   ;--------------------------------------------
   ;-- draw the new lines after scrolling at top or bottom
@@ -7053,6 +7186,9 @@ ped\ptrLineUndeleteStore = tempMemPtr + (#MAX_Columns + 4) * 2
 ; -- alloc memory for tokencache
 ped\tokenCache = PED_AllocMem{32768 * 4}
 If ped\tokenCache = 0 Then Goto exit_PED_closelibraries
+ped\tokenInfo = PED_AllocMem{32768}
+If ped\tokenInfo = 0 Then Goto exit_PED_closelibraries
+PED_ClearTokencache{}
 
 *pedProcess.Process = FindTask_(0)
 FindScreen 0
@@ -9969,9 +10105,7 @@ Return
   CursorXTarget.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
   ; -- delete all characters until end of line (replace with spaces)
   lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-  For cupos.w = CursorXTarget To #MAX_Columns-1
-    PokeB lineaddr + cupos, $20
-  Next cupos
+  MemCls lineaddr + CursorXTarget, #MAX_Columns - CursorXTarget, @" "
   Gosub updateSourceLine
 Return
 
@@ -12837,7 +12971,7 @@ Return
 
   ; --
   ; -- reset tables and arrays
-  Dim usedTokensTable.b(65535)
+  Dim usedTokensTable.b(65535)        ; Dim allocates cleared memory, no loop needed
   For i.l = 0 To 65535
     usedTokensTable(i) = 0
   Next i
@@ -13679,9 +13813,7 @@ Return
     CursorXTarget.w = ped\ptrCurrentSourceData\Column + ped\ptrCurrentSourceData\ColumnsOffset
     ;-- delete all charecters until end of line (replace with spaces)
     lineaddr.l = ped\ptrTextbuffer + ped\ptrCurrentSourceData\TextBufferOffset
-    For cupos.w = CursorXTarget To #MAX_Columns-1
-      PokeB lineaddr + cupos, $20
-    Next cupos
+    MemCls lineaddr + CursorXTarget, #MAX_Columns - CursorXTarget, @" "
     Gosub updateSourceLine
 
   Default
@@ -13834,9 +13966,8 @@ Return
           PokeB lineaddr + cupos, PeekB(lineaddr + cupos + 1)
         Next cupos
       Next aaa
-      For cupos.w = #MAX_Columns-1 + moveCount To #MAX_Columns-1
-        PokeB lineaddr + cupos, $20 ; insert space character
-      Next cupos
+      ;-- fill the end of the line with spaces (moveCount is negative here)
+      MemCls lineaddr + #MAX_Columns - 1 + moveCount, 1 - moveCount, @" "
 
       ped\ptrCurrentSourceData\Column + moveCount
       CursorXTarget.w = ped\ptrCurrentSourceData\Column : Gosub updateSourceLine
