@@ -104,6 +104,7 @@
 ;   c2pBitMapRows (added 2026-11-05, see end of file):
 ;   - same merge c2p, but for any range of rows of a standard 8-bitplane
 ;     BitMap (plane spacing taken from the BitMap), runs on 68000 and up
+;   - since 2026-11-10 two-pass (each loop fits the 020/030 instruction cache)
 ; ===========================================================================
 ABSEXECBASE EQU $4
 
@@ -1823,8 +1824,12 @@ RTS    ;1274: 4e75
 ;     the chunky buffer must be BytesPerRow * 8 pixels wide
 ;   - requirements: Depth = 8, BytesPerRow a multiple of 4, planes equally
 ;     spaced and not interleaved; otherwise nothing is done and 0 returned
-;   - merge c2p (stages 8, 4, 1, 16, 2 bits): 32 pixels per loop, one
-;     longword write per bitplane; any plane spacing, runs on 68000 and up
+;   - merge c2p in two passes per chunk of up to 16 x 32 pixels, so that
+;     each loop fits into the 256-byte instruction cache of 68020/68030:
+;     pass 1 (stages 8, 4, 1 bits, 16 pixels) into a 512-byte work buffer on
+;     the stack, pass 2 (stages 16, 2 bits, 32 pixels) with one longword
+;     write per bitplane; any plane spacing, runs on 68000 and up
+;     (changed 2026-11-10: before, one 396-byte loop did not fit the cache)
 ;   - returns 1 when done (also when no row lies inside the BitMap)
 ; ---------------------------------------------------------------------------
 .do_c2pbitmaprows:                  ; d0: chunky, d1: struct BitMap, d2: FirstRow, d3: NumRows
@@ -1884,167 +1889,155 @@ c2pbr_rowsok:
   ADD.L D7,D7
   LEA 0(A1,D7.L),A3                 ; a3 = Planes[2] + offset
   ADD.L D7,D7                       ; d7 = 4 * S
-  MOVE.L D3,-(A7)                   ; block counter on the stack
-c2pbr_loop:
-  MOVEM.L (A0)+,D0-D3               ; pixels 0..15
+  MOVEA.L D6,A4                     ; a4 = S (plane spacing, used as index)
+  MOVEA.L D7,A5                     ; a5 = 4 * S
+  MOVE.L D3,-(A7)                   ; remaining blocks, at 512(A7) below
+  LEA -512(A7),A7                   ; work buffer: 16 blocks of 32 bytes
+  MOVE.L #$00FF00FF,D5              ; masks stay in registers during
+  MOVE.L #$0F0F0F0F,D6              ; pass 1 (short AND.L Dn,Dn)
+  MOVE.L #$55555555,D7
+c2pbr_chunk:                        ; ---- up to 16 blocks per chunk ----
+  MOVEQ #16,D4
+  CMP.L 512(A7),D4
+  BLS.W c2pbr_n
+  MOVE.L 512(A7),D4                 ; fewer than 16 blocks left
+c2pbr_n:
+  SUB.L D4,512(A7)
+  LSL.L #5,D4                       ; 32 chunky bytes per block
+  LEA 0(A0,D4.L),A6                 ; a6 = end of this chunk in the chunky buffer
+  MOVEA.L A7,A2                     ; a2 = work buffer
+c2pbr_p1:                           ; ---- pass 1: 16 pixels, stages 8, 4, 1 ----
+  MOVEM.L (A0)+,D0-D3
   MOVE.L D2,D4
   LSR.L #8,D4
   EOR.L D0,D4
-  AND.L #$00FF00FF,D4
+  AND.L D5,D4
   EOR.L D4,D0
   LSL.L #8,D4
   EOR.L D4,D2
   MOVE.L D3,D4
   LSR.L #8,D4
   EOR.L D1,D4
-  AND.L #$00FF00FF,D4
+  AND.L D5,D4
   EOR.L D4,D1
   LSL.L #8,D4
   EOR.L D4,D3
   MOVE.L D1,D4
   LSR.L #4,D4
   EOR.L D0,D4
-  AND.L #$0F0F0F0F,D4
+  AND.L D6,D4
   EOR.L D4,D0
   LSL.L #4,D4
   EOR.L D4,D1
   MOVE.L D3,D4
   LSR.L #4,D4
   EOR.L D2,D4
-  AND.L #$0F0F0F0F,D4
+  AND.L D6,D4
   EOR.L D4,D2
   LSL.L #4,D4
   EOR.L D4,D3
   MOVE.L D2,D4
   LSR.L #1,D4
   EOR.L D0,D4
-  AND.L #$55555555,D4
+  AND.L D7,D4
   EOR.L D4,D0
   LSL.L #1,D4
   EOR.L D4,D2
   MOVE.L D3,D4
   LSR.L #1,D4
   EOR.L D1,D4
-  AND.L #$55555555,D4
+  AND.L D7,D4
   EOR.L D4,D1
   LSL.L #1,D4
   EOR.L D4,D3
-  MOVEA.L D0,A2
-  MOVEA.L D1,A4
-  MOVEA.L D2,A5
-  MOVEA.L D3,A6
-  MOVEM.L (A0)+,D0-D3               ; pixels 16..31
-  MOVE.L D2,D4
-  LSR.L #8,D4
-  EOR.L D0,D4
-  AND.L #$00FF00FF,D4
-  EOR.L D4,D0
-  LSL.L #8,D4
-  EOR.L D4,D2
-  MOVE.L D3,D4
-  LSR.L #8,D4
-  EOR.L D1,D4
-  AND.L #$00FF00FF,D4
-  EOR.L D4,D1
-  LSL.L #8,D4
-  EOR.L D4,D3
-  MOVE.L D1,D4
-  LSR.L #4,D4
-  EOR.L D0,D4
-  AND.L #$0F0F0F0F,D4
-  EOR.L D4,D0
-  LSL.L #4,D4
-  EOR.L D4,D1
-  MOVE.L D3,D4
-  LSR.L #4,D4
-  EOR.L D2,D4
-  AND.L #$0F0F0F0F,D4
-  EOR.L D4,D2
-  LSL.L #4,D4
-  EOR.L D4,D3
-  MOVE.L D2,D4
-  LSR.L #1,D4
-  EOR.L D0,D4
-  AND.L #$55555555,D4
-  EOR.L D4,D0
-  LSL.L #1,D4
-  EOR.L D4,D2
-  MOVE.L D3,D4
-  LSR.L #1,D4
-  EOR.L D1,D4
-  AND.L #$55555555,D4
-  EOR.L D4,D1
-  LSL.L #1,D4
-  EOR.L D4,D3
-  MOVE.L A4,D5                      ; planes 3 / 1
+  MOVE.L D1,(A2)+                   ; order 1, 3, 0, 2: pass 2 then needs
+  MOVE.L D3,(A2)+                   ; only one ADDA and one SUBA
+  MOVE.L D0,(A2)+
+  MOVE.L D2,(A2)+
+  CMPA.L A6,A0
+  BNE.W c2pbr_p1
+  MOVE.L A2,D4                      ; blocks in this chunk - 1
+  SUB.L A7,D4
+  LSR.L #5,D4
+  SUBQ.W #1,D4
+  MOVE.L #$33333333,D3
+  MOVEA.L A7,A2
+c2pbr_p2:                           ; ---- pass 2: 32 pixels, stages 16, 2 ----
+  MOVE.L (A2)+,D0                   ; planes 3 / 1
+  MOVE.L 12(A2),D1
   SWAP D1
-  EOR.W D1,D5
-  EOR.W D5,D1
-  EOR.W D1,D5
+  EOR.W D1,D0
+  EOR.W D0,D1
+  EOR.W D1,D0
   SWAP D1
-  MOVE.L D1,D4
-  LSR.L #2,D4
-  EOR.L D5,D4
-  AND.L #$33333333,D4
-  EOR.L D4,D5
-  LSL.L #2,D4
-  EOR.L D4,D1
-  MOVE.L D5,0(A3,D6.L)
-  MOVE.L D1,0(A1,D6.L)
-  MOVE.L A6,D5                      ; planes 2 / 0
-  SWAP D3
-  EOR.W D3,D5
-  EOR.W D5,D3
-  EOR.W D3,D5
-  SWAP D3
-  MOVE.L D3,D4
-  LSR.L #2,D4
-  EOR.L D5,D4
-  AND.L #$33333333,D4
-  EOR.L D4,D5
-  LSL.L #2,D4
-  EOR.L D4,D3
-  MOVE.L D5,(A3)
-  MOVE.L D3,(A1)
-  ADDA.L D7,A1                      ; to planes 4..7
-  ADDA.L D7,A3
-  MOVE.L A2,D5                      ; planes 7 / 5
-  SWAP D0
-  EOR.W D0,D5
-  EOR.W D5,D0
-  EOR.W D0,D5
-  SWAP D0
-  MOVE.L D0,D4
-  LSR.L #2,D4
-  EOR.L D5,D4
-  AND.L #$33333333,D4
-  EOR.L D4,D5
-  LSL.L #2,D4
-  EOR.L D4,D0
-  MOVE.L D5,0(A3,D6.L)
-  MOVE.L D0,0(A1,D6.L)
-  MOVE.L A5,D5                      ; planes 6 / 4
-  SWAP D2
-  EOR.W D2,D5
-  EOR.W D5,D2
-  EOR.W D2,D5
-  SWAP D2
-  MOVE.L D2,D4
-  LSR.L #2,D4
-  EOR.L D5,D4
-  AND.L #$33333333,D4
-  EOR.L D4,D5
-  LSL.L #2,D4
-  EOR.L D4,D2
-  MOVE.L D5,(A3)
-  MOVE.L D2,(A1)
-  SUBA.L D7,A1                      ; back to planes 0..3, next longword
-  SUBA.L D7,A3
+  MOVE.L D1,D2
+  LSR.L #2,D2
+  EOR.L D0,D2
+  AND.L D3,D2
+  EOR.L D2,D0
+  LSL.L #2,D2
+  EOR.L D2,D1
+  MOVE.L D0,0(A3,A4.L)
+  MOVE.L D1,0(A1,A4.L)
+  MOVE.L (A2)+,D0                   ; planes 2 / 0
+  MOVE.L 12(A2),D1
+  SWAP D1
+  EOR.W D1,D0
+  EOR.W D0,D1
+  EOR.W D1,D0
+  SWAP D1
+  MOVE.L D1,D2
+  LSR.L #2,D2
+  EOR.L D0,D2
+  AND.L D3,D2
+  EOR.L D2,D0
+  LSL.L #2,D2
+  EOR.L D2,D1
+  MOVE.L D0,(A3)
+  MOVE.L D1,(A1)
+  ADDA.L A5,A1                      ; to planes 4..7
+  ADDA.L A5,A3
+  MOVE.L (A2)+,D0                   ; planes 7 / 5
+  MOVE.L 12(A2),D1
+  SWAP D1
+  EOR.W D1,D0
+  EOR.W D0,D1
+  EOR.W D1,D0
+  SWAP D1
+  MOVE.L D1,D2
+  LSR.L #2,D2
+  EOR.L D0,D2
+  AND.L D3,D2
+  EOR.L D2,D0
+  LSL.L #2,D2
+  EOR.L D2,D1
+  MOVE.L D0,0(A3,A4.L)
+  MOVE.L D1,0(A1,A4.L)
+  MOVE.L (A2)+,D0                   ; planes 6 / 4
+  MOVE.L 12(A2),D1
+  SWAP D1
+  EOR.W D1,D0
+  EOR.W D0,D1
+  EOR.W D1,D0
+  SWAP D1
+  MOVE.L D1,D2
+  LSR.L #2,D2
+  EOR.L D0,D2
+  AND.L D3,D2
+  EOR.L D2,D0
+  LSL.L #2,D2
+  EOR.L D2,D1
+  MOVE.L D0,(A3)
+  MOVE.L D1,(A1)
+  SUBA.L A5,A1                      ; back to planes 0..3, next longword
+  SUBA.L A5,A3
   ADDQ.L #4,A1
   ADDQ.L #4,A3
-  SUBQ.L #1,(A7)
-  BNE.W c2pbr_loop
-  ADDQ.L #4,A7
+  LEA 16(A2),A2                     ; next block in the work buffer
+  DBRA D4,c2pbr_p2
+  TST.L 512(A7)
+  BNE.W c2pbr_chunk
+  LEA 516(A7),A7
 c2pbr_ok:
   MOVEQ #1,D0                       ; result: 1 = done
 c2pbr_end:
