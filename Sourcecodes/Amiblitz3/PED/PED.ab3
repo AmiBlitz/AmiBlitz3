@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 3.14.0
-; NumberOfBuilds  = 3657
+; NumberOfBuilds  = 3662
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,11 +30,11 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 4054
-; CursorColumn    = 3
-; LabelSearch     = "PED_Printhigh"
+; CursorLine      = 7550
+; CursorColumn    = 1
+; LabelSearch     = "PED_LoadHelpIndexBinFile"
 ; LabelRemark     = 0
-; LabelAll        = 0
+; LabelAll        = 1
 ; LabelCase       = 0
 ; LabelPosition   = 0
 ; 
@@ -3396,9 +3396,18 @@ End Function
 NEWTYPE.helpIndexItem
   name.s
   helpText.s
-  includeFileName.s
+  fileIdx.w                           ; index into HelpIndexFiles() (0 = no file)
 End NEWTYPE
 Dim List HelpIndexCache.helpIndexItem(0)
+
+;-- include file names of the help index: every name is stored only once,
+;-- the items only keep the index (saves a lot of memory, ~8000 items but only ~200 files)
+#MAX_HELPINDEXFILES = 1023
+Dim HelpIndexFiles.s(#MAX_HELPINDEXFILES)
+helpIndexNumFiles.w = 1               ; index 0 is reserved for "no file"
+
+;-- header of HelpIndexCache.bin (an old bin file without it is rebuilt automatically)
+#HELPINDEX_MAGIC = $48495832          ; "HIX2"
 
 ; Begin routines for function PED_BuildHelpIndex{}  ; moved the functions and statemend defination out of the build index rountine for a better overview  tomsmart1
 Function.l ab3_IsTokenChar{char.w}
@@ -3676,14 +3685,15 @@ SHARED pedconfig
 End Statement
 
 
-Statement PED_ReadHelpIndexFromTextFile{}
-SHARED pedconfig, HelpIndexCache()
+Statement PED_ReadHelpIndexFromTextFile{txtFileName.s}
+SHARED HelpIndexCache(), HelpIndexFiles(), helpIndexNumFiles
 
-  fid.l = file_Open{pedconfig\HelpIndexTextFile, #file_read}
+  fid.l = file_Open{txtFileName, #file_read}
   If fid<>-1
     file_Cache{fid}
     
     ClearList HelpIndexCache()
+    HelpIndexFiles(0) = "" : helpIndexNumFiles = 1 : fileIdx.w = 0
     row.s = ""
     While file_EOF{fid} = False
       row = file_ReadLine{fid}
@@ -3700,7 +3710,14 @@ SHARED pedconfig, HelpIndexCache()
 
       If typ$ <> ""
         If typ$ = "FILE"
-          filename$ = name$
+          If helpIndexNumFiles <= #MAX_HELPINDEXFILES
+            HelpIndexFiles(helpIndexNumFiles) = name$
+            fileIdx = helpIndexNumFiles
+            helpIndexNumFiles + 1
+          Else
+            fileIdx = 0
+            !log_PrintOut{"help index: too many include files, " + name$ + " is not stored.", #log_warning}
+          EndIf
 
         Else
 
@@ -3718,7 +3735,7 @@ SHARED pedconfig, HelpIndexCache()
             If AddItem(HelpIndexCache())
               HelpIndexCache()\name  = name$
               HelpIndexCache()\helpText  = help$
-              HelpIndexCache()\includeFileName = filename$
+              HelpIndexCache()\fileIdx = fileIdx
             End If
             
           End If
@@ -3728,17 +3745,34 @@ SHARED pedconfig, HelpIndexCache()
 
     file_Close{fid}
   Else
-    error{"Could not open " + pedconfig\HelpIndexTextFile + " for read."}
+    error{"Could not open " + txtFileName + " for read."}
   End If
 End Statement
 
 
-Statement PED_WriteHelpIndexBinFile{}
-SHARED pedconfig, HelpIndexCache()
+Statement PED_WriteHelpIndexBinFile{binFilename.s}
+SHARED HelpIndexCache(), HelpIndexFiles(), helpIndexNumFiles
 
-  If dos_Exist{pedconfig\HelpIndexBinFile} Then dos_Delete{pedconfig\HelpIndexBinFile}
+  If dos_Exist{binFilename} Then dos_Delete{binFilename}
 
-  If OpenFile(1,pedconfig\HelpIndexBinFile)
+  If OpenFile(1,binFilename)
+    ;-- header: magic (4 bytes) and number of file names (2 bytes), then the file names
+    hdrMagic.l = #HELPINDEX_MAGIC
+    hdrNumFiles.w = helpIndexNumFiles
+    WriteMem 1,&hdrMagic,4
+    WriteMem 1,&hdrNumFiles,2
+    ;-- every file name: length (2 bytes), then the characters (without 0-byte)
+    If helpIndexNumFiles > 1
+      For i.w = 1 To helpIndexNumFiles - 1
+        !log_PrintOut{"writing " + Str$(i) + ": " + HelpIndexFiles(i)}
+        fileName.s = HelpIndexFiles(i)
+        nameLen.w = FLen(fileName)
+        WriteMem 1,&nameLen,2
+        If nameLen > 0 Then WriteMem 1,&fileName,nameLen
+      Next i
+    EndIf
+
+    ;-- items
     ResetList HelpIndexCache()
     While NextItem(HelpIndexCache())
       WriteType 1,HelpIndexCache()
@@ -3748,29 +3782,57 @@ SHARED pedconfig, HelpIndexCache()
 End Statement
 
 
-Statement PED_LoadHelpIndexBinFile{}
-SHARED pedconfig, HelpIndexCache()
+Function.b PED_LoadHelpIndexBinFile{binFilename.s}
+SHARED HelpIndexCache(), HelpIndexFiles(), helpIndexNumFiles
+  ;-- returns False if the file is missing or has the old format (then it has to be rebuilt)
+  ok.b = False
 
-  If OpenFile(1,pedconfig\HelpIndexBinFile)
-    ClearList HelpIndexCache()
-    _lof.l = Lof(1)
-    While _lof > Loc(1)
-      If AddLast(HelpIndexCache())
-        ReadType 1,HelpIndexCache()
-      Else
-        !log_PrintOut{"Could not load HelpfileCache.", #log_error}
-        Pop While: Goto exit_while1
+  If OpenFile(1,binFilename)
+    ;-- first only the magic (4 bytes): an old file without header is rebuilt
+    hdrMagic.l = 0 : hdrNumFiles.w = 0
+    ReadMem 1,&hdrMagic,4
+    If hdrMagic = #HELPINDEX_MAGIC Then ReadMem 1,&hdrNumFiles,2
+    If (hdrMagic = #HELPINDEX_MAGIC) AND (hdrNumFiles >= 1) AND (hdrNumFiles <= #MAX_HELPINDEXFILES + 1)
+      ;-- table of the include file names
+      HelpIndexFiles(0) = ""
+      helpIndexNumFiles = hdrNumFiles
+      ;-- every file name: length (2 bytes), then the characters (without 0-byte)
+      If helpIndexNumFiles > 1
+        For i.w = 1 To helpIndexNumFiles - 1
+          nameLen.w = 0
+          ReadMem 1,&nameLen,2
+          fileName.s = ""
+          If nameLen > 0
+            fileName = SPACE$(nameLen)        ; reserve the string, then read into it
+            ReadMem 1,&fileName,nameLen
+          EndIf
+          HelpIndexFiles(i) = fileName
+        Next i
       EndIf
-    Wend
-    exit_while1:
+
+      ;-- items
+      ClearList HelpIndexCache()
+      _lof.l = Lof(1)
+      While _lof > Loc(1)
+        If AddLast(HelpIndexCache())
+          ReadType 1,HelpIndexCache()
+        Else
+          !log_PrintOut{"Could not load HelpfileCache.", #log_error}
+          Pop While: Goto exit_while1
+        EndIf
+      Wend
+      exit_while1:
+      ok = True
+    Else
+      !log_PrintOut{binFilename + ": old format, it will be rebuilt.", #log_warning}
+    EndIf
     CloseFile 1
   Else
-    !log_PrintOut{pedconfig\HelpIndexBinFile + " " + !TRANS{"not found."}, #log_error}
+    !log_PrintOut{binFilename + " not found.", #log_error}
   End If
-
-;  If fidW><-1 Then file_Close{fidW}
-
-End Statement
+  
+  Function Return ok
+End Function
 
 
 
@@ -3785,10 +3847,10 @@ SHARED pedconfig
     PED_CreateHelpIndexTextFile{}
 
     WZ_ShowMessage{!TRANS{"Read helpindex from text file ..."}} 
-    PED_ReadHelpIndexFromTextFile{}
+    PED_ReadHelpIndexFromTextFile{pedconfig\HelpIndexTextFile}
     
     WZ_ShowMessage{!TRANS{"Saving helpindex bin file ..."}} 
-    PED_WriteHelpIndexBinFile{}
+    PED_WriteHelpIndexBinFile{pedconfig\HelpIndexBinFile}
 
     WZ_HideMessage{}
   Else
@@ -3802,7 +3864,7 @@ End Statement
 #INDEXHELP_FILE = 3
 
 Function.s PED_GetIndexHelp{entry.s, entrytype.b}
-SHARED HelpIndexCache()
+SHARED HelpIndexCache(), HelpIndexFiles()
 
   ResetList HelpIndexCache()
   If NextItemFast(HelpIndexCache()) = False Then Function Return ""
@@ -3816,7 +3878,7 @@ SHARED HelpIndexCache()
       Select entrytype
       Case #INDEXHELP_NAME : result = HelpIndexCache()\name
       Case #INDEXHELP_HELP : result = HelpIndexCache()\helpText
-      Case #INDEXHELP_FILE : result = HelpIndexCache()\includeFileName
+      Case #INDEXHELP_FILE : result = HelpIndexFiles(HelpIndexCache()\fileIdx)
       End Select
     End If
   Wend
@@ -7574,7 +7636,10 @@ If pedconfig\onlinehelp_includes
   WZ_ShowMessage{!TRANS{"Loading helpindex for include-functions ..."}}
   If dos_Exist{pedconfig\HelpIndexBinFile} AND dos_GetFileSize{pedconfig\HelpIndexBinFile} > 0
     !log_PrintOut{"loading help index cache file: " + pedconfig\HelpIndexBinFile + ", " + Str$(dos_GetFileSize{pedconfig\HelpIndexBinFile}) + "bytes"}
-    PED_LoadHelpIndexBinFile{}
+    If NOT PED_LoadHelpIndexBinFile{pedconfig\HelpIndexBinFile}
+      !log_PrintOut{"building help index cache file: " + pedconfig\HelpIndexBinFile}    
+      PED_BuildHelpIndex{}   ; old format -> rebuild
+    EndIf
   Else
     !log_PrintOut{"building help index cache file: " + pedconfig\HelpIndexBinFile}
     PED_BuildHelpIndex{}
@@ -15187,13 +15252,13 @@ Return
       !log_PrintOut{"definition not found in current source, searching in helpcache for <" + actualword$ + ">"}
       ResetList HelpIndexCache()
       While NextItemFast(HelpIndexCache()) AND found_in_cache = False
-        If actualword$ = HelpIndexCache()\name OR actualword$ = HelpIndexCache()\includeFileName
+        If actualword$ = HelpIndexCache()\name OR actualword$ = HelpIndexFiles(HelpIndexCache()\fileIdx)
           found_in_cache = True
         End If
       Wend
 
       If found_in_cache
-        tmpStringVar = dos_AddPart{pedconfig\includeDir, HelpIndexCache()\includeFileName}
+        tmpStringVar = dos_AddPart{pedconfig\includeDir, HelpIndexFiles(HelpIndexCache()\fileIdx)}
         !log_PrintOut{"found in HelpIndexCache(), will open it:" + tmpStringVar}
         !PED_LoadSource{tmpStringVar,False,True,True}
         PED_UpdateStatusArea{}
