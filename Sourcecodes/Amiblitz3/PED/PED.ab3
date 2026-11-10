@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 7550
-; CursorColumn    = 1
-; LabelSearch     = "PED_LoadHelpIndexBinFile"
+; CursorLine      = 11972
+; CursorColumn    = 4
+; LabelSearch     = "PED_detokenizetextas"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -1694,23 +1694,34 @@ End Statement
 
 
 Function.b PED_HasUnknownToken{txtaddr.l}
-  ;-- searches the zero-terminated text for "????L" (unknown token, see PED_GetTokenName)
+  ;-- searches the zero-terminated, tokenized text for "????L" (unknown token, see PED_GetTokenName),
+  ;-- but only in code: strings and remarks are skipped, tokens (2 bytes) are skipped as a whole
   GetReg A0,txtaddr
-  MOVEQ #0,D0
+  MOVEQ #0,D0                 ; result: 0 = not found
+  MOVEQ #0,D2                 ; D2 = 1 while inside a string
   'ut_loop:
-    MOVE.b (A0)+,D1
-    BEQ 'ut_done
-    CMP.b #$3F,D1
-    BNE 'ut_loop
-    CMP.b #$3F,(A0)
-    BNE 'ut_loop
-    CMP.b #$3F,1(A0)
-    BNE 'ut_loop
-    CMP.b #$3F,2(A0)
-    BNE 'ut_loop
-    CMP.b #$4C,3(A0)
-    BNE 'ut_loop
-    MOVEQ #1,D0
+    MOVE.b (A0)+,D1 : BEQ 'ut_done ; end of line
+    TST.b D2 : BEQ 'ut_code
+      ;-- inside a string: only wait for the closing quote
+      CMP.b #$22,D1 : BNE 'ut_loop
+      MOVEQ #0,D2
+      BRA 'ut_loop
+  'ut_code:
+    TST.b D1 : BPL 'ut_char
+      ADDQ.l #1,A0            ; token: skip its second byte (it may be $00)
+      BRA 'ut_loop
+  'ut_char:
+    CMP.b #$22,D1 : BNE 'ut_nostr
+      MOVEQ #1,D2             ; start of a string
+      BRA 'ut_loop
+  'ut_nostr:
+    CMP.b #$3B,D1   : BEQ 'ut_done  ; ";" : the rest of the line is a remark
+    CMP.b #$3F,D1   : BNE 'ut_loop
+    CMP.b #$3F,(A0) : BNE 'ut_loop
+    CMP.b #$3F,1(A0): BNE 'ut_loop
+    CMP.b #$3F,2(A0): BNE 'ut_loop
+    CMP.b #$4C,3(A0): BNE 'ut_loop
+    MOVEQ #1,D0               ; found
   'ut_done:
   Function Return PutRegD0
 End Function
@@ -3187,6 +3198,90 @@ SHARED ped, pedconfig, *preProcessor, linebuff$
     ;!log_PrintOut{"PED_DetokenizeText(): Tokenizing is off"}
   EndIf
   Function Return strLine
+End Function
+
+#DETOKASM_MAX = 500                   ; max. length of the result of PED_DetokenizeTextASM
+
+Function.s PED_DetokenizeTextASM{strLine.s}
+SHARED ped, *tokenbase
+  ;-- fast detokenizer in assembler, based on do_detokenize of the rilesdebuglib.
+  ;-- Differences to do_detokenize:
+  ;--  - token names are taken from ped\tokenCache, only a token that is not cached yet is
+  ;--    searched in the token list (*tokenbase) and then stored in the cache
+  ;--  - bytes in strings and remarks are never taken as tokens (e.g. umlauts)
+  ;--  - unknown tokens are written as "????Lib" (without the lib/entry numbers)
+  ;--  - no marking of tokens, the result is limited to #DETOKASM_MAX characters
+  ;--  - the preprocessor is not supported: use PED_DetokenizeText if it is switched on
+  If ped\doTokenize = 0 Then Function Return strLine
+
+  txtP.l   = &strLine
+  bufP.l   = ?detokasm_buf
+  cacheP.l = ped\tokenCache
+  listP.l  = *tokenbase
+  GetReg D1,txtP
+  GetReg D2,bufP
+  GetReg D3,cacheP
+  GetReg D4,listP
+  MOVEM.l d2-d7/a2-a6,-(a7)
+  MOVEA.l D1,A1                          ; source text
+  MOVEA.l D2,A3                          ; destination buffer
+  MOVEA.l D3,A2                          ; token cache (pointer to tokendata per token)
+  MOVEQ #0,D6                            ; length of the result
+  MOVEQ #0,D7                            ; 0 = code, 1 = in a string, 2 = in a remark
+  'dt_loop:
+    MOVEQ #0,D0
+    MOVE.b (A1)+,D0 : BEQ 'dt_done       ; end of the text
+    CMP.w #DETOKASM_MAX,D6 : BCC 'dt_done
+    TST.b D7 : BEQ 'dt_code
+    CMP.b #1,D7 : BNE 'dt_char           ; remark: copy the rest of the line
+    CMP.b #$22,D0 : BNE 'dt_char         ; string: wait for the closing quote
+    MOVEQ #0,D7
+    BRA 'dt_char
+  'dt_code:
+    TST.b D0 : BMI 'dt_token             ; bit 7 set: it is a token
+    CMP.b #$22,D0 : BNE 'dt_norem
+    MOVEQ #1,D7 : BRA 'dt_char           ; start of a string
+  'dt_norem:
+    CMP.b #$3B,D0 : BNE 'dt_char
+    MOVEQ #2,D7                          ; ";" start of a remark
+  'dt_char:
+    MOVE.b D0,(A3)+ : ADDQ.l #1,D6       ; copy the char
+    BRA 'dt_loop
+
+  'dt_token:
+    LSL.w #8,D0
+    MOVE.b (A1)+,D0                      ; second byte of the token
+    BCLR #15,D0
+    MOVE.l D0,D1 : LSL.l #2,D1           ; offset in the token cache
+    MOVE.l 0(A2,D1.l),D2 : BNE 'dt_found ; token already cached
+    MOVE.l D4,D2                         ; search the token list (like do_detokenize)
+  'dt_search:
+    TST.l D2 : BEQ 'dt_unknown
+    MOVEA.l D2,A6
+    CMP.w 4(A6),D0 : BEQ 'dt_store
+    MOVE.l (A6),D2
+    BRA 'dt_search
+  'dt_store:
+    MOVE.l A6,0(A2,D1.l)                 ; store the token in the cache
+    MOVE.l A6,D2
+  'dt_found:
+    MOVEA.l D2,A6
+    ADDQ.l #6,A6                         ; name of the token (tokendata\dat)
+  'dt_name:
+    CMP.w #DETOKASM_MAX,D6 : BCC 'dt_done
+    MOVE.b (A6)+,D0 : BEQ 'dt_loop       ; end of the name
+    MOVE.b D0,(A3)+ : ADDQ.l #1,D6
+    BRA 'dt_name
+  'dt_unknown:
+    LEA detokasm_unknown,A6
+    BRA 'dt_name
+
+  'dt_done:
+  MOVE.l D6,D0
+  MOVEM.l (a7)+,d2-d7/a2-a6
+  resLen.l = PutRegD0
+  If resLen <= 0 Then Function Return ""
+  Function Return PeekS(?detokasm_buf, resLen)
 End Function
 
 Function.s PED_Detokenize{*sourceLine.sourceLine}
@@ -11809,8 +11904,12 @@ Return
       If labelWord1 <> "" Then ped\labelSearchMode = 1
     EndIf
   EndIf
-
+ 
+  labelBreakpoints.l = 0
   Gosub listLabels
+
+  ;-- sort once (the breakpoints at the top stay where they are)
+  If pedconfig\sort_labels Then WZListSort list_Labels, labelBreakpoints
 
   ;!log_PrintOut{"updating labellist done"}
   ;ttt.l = eclock_Stop{}
@@ -11859,8 +11958,9 @@ Return
           found = True
         EndIf
 
-        ; add unknown tokens
-        If Instr(tmpStr,"????L") > 0                
+        ; add unknown tokens (only in code, not in strings or remarks)
+        ;If Instr(tmpStr,"????L") > 0          
+        If PED_HasUnknownToken{*nextline + 9}
           ped\labelEntryType = $FFFD : found.b = True
           !log_PrintOut{"unknown token in source line " + Str$(tmpLineCounter + 1), #log_error}
         EndIf
@@ -11943,7 +12043,9 @@ Return
   addok.b = False
   CaseSense Off
 
+  ;-- fast detokenizer in assembler, the preprocessor needs the Basic version
   labelCaption.s = PED_DetokenizeText{tmpStr}
+  ;labelCaption.s = PED_DetokenizeTextASM{tmpStr}
 
   ; -- search in entry for an optional search string
   Select ped\labelSearchMode
@@ -11971,16 +12073,15 @@ Return
       !log_PrintOut{"sourcebrowser: label to add is empty!",#log_error}
     EndIf
 
-    If pedconfig\sort_labels = 0
-      labelSorting.b = -2
-    Else
-      labelSorting = -1
-    EndIf
+    ;-- always append (-2 = fast, no walk through the list); sorting is done once by
+    ;-- WZListSort after listLabels (sorted inserting for every entry costs n*n)
+    labelSorting.b = -2
 
     Select ped\labelEntryType
     Case #TOKEN_Stop
       labelCaption.s = "---Breakpoint---" ; space at the beginning to see it as the first entry
       WZTags #WENTRYA_TextPen,2 : labelSorting = 0
+      labelBreakpoints + 1                    ; breakpoints are inserted at the top and stay there
     Case #TOKEN_Function
       WZTags #WENTRYA_TextPen,AB3Pen(#AB3_cfunction)
     Case #TOKEN_Statement
@@ -17270,6 +17371,11 @@ CEND
 ; ---------------------------------------------------------------------
 .DECLARATIONS
 wzgui:                IncBin "ped.wizard"
+
+                      Even
+detokasm_buf:         Dcb.b 512,0                ; result buffer of PED_DetokenizeTextASM
+detokasm_unknown:     Dc.b "????Lib",0           ; text for unknown tokens (PED_DetokenizeTextASM)
+                      Even
 
 .classiccommands
                       ; memory reservations for libs that where introduced with old blitz2
