@@ -14,7 +14,7 @@
 ; MakeSmallest    = 1
 ; FuncOptimize    = 1
 ; Version         = 0.0.0
-; NumberOfBuilds  = 48
+; NumberOfBuilds  = 49
 ; 
 ; Debugger
 ; -------------------------------------------------------
@@ -30,9 +30,9 @@
 ; 
 ; Editor
 ; -------------------------------------------------------
-; CursorLine      = 1655
+; CursorLine      = 1911
 ; CursorColumn    = 1
-; LabelSearch     = "_wzgadgetname"
+; LabelSearch     = "_wzlistsort2"
 ; LabelRemark     = 0
 ; LabelAll        = 1
 ; LabelCase       = 0
@@ -60,6 +60,7 @@
 ; Max BitMap      = 10
 ; Max Screen      = 5
 ; Max Palette     = 4
+; Max Window      = 5
 ; Max Sound       = 10
 ; Max MedModule   = 8
 ; Max Buffer      = 10
@@ -75,7 +76,6 @@
 ; Max Stencil     = 5
 ; Max XBSound     = 10
 ; Max Page        = 4
-; Max Window      = 5
 ; /XTRA
 ;
 ; 20221114: moved GetD0,PutD0,PushD0 to environlib
@@ -416,6 +416,15 @@ Dc 3 LSL 8+3,0,0
 !subs {_wzgadaddrnocheck,0,0}
 !name {"WZGadAddrNoCheck","(GadgetId) - returns address of gadget"}
 
+!astatement
+!args {#long}
+!libs
+!subs {_wzlistsort,0,0}
+!args {#long,#long}
+!libs
+!subs {_wzlistsort2,0,0}
+!name {"WZListSort","Listbase.List[,Skip] - sorts a listview list by its strings, Skip: entries at the start that stay unsorted"}
+
 ; ================================== declarations to be moved in other libs ===============
 
 ;--- constants for PPC-usage
@@ -484,7 +493,6 @@ Dc 3 LSL 8+3,0,0
 !libs {#windowslib,#ia0}
 !subs {_getreactionobject,0,0}
 !name {"GetReactionObject","[(Window#)] - returns Reactionobject stored by UseAsBlitzWin"}
-
 
 
 ; ================================== END OF DECLARATIONS ================================== 
@@ -1944,6 +1952,12 @@ _wzlist2add_
   TST.l d5 : BEQ 'l100
   MOVE.l (a2),a2
   CMP.l #-1,d5 : BEQ '_sort
+  TST.l d5 : BPL 'l150
+    ;-- Num < -1: append at the end directly (before: walked through the whole list)
+    MOVE.l $4,a6
+    JSR _AddTail(a6)
+    BRA 'l110
+ 'l150:
   SUBQ.l #1,d5
  'l200:
     TST.l d5 : BEQ 'l100
@@ -1954,6 +1968,7 @@ _wzlist2add_
  'l100:
   MOVE.l $4,a6
   JSR _Insert(a6)
+ 'l110:
   MOVE.l usertags(pc),a0
   CLR.l (a0) 
  'nomem: 
@@ -1977,6 +1992,125 @@ RTS
 'back
  MOVE.l 4(a2),a2
  BRA 'l100
+
+
+._wzlistsort
+  MOVEQ #0,d1                          ; default: sort the whole list
+_wzlistsort2
+  ;-- WZListSort Listbase.List[,Skip]
+  ;-- sorts the entries of a listview list by their strings with a stable merge sort,
+  ;-- so the time grows with n*log(n) instead of n*n like a sorted WZListAdd for every entry.
+  ;-- Skip: number of entries at the beginning that stay unsorted (e.g. breakpoints).
+  ;-- Strings are compared bytewise (signed bytes) like the sorted WZListAdd,
+  ;-- a string that is the beginning of a longer one comes first.
+  ;-- d0: list header, d1: skip
+  MOVEM.l d2-d7/a2-a6,-(a7)
+  MOVE.l d0,a5                         ; a5 = list header
+  TST.l (a5) : BEQ 'ls_done            ; list was never used
+
+  ;-- anchor: header or node after which the sorted part begins
+  MOVE.l a5,a6
+ 'ls_skip
+    TST.l d1 : BLE 'ls_skipped
+    MOVE.l (a6),a0                     ; next node
+    TST.l (a0) : BEQ 'ls_skipped       ; next is the end of the list
+    MOVE.l a0,a6
+    SUBQ.l #1,d1
+  BRA 'ls_skip
+ 'ls_skipped
+  MOVE.l (a6),a2                       ; a2 = first node to sort
+  TST.l (a2) : BEQ 'ls_done            ; nothing to sort
+  MOVE.l 8(a5),a0                      ; last node (lh_TailPred)
+  CLR.l (a0)                           ; end the chain with NULL while sorting
+  MOVE.l a6,-(a7)                      ; remember the anchor
+
+  ;-- bottom up merge sort of the NULL terminated chain in a2
+  ;-- d2 = run size, d3 = merges in this pass, d4 = size of p, d5 = size of q
+  ;-- a0 = head of the new chain, a1 = its tail, a2 = p, a3 = q, a4 = taken node
+  MOVEQ #1,d2
+ 'ls_pass
+    SUBA.l a0,a0
+    SUBA.l a1,a1
+    MOVEQ #0,d3
+   'ls_merge
+      MOVE.l a2,d0 : BEQ 'ls_passend   ; no more runs in this pass
+      ADDQ.l #1,d3
+      MOVE.l a2,a3                     ; q = p moved forward by up to d2 nodes
+      MOVEQ #0,d4
+     'ls_step
+        ADDQ.l #1,d4
+        MOVE.l (a3),a3
+        MOVE.l a3,d0 : BEQ 'ls_stepped
+        CMP.l d2,d4 : BLT 'ls_step
+     'ls_stepped
+      MOVE.l d2,d5
+     'ls_pick
+        TST.l d4 : BNE 'ls_pnotempty
+          TST.l d5 : BEQ 'ls_runend    ; p and q both empty
+          MOVE.l a3,d0 : BEQ 'ls_runend
+          BRA 'ls_takeq
+       'ls_pnotempty
+        TST.l d5 : BEQ 'ls_takep
+        MOVE.l a3,d0 : BEQ 'ls_takep
+        ;-- compare the strings of p and q
+        MOVE.l $3c(a2),a4 : MOVE.l a4,d0 : BNE 'ls_c1
+          LEA ls_empty(pc),a4
+       'ls_c1
+        MOVE.l $3c(a3),a6 : MOVE.l a6,d0 : BNE 'ls_cmp
+          LEA ls_empty(pc),a6
+       'ls_cmp
+          MOVE.b (a4)+,d0
+          MOVE.b (a6)+,d1
+          CMP.b d1,d0 : BNE 'ls_diff
+          TST.b d0 : BNE 'ls_cmp
+        BRA 'ls_takep                  ; equal: p first (stable)
+       'ls_diff
+        BLT 'ls_takep                  ; p < q
+       'ls_takeq
+        MOVE.l a3,a4 : MOVE.l (a3),a3 : SUBQ.l #1,d5
+        BRA 'ls_append
+       'ls_takep
+        MOVE.l a2,a4 : MOVE.l (a2),a2 : SUBQ.l #1,d4
+       'ls_append
+        MOVE.l a1,d0 : BEQ 'ls_first
+          MOVE.l a4,(a1)
+          BRA 'ls_appended
+       'ls_first
+          MOVE.l a4,a0
+       'ls_appended
+        MOVE.l a4,a1
+      BRA 'ls_pick
+     'ls_runend
+      MOVE.l a3,a2                     ; next run starts behind q
+    BRA 'ls_merge
+   'ls_passend
+    CLR.l (a1)
+    MOVE.l a0,a2
+    CMP.l #1,d3 : BLE 'ls_sorted       ; only one run left: sorted
+    ADD.l d2,d2
+  BRA 'ls_pass
+
+ 'ls_sorted
+  ;-- link the sorted chain back into the exec list (succ/pred, tail)
+  MOVE.l (a7)+,a6                      ; anchor
+  MOVE.l a2,(a6)
+  MOVE.l a6,a0
+ 'ls_link
+    MOVE.l a0,4(a2)
+    MOVE.l a2,a0
+    MOVE.l (a2),d0 : BEQ 'ls_linked
+    MOVE.l d0,a2
+  BRA 'ls_link
+ 'ls_linked
+  LEA 4(a5),a1
+  MOVE.l a1,(a0)                       ; last node -> lh_Tail
+  MOVE.l a0,8(a5)                      ; lh_TailPred = last node
+ 'ls_done
+  MOVEM.l (a7)+,d2-d7/a2-a6
+RTS
+
+ls_empty: Dc.b 0
+  Even
 
 
 ._wzlistremove
