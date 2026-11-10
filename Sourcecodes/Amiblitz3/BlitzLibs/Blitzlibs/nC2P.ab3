@@ -1830,6 +1830,8 @@ RTS    ;1274: 4e75
 ;     the stack, pass 2 (stages 16, 2 bits, 32 pixels) with one longword
 ;     write per bitplane; any plane spacing, runs on 68000 and up
 ;     (changed 2026-11-10: before, one 396-byte loop did not fit the cache)
+;   - pass 2 is software-pipelined: the Chip-RAM writes of one plane pair
+;     are spread between the calculations of the next pair (2026-11-10)
 ;   - returns 1 when done (also when no row lies inside the BitMap)
 ; ---------------------------------------------------------------------------
 .do_c2pbitmaprows:                  ; d0: chunky, d1: struct BitMap, d2: FirstRow, d3: NumRows
@@ -1893,10 +1895,10 @@ c2pbr_rowsok:
   MOVEA.L D7,A5                     ; a5 = 4 * S
   MOVE.L D3,-(A7)                   ; remaining blocks, at 512(A7) below
   LEA -512(A7),A7                   ; work buffer: 16 blocks of 32 bytes
-  MOVE.L #$00FF00FF,D5              ; masks stay in registers during
-  MOVE.L #$0F0F0F0F,D6              ; pass 1 (short AND.L Dn,Dn)
-  MOVE.L #$55555555,D7
+  MOVE.L #$0F0F0F0F,D6              ; masks stay in registers during
+  MOVE.L #$55555555,D7              ; pass 1 (short AND.L Dn,Dn)
 c2pbr_chunk:                        ; ---- up to 16 blocks per chunk ----
+  MOVE.L #$00FF00FF,D5              ; (d5 is also used by pass 2)
   MOVEQ #16,D4
   CMP.L 512(A7),D4
   BLS.W c2pbr_n
@@ -1956,14 +1958,16 @@ c2pbr_p1:                           ; ---- pass 1: 16 pixels, stages 8, 4, 1 ---
   MOVE.L D2,(A2)+
   CMPA.L A6,A0
   BNE.W c2pbr_p1
-  MOVE.L A2,D4                      ; blocks in this chunk - 1
-  SUB.L A7,D4
-  LSR.L #5,D4
-  SUBQ.W #1,D4
+  LEA 4(A2),A6                      ; a6 = end of the work data + 4 (loop end)
   MOVE.L #$33333333,D3
   MOVEA.L A7,A2
-c2pbr_p2:                           ; ---- pass 2: 32 pixels, stages 16, 2 ----
-  MOVE.L (A2)+,D0                   ; planes 3 / 1
+                                    ; ---- pass 2: 32 pixels, stages 16, 2 ----
+                                    ; software pipeline: each pair of planes is
+                                    ; written while the next pair is computed,
+                                    ; every Chip-RAM write is followed by 6
+                                    ; register-only instructions (the 020 goes
+                                    ; on executing from the cache meanwhile)
+  MOVE.L (A2)+,D0                   ; first block, planes 3 / 1 (no writes yet)
   MOVE.L 12(A2),D1
   SWAP D1
   EOR.W D1,D0
@@ -1977,64 +1981,80 @@ c2pbr_p2:                           ; ---- pass 2: 32 pixels, stages 16, 2 ----
   EOR.L D2,D0
   LSL.L #2,D2
   EOR.L D2,D1
-  MOVE.L D0,0(A3,A4.L)
-  MOVE.L D1,0(A1,A4.L)
-  MOVE.L (A2)+,D0                   ; planes 2 / 0
+c2pbr_p2:
+  MOVE.L (A2)+,D4                   ; planes 2 / 0 in d4 / d5
+  MOVE.L 12(A2),D5
+  MOVE.L D0,0(A3,A4.L)              ; write plane 3
+  SWAP D5
+  EOR.W D5,D4
+  EOR.W D4,D5
+  EOR.W D5,D4
+  SWAP D5
+  MOVE.L D5,D2
+  MOVE.L D1,0(A1,A4.L)              ; write plane 1
+  LSR.L #2,D2
+  EOR.L D4,D2
+  AND.L D3,D2
+  EOR.L D2,D4
+  LSL.L #2,D2
+  EOR.L D2,D5
+  MOVE.L (A2)+,D0                   ; planes 7 / 5 in d0 / d1
   MOVE.L 12(A2),D1
+  MOVE.L D4,(A3)                    ; write plane 2
   SWAP D1
   EOR.W D1,D0
   EOR.W D0,D1
   EOR.W D1,D0
   SWAP D1
   MOVE.L D1,D2
+  MOVE.L D5,(A1)                    ; write plane 0
   LSR.L #2,D2
   EOR.L D0,D2
-  AND.L D3,D2
-  EOR.L D2,D0
-  LSL.L #2,D2
-  EOR.L D2,D1
-  MOVE.L D0,(A3)
-  MOVE.L D1,(A1)
   ADDA.L A5,A1                      ; to planes 4..7
+  AND.L D3,D2
+  EOR.L D2,D0
   ADDA.L A5,A3
-  MOVE.L (A2)+,D0                   ; planes 7 / 5
-  MOVE.L 12(A2),D1
-  SWAP D1
-  EOR.W D1,D0
-  EOR.W D0,D1
-  EOR.W D1,D0
-  SWAP D1
-  MOVE.L D1,D2
-  LSR.L #2,D2
-  EOR.L D0,D2
-  AND.L D3,D2
-  EOR.L D2,D0
   LSL.L #2,D2
   EOR.L D2,D1
-  MOVE.L D0,0(A3,A4.L)
-  MOVE.L D1,0(A1,A4.L)
-  MOVE.L (A2)+,D0                   ; planes 6 / 4
-  MOVE.L 12(A2),D1
-  SWAP D1
-  EOR.W D1,D0
-  EOR.W D0,D1
-  EOR.W D1,D0
-  SWAP D1
-  MOVE.L D1,D2
+  MOVE.L (A2)+,D4                   ; planes 6 / 4 in d4 / d5
+  MOVE.L 12(A2),D5
+  MOVE.L D0,0(A3,A4.L)              ; write plane 7
+  SWAP D5
+  EOR.W D5,D4
+  EOR.W D4,D5
+  EOR.W D5,D4
+  SWAP D5
+  MOVE.L D5,D2
+  MOVE.L D1,0(A1,A4.L)              ; write plane 5
   LSR.L #2,D2
-  EOR.L D0,D2
+  EOR.L D4,D2
   AND.L D3,D2
-  EOR.L D2,D0
-  LSL.L #2,D2
-  EOR.L D2,D1
-  MOVE.L D0,(A3)
-  MOVE.L D1,(A1)
-  SUBA.L A5,A1                      ; back to planes 0..3, next longword
-  SUBA.L A5,A3
-  ADDQ.L #4,A1
-  ADDQ.L #4,A3
+  EOR.L D2,D4
   LEA 16(A2),A2                     ; next block in the work buffer
-  DBRA D4,c2pbr_p2
+  LSL.L #2,D2
+  EOR.L D2,D5
+  MOVE.L (A2)+,D0                   ; next block: planes 3 / 1 in d0 / d1
+  MOVE.L 12(A2),D1                  ; (after the last block this reads unused
+  MOVE.L D4,(A3)                    ;  stack data, the result is not written)
+  SWAP D1                           ; write plane 6 (above)
+  EOR.W D1,D0
+  EOR.W D0,D1
+  EOR.W D1,D0
+  SWAP D1
+  MOVE.L D1,D2
+  MOVE.L D5,(A1)                    ; write plane 4
+  LSR.L #2,D2
+  SUBA.L A5,A1                      ; back to planes 0..3, next longword
+  EOR.L D0,D2
+  SUBA.L A5,A3
+  AND.L D3,D2
+  ADDQ.L #4,A1
+  EOR.L D2,D0
+  ADDQ.L #4,A3
+  LSL.L #2,D2
+  EOR.L D2,D1
+  CMPA.L A6,A2
+  BNE.W c2pbr_p2
   TST.L 512(A7)
   BNE.W c2pbr_chunk
   LEA 516(A7),A7
